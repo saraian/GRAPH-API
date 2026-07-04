@@ -1,2 +1,11 @@
 # GRAPH API
-Da aggiungere
+Per far partire tutto, in 4 diversi terminali: 
+
+ros2 launch simulation.launch.py
+
+ros2 run lost3dsg perception.py --ros-args -p use_sim_time:=True
+
+ros2 run lost3dsg object_manager_6.py
+
+cd lost3dsg/src/perception_module
+python3 graph_api_bridge.py
