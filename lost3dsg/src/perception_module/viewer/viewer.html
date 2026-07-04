@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Graph Viewer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.33.1/cytoscape.min.js"></script>
+  <style>
+    :root {
+      --bg: #f6f7fb;
+      --panel: #ffffff;
+      --panel-2: #f9fafb;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --primary: #0f766e;
+      --primary-soft: #dff7f4;
+      --warn: #b45309;
+      --warn-soft: #fef3c7;
+      --danger: #b42318;
+      --danger-soft: #fee4e2;
+      --info: #1d4ed8;
+      --info-soft: #dbeafe;
+      --radius: 14px;
+      --shadow: 0 8px 24px rgba(16, 24, 40, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+    }
+
+    .page {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 16px;
+      max-width: 1800px;
+      margin: 0 auto;
+    }
+
+    .hero {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px 18px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: 1.25rem;
+      line-height: 1.2;
+    }
+
+    .hero-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 14px 16px;
+    }
+
+    .stat .label {
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+
+    .stat .value {
+      font-size: 1.25rem;
+      font-weight: 700;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+
+    .panel-header h2 {
+      margin: 0;
+      font-size: 1rem;
+      line-height: 1.2;
+    }
+
+    .panel-header .sub {
+      color: var(--muted);
+      font-size: 0.88rem;
+      margin-left: auto;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr auto auto;
+      gap: 10px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      background: #fcfcfd;
+    }
+
+    input, button, select {
+      font: inherit;
+      color: inherit;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: white;
+      padding: 10px 12px;
+    }
+
+    input:focus, select:focus {
+      outline: 2px solid rgba(15, 118, 110, 0.18);
+      border-color: var(--primary);
+    }
+
+    button {
+      cursor: pointer;
+      transition: 0.15s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: white;
+    }
+
+    .checkbox {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      padding: 0 4px;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0 16px 16px;
+      background: #fcfcfd;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--primary-soft);
+      color: var(--primary);
+      font-size: 0.82rem;
+      font-weight: 600;
+      border: 1px solid #b8e6e0;
+    }
+
+    .scroll {
+      overflow: auto;
+    }
+
+    .table-wrap {
+      max-height: 520px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      font-size: 0.94rem;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: white;
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    tbody tr {
+      cursor: pointer;
+    }
+
+    tbody tr:hover {
+      background: #f9fafb;
+    }
+
+    tbody tr.selected {
+      background: #ecfdfb;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+
+    .badge.warn {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    .badge.neutral {
+      background: #eef2f7;
+      color: #475467;
+    }
+
+    .empty, .error {
+      padding: 16px;
+      margin: 16px;
+      border-radius: 12px;
+      font-size: 0.95rem;
+    }
+
+    .empty {
+      background: #f8fafc;
+      color: var(--muted);
+      border: 1px dashed var(--border);
+    }
+
+    .error {
+      background: var(--danger-soft);
+      color: var(--danger);
+      border: 1px solid #fda29b;
+    }
+
+    .details {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 0;
+    }
+
+    .details-top {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .details-title {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .details-sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .details-content {
+      padding: 16px;
+      overflow: auto;
+      max-height: 980px;
+      background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+    }
+
+    .group {
+      margin-bottom: 18px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+    }
+
+    .group h3 {
+      margin: 0 0 10px;
+      font-size: 0.94rem;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+      align-items: start;
+    }
+
+    .kv .k {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .kv .v {
+      font-size: 0.94rem;
+      word-break: break-word;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #eef2ff;
+      color: #344054;
+      border: 1px solid #d9ddff;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+
+    .graph-wrap {
+      padding: 16px;
+      display: grid;
+      grid-template-rows: auto 720px;
+      gap: 12px;
+    }
+
+    .graph-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    #cy {
+      width: 100%;
+      height: 720px;
+      display: block;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+
+    .legend {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 10px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .dot.object { background: #0f766e; }
+    .dot.room { background: #6366f1; }
+    .dot.reference { background: #94a3b8; }
+
+    @media (max-width: 1200px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .controls {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      #cy {
+        height: 560px;
+      }
+
+      .graph-wrap {
+        grid-template-rows: auto 560px;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .stats {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        align-items: flex-start;
+      }
+
+      .hero-actions {
+        margin-left: 0;
+      }
+
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      .kv {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div>
+        <h1>Graph API</h1>
+      </div>
+      <div class="hero-actions">
+        <button id="refreshObjectsBtn" class="btn-primary">Update object view</button>
+        <button id="refreshGraphBtn">Update graph view</button>
+      </div>
+    </section>
+
+    <section class="stats">
+      <article class="stat">
+        <div class="label">Number of nodes</div>
+        <div class="value" id="statNodes">0</div>
+      </article>
+      <article class="stat">
+        <div class="label">Number of edges</div>
+        <div class="value" id="statEdges">0</div>
+      </article>
+    </section>
+    
+        <section class="panel">
+      <div class="panel-header">
+        <h2>Graph</h2>
+        <div class="sub" id="graphStatus">Waiting…</div>
+      </div>
+
+      <div class="graph-wrap">
+        <div class="graph-toolbar">
+          <div class="legend">
+            <span class="legend-item"><span class="dot room"></span> Room</span>
+            <span class="legend-item"><span class="dot object"></span> Object</span>
+            <span class="legend-item"><span class="dot reference"></span> Edge</span>
+          </div>
+        </div>
+        <div id="cy"></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Objects</h2>
+          <div class="sub" id="objectCountLabel">0 results</div>
+        </div>
+
+        <div class="controls">
+          <input id="searchInput" type="hidden" />
+          <input id="roomInput" type="text" placeholder="room_id" />
+          <input id="labelInput" type="text" placeholder="label_filter" />
+          <label class="checkbox">
+            <input id="uncertainInput" type="checkbox" />
+            Uncertain objects
+          </label>
+          <button id="resetBtn">Reset</button>
+        </div>
+
+        <div class="chips" id="chips"></div>
+
+        <div class="table-wrap scroll" id="tableWrap">
+          <div class="empty">Looking for objects…</div>
+        </div>
+      </section>
+
+      <aside class="panel details">
+        <div class="details-top">
+          <div class="details-title">Details</div>
+          <div class="details-sub" id="detailMeta">Select a row in the table, a node or an edge in the graph.</div>
+        </div>
+        <div class="details-content" id="detailContent"></div>
+      </aside>
+    </section>
+  </main>
+
+  <script>
+    let rawObjects = [];
+    let rawObjectIds = [];
+    let filteredRows = [];
+    let selectedIdx = -1;
+    let cy = null;
+
+    const el = {
+      statNodes: document.getElementById("statNodes"),
+      statEdges: document.getElementById("statEdges"),
+      search: document.getElementById("searchInput"),
+      objectCountLabel: document.getElementById("objectCountLabel"),
+      graphStatus: document.getElementById("graphStatus"),
+      chips: document.getElementById("chips"),
+      tableWrap: document.getElementById("tableWrap"),
+      detailMeta: document.getElementById("detailMeta"),
+      detailContent: document.getElementById("detailContent"),
+      room: document.getElementById("roomInput"),
+      label: document.getElementById("labelInput"),
+      uncertain: document.getElementById("uncertainInput"),
+      refreshObjects: document.getElementById("refreshObjectsBtn"),
+      refreshGraph: document.getElementById("refreshGraphBtn"),
+      reset: document.getElementById("resetBtn"),
+      cy: document.getElementById("cy"),
+    };
+
+    function escapeHtml(s) {
+      return String(s ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function prettyKey(key) {
+      return String(key || "")
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    function prettyValue(v) {
+      if (v === null || v === undefined || v === "") return "—";
+      if (Array.isArray(v)) return v.length ? v.join(", ") : "—";
+      if (typeof v === "object") return JSON.stringify(v);
+      return String(v);
+    }
+
+    function fmtNum(v, digits = 3) {
+      if (v === null || v === undefined || v === "") return "—";
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toFixed(digits) : String(v);
+    }
+
+    function buildRows() {
+      return rawObjects.map((obj, i) => ({
+        object_id: rawObjectIds[i] ?? obj.object_id ?? obj.id ?? obj.uuid ?? `obj-${i}`,
+        label: obj.label ?? obj.name ?? obj.category ?? "",
+        room_id: obj.room_id ?? "",
+        color: obj.color ?? "",
+        material: obj.material ?? "",
+        uncertain: !!obj.uncertain,
+        json: obj
+      }));
+    }
+
+    function renderChips() {
+      const chips = [];
+      if (el.room.value.trim()) chips.push(`room_id: ${el.room.value.trim()}`);
+      if (el.search.value.trim()) chips.push(`search: ${el.search.value.trim()}`);
+      if (el.label.value.trim()) chips.push(`label_filter: ${el.label.value.trim()}`);
+      if (el.uncertain.checked) chips.push("uncertain_only");
+
+      el.chips.innerHTML = chips.map(c => `<span class="chip">${escapeHtml(c)}</span>`).join("");
+    }
+
+    function applyClientFilters() {
+      const q = el.search.value.trim().toLowerCase();
+      const room = el.room.value.trim().toLowerCase();
+      const label = el.label.value.trim().toLowerCase();
+      const uncertain = el.uncertain.checked;
+
+      filteredRows = buildRows().filter(row => {
+        if (room && !String(row.room_id).toLowerCase().includes(room)) return false;
+        if (label && !String(row.label).toLowerCase().includes(label)) return false;
+        if (uncertain && !row.uncertain) return false;
+
+        if (q) {
+          const blob = JSON.stringify(row.json).toLowerCase();
+          const keys = [
+            String(row.object_id).toLowerCase(),
+            String(row.label).toLowerCase(),
+            String(row.room_id).toLowerCase(),
+            String(row.color).toLowerCase(),
+            String(row.material).toLowerCase(),
+            blob
+          ];
+          if (!keys.some(v => v.includes(q))) return false;
+        }
+        return true;
+      });
+
+      renderChips();
+      renderTable();
+    }
+
+    function renderTable() {
+      el.objectCountLabel.textContent = `${filteredRows.length} results`;
+
+      if (!filteredRows.length) {
+        el.tableWrap.innerHTML = `<div class="empty">No object found.</div>`;
+        return;
+      }
+
+      const rows = filteredRows.map((row, i) => `
+        <tr data-index="${i}" class="${i === selectedIdx ? "selected" : ""}">
+          <td>${escapeHtml(row.object_id)}</td>
+          <td>${escapeHtml(row.label || "—")}</td>
+          <td>${escapeHtml(row.room_id || "—")}</td>
+          <td>${escapeHtml(row.color || "—")}</td>
+          <td>${escapeHtml(row.material || "—")}</td>
+          <td>${row.uncertain ? '<span class="badge warn">uncertain</span>' : '<span class="badge neutral">stable</span>'}</td>
+        </tr>
+      `).join("");
+
+      el.tableWrap.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Object ID</th>
+              <th>Label</th>
+              <th>Room</th>
+              <th>Color</th>
+              <th>Material</th>
+              <th>State</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+
+      el.tableWrap.querySelectorAll("tbody tr").forEach(tr => {
+        tr.addEventListener("click", () => {
+          selectedIdx = Number(tr.dataset.index);
+          renderTable();
+          renderObjectDetails(filteredRows[selectedIdx].json, filteredRows[selectedIdx].object_id);
+        });
+      });
+
+      if (selectedIdx < 0 || selectedIdx >= filteredRows.length) {
+        selectedIdx = 0;
+      }
+      renderObjectDetails(filteredRows[selectedIdx].json, filteredRows[selectedIdx].object_id);
+    }
+
+    function bboxText(obj) {
+      if (obj.bbox !== undefined && obj.bbox !== null) {
+        const b = obj.bbox;
+
+        if (Array.isArray(b)) {
+          if (b.length === 6) {
+            return `x [${fmtNum(b[0])}, ${fmtNum(b[1])}], y [${fmtNum(b[2])}, ${fmtNum(b[3])}], z [${fmtNum(b[4])}, ${fmtNum(b[5])}]`;
+          }
+          return b.map(v => fmtNum(v)).join(", ");
+        }
+
+        if (typeof b === "object") {
+          if (["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"].some(k => b[k] !== undefined && b[k] !== null)) {
+            return `x [${fmtNum(b.x_min)}, ${fmtNum(b.x_max)}], y [${fmtNum(b.y_min)}, ${fmtNum(b.y_max)}], z [${fmtNum(b.z_min)}, ${fmtNum(b.z_max)}]`;
+          }
+
+          if (Array.isArray(b.min) && Array.isArray(b.max) && b.min.length >= 3 && b.max.length >= 3) {
+            return `x [${fmtNum(b.min[0])}, ${fmtNum(b.max[0])}], y [${fmtNum(b.min[1])}, ${fmtNum(b.max[1])}], z [${fmtNum(b.min[2])}, ${fmtNum(b.max[2])}]`;
+          }
+
+          return JSON.stringify(b);
+        }
+      }
+
+      const keys = ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"];
+      const has = keys.some(k => obj[k] !== undefined && obj[k] !== null);
+      if (!has) return "—";
+
+      return `x [${fmtNum(obj.x_min)}, ${fmtNum(obj.x_max)}], y [${fmtNum(obj.y_min)}, ${fmtNum(obj.y_max)}], z [${fmtNum(obj.z_min)}, ${fmtNum(obj.z_max)}]`;
+    }
+
+    function centerText(obj) {
+      if (obj.center && Array.isArray(obj.center)) {
+        return obj.center.map(v => fmtNum(v)).join(", ");
+      }
+
+      if (obj.bbox !== undefined && obj.bbox !== null) {
+        const b = obj.bbox;
+
+        if (Array.isArray(b) && b.length === 6) {
+          const [xmin, xmax, ymin, ymax, zmin, zmax] = b.map(Number);
+          if ([xmin, xmax, ymin, ymax, zmin, zmax].every(Number.isFinite)) {
+            return `${fmtNum((xmin + xmax) / 2)}, ${fmtNum((ymin + ymax) / 2)}, ${fmtNum((zmin + zmax) / 2)}`;
+          }
+        }
+
+        if (typeof b === "object") {
+          if (Array.isArray(b.min) && Array.isArray(b.max) && b.min.length >= 3 && b.max.length >= 3) {
+            return `${fmtNum((Number(b.min[0]) + Number(b.max[0])) / 2)}, ${fmtNum((Number(b.min[1]) + Number(b.max[1])) / 2)}, ${fmtNum((Number(b.min[2]) + Number(b.max[2])) / 2)}`;
+          }
+
+          if (["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"].every(k => Number.isFinite(Number(b[k])))) {
+            return `${fmtNum((Number(b.x_min) + Number(b.x_max)) / 2)}, ${fmtNum((Number(b.y_min) + Number(b.y_max)) / 2)}, ${fmtNum((Number(b.z_min) + Number(b.z_max)) / 2)}`;
+          }
+        }
+      }
+
+      if ([obj.x_min, obj.x_max, obj.y_min, obj.y_max, obj.z_min, obj.z_max].every(v => Number.isFinite(Number(v)))) {
+        const cx = (Number(obj.x_min) + Number(obj.x_max)) / 2;
+        const cy = (Number(obj.y_min) + Number(obj.y_max)) / 2;
+        const cz = (Number(obj.z_min) + Number(obj.z_max)) / 2;
+        return `${fmtNum(cx)}, ${fmtNum(cy)}, ${fmtNum(cz)}`;
+      }
+
+      return "—";
+    }
+
+    function collectRelations(obj) {
+      const rels = [];
+
+      if (Array.isArray(obj.relations)) {
+        obj.relations.forEach((r, idx) => {
+          rels.push({
+            id: `relations-${idx}`,
+            type: r.type ?? r.relation ?? r.label ?? "related_to",
+            target: String(r.target ?? r.to ?? r.object_id ?? r.related_object_id ?? r.dst ?? "")
+          });
+        });
+      }
+
+      if (Array.isArray(obj.edges)) {
+        obj.edges.forEach((r, idx) => {
+          rels.push({
+            id: `edges-${idx}`,
+            type: r.type ?? r.label ?? "related_to",
+            target: String(r.target ?? r.to ?? r.object_id ?? r.dst ?? "")
+          });
+        });
+      }
+
+      const relationKeys = [
+        "room_id", "parent_id", "support_id", "container_id",
+        "inside_of", "in_room", "on_top_of", "part_of", "attached_to",
+        "near", "left_of", "right_of", "behind", "in_front_of"
+      ];
+
+      relationKeys.forEach(key => {
+        if (obj[key]) {
+          rels.push({
+            id: `${key}-${obj[key]}`,
+            type: key === "room_id" ? "in_room" : key,
+            target: String(obj[key])
+          });
+        }
+      });
+
+      return rels.filter(r => r.target);
+    }
+
+    function renderObjectDetails(obj, fallbackId = "") {
+      const objectId = obj.object_id ?? obj.id ?? obj.uuid ?? fallbackId ?? "—";
+      const label = obj.label ?? obj.name ?? obj.category ?? obj.type ?? "object";
+      const attrs = [];
+
+      ["color", "material", "room_id", "type", "category", "state", "status"].forEach(k => {
+        if (obj[k]) attrs.push(`<span class="tag">${escapeHtml(prettyKey(k))}: ${escapeHtml(obj[k])}</span>`);
+      });
+
+      const relations = collectRelations(obj);
+      const knownKeys = new Set([
+        "object_id","id","uuid","label","name","category","type","description",
+        "color","material","room_id","state","status","uncertain",
+        "bbox","x_min","x_max","y_min","y_max","z_min","z_max","center",
+        "relations","edges","parent_id","support_id","container_id",
+        "inside_of","in_room","on_top_of","part_of","attached_to",
+        "near","left_of","right_of","behind","in_front_of"
+      ]);
+
+
+      el.detailMeta.textContent = `${label} · ${objectId}`;
+
+      el.detailContent.innerHTML = `
+        <section class="group">
+          <h3>General info</h3>
+          <div class="kv"><div class="k">ID</div><div class="v">${escapeHtml(objectId)}</div></div>
+          <div class="kv"><div class="k">Label</div><div class="v">${escapeHtml(label)}</div></div>
+          <div class="kv"><div class="k">Description</div><div class="v">${escapeHtml(obj.description ?? "—")}</div></div>
+          <div class="kv"><div class="k">Ceirtanty</div><div class="v">${obj.uncertain ? '<span class="badge warn">uncertain</span>' : '<span class="badge neutral">stable</span>'}</div></div>
+        </section>
+
+        <section class="group">
+          <h3>Features</h3>
+          <div class="tag-list">${attrs.length ? attrs.join("") : "—"}</div>
+        </section>
+
+        <section class="group">
+          <h3>Geometry</h3>
+          <div class="kv"><div class="k">Bounding box</div><div class="v">${escapeHtml(bboxText(obj))}</div></div>
+          <div class="kv"><div class="k">Center</div><div class="v">${escapeHtml(centerText(obj))}</div></div>
+        </section>
+
+        <section class="group">
+          <h3>Relationships</h3>
+          ${
+            relations.length
+              ? relations.map(r => `
+                  <div class="kv">
+                    <div class="k">${escapeHtml(prettyKey(r.type))}</div>
+                    <div class="v">${escapeHtml(r.target)}</div>
+                  </div>
+                `).join("")
+              : `<div class="kv"><div class="k">Relationships</div><div class="v">—</div></div>`
+          }
+        </section>
+
+      `;
+    }
+
+    function renderEdgeDetails(data) {
+      el.detailMeta.textContent = `${data.label ?? data.type ?? "relation"} · ${data.source} → ${data.target}`;
+      el.detailContent.innerHTML = `
+        <section class="group">
+          <h3>Edges</h3>
+          <div class="kv"><div class="k">Type</div><div class="v">${escapeHtml(data.label ?? data.type ?? "related_to")}</div></div>
+          <div class="kv"><div class="k">Source</div><div class="v">${escapeHtml(data.source ?? "—")}</div></div>
+          <div class="kv"><div class="k">Target</div><div class="v">${escapeHtml(data.target ?? "—")}</div></div>
+        </section>
+      `;
+    }
+
+    async function loadObjects() {
+      el.tableWrap.innerHTML = `<div class="empty">Caricamento oggetti…</div>`;
+
+      try {
+        const payload = {
+          uncertain_only: el.uncertain.checked,
+          room_id: el.room.value.trim(),
+          label_filter: el.label.value.trim()
+        };
+
+        const res = await fetch("/query_objects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+        rawObjects = Array.isArray(data.objects) ? data.objects : [];
+        rawObjectIds = Array.isArray(data.object_ids) ? data.object_ids : [];
+        selectedIdx = -1;
+        applyClientFilters();
+      } catch (err) {
+        el.tableWrap.innerHTML = `<div class="error">Error retrieving objects: ${escapeHtml(err.message || err)}</div>`;
+      }
+    }
+
+    function inferNodeId(obj, i) {
+      return String(obj.id ?? obj.object_id ?? obj.uuid ?? obj.name ?? obj.label ?? `node-${i}`);
+    }
+
+    function inferNodeLabel(obj) {
+      return String(obj.label ?? obj.name ?? obj.category ?? obj.type ?? inferNodeId(obj, 0));
+    }
+
+    function classifyNode(obj) {
+      if (obj.kind) return obj.kind;
+      if (obj.node_type === "room" || obj.type === "room" || obj.category === "room") return "room";
+      if (obj.room_id && !obj.label && !obj.name) return "room";
+      return "object";
+    }
+
+    function destroyGraph() {
+      if (cy) {
+        cy.destroy();
+        cy = null;
+      }
+    }
+
+    async function loadPersistentGraph() {
+      el.graphStatus.textContent = "Loading graph…";
+      destroyGraph();
+
+      try {
+        const res = await fetch("/persistent_perception");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        
+        const raw = await res.json();
+
+        const objects =
+          Array.isArray(raw) ? raw :
+          Array.isArray(raw.objects) ? raw.objects :
+          Array.isArray(raw.nodes) ? raw.nodes :
+          Array.isArray(raw.entities) ? raw.entities :
+          [];
+
+        if (!objects.length) {
+          el.graphStatus.textContent = "JSON loaded but did not recognize object structure";
+          el.cy.innerHTML = `<div class="empty">File loaded but no array in raw / raw.objects / raw.nodes / raw.entities.</div>`;
+          return;
+        }
+
+        const elements = [];
+        const knownNodes = new Map();
+
+        objects.forEach((obj, i) => {
+          const id = inferNodeId(obj, i);
+          const label = inferNodeLabel(obj);
+          const kind = classifyNode(obj);
+
+          knownNodes.set(id, true);
+
+          elements.push({
+            data: {
+              id,
+              label,
+              kind,
+              raw: obj
+            }
+          });
+        });
+
+        objects.forEach((obj, i) => {
+          const source = inferNodeId(obj, i);
+          const rels = collectRelations(obj);
+
+          rels.forEach((rel, idx) => {
+            const target = rel.target;
+            const targetLooksRoom = rel.type === "in_room" || rel.type.includes("room");
+
+            if (!knownNodes.has(target)) {
+              knownNodes.set(target, true);
+
+              elements.push({
+                data: {
+                  id: target,
+                  label: target,
+                  kind: targetLooksRoom ? "room" : "reference",
+                  raw: {
+                    id: target,
+                    label: target,
+                    type: targetLooksRoom ? "room" : "reference"
+                  }
+                }
+              });
+            }
+
+            elements.push({
+              data: {
+                id: `${source}--${rel.type}--${target}--${idx}`,
+                source,
+                target,
+                label: rel.type,
+                type: rel.type
+              }
+            });
+          });
+        });
+
+        el.cy.innerHTML = "";
+
+        cy = cytoscape({
+          container: el.cy,
+          elements,
+          style: [
+            {
+              selector: "node",
+              style: {
+                "label": "data(label)",
+                "font-size": 11,
+                "text-wrap": "wrap",
+                "text-max-width": 90,
+                "text-valign": "center",
+                "text-halign": "center",
+                "background-color": "#0f766e",
+                "color": "#0f172a",
+                "border-width": 2,
+                "border-color": "#ffffff",
+                "width": 38,
+                "height": 38
+              }
+            },
+            {
+              selector: 'node[kind = "object"]',
+              style: {
+                "shape": "circle",
+                "background-color": "#0f766e",
+                "width": 60,
+                "height": 60,
+                "color": "#111827"
+              }
+            },
+            {
+              selector: 'node[kind = "room"]',
+              style: {
+                "shape": "round-rectangle",
+                "background-color": "#6366f1",
+                "width": 60,
+                "height": 60,
+                "color": "#111827"
+              }
+            },
+            {
+              selector: 'node[kind = "reference"]',
+              style: {
+                "shape": "diamond",
+                "background-color": "#94a3b8",
+                "width": 34,
+                "height": 34
+              }
+            },
+            {
+              selector: "edge",
+              style: {
+                "curve-style": "bezier",
+                "width": 2,
+                "line-color": "#94a3b8",
+                "target-arrow-color": "#94a3b8",
+                "target-arrow-shape": "triangle",
+                "label": "data(label)",
+                "font-size": 9,
+                "text-background-color": "#ffffff",
+                "text-background-opacity": 0.92,
+                "text-background-padding": 2,
+                "color": "#334155"
+              }
+            },
+            {
+              selector: ":selected",
+              style: {
+                "overlay-opacity": 0,
+                "border-color": "#f59e0b",
+                "line-color": "#f59e0b",
+                "target-arrow-color": "#f59e0b"
+              }
+            }
+          ],
+          layout: {
+            name: "breadthfirst",
+            directed: true,
+            padding: 10,
+            direction: "upward",
+            spacingFactor: 1.5
+          }
+        });
+
+        cy.on("tap", "node", evt => {
+          renderObjectDetails(evt.target.data("raw"), evt.target.id());
+        });
+
+        cy.on("tap", "edge", evt => {
+          renderEdgeDetails(evt.target.data());
+        });
+
+        setTimeout(() => {
+          if (cy) {
+            cy.resize();
+            cy.fit();
+          }
+        }, 150);
+
+        const nodeCount = cy.nodes().length;
+        const edgeCount = cy.edges().length;
+        el.statNodes.textContent = String(nodeCount);
+        el.statEdges.textContent = String(edgeCount);
+        el.graphStatus.textContent = ``;
+      } catch (err) {
+        el.graphStatus.textContent = "Error loading graph";
+        el.cy.innerHTML = `<div class="error">Errore loading graph: ${escapeHtml(err.message || err)}</div>`;
+      }
+    }
+
+    el.refreshObjects.addEventListener("click", loadObjects);
+    el.refreshGraph.addEventListener("click", loadPersistentGraph);
+
+    el.reset.addEventListener("click", () => {
+      el.search.value = "";
+      el.room.value = "";
+      el.label.value = "";
+      el.uncertain.checked = false;
+      loadObjects();
+    });
+
+    el.search.addEventListener("input", applyClientFilters);
+    el.room.addEventListener("change", loadObjects);
+    el.label.addEventListener("change", loadObjects);
+    el.uncertain.addEventListener("change", loadObjects);
+
+    window.addEventListener("load", async () => {
+      await loadObjects();
+      await loadPersistentGraph();
+    });
+
+    window.addEventListener("resize", () => {
+      if (cy) {
+        cy.resize();
+        cy.fit();
+      }
+    });
+  </script>
+</body>
+</html>

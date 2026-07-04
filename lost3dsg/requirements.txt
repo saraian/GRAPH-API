@@ -1,0 +1,49 @@
+# ========================================
+# LOST-3DSG Python Dependencies
+# ========================================
+# Install these with: pip3 install -r requirements.txt
+# 
+# ROS 2 dependencies should be installed via apt:
+#   sudo apt install ros-humble-rclpy ros-humble-cv-bridge \
+#     ros-humble-sensor-msgs ros-humble-visualization-msgs \
+#     ros-humble-tf2-ros ros-humble-geometry-msgs
+# ========================================
+
+# Core Scientific Computing
+numpy>=1.24.0,<2.0
+opencv-python>=4.8.0
+scipy>=1.10.0
+
+# Deep Learning Frameworks
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.30.0
+timm>=0.9.0
+
+# Computer Vision & Detection
+ultralytics>=8.0.0
+segment-anything>=1.0
+Pillow>=10.0.0
+
+# ONNX Runtime (choose CPU or GPU version)
+onnx>=1.14.0
+onnxruntime>=1.15.0
+# Uncomment the following line if you have CUDA GPU support:
+# onnxruntime-gpu>=1.15.0
+onnxsim>=0.4.0
+
+# NLP & Language Models
+gensim>=4.3.0
+openai>=1.0.0
+
+
+# Utilities
+PyYAML>=6.0
+tqdm>=4.65.0
+
+# ========================================
+# Notes:
+# - For GPU acceleration, install CUDA toolkit first
+# - If you encounter memory issues, consider using CPU versions
+# - Some models may require additional downloads on first run
+# ========================================

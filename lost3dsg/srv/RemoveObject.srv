@@ -1,0 +1,15 @@
+# REQUEST
+bool remove_from_uncertain_only
+
+float32 pov_x_min
+float32 pov_x_max
+float32 pov_y_min
+float32 pov_y_max
+float32 pov_z_min
+float32 pov_z_max
+
+string object_id  
+---
+# RESPONSE
+bool success
+string message

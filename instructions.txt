@@ -1,0 +1,11 @@
+Se non ti legge i topic del tiago: nft insert rule ip filter ufw-user-input iifname "eno1" ip saddr 10.68.0.1 udp dport 7400-8700 counter accept
+ros2 daemon stop
+
+
+Per lo slam del tiago: ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file slam_params.yaml
+
+
+Se rviz smette di prendere i topic provare a fare source
+Caricare la mappa direttamente in ssh
+Le immagini si devono mettere con reliability policy best effort
+

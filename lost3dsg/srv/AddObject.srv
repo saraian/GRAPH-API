@@ -1,0 +1,19 @@
+# REQUEST
+string label
+string description
+string color
+string material
+float32 x_min
+float32 x_max
+float32 y_min
+float32 y_max
+float32 z_min
+float32 z_max
+string room_id
+float32[] description_embedding
+bool in_exploration
+---
+# RESPONSE
+bool success
+string object_id      # label#uuid assegnato
+string message

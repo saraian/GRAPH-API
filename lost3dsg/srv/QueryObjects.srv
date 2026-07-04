@@ -1,0 +1,7 @@
+bool uncertain_only
+string room_id
+string label_filter
+---
+bool success
+string[] object_ids
+string serialized_json

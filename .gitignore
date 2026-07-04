@@ -1,0 +1,12 @@
+habitat/
+lib/
+habitat-sim/
+habitat_nav_output/
+__pycache__/
+*.pyc
+build/
+install/
+log/
+utils/
+tiago_habitat/
+lost3dsg/word2vec-google-news-300/

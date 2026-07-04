@@ -1,0 +1,10 @@
+# Request
+float32 max_distance       # default 0.8m  (0.0 = usa default)
+float32 min_similarity     # default 0.75  (0.0 = usa default)
+bool    dry_run            # se True, calcola ma non esegue il merge
+---
+# Response
+bool     success
+string   message
+int32    merged_count
+string   merge_log_json    # lista di dict con dettagli di ogni merge avvenuto

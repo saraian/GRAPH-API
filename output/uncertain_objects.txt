@@ -1,0 +1,20 @@
+================================================================================
+UNCERTAIN OBJECTS - Updated: 2026-07-02 12:19:46
+================================================================================
+
+Total uncertain objects: 7
+
+1. lamp#2
+   Center position: X=1.232, Y=0.137, Z=-0.894
+2. window
+   Center position: X=5.022, Y=-0.422, Z=-1.029
+3. window
+   Center position: X=1.232, Y=0.137, Z=-0.894
+4. window
+   Center position: X=3.559, Y=2.158, Z=-0.440
+5. window
+   Center position: X=5.323, Y=-0.181, Z=-1.001
+6. window
+   Center position: X=3.281, Y=-1.002, Z=-1.091
+7. window
+   Center position: X=1.522, Y=2.782, Z=-0.960

@@ -1,0 +1,16 @@
+[
+    {
+        "room_id": "room_0",
+        "semantic_label": "Unknown_Room",
+        "description": "Fallback per oggetti: sofa, lamp, window, desk",
+        "objects": [
+            "desk",
+            "sofa#1",
+            "sofa#2",
+            "lamp#1",
+            "lamp#2",
+            "window"
+        ],
+        "walls": []
+    }
+]

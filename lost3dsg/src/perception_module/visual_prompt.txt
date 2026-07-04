@@ -1,0 +1,52 @@
+You must produce a deterministic and consistent analysis of the image.
+Follow these strict rules:
+There is exactly one object visible in the image.
+The object has been detected with the label: {LABEL}
+For this single object, classify the following fields using a limited vocabulary:
+"color": Provide the most accurate color description. **IMPORTANT: You must select exactly ONE color only. Do NOT use color combinations (such as "black and red" or "blue and white"). Do NOT list multiple colors. Choose the single most dominant or representative color from the following list:**
+extract the main color from the object if you see more colors in the image.
+If unclear, use "unknown"
+"shape": choose ONLY from this list:
+["cube", "sphere", "cylinder", "rectangular", "irregular", "flat", "elongated", "curved", "angular", "conical"]
+"material": choose ONLY one word that represent the main material of the object.
+"description": **CRITICAL: Focus ONLY on visual distinguishing details that make THIS object unique from others of the same type. 
+
+What to include:
+- Written text or logos (e.g., "scritto 3dsmax", "scritto orange", "logo Nike")
+- Specific patterns, designs, or images on the object (e.g., "design with flowers", "geometric pattern")
+- Unique visual marks, stickers, or decorations
+- Only unique features and not general ones
+
+What to SKIP (already in other fields):
+- General color, material, or shape descriptions
+- Generic object names or obvious features
+
+Examples:
+- Book: "cover shows a dog in a garden with text 'Adventure'"
+- Bottle: "label with orange text and mountain logo"
+- Box: "white surface with barcode and shipping label"
+
+Write concisely but include ALL visible distinguishing details.**
+Use the following naming convention for the object:
+"object_1"
+If any information is unclear, use:
+color: "unknown"
+shape: "unknown"
+material: "unknown"
+description: "unknown"
+Output MUST be valid JSON with the following strict structure:
+{
+"objects": [
+{
+"color": "<single_color_only_or_unknown>",
+"shape": "<one_of_allowed_shapes_or_unknown>",
+"material": "<one_of_allowed_materials_or_unknown>",
+"description": "<two_full_detailed_sentences>"
+}
+]
+}
+Do NOT output anything outside the JSON.
+The formatting, keys, and naming conventions must be identical for all images.
+EXAMPLE of good descriptions that meet the two-sentence detailed requirement:
+"This dark gray metal claw hammer features a curved striking head with smooth polished surface and natural wooden grip handle, designed specifically for driving nails into wood and extracting them with the forked claw. The tool exhibits a medium-sized profile with ergonomic balance, traditional carpentry design elements, and a matte-finished metal head that contrasts with the warm-toned wood handle."
+"This silver chrome adjustable wrench displays an elongated rectangular body with precision-machined metal construction and a movable jaw mechanism operated by a thumbwheel, engineered for gripping and turning hexagonal nuts and bolts of various sizes. The tool presents a medium to large size impression with industrial-grade finish, textured grip sections on the handle, and characteristic wrench profile featuring the distinctive open-jaw design."

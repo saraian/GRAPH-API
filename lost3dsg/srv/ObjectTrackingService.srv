@@ -1,0 +1,6 @@
+lost3dsg/ObjectDescriptionArray descriptions
+lost3dsg/Bbox3dArray bboxes
+---
+string status
+int32 num_objects
+bool tracking_mode_activated

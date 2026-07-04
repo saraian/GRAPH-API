@@ -1,0 +1,23 @@
+# REQUEST
+string object_id
+string description
+string color
+string material
+
+bool update_bbox
+float32 x_min
+float32 x_max
+float32 y_min
+float32 y_max
+float32 z_min
+float32 z_max
+
+float32[] description_embedding
+---
+# RESPONSE
+bool success
+string message
+string object_id
+float32 distance
+float32 iou
+bool replaced

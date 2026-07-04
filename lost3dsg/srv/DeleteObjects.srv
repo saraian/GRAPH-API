@@ -1,0 +1,10 @@
+# DeleteObjects.srv
+float32[] pov_volume_flat    
+string[]  current_labels    
+bool      check_uncertain    
+---
+bool    success
+string  message
+int32   deleted_count
+int32   uncertain_removed_count
+string  deleted_labels_json

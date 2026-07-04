@@ -1,0 +1,11 @@
+Provide a list of objects to identify in the scene, separated by commas. 
+Include objects that are clearly visible in the foreground, AND explicitly include 'door' if any doors are visible in the scene, even if they are in the background.
+
+Do NOT include other background clutter or partially visible small objects. If you see a sofa with cushions, write only 'sofa' (do not list cushions separately). 
+
+IMPORTANT: Use ONLY ONE WORD per object - use the most common, simple name. NO compound words, NO adjectives, NO descriptions.
+Examples: 'bottle' NOT 'water bottle', 'chair' NOT 'office chair', 'plant' NOT 'potted plant', 'laptop' NOT 'gaming laptop'.
+
+Exclude irrelevant structural objects such as walls, floors, or ceilings, but ALWAYS include doors. 
+Example: plant, screwdriver, wrench, hammer, can, bottle, chair, table, door. 
+Do not add any other text, only the list of objects.
