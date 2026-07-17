@@ -1,7 +1,8 @@
 # GRAPH API
 Per far partire tutto, in 4 diversi terminali: 
 
-ros2 launch simulation.launch.py
+ros2 launch simulation.launch.py se Gazebo
+ros2 run lost3dsg habitat_camera_node.py
 
 ros2 run lost3dsg perception.py --ros-args -p use_sim_time:=True
 
