@@ -1,0 +1,31 @@
+# Perception module configuration. Every value here was previously a constant in
+# the code. Copy, edit, and point $PERCEPTION_CONFIG at it, or leave this file
+# next to perception_config.py and it is picked up automatically.
+# Anything omitted falls back to the defaults in perception_config.DEFAULTS.
+
+vlm:
+  model: gpt-5-nano
+  timeout_s: 20.0
+  max_retries: 2
+  enabled: true          # false skips per-object descriptions entirely
+  api_key_env: OPENAI_API_KEY
+
+camera:
+  # "optical" (x right, y down, z forward) is what the projection code assumes.
+  # Only set "body" if your publisher names a body frame in the image header and
+  # you cannot change it. See the long comment in perception_config.py first.
+  frame_convention: optical
+  use_image_stamp: true  # false restores the old "always latest transform"
+  tf_buffer_s: 10.0
+
+output:
+  dir: output            # relative paths resolve against the package root
+
+models:
+  auto_download: true
+  semantic_backend: sentence-transformers
+  sentence_model: all-MiniLM-L6-v2
+
+exploration:
+  interactive_gate: false      # true needs a TTY
+  publish_during_exploration: true
