@@ -5,6 +5,7 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 import os
+import perception_config
 import json
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow warnings
 import rclpy
@@ -182,15 +183,28 @@ class DetectObjects(Node):
         'debug': ('debug',   'debug'),
     }
 
-    def __init__(self):
+    def __init__(self, detector=None, segmenter=None):
+        """
+        Args:
+            detector: object exposing the OWLv2 detect interface. Defaults to OWLv2().
+            segmenter: object exposing the VitSam interface. Defaults to VitSam(...).
+
+        Both are injectable so that swapping the perception front-end is a
+        configuration change rather than an edit to this file. Constructing them
+        inline meant every alternative front-end needed a patch here.
+        """
         super().__init__('detection_node')
 
         self.file_logger = module_logger
         self.file_logger.info("=== DetectObjects Node Initialized ===")
 
         self.bridge = CvBridge()
-        self.detector = OWLv2()
-        self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
+        self.detector = detector if detector is not None else OWLv2()
+        if segmenter is not None:
+            self.vitsam = segmenter
+        else:
+            enc, dec = utils.ensure_vitsam_weights()
+            self.vitsam = VitSam(enc, dec)
         self.COLORS = ['red', 'green', 'blue', 'magenta', 'gray', 'yellow'] * 3
 
         self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
@@ -391,7 +405,7 @@ class DetectObjects(Node):
         self.process_walls_and_publish()
 
         if not self.is_stationary:
-            self.log_both("warn", "Robot moved after OWLv2 — interrupting")
+            self.log_both("warn", "Robot moved after OWLv2 , interrupting")
             self.processing_interrupted = True
             return []
 
@@ -545,7 +559,8 @@ class DetectObjects(Node):
         for det, centroid, bbox, desc in zip(detections, centroids_3d, bboxes_3d, descriptions):
             wm.add_actual_perception(Object(det.label, centroid, bbox, **desc))
 
-        perceptions_path = "/root/exchange/lost3dsg/output/actual_perceptions.json"
+        perceptions_path = os.path.join(
+            perception_config.output_dir(), "actual_perceptions.json")
         os.makedirs(os.path.dirname(perceptions_path), exist_ok=True)
         with open(perceptions_path, "w") as f:
             json.dump([
@@ -664,7 +679,7 @@ class DetectObjects(Node):
             self.is_stationary = False
             self.processing_interrupted = True
             self.time_stationary_start  = None
-            self.log_both('warn', "Movement detected — timer reset.")
+            self.log_both('warn', "Movement detected , timer reset.")
 
             if not self.robot_has_moved_once:
                 self.robot_has_moved_once = True
@@ -675,7 +690,7 @@ class DetectObjects(Node):
         elif not moving and not self.is_stationary:
             self.is_stationary         = True
             self.time_stationary_start = self.get_clock().now()
-            self.log_both('info', f"Robot stopped — detection in {self.min_stationary_after_movement}s")
+            self.log_both('info', f"Robot stopped , detection in {self.min_stationary_after_movement}s")
         
     def scan_callback(self, msg):
             self.latest_scan = msg
@@ -874,7 +889,7 @@ def main(args=None):
             print("--- [DEBUG] Cerco dati sincronizzati... ---")
             if node.camera_data.get_synced_data() is not None:
                 print("--- [DEBUG] DATI TROVATI! Avvio la rete neurale! ---")
-                _run_perception("First detection: data available — starting perception.")
+                _run_perception("First detection: data available , starting perception.")
             else:
                 print("--- [DEBUG] Dati non ancora pronti o troppo sfasati ---")
             return
@@ -885,7 +900,7 @@ def main(args=None):
 
         elapsed = (node.get_clock().now() - node.time_stationary_start).nanoseconds / 1e9
         if elapsed >= node.min_stationary_after_movement:
-            _run_perception("Robot stationary long enough — starting new perception cycle.")
+            _run_perception("Robot stationary long enough , starting new perception cycle.")
 
     # Creiamo un gruppo indipendente per il timer in modo che non si blocchi MAI
     timer_cb_group = ReentrantCallbackGroup()
