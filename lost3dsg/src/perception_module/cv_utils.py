@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import os
 import numpy as np
+
+import perception_config
 from sensor_msgs.msg import CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
 from matplotlib.colors import to_rgb
@@ -558,29 +560,92 @@ def vlm_call(prompt, encoded_image):
     return resp.choices[0].message.content
 
 '''
-with open(os.path.join(os.path.dirname(file_path), "api.txt"), "r") as f:
-    api_key = f.read().strip()
+class VLMUnavailable(RuntimeError):
+    """The provider could not be reached or answered with a malformed envelope.
 
-client = OpenAI(api_key=api_key)
+    Deliberately distinct from "the model had nothing to say". A connection
+    problem is not a semantic result, and collapsing the two hides outages.
+    """
+
+
+_client = None
+
+
+def _get_client():
+    """Build the client on first use, not at import.
+
+    Reading the key at module scope means a missing file takes down every
+    importer of cv_utils, including perception.py, before any function runs and
+    with no way for a caller to guard it. Anyone who never makes a VLM call now
+    never needs a key.
+    """
+    global _client
+    if _client is not None:
+        return _client
+    key = os.environ.get(perception_config.get("vlm", "api_key_env") or "OPENAI_API_KEY")
+    if not key:
+        key_file = perception_config.get("vlm", "api_key_file") or \
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt")
+        if os.path.isfile(key_file):
+            with open(key_file) as f:
+                key = f.read().strip()
+    if not key:
+        raise VLMUnavailable(
+            "No API key. Set the env var named by vlm.api_key_env, or point "
+            "vlm.api_key_file at a file, or disable descriptions with "
+            "vlm.enabled: false in perception_config.yaml.")
+    kwargs = {"api_key": key, "timeout": perception_config.get("vlm", "timeout_s"),
+              "max_retries": 0}
+    base_url = perception_config.get("vlm", "base_url")
+    if base_url:
+        kwargs["base_url"] = base_url
+    _client = OpenAI(**kwargs)
+    return _client
 
 
 def vlm_call(prompt, encoded_image):
-    agent = client.chat.completions.create(
-        model="gpt-5-nano",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
+    """Describe an image region. Returns the text, or None if the model had none.
+
+    Raises VLMUnavailable when the provider is unreachable or returns an
+    envelope we cannot read, after the configured retries. That case must stay
+    loud: it is an outage, not an empty answer.
+    """
+    if not perception_config.get("vlm", "enabled"):
+        return None
+    retries = int(perception_config.get("vlm", "max_retries"))
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            agent = _get_client().chat.completions.create(
+                model=perception_config.get("vlm", "model"),
+                messages=[
                     {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{encoded_image}"}
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{encoded_image}"}
+                            }
+                        ],
                     }
-                ],
-            }
-        ]
-    )
-    return agent.choices[0].message.content
+                ]
+            )
+        except VLMUnavailable:
+            raise
+        except Exception as e:              # timeout, connection, provider error
+            last = e
+            continue
+        choices = getattr(agent, "choices", None)
+        if not choices or getattr(choices[0], "message", None) is None:
+            # A well-formed reply always carries choices. Missing ones mean a
+            # moderation block or an error envelope, i.e. transport, not content.
+            last = VLMUnavailable(f"provider returned no choices: {agent!r}"[:300])
+            continue
+        content = choices[0].message.content
+        # Well-formed and empty is a real answer: the model had nothing to add.
+        return content if content and content.strip() else None
+    raise VLMUnavailable(f"VLM call failed after {retries + 1} attempt(s): {last}")
 
 def numpy_to_base64(img, fmt='.png'):
     _, buf = cv2.imencode(fmt, img)

@@ -139,7 +139,9 @@ class RoomManager:
         
         try:
             # Caricamento API Key
-            api_key_path = "/root/exchange/lost3dsg/src/perception_module/api.txt"
+            api_key_path = os.environ.get(
+                "PERCEPTION_API_KEY_FILE",
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.txt"))
             with open(api_key_path, "r") as f:
                 api_key = f.read().strip()
 

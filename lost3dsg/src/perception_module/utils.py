@@ -3,6 +3,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.time import Time as ROS2Time
 from rclpy.duration import Duration as ROS2Duration
 import numpy as np
+
+import perception_config
 from cv_bridge import CvBridge
 import cv2, os, colorsys
 from sensor_msgs.msg import Image, CameraInfo
@@ -14,8 +16,55 @@ import config
 bridge = CvBridge()
 
 file_path = os.path.abspath(__file__)
-ENCODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path),"utils", "l2_encoder.onnx")
-DECODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path),"utils", "l2_decoder.onnx")
+ENCODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path), "utils", "l2_encoder.onnx")
+DECODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path), "utils", "l2_decoder.onnx")
+
+# EfficientViT-SAM ONNX weights. The repo ships an encoder export script but no
+# decoder export and no checkpoint, so VitSam cannot be built from a clean clone
+# and the failure surfaces as a confusing ONNX error rather than "no weights".
+# Set models.auto_download false to manage them yourself.
+VITSAM_URLS = {
+    "l2_encoder.onnx": os.environ.get("VITSAM_ENCODER_URL", ""),
+    "l2_decoder.onnx": os.environ.get("VITSAM_DECODER_URL", ""),
+}
+
+
+def ensure_vitsam_weights():
+    """Return (encoder, decoder) paths, fetching them once if configured.
+
+    Checks the package directory first, then the shared cache. Downloads only
+    when models.auto_download is on and a URL is known, writes to a temporary
+    file and renames, so an interrupted fetch cannot leave a half file behind
+    that looks valid on the next run.
+    """
+    import shutil
+    import urllib.request
+
+    out = []
+    cache = perception_config.model_cache_dir()
+    for name, local in (("l2_encoder.onnx", ENCODER_VITSAM_PATH),
+                        ("l2_decoder.onnx", DECODER_VITSAM_PATH)):
+        if os.path.isfile(local):
+            out.append(local)
+            continue
+        cached = os.path.join(cache, name)
+        if os.path.isfile(cached):
+            out.append(cached)
+            continue
+        url = VITSAM_URLS.get(name) or ""
+        if not perception_config.get("models", "auto_download") or not url:
+            raise FileNotFoundError(
+                f"{name} not found in {os.path.dirname(local)} or {cache}. "
+                f"Export it with efficientvit/export_encoder.py, or set "
+                f"VITSAM_ENCODER_URL / VITSAM_DECODER_URL and enable "
+                f"models.auto_download to fetch it once into {cache}.")
+        print(f"[perception] downloading {name} to {cache} (once)", flush=True)
+        tmp = cached + ".part"
+        with urllib.request.urlopen(url) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        os.replace(tmp, cached)
+        out.append(cached)
+    return out[0], out[1]
 
 
 class SyncedCameraData:
@@ -92,14 +141,32 @@ class SyncedCameraData:
             camera_frame = self.cached_rgb.header.frame_id
             target_frame = "map"
 
-            # ALWAYS use the most recent transform available (timestamp=0)
-            # We ignore the image timestamp because there's too much delay
-            transform = self.node.tf_buffer.lookup_transform(
-                target_frame,
-                camera_frame,
-                ROS2Time(seconds=0),  # Most recent available
-                timeout=ROS2Duration(seconds=0.01)
-            )
+            # Look the transform up at the stamp the image was actually taken
+            # at. Using "latest" instead projects every detection through
+            # whatever pose is newest at processing time, so any motion between
+            # capture and processing displaces the whole frame by that motion.
+            # Falling back to latest is still better than dropping the frame,
+            # but it is logged, because silently using the wrong pose is worse
+            # than skipping one. Needs a TF buffer long enough to still hold
+            # the stamp: see camera.tf_buffer_s in perception_config.
+            use_stamp = perception_config.get("camera", "use_image_stamp")
+            stamp = self.cached_rgb.header.stamp if use_stamp else ROS2Time(seconds=0)
+            try:
+                transform = self.node.tf_buffer.lookup_transform(
+                    target_frame, camera_frame, stamp,
+                    timeout=ROS2Duration(seconds=0.05))
+            except Exception:
+                if not use_stamp:
+                    raise
+                transform = self.node.tf_buffer.lookup_transform(
+                    target_frame, camera_frame, ROS2Time(seconds=0),
+                    timeout=ROS2Duration(seconds=0.05))
+                self._stamp_fallbacks = getattr(self, "_stamp_fallbacks", 0) + 1
+                if self._stamp_fallbacks in (1, 10, 100) or self._stamp_fallbacks % 500 == 0:
+                    self.node.get_logger().warn(
+                        f"TF at image stamp unavailable, used latest instead "
+                        f"({self._stamp_fallbacks} so far). Positions from these "
+                        f"frames are displaced by any motion since capture.")
 
             first_time = self.cached_transform is None
             self.cached_transform = transform  # Always update!
