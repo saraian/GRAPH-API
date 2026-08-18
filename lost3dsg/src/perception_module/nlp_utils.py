@@ -1,4 +1,6 @@
 import numpy as np
+
+import perception_config
 import webcolors
 import re
 
@@ -131,6 +133,39 @@ def color_similarity_rgb(color1: str, color2: str, word2vec_model=None) -> float
 
     return max(0.0, min(1.0, similarity))
 
+_semantic_model = None
+
+
+def semantic_model():
+    """The embedding model, loaded once on first use and cached on disk.
+
+    Two problems this addresses. First, callers were passing the OpenAI *client*
+    to get_embedding(), which expects something supporting `w in model` and
+    `model[w]`; the lookup raised, a blanket except swallowed it, and the
+    function returned None on every call. Since the description term carries
+    weight 0.50 in lost_similarity(), half the association decision was
+    permanently zero. Second, word2vec-google-news-300 pulls 1.6 GB at import,
+    blocking node startup, for embeddings a ~80 MB sentence encoder beats.
+
+    Backend and model id come from perception_config (models.semantic_backend,
+    models.sentence_model). Weights are cached under models.cache_dir, so the
+    download happens once.
+    """
+    global _semantic_model
+    if _semantic_model is not None:
+        return _semantic_model
+    backend = perception_config.get("models", "semantic_backend")
+    if backend == "sentence-transformers":
+        from sentence_transformers import SentenceTransformer
+        _semantic_model = SentenceTransformer(
+            perception_config.get("models", "sentence_model"),
+            cache_folder=perception_config.model_cache_dir())
+    else:
+        import gensim.downloader as api
+        _semantic_model = api.load(perception_config.get("models", "sentence_model"))
+    return _semantic_model
+
+
 def get_embedding(model, text):
     """
     Restituisce embedding vettoriale tramite Word2Vec (calcolando la media delle parole).
@@ -139,7 +174,17 @@ def get_embedding(model, text):
     try:
         if not text:
             return None
-        
+
+        if model is None:
+            model = semantic_model()
+
+        # A sentence encoder embeds the whole string; the word2vec path below
+        # averages per-word vectors. Support both so the backend is swappable.
+        if hasattr(model, "encode"):
+            v = model.encode(text)
+            n = np.linalg.norm(v)
+            return v / n if n > 0 else v
+
         # Estrae le singole parole dalla descrizione
         words = re.findall(r'\w+', text)
         

@@ -39,13 +39,14 @@ current_dir = os.path.dirname(file_path)
 PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir else os.path.abspath(os.path.join(current_dir, "../.."))
 # Metti il percorso esatto in base a dove si trova realmente il file
 
-with open("/root/exchange/lost-3dsg/src/perception_module/api.txt", "r") as f:
-    api_key = f.read().strip()
+# Built lazily by cv_utils._get_client(); reading a key at import time takes
+# down every importer of this module when the file is absent.
+client = None
 
-client = OpenAI(api_key=api_key)
 
-
-world2vec = api.load('word2vec-google-news-300')
+# Loaded lazily on first use by nlp_utils.semantic_model(); importing this
+# module no longer downloads 1.6 GB before the node can start.
+world2vec = None
 
 
 # Setup file logger and project paths
@@ -114,7 +115,7 @@ def find_best_matching_key(target_label, target_material, target_color, target_d
         key_data = json.loads(key)
 
         # Get embedding for the key description
-        key_embedding = get_embedding(client, key_data["description"]) if key_data["description"] else None
+        key_embedding = get_embedding(semantic_model(), key_data["description"]) if key_data["description"] else None
 
         # Compute lost_similarity
         similarity = lost_similarity(
@@ -639,6 +640,16 @@ class ObjectManagerNode(Node):
             prefix = "[INFO] " if level == 'info' else "[WARN] "
             print(f"{prefix}{message}")
 
+    @staticmethod
+    def _stdin_ready():
+        """True if a line is waiting on stdin. Never blocks, safe without a TTY."""
+        try:
+            if not sys.stdin or not sys.stdin.isatty():
+                return False
+            return bool(select.select([sys.stdin], [], [], 0.0)[0])
+        except Exception:
+            return False
+
     def wait_for_exploration_end(self):
         """Wait for exploration phase to end."""
         self.log_both('warn', "=" * 60)
@@ -646,9 +657,22 @@ class ObjectManagerNode(Node):
         self.log_both('warn', "[EXPLORATION] Will switch to TRACKING when an object is seen again.")
         self.log_both('warn', "=" * 60)
 
+        # The loop polls self.seen_again, which the detection path sets when an
+        # object is re-observed. The blocking input() that used to be here
+        # defeated that: the thread parked inside it and never re-evaluated the
+        # condition, so the automatic switch this banner advertises never fired
+        # and a human had to press ENTER anyway. With no TTY it raised EOFError
+        # and the thread died, taking the switch with it.
+        #
+        # The prompt is now opt-in (exploration.interactive_gate) and read
+        # without blocking, so both exits work: automatic on re-observation,
+        # manual whenever an operator wants it.
+        interactive = perception_config.get("exploration", "interactive_gate")
+        if interactive:
+            print("Press ENTER to stop exploration and switch to TRACKING mode...")
         while not self.seen_again:
-            choice = input("Click ENTER to stop exploration and switch to TRACKING mode...\n")
-            if choice == "":
+            if interactive and self._stdin_ready():
+                sys.stdin.readline()
                 self.seen_again = True
                 self.log_both('warn', "[EXPLORATION] Manual interruption received - switching to TRACKING mode...")
                 break
@@ -879,7 +903,13 @@ class ObjectManagerNode(Node):
         if not hasattr(self, 'exploration_step_counter'):
             self.exploration_step_counter = 0
 
-        if not self.exploration_mode:
+        # Publish whenever there is something to show. Gating this on the mode
+        # meant the belief was invisible for the entire exploration phase and
+        # only appeared after the manual switch, so an unattended run built a
+        # correct belief nobody ever saw. The mode is about delete/verify
+        # semantics, not about visibility.
+        if not self.exploration_mode or perception_config.get(
+                "exploration", "publish_during_exploration"):
             self.tracking_step_counter += 1
 
         in_exploration = self.exploration_mode
@@ -911,7 +941,7 @@ class ObjectManagerNode(Node):
             })
 
             print(f"Processing: '{label}'")
-            description_embedding = get_embedding(client, description_text)
+            description_embedding = get_embedding(semantic_model(), description_text)
 
             # Find matching bbox
             old_key = create_object_key(label, "", "", "")
@@ -989,7 +1019,7 @@ class ObjectManagerNode(Node):
 
                 for obj in wm.persistent_perceptions:
                     if not hasattr(obj, "embedding"):
-                        obj.embedding = get_embedding(client, obj.description)
+                        obj.embedding = get_embedding(semantic_model(), obj.description)
                     if obj.embedding is None:
                         continue
 
