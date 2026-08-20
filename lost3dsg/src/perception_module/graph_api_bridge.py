@@ -21,6 +21,7 @@ from lost3dsg.srv import (
 app = FastAPI(title="Graph API")
 
 PERSISTENT_PATH = Path("/root/exchange/output/persistent_perception.json")
+ROOM_PATH = Path("/root/exchange/output/room.json")
 
 _node = None
 
@@ -34,11 +35,21 @@ def viewer():
 @app.get("/persistent_perception")
 def persistent_perception():
     if not PERSISTENT_PATH.exists():
-        raise HTTPException(status_code=404, detail="persistent_perception.json non trovato")
+        return []
     try:
         return json.loads(PERSISTENT_PATH.read_text())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore lettura JSON: {e}")
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+@app.get("/rooms")
+def persistent_perception():
+    if not ROOM_PATH.exists():
+        return []
+    try:
+        return json.loads(ROOM_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
 
 
 class BridgeNode(Node):
@@ -91,7 +102,7 @@ def add_object(body: dict):
     req.description = body.get("description", "")
     req.color = body.get("color", "")
     req.material = body.get("material", "")
-    req.room_id = body.get("room_id", "")
+    req.room_id = body.get("room_id") or ""
     req.x_min = float(body.get("x_min", 0.0))
     req.x_max = float(body.get("x_max", 0.0))
     req.y_min = float(body.get("y_min", 0.0))
@@ -105,7 +116,7 @@ def add_object(body: dict):
 
     return {
         "success": res.success,
-        "object_id": req.label,
+        "object_id": res.object_id,
         "message": res.message,
     }
 
@@ -229,15 +240,29 @@ def query_objects(body: dict = None):
     req.uncertain_only = bool(body.get("uncertain_only", False))
     req.room_id = body.get("room_id", "")
     req.label_filter = body.get("label_filter", "")
+    area_filter = body.get("area_filter")
+    if area_filter is not None:
+        req.area_filter = [float(x) for x in area_filter]
+    else:
+        req.area_filter = []
 
-    res = get_node().call('query_objects', req)
+    node = get_node()
+    if node is None:
+        return {"success": False, "ready": False, "object_ids": [], "objects": []}
+
+    try:
+        res = node.call('query_objects', req)
+    except RuntimeError:
+        return {"success": False, "ready": False, "object_ids": [], "objects": []}
+
     if not res.success:
-        raise HTTPException(status_code=400, detail="Query failed")
+        return {"success": False, "ready": True, "object_ids": [], "objects": []}
 
     parsed = json.loads(res.serialized_json) if res.serialized_json else []
 
     return {
         "success": res.success,
+        "ready": True,
         "object_ids": list(res.object_ids),
         "objects": parsed,
     }

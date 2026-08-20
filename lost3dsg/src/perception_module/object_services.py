@@ -27,6 +27,11 @@ from gensim.models import KeyedVectors
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+import json
+import hashlib
+from datetime import timezone
+from builtin_interfaces.msg import Time as TimeMsg
+
 
 # =============  EXPLORATION PARAMETERS =============
 EXPLORATION_IOU_THRESHOLD = 0.10
@@ -52,29 +57,168 @@ log_dir = os.path.join(PROJECT_ROOT, "output")
 os.makedirs(log_dir, exist_ok=True)
 SYNTHETIC_LOG_FILE = os.path.join(log_dir, "operations.txt")
 
+def inside_area(o):
+    bbox = getattr(o, "bbox", None)
+    if not bbox or len(bbox) != 6:
+        return False
+
+    oxmin, oxmax, oymin, oymax, ozmin, ozmax = bbox
+    return (
+        oxmin >= xmin and oxmax <= xmax and
+        oymin >= ymin and oymax <= ymax and
+        ozmin >= zmin and ozmax <= zmax
+    )
+
+def create_object_key(label, material, color, description):
+    """Create a unique key for an object based on attributes."""
+    key_dict = {
+        "label": label if label else "",
+        "material": material if material else "",
+        "color": color if color else "",
+        "description": description if description else ""
+    }
+    return json.dumps(key_dict, sort_keys=True)
+
+def create_object_id(label, material, color, description):
+    key = create_object_key(label, material, color, description)
+    return hashlib.sha256(key.encode("utf-8")).hexdigest() 
+
+
+def bbox_volume(bbox):
+    if not bbox:
+        return 0.0
+    return max(0.0, bbox["x_max"] - bbox["x_min"]) * \
+        max(0.0, bbox["y_max"] - bbox["y_min"]) * \
+        max(0.0, bbox["z_max"] - bbox["z_min"])
+
+
+def bbox_is_suspicious(bbox, reference_bbox=None):
+    if not bbox:
+        return True
+
+    sizes = [
+        bbox["x_max"] - bbox["x_min"],
+        bbox["y_max"] - bbox["y_min"],
+        bbox["z_max"] - bbox["z_min"],
+    ]
+    if any(size <= 0.0 for size in sizes):
+        return True
+
+    if max(sizes) > 3.0:
+        return True
+
+    volume = bbox_volume(bbox)
+    if volume > 1.5:
+        return True
+
+    if reference_bbox:
+        ref_volume = bbox_volume(reference_bbox)
+        if ref_volume > 1e-6 and volume > max(3.0 * ref_volume, ref_volume + 0.75):
+            return True
+
+    return False
+
 def save_persistent_perceptions(node):
-    """Save persistent_perceptions to JSON."""
     output_dir = os.path.join(PROJECT_ROOT, "output")
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, "persistent_perception.json")
 
-    data = []
+    # 1. Carica lo stato attuale dal file (unica fonte di verità)
+    existing_by_id = {}
+    if os.path.exists(save_path):
+        try:
+            with open(save_path, "r") as f:
+                existing_data = json.load(f)
+            existing_by_id = {e["object_id"]: e for e in existing_data}
+        except (json.JSONDecodeError, OSError):
+            existing_by_id = {}
+
+    current_ids = set()
+    changed = False
+
     for obj in wm.persistent_perceptions:
-        data.append({
+        if not getattr(obj, "object_id", None):
+            obj.object_id = f"obj_{uuid.uuid4().hex}"
+
+        ensure_relations(obj)
+        obj_id = obj.object_id
+        current_ids.add(obj_id)
+
+        new_entry = {
+            "object_id": obj_id,
             "label": obj.label,
             "description": obj.description,
             "color": obj.color,
             "material": obj.material,
             "shape": obj.shape,
             "bbox": obj.bbox,
-            "room_id": getattr(obj, "room_id", "unknown")
-        })
+            "room_id": getattr(obj, "room_id", "unknown"),
+            "relations": {k: sorted(list(v)) for k, v in obj.relations.items()},
+            "last_perception_timestamp": getattr(obj, "last_perception_time", None),
+            "last_perception_datetime": (
+                datetime.fromtimestamp(obj.last_perception_time, tz=timezone.utc).isoformat()
+                if getattr(obj, "last_perception_time", None) else None
+            ),
+        }
 
-    with open(save_path, "w") as f:
+        old_entry = existing_by_id.get(obj_id)
+        if old_entry != new_entry:
+            existing_by_id[obj_id] = new_entry
+            changed = True
+
+    removed_ids = set(existing_by_id.keys()) - current_ids
+    for rid in removed_ids:
+        del existing_by_id[rid]
+        changed = True
+
+    if not changed:
+        return
+
+    data = list(existing_by_id.values())
+    tmp_path = save_path + ".tmp"
+    with open(tmp_path, "w") as f:
         json.dump(data, f, indent=4)
+    os.replace(tmp_path, save_path)
 
     msg = f"Saved {len(data)} objects to persistent_perception.json"
     node.log_both('info', msg)
+
+
+def _stamp_from_seconds(timestamp_sec):
+    stamp = TimeMsg()
+    sec = int(timestamp_sec)
+    nanosec = int(round((timestamp_sec - sec) * 1e9))
+    if nanosec >= 1_000_000_000:
+        sec += 1
+        nanosec -= 1_000_000_000
+    stamp.sec = sec
+    stamp.nanosec = nanosec
+    return stamp
+
+
+def publish_persistent_bboxes(node, wm, pub):
+    marker_array = MarkerArray()
+    for i, obj in enumerate(wm.persistent_perceptions):
+        if obj.bbox is None or "door" in obj.label.lower():
+             continue
+        marker = Marker()
+        marker.header.frame_id = "map"
+        obj_stamp = getattr(obj, "last_perception_time", None)
+        marker.header.stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
+        marker.id = i
+        marker.type = Marker.CUBE
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        marker.pose.position.x = (obj.bbox['x_min'] + obj.bbox['x_max']) / 2.0
+        marker.pose.position.y = (obj.bbox['y_min'] + obj.bbox['y_max']) / 2.0
+        marker.pose.position.z = (obj.bbox['z_min'] + obj.bbox['z_max']) / 2.0
+        marker.scale.x = obj.bbox['x_max'] - obj.bbox['x_min']
+        marker.scale.y = obj.bbox['y_max'] - obj.bbox['y_min']
+        marker.scale.z = obj.bbox['z_max'] - obj.bbox['z_min']
+        marker.color.a = 0.5
+        marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
+        marker_array.markers.append(marker)
+    pub.publish(marker_array)
     
 def bbox_centroid_in_volume(bbox, volume):
     """Check whether the centroid of a bounding box lies inside a volume."""
@@ -92,6 +236,117 @@ def bbox_centroid_in_volume(bbox, volume):
     )
 
     return is_inside
+
+
+def ensure_relations(obj):
+    if not hasattr(obj, "relations") or obj.relations is None:
+        obj.relations = {
+            "isIn": set(),
+            "isOn": set(),
+            "isNextTo": set(),
+            "isAbove": set(),
+            "isUnder": set(),
+        }
+    else:
+        for key in ["isIn", "isOn", "isNextTo", "isAbove", "isUnder"]:
+            if key not in obj.relations:
+                obj.relations[key] = set()
+
+
+def bbox_center(b):
+    return {
+        "x": (b["x_min"] + b["x_max"]) / 2.0,
+        "y": (b["y_min"] + b["y_max"]) / 2.0,
+        "z": (b["z_min"] + b["z_max"]) / 2.0,
+    }
+
+
+def overlap_1d(a_min, a_max, b_min, b_max):
+    inter = max(0.0, min(a_max, b_max) - max(a_min, b_min))
+    a_len = max(1e-6, a_max - a_min)
+    b_len = max(1e-6, b_max - b_min)
+    return inter / min(a_len, b_len)
+
+
+def overlap_xy(b1, b2):
+    ox = overlap_1d(b1["x_min"], b1["x_max"], b2["x_min"], b2["x_max"])
+    oy = overlap_1d(b1["y_min"], b1["y_max"], b2["y_min"], b2["y_max"])
+    return ox * oy
+
+
+def horizontal_distance(c1, c2):
+    dx = c1["x"] - c2["x"]
+    dy = c1["y"] - c2["y"]
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def infer_spatial_relations(obj_a, obj_b):
+    rels = []
+
+    b1 = getattr(obj_a, "bbox", None)
+    b2 = getattr(obj_b, "bbox", None)
+    if b1 is None or b2 is None:
+        return rels
+
+    if not getattr(obj_a, "object_id", None) or not getattr(obj_b, "object_id", None):
+        return rels
+
+    c1 = bbox_center(b1)
+    c2 = bbox_center(b2)
+
+    xy_overlap = overlap_xy(b1, b2)
+    dz_top = b1["z_min"] - b2["z_max"]
+    dz_bottom = b2["z_min"] - b1["z_max"]
+    hd = horizontal_distance(c1, c2)
+    z_center_diff = abs(c1["z"] - c2["z"])
+
+    size_a_x = b1["x_max"] - b1["x_min"]
+    size_a_y = b1["y_max"] - b1["y_min"]
+    size_b_x = b2["x_max"] - b2["x_min"]
+    size_b_y = b2["y_max"] - b2["y_min"]
+
+    max_xy_size = max(size_a_x, size_a_y, size_b_x, size_b_y)
+
+    on_gap_thresh = 0.10
+    above_gap_thresh = 0.20
+    next_to_dist_thresh = 1.2 * max_xy_size
+    next_to_z_thresh = 0.35
+
+    if xy_overlap > 0.3 and 0.0 <= dz_top <= on_gap_thresh:
+        rels.append((obj_a.object_id, "isOn", obj_b.object_id))
+
+    if c1["z"] > c2["z"] and xy_overlap > 0.2 and dz_top > above_gap_thresh:
+        rels.append((obj_a.object_id, "isAbove", obj_b.object_id))
+
+    if c1["z"] < c2["z"] and xy_overlap > 0.2 and dz_bottom > above_gap_thresh:
+        rels.append((obj_a.object_id, "isUnder", obj_b.object_id))
+
+    is_vertical_relation = (
+        (xy_overlap > 0.3 and 0.0 <= dz_top <= on_gap_thresh) or
+        (c1["z"] > c2["z"] and xy_overlap > 0.2 and dz_top > above_gap_thresh) or
+        (c1["z"] < c2["z"] and xy_overlap > 0.2 and dz_bottom > above_gap_thresh)
+    )
+
+    # Conservative containment: A is "in" B if the centroid of A lies inside B
+    # and A is smaller than B on every axis.
+    a_smaller_than_b = (
+        (b1["x_max"] - b1["x_min"]) <= (b2["x_max"] - b2["x_min"]) and
+        (b1["y_max"] - b1["y_min"]) <= (b2["y_max"] - b2["y_min"]) and
+        (b1["z_max"] - b1["z_min"]) <= (b2["z_max"] - b2["z_min"])
+    )
+    if a_smaller_than_b and bbox_centroid_in_volume(b1, b2):
+        rels.append((obj_a.object_id, "isIn", obj_b.object_id))
+
+    if (
+        not is_vertical_relation and
+        hd <= next_to_dist_thresh and
+        xy_overlap < 0.2 and
+        z_center_diff <= next_to_z_thresh
+    ):
+        rels.append((obj_a.object_id, "isNextTo", obj_b.object_id))
+
+    return rels
+
     
 
 class ObjectServices(Node):
@@ -475,7 +730,15 @@ class ObjectServices(Node):
             material    = request.material
 
             new_obj = Object(label, None, bbox, description, color, material)
+            new_obj.object_id = create_object_id(label, material, color, description)
             new_obj.creation_time = time.time()
+            new_obj.relations = {
+                "isIn": set(),
+                "isOn": set(),
+                "isNextTo": set(),
+                "isAbove": set(),
+                "isUnder": set(),
+            }
 
             raw_embedding = getattr(request, 'description_embedding', None)
 
@@ -509,6 +772,23 @@ class ObjectServices(Node):
                 assigned_room = request.room_id
             else:
                 assigned_room = self.room_manager.current_room_id
+
+            if not assigned_room:
+                raise ValueError(
+                    f"Impossibile assegnare l'oggetto '{label}': nessuna stanza corrente "
+                    f"nota (robot fuori da qualsiasi poligono o posa non ancora disponibile)."
+                )
+
+            new_obj.room_id = assigned_room
+            self.room_manager.update_room_geometry(assigned_room, bbox)
+
+            room_entry = self.room_manager.scene_graph.get(assigned_room)
+            if room_entry is None:
+                # difesa extra: se per qualche motivo la entry non esiste ancora, creala
+                room_entry = self.room_manager._ensure_room_entry(assigned_room)
+
+            if label not in room_entry["objects"]:
+                room_entry["objects"].append(label)
 
             new_obj.room_id = assigned_room
             self.room_manager.update_room_geometry(assigned_room, bbox)
@@ -549,7 +829,7 @@ class ObjectServices(Node):
 
             response.success   = True
             response.message   = f"Object '{label}' added to {assigned_room}"
-            response.object_id = new_obj.label  
+            response.object_id = new_obj.object_id
 
         except Exception as e:
             self.get_logger().error(f"_cb_add_object failed: {e}")
@@ -596,9 +876,12 @@ class ObjectServices(Node):
     def _cb_update_object(self, request, response):
         try:
             obj_id = request.object_id
-            all_labels = [o.label for o in wm.persistent_perceptions]
-            self.get_logger().info(f"[DEBUG UPDATE] Cerco '{obj_id}' tra: {all_labels}")
-            best_match = next((o for o in wm.persistent_perceptions if o.label == obj_id), None)
+            all_ids = [getattr(o, "object_id", None) or o.label for o in wm.persistent_perceptions]
+            self.get_logger().info(f"[DEBUG UPDATE] Cerco '{obj_id}' tra: {all_ids}")
+            best_match = next(
+                (o for o in wm.persistent_perceptions if getattr(o, "object_id", None) == obj_id),
+                None,
+            )
             if best_match is None:
                 response.success = False
                 response.message = f"Object {obj_id} not found"
@@ -627,6 +910,7 @@ class ObjectServices(Node):
             description_embedding = getattr(request, "description_embedding", None)
 
             updated_obj = best_match
+            updated_obj.object_id = create_object_id(best_match.label, best_match.material, best_match.color, best_match.description)
             distance = 0.0
             iou = 0.0
 
@@ -649,7 +933,17 @@ class ObjectServices(Node):
                     new_z = (bbox["z_min"] + bbox["z_max"]) / 2.0
                     distance = np.sqrt((new_x - old_x) ** 2 + (new_y - old_y) ** 2 + (new_z - old_z) ** 2)
 
-                    if distance < 0.5 or iou >= TRACKING_IOU_THRESHOLD:
+                    if bbox_is_suspicious(bbox, old_bbox):
+                        self.get_logger().warn(
+                            f"[UPDATE] Bbox sospetta per '{best_match.label}', mantengo quella precedente"
+                        )
+                        best_match.bbox = old_bbox
+                        updated_obj = best_match
+                        distance = 0.0
+                        iou = 0.0
+                        response.message = "bbox rejected as implausible"
+
+                    elif distance < 0.5 or iou >= TRACKING_IOU_THRESHOLD:
                         best_match.bbox = bbox
                         self.room_manager.update_room_geometry(
                             getattr(best_match, "room_id", self.room_manager.current_room_id),
@@ -686,7 +980,15 @@ class ObjectServices(Node):
                             best_match.color,
                             best_match.material
                         )
+                        updated_obj.object_id = create_object_id(best_match.label, best_match.material, best_match.color, best_match.description)
                         updated_obj.embedding = description_embedding
+                        updated_obj.relations = getattr(best_match, "relations", {
+                            "isIn": set(),
+                            "isOn": set(),
+                            "isNextTo": set(),
+                            "isAbove": set(),
+                            "isUnder": set(),
+                        })
 
                         new_room = self.room_manager.assign_room_by_geometry(bbox)
                         updated_obj.room_id = new_room
@@ -717,7 +1019,7 @@ class ObjectServices(Node):
 
             response.success = True
             response.message = f"Object {obj_id} updated dist={distance:.2f}m, iou={iou:.2f}"
-            response.object_id = updated_obj.label
+            response.object_id = getattr(updated_obj, "object_id", None) or updated_obj.label
             response.distance = float(distance)
             response.iou = float(iou)
             response.replaced = replaced
@@ -745,8 +1047,13 @@ class ObjectServices(Node):
                 results = [o for o in results
                         if request.label_filter.lower() in o.label.lower()]
 
-            response.object_ids = [o.label for o in results]
+            if len(request.area_filter) == 6:
+                xmin, xmax, ymin, ymax, zmin, zmax = request.area_filter
+                results = [o for o in results if inside_area(o)]
+
+            response.object_ids = [getattr(o, "object_id", None) or o.label for o in results]
             response.serialized_json = json.dumps([{
+                "object_id":   getattr(o, "object_id", None) or o.label,
                 "label":       o.label,
                 "description": o.description,
                 "color":       o.color,
@@ -763,7 +1070,10 @@ class ObjectServices(Node):
         
 def main(args=None):
     rclpy.init(args=args)
-    room_manager = RoomManager(w2v_model=world2vec)
+    room_manager = RoomManager(
+        w2v_model=world2vec,
+        cloud_map_topic='/rtabmap/cloud_map',
+    )
     service_node = ObjectServices(room_manager)
 
     try:

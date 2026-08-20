@@ -37,16 +37,19 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 # Install Python scripts
 install(PROGRAMS
-  src/perception_module/perception.py
+  src/perception_module/perception_2.py
   src/perception_module/cv_utils.py
   src/perception_module/utils.py
-  src/perception_module/object_manager.py
-  src/perception_module/object_manager_4.py
-  src/perception_module/object_manager_5.py
+  src/perception_module/detection_pipeline.py
+  src/perception_module/detection_types.py
+  src/perception_module/input_output.py
+  src/perception_module/perception_utils.py
   src/perception_module/object_manager_6.py
   src/perception_module/object_services.py
   src/perception_module/room_manager.py
   src/perception_module/habitat_camera_node.py
+  src/perception_module/walls_rooms.py
+  src/perception_module/vlm_call.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

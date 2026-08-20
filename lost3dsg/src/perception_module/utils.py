@@ -9,7 +9,7 @@ from sensor_msgs.msg import Image, CameraInfo
 from scipy.spatial import KDTree
 from std_msgs.msg import ColorRGBA
 import config 
-
+from rclpy.time import Time
 
 bridge = CvBridge()
 
@@ -31,6 +31,8 @@ class SyncedCameraData:
         """
         self.node = node
         self.bridge = CvBridge()
+        self.sync_tolerance_sec = float(sync_tolerance_ms) / 1000.0
+        self.default_camera_frame = "habitat_camera"
 
         # Data cache - ALWAYS UPDATED with the most recent messages
         self.cached_rgb = None
@@ -72,43 +74,41 @@ class SyncedCameraData:
         if first_time:
             self.node.get_logger().info("Depth received (first frame)")
             self._check_all_ready()
+        self._try_get_transform()
 
     def _camera_info_callback(self, msg):
-        """Saves CameraInfo (usually doesn't change)"""
-        if self.cached_camera_info is None:
-            self.cached_camera_info = msg
+        """Keep the latest CameraInfo header stamp aligned with the current frame."""
+        first_time = self.cached_camera_info is None
+        self.cached_camera_info = msg
+        if first_time:
             self.node.get_logger().info("CameraInfo received")
-            self._check_all_ready()
+        self._check_all_ready()
+        self._try_get_transform()
 
     def _try_get_transform(self):
-        """ALWAYS updates the transform with the most recent one available"""
         if self.cached_rgb is None:
-            return  # Don't have RGB yet
-
+            return
         if not hasattr(self.node, 'tf_buffer'):
             return
-
         try:
-            camera_frame = self.cached_rgb.header.frame_id
+            camera_frame = self.cached_rgb.header.frame_id or self.default_camera_frame
             target_frame = "map"
-
-            # ALWAYS use the most recent transform available (timestamp=0)
-            # We ignore the image timestamp because there's too much delay
+            lookup_time = Time.from_msg(self.cached_rgb.header.stamp)
             transform = self.node.tf_buffer.lookup_transform(
                 target_frame,
                 camera_frame,
-                ROS2Time(seconds=0),  # Most recent available
-                timeout=ROS2Duration(seconds=0.01)
+                lookup_time,
+                timeout=ROS2Duration(seconds=0.1)
             )
-
             first_time = self.cached_transform is None
-            self.cached_transform = transform  # Always update!
-
+            self.cached_transform = transform
             if first_time:
                 self.node.get_logger().info("✓ Transform received (first)")
                 self._check_all_ready()
-
         except Exception as e:
+            # Per le bbox 3D preferiamo una posa esatta al timestamp del frame RGB:
+            # se non è disponibile, invalidiamo la cache così il frame viene scartato.
+            self.cached_transform = None
             if not hasattr(self, '_transform_error_logged'):
                 self.node.get_logger().warn(f"Transform not available: {e}")
                 self._transform_error_logged = True
@@ -123,52 +123,68 @@ class SyncedCameraData:
                 self.node.get_logger().info("OK - All data ready!")
                 self.all_ready = True
 
-    def get_synced_data(self):
-        """
-        Returns camera data ONLY if ALL are available (RGB, Depth, CameraInfo, Transform).
+    def get_synced_data(self, max_age=1.0):
+        if self.cached_transform is None:
+            self._try_get_transform()
 
-        Returns:
-            dict or None: {
-                'rgb': numpy array BGR,
-                'depth': numpy array (meters),
-                'camera_info': CameraInfo msg,
-                'transform': TransformStamped,
-                'timestamp': Time of RGB frame,
-                'camera_frame': str
-            }
-        """
-
-        # AGGIUNGI QUESTA RIGA DI STAMPA QUI SOTTO:
-        print(f"--- [DEBUG utils] Verifico cache -> RGB:{self.cached_rgb is not None}, Depth:{self.cached_depth is not None}, Info:{self.cached_camera_info is not None}, TF:{self.cached_transform is not None}")
-        # Check if we have ALL the data (including transform!)
-        if (self.cached_rgb is None or
-            self.cached_depth is None or
-            self.cached_camera_info is None or
-            self.cached_transform is None):
+        missing = []
+        if self.cached_rgb is None:
+            missing.append("rgb")
+        if self.cached_depth is None:
+            missing.append("depth")
+        if self.cached_camera_info is None:
+            missing.append("camera_info")
+        if self.cached_transform is None:
+            missing.append("transform")
+        if missing:
+            self.node.get_logger().info(f"Synced data not ready, missing: {', '.join(missing)}")
             return None
 
+        # Controllo di freschezza: scarta dati troppo vecchi
+        now = self.node.get_clock().now()
+        rgb_stamp = Time.from_msg(self.cached_rgb.header.stamp)
+        age = (now - rgb_stamp).nanoseconds / 1e9
+        if age > max_age:
+            self.node.get_logger().warn(f"Cached frame troppo vecchio ({age:.2f}s), scarto")
+            return None
+
+        depth_stamp = None
+        if hasattr(self.cached_depth, "header"):
+            depth_stamp = Time.from_msg(self.cached_depth.header.stamp)
+            stamp_delta = abs((rgb_stamp - depth_stamp).nanoseconds) / 1e9
+            if stamp_delta > self.sync_tolerance_sec:
+                self.node.get_logger().warn(
+                    f"RGB/depth non sincronizzati ({stamp_delta:.3f}s), scarto il frame"
+                )
+                return None
+
         try:
-            # Convert images
             rgb_cv = self.bridge.imgmsg_to_cv2(self.cached_rgb, 'bgr8')
             depth_array = self.bridge.imgmsg_to_cv2(self.cached_depth, desired_encoding='passthrough')
             depth_array = np.asarray(depth_array).astype(float)
 
-            # Convert to meters if necessary (depth from Asus Xtion is in mm)
-            
             if config.simulation:
                 depth_array = np.nan_to_num(depth_array, nan=0.0, posinf=0.0, neginf=0.0)
-    
             else:
                 if depth_array.max() > 20.0:
-                    depth_array = depth_array / 1000.0  # Convert mm to meters
-            return {
-                    'rgb': rgb_cv,
-                    'depth': depth_array,
-                    'camera_info': self.cached_camera_info,
-                    'transform': self.cached_transform,
-                    'timestamp': self.cached_rgb.header.stamp,
-                    'camera_frame': self.cached_rgb.header.frame_id
-                }
+                    depth_array = depth_array / 1000.0
+
+            result = {
+                'rgb': rgb_cv,
+                'depth': depth_array,
+                'camera_info': self.cached_camera_info,
+                'transform': self.cached_transform,
+                'timestamp': self.cached_rgb.header.stamp,
+                'camera_frame': self.cached_rgb.header.frame_id
+            }
+
+            # Invalida dopo il consumo, per forzare l'attesa di un nuovo frame
+            self.cached_rgb = None
+            self.cached_depth = None
+            self.cached_camera_info = None
+            self.cached_transform = None
+
+            return result
 
         except Exception as e:
             self.node.get_logger().error(f"Data conversion error: {e}")

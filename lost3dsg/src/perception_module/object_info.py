@@ -11,7 +11,11 @@ class Object:
         shape (str, optional): The shape of the object. Defaults to "".
     """
 
-    def __init__(self, label, centroid, bbox=None, description="", color="",material="",shape=""):
+    def __init__(self, label, centroid, bbox=None, description="", color="",material="",shape="", object_id=None):
+        # `label` comes from perception and may change between frames (for
+        # example ``stove#2``).  Persistent objects receive an immutable ID in
+        # ObjectServices when they are first added to the world model.
+        self.object_id = object_id
         self.label = label
         self.centroid = centroid
         self.bbox = bbox
