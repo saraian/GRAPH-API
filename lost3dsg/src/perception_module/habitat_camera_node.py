@@ -71,6 +71,17 @@ def numpy_to_image_msg_depth(np_img, stamp, frame_id: str = "habitat_camera_opti
 
 
 
+def _quaternion_xyzw(rotation_quat):
+    """Return a Habitat/Magnum quaternion as ROS scalar-last components."""
+    if all(hasattr(rotation_quat, attr) for attr in ("x", "y", "z", "w")):
+        return tuple(float(getattr(rotation_quat, attr)) for attr in ("x", "y", "z", "w"))
+
+    # Magnum exposes Quaternion as vector (x,y,z) + scalar (w).
+    vector = rotation_quat.vector
+    scalar = rotation_quat.scalar
+    return float(vector[0]), float(vector[1]), float(vector[2]), float(scalar)
+
+
 def habitat_pose_to_ros(position, rotation_quat):
     """
     Converte posizione e quaternione dal sistema di coordinate Habitat
@@ -103,12 +114,7 @@ def habitat_pose_to_ros(position, rotation_quat):
     )
 
 
-    qx, qy, qz, qw = (
-        float(rotation_quat.x),
-        float(rotation_quat.y),
-        float(rotation_quat.z),
-        float(rotation_quat.w),
-    )
+    qx, qy, qz, qw = _quaternion_xyzw(rotation_quat)
 
 
     R_habitat = np.array(
@@ -447,7 +453,7 @@ def main():
     # Scena e dataset
     sim_settings["scene"] = (
         "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/"
-        "00801-HaxA7YrQdEC/HaxA7YrQdEC.basis.glb"
+        "00805-SUHsP6z2gcJ/SUHsP6z2gcJ.basis.glb"
     )
     sim_settings["scene_dataset"] = (
         "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/"

@@ -971,9 +971,16 @@
       destroyGraph();
 
       try {
-        const [perceptionRes, roomsRes] = await Promise.all([
-          fetch("/persistent_perception", { cache: "no-store" }),
-          fetch("/rooms", { cache: "no-store" })
+        const refreshToken = Date.now();
+        const [perceptionRes, roomsRes, objectsRes] = await Promise.all([
+          fetch(`/persistent_perception?refresh=${refreshToken}`, { cache: "no-store" }),
+          fetch(`/rooms?refresh=${refreshToken}`, { cache: "no-store" }),
+          fetch("/query_objects", {
+            method: "POST",
+            cache: "no-store",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({})
+          })
         ]);
 
         if (!perceptionRes.ok) throw new Error(`persistent_perception HTTP ${perceptionRes.status}`);
@@ -981,6 +988,7 @@
 
         const perceptionResponse = await perceptionRes.json();
         const roomsPayload = await roomsRes.json();
+        const objectsResponse = objectsRes.ok ? await objectsRes.json() : {};
         const building = Array.isArray(roomsPayload)
           ? null
           : (roomsPayload.building ?? null);
@@ -989,22 +997,32 @@
           : (Array.isArray(building?.rooms)
               ? building.rooms
               : (Array.isArray(roomsPayload.rooms) ? roomsPayload.rooms : []));
+        const knownRoomIds = new Set(
+          rooms.map((room, i) => String(room.room_id ?? room.id ?? `room-${i}`))
+        );
         const raw = perceptionResponse.data ?? perceptionResponse;
 
-        if (perceptionResponse.ready === false) {
+        const persistentObjects =
+          Array.isArray(raw) ? raw :
+          Array.isArray(raw.objects) ? raw.objects :
+          Array.isArray(raw.nodes) ? raw.nodes :
+          Array.isArray(raw.entities) ? raw.entities :
+          [];
+        // /query_objects is the authoritative live source used by the table.
+        // persistent_perception can temporarily lag behind it, especially
+        // while room geometry is being rewritten.
+        const queriedObjects = Array.isArray(objectsResponse.objects)
+          ? objectsResponse.objects
+          : [];
+        const objects = queriedObjects.length ? queriedObjects : persistentObjects;
+
+        if (perceptionResponse.ready === false && !objects.length && !rooms.length) {
           el.graphStatus.textContent = "In attesa dei primi dati di percezione…";
           el.cy.innerHTML = `<div class="empty">Il grafo verrà visualizzato automaticamente quando saranno disponibili oggetti.</div>`;
           el.statNodes.textContent = "0";
           el.statEdges.textContent = "0";
           return;
         }
-
-        const objects =
-          Array.isArray(raw) ? raw :
-          Array.isArray(raw.objects) ? raw.objects :
-          Array.isArray(raw.nodes) ? raw.nodes :
-          Array.isArray(raw.entities) ? raw.entities :
-          [];
 
         if (!objects.length && !rooms.length) {
           el.graphStatus.textContent = "In attesa dei primi oggetti…";
@@ -1127,6 +1145,12 @@
             const target = rel.target;
             const targetLooksRoom = rel.type === "in_room" || rel.type.includes("room");
 
+            // Objects can briefly retain an old room_id while room geometry is
+            // being re-segmented.  Do not manufacture a disconnected room node
+            // from that stale reference; the authoritative room list is the
+            // one loaded above from room.json.
+            if (targetLooksRoom && !knownRoomIds.has(String(target))) return;
+
             if (!knownNodes.has(target)) {
               knownNodes.set(target, true);
 
@@ -1166,6 +1190,9 @@
         const objectY = 360;
         const orphanY = 520;
         const buildingX = 0;
+        // Keep sibling nodes apart. Relation edges are drawn on top of this
+        // hierarchy, so overly tight spacing makes unrelated branches look
+        // like one dense cluster.
         const roomSpacing = 240;
         const objectSpacingX = 140;
         const objectSpacingY = 120;
@@ -1324,7 +1351,7 @@
             layout: {
               name: "preset",
               fit: true,
-              padding: 30
+              padding: 60
             }
         });
 
@@ -1380,7 +1407,7 @@
     window.addEventListener("load", async () => {
       await loadObjects();
       await loadPersistentGraph();
-      graphRefreshTimer = setInterval(loadPersistentGraph, 5000);
+          graphRefreshTimer = setInterval(loadPersistentGraph, 1000);
     });
 
     window.addEventListener("resize", () => {

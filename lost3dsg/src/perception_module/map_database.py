@@ -36,6 +36,7 @@ class MapDatabase:
 
                 CREATE TABLE IF NOT EXISTS objects (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    object_uuid  TEXT,
                     label        TEXT NOT NULL,
                     color        TEXT DEFAULT '',
                     material     TEXT DEFAULT '',
@@ -92,14 +93,24 @@ class MapDatabase:
             (bbox["z_min"] + bbox["z_max"]) / 2.0,
         )
 
-    def _find_active(self, conn, label, color, material):
-        """Cerca l'oggetto attivo con match ESATTO su label+color+material."""
+    def _find_active(self, conn, obj):
+        """Find an active row by immutable object ID, with legacy fallback."""
         conn.row_factory = sqlite3.Row
+        object_uuid = getattr(obj, 'object_id', None)
+        if object_uuid:
+            row = conn.execute(
+                """SELECT * FROM objects
+                   WHERE object_uuid=? AND is_active=1
+                   ORDER BY last_seen DESC LIMIT 1""",
+                (object_uuid,)
+            ).fetchone()
+            if row:
+                return row
         return conn.execute(
             """SELECT * FROM objects
                WHERE label=? AND color=? AND material=? AND is_active=1
                ORDER BY last_seen DESC LIMIT 1""",
-            (label, color or "", material or "")
+            (obj.label, obj.color or "", obj.material or "")
         ).fetchone()
 
     # ------------------------------------------------------------------ #
@@ -118,9 +129,9 @@ class MapDatabase:
         with sqlite3.connect(self.db_path) as conn:
             obj_id = conn.execute(
                 """INSERT INTO objects
-                   (label,color,material,description,x,y,z,bbox_json,first_seen,last_seen,last_event,room_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,'detected',?)""",
-                (obj.label, obj.color or "", obj.material or "",
+                   (object_uuid,label,color,material,description,x,y,z,bbox_json,first_seen,last_seen,last_event,room_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,'detected',?)""",
+                (getattr(obj, 'object_id', None), obj.label, obj.color or "", obj.material or "",
                  obj.description or "", x, y, z, bbox_json, now, now, room)
             ).lastrowid
 
@@ -145,7 +156,7 @@ class MapDatabase:
         room = getattr(obj, 'room_id', 'unknown')
 
         with sqlite3.connect(self.db_path) as conn:
-            row = self._find_active(conn, obj.label, obj.color, obj.material)
+            row = self._find_active(conn, obj)
             if not row:
                 print(f"[MapDB] ⚠️  on_object_moved: '{obj.label}' non trovato nel DB, salto.")
                 return
@@ -169,6 +180,25 @@ class MapDatabase:
 
         print(f"[MapDB] 🔄 MOVED '{obj.label}'  Δ={distance:.2f}m  IoU={iou:.2f}")
 
+    def on_object_room_changed(self, obj, old_room, new_room, step: int = 0):
+        """Persist a room reassignment caused by updated room geometry."""
+        now = datetime.now().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            row = self._find_active(conn, obj)
+            if not row:
+                return
+            conn.execute(
+                "UPDATE objects SET room_id=?, last_seen=?, last_event='room_reassigned' WHERE id=?",
+                (new_room, now, row['id'])
+            )
+            conn.execute(
+                """INSERT INTO object_history
+                   (object_id,label,color,timestamp,event_type,phase,step,notes,room_id)
+                   VALUES (?,?,?,?,'room_reassigned','tracking',?,?,?)""",
+                (row['id'], obj.label, obj.color or "", now,
+                 step, f"{old_room} -> {new_room}", new_room)
+            )
+
     def on_object_deleted(self, obj, reason: str = "",
                           phase: str = "tracking", step: int = 0):
         """Chiama in delete_undetected_objects() e delete_uncertain_objects()."""
@@ -177,7 +207,7 @@ class MapDatabase:
         room = getattr(obj, 'room_id', 'unknown')
 
         with sqlite3.connect(self.db_path) as conn:
-            row = self._find_active(conn, obj.label, obj.color, obj.material)
+            row = self._find_active(conn, obj)
             if not row:
                 print(f"[MapDB] ⚠️  on_object_deleted: '{obj.label}' non trovato nel DB, salto.")
                 return
@@ -205,7 +235,7 @@ class MapDatabase:
         room = getattr(obj, 'room_id', 'unknown')
         
         with sqlite3.connect(self.db_path) as conn:
-            row = self._find_active(conn, obj.label, obj.color, obj.material)
+            row = self._find_active(conn, obj)
             if not row:
                 print(f"[MapDB] ⚠️  on_uncertain_added: '{obj.label}' non trovato nel DB, salto.")
                 return

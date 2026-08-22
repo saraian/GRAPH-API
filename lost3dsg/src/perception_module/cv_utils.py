@@ -199,7 +199,9 @@ def mask_list_to_pointcloud2(
 
     labels = labels or [f"obj_{i}" for i in range(len(masks))]
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
-    camera_frame = "habitat_camera"
+    # Depth pixels are expressed in the optical pinhole frame published by
+    # the Habitat camera, not in the mechanical camera frame.
+    camera_frame = "habitat_camera_optical"
 
     current_points, id_to_label = [], {}
 
@@ -251,7 +253,7 @@ def mask_list_to_pointcloud2(
         PointField(name="object_id", offset=16, datatype=PointField.INT32, count=1),
     ]
 
-    header = Header(stamp=node.get_clock().now().to_msg(), frame_id=camera_frame)
+    header = Header(stamp=camera_info.header.stamp, frame_id=camera_frame)
     cloud_msg = point_cloud2.create_cloud(header, fields, current_points)
 
     qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -276,7 +278,7 @@ def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, 
     labels       = labels or [f"obj_{i}" for i in range(len(masks))]
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
     #camera_frame = "head_front_camera_color_optical_frame"
-    camera_frame = "habitat_camera"
+    camera_frame = "habitat_camera_optical"
     palette      = [to_rgb(c) for c in ('red','green','blue','magenta','cyan','yellow','orange','purple','brown','pink')]
     qos          = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
     stamp        = timestamp or node.get_clock().now().to_msg()
@@ -390,7 +392,7 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                                     sor_k=30, sor_std=1.5, transform=None,
                                     output_frame="map"):
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
-    camera_frame = "habitat_camera"
+    camera_frame = "habitat_camera_optical"
     centroids_3d, bboxes_3d, all_markers = [], [], []
     stamp = camera_info.header.stamp
 

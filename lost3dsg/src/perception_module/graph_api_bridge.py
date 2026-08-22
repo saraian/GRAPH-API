@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 import rclpy
@@ -20,34 +21,77 @@ from lost3dsg.srv import (
 
 app = FastAPI(title="Graph API")
 
-PERSISTENT_PATH = Path("/root/exchange/output/persistent_perception.json")
-ROOM_PATH = Path("/root/exchange/output/room.json")
+_MODULE_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = Path(
+    _MODULE_DIR.parent.parent
+    if "/install/" not in str(_MODULE_DIR)
+    else str(_MODULE_DIR).split("/install/", 1)[0]
+)
+def _active_output_dir():
+    """Return the output directory used by the active ROS installation.
+
+    The package can be launched either from ``src`` or from ``install``.
+    Those two modes previously made the bridge read different copies of the
+    JSON files.  Prefer an explicit directory, otherwise use the candidate
+    containing the most recently written map/room data.
+    """
+    configured = os.environ.get("LOST3DSG_OUTPUT_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+
+    candidates = [
+        _PROJECT_ROOT / "output",
+        _MODULE_DIR.parents[2] / "output" if len(_MODULE_DIR.parents) > 2 else _PROJECT_ROOT / "output",
+    ]
+    unique = []
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate not in unique:
+            unique.append(candidate)
+
+    existing = [
+        candidate for candidate in unique
+        if any((candidate / name).exists() for name in ("room.json", "persistent_perception.json"))
+    ]
+    if existing:
+        return max(
+            existing,
+            key=lambda candidate: max(
+                ((candidate / name).stat().st_mtime for name in ("room.json", "persistent_perception.json")
+                 if (candidate / name).exists()),
+                default=0.0,
+            ),
+        )
+    return unique[0]
+VIEWER_DIR = _MODULE_DIR / "viewer"
 
 _node = None
 
-app.mount("/viewer", StaticFiles(directory="viewer"), name="viewer")
+app.mount("/viewer", StaticFiles(directory=str(VIEWER_DIR)), name="viewer")
 
 @app.get("/", include_in_schema=False)
 def viewer():
-    return FileResponse("viewer/viewer.html")
+    return FileResponse(str(VIEWER_DIR / "viewer.html"))
 
 
 @app.get("/persistent_perception")
 def persistent_perception():
-    if not PERSISTENT_PATH.exists():
+    path = _active_output_dir() / "persistent_perception.json"
+    if not path.exists():
         return []
     try:
-        return json.loads(PERSISTENT_PATH.read_text())
+        return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return []
 
 
 @app.get("/rooms")
-def persistent_perception():
-    if not ROOM_PATH.exists():
+def rooms():
+    path = _active_output_dir() / "room.json"
+    if not path.exists():
         return []
     try:
-        return json.loads(ROOM_PATH.read_text())
+        return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return []
 
@@ -95,6 +139,13 @@ def get_node():
     return _node
 
 
+def require_node():
+    node = get_node()
+    if node is None:
+        raise HTTPException(status_code=503, detail="ROS bridge non pronto")
+    return node
+
+
 @app.post("/objects")
 def add_object(body: dict):
     req = AddObject.Request()
@@ -110,7 +161,7 @@ def add_object(body: dict):
     req.z_min = float(body.get("z_min", 0.0))
     req.z_max = float(body.get("z_max", 0.0))
     req.description_embedding = [float(x) for x in body.get("description_embedding", [])]
-    res = get_node().call('add', req)
+    res = require_node().call('add', req)
     if not res.success:
         raise HTTPException(status_code=400, detail=res.message)
 
@@ -142,7 +193,7 @@ def remove_object(
     req.pov_z_max = pov_z_max
     req.object_id = object_id
 
-    res = get_node().call('remove', req)
+    res = require_node().call('remove', req)
     if not res.success:
         raise HTTPException(status_code=404, detail=res.message)
 
@@ -176,7 +227,7 @@ def update_object(object_id: str, body: dict):
         float(x) for x in body.get("description_embedding", [])
     ]
 
-    res = get_node().call('update', req)
+    res = require_node().call('update', req)
     if not res.success:
         raise HTTPException(status_code=400, detail=res.message)
 
@@ -198,7 +249,7 @@ def merge_objects(body: dict = None):
     req.min_similarity = float(body.get("min_similarity", 0.75))
     req.dry_run = bool(body.get("dry_run", False))
 
-    res = get_node().call('merge', req)
+    res = require_node().call('merge', req)
     if not res.success:
         raise HTTPException(status_code=400, detail=res.message)
 
@@ -219,7 +270,7 @@ def delete_objects(body: dict):
     req.current_labels = body.get("current_labels", [])
     req.check_uncertain = bool(body.get("check_uncertain", False))
 
-    res = get_node().call('delete_objects', req)
+    res = require_node().call('delete_objects', req)
     if not res.success:
         raise HTTPException(status_code=400, detail=res.message)
 

@@ -12,6 +12,7 @@ from lost3dsg.srv import (
     AddObject, RemoveObject, UpdateObject, MergeObjects, DeleteObjects, QueryObjects,
 )
 import uuid
+from functools import wraps
 from visualization_msgs.msg import Marker, MarkerArray
 from room_manager import RoomManager
 from std_msgs.msg import Bool
@@ -56,6 +57,15 @@ world2vec = KeyedVectors.load_word2vec_format(
 log_dir = os.path.join(PROJECT_ROOT, "output")
 os.makedirs(log_dir, exist_ok=True)
 SYNTHETIC_LOG_FILE = os.path.join(log_dir, "operations.txt")
+
+
+def synchronized_world_model(callback):
+    """Serialize callbacks that read/write the shared world model."""
+    @wraps(callback)
+    def wrapper(*args, **kwargs):
+        with wm.lock:
+            return callback(*args, **kwargs)
+    return wrapper
 
 def inside_area(o):
     bbox = getattr(o, "bbox", None)
@@ -408,6 +418,7 @@ class ObjectServices(Node):
             print(f"{prefix}{message}")
 
 
+    @synchronized_world_model
     def _cb_delete_unseen_objects(self, request, response):
         try:
             import json
@@ -486,7 +497,7 @@ class ObjectServices(Node):
                     save_persistent_perceptions(self)
 
                     try:
-                        with open('/root/exchange/output/operations.txt', 'a') as f:
+                        with open(SYNTHETIC_LOG_FILE, 'a') as f:
                             timestamp = datetime.now().strftime('%H:%M:%S')
                             for lbl in deleted_labels:
                                 f.write(f"[{timestamp}] 🗑️ CANCELLATO (non visto): {lbl}\n")
@@ -507,7 +518,7 @@ class ObjectServices(Node):
                     print(f"🗑️ [UNCERTAIN RIMOSSO] '{uncertain_obj.label}'")
 
                     try:
-                        with open('/root/exchange/output/operations.txt', 'a') as f:
+                        with open(SYNTHETIC_LOG_FILE, 'a') as f:
                             timestamp = datetime.now().strftime('%H:%M:%S')
                             f.write(f"[{timestamp}] ⚠️ UNCERTAIN RIMOSSO: {uncertain_obj.label}\n")
                     except Exception as e:
@@ -534,6 +545,7 @@ class ObjectServices(Node):
 
         return response
     
+    @synchronized_world_model
     def _cb_merge_objects(self, request, response):
         try:
             import json
@@ -685,7 +697,7 @@ class ObjectServices(Node):
                 publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
 
                 try:
-                    with open('/root/exchange/output/operations.txt', 'a') as f:
+                    with open(SYNTHETIC_LOG_FILE, 'a') as f:
                         timestamp = datetime.now().strftime('%H:%M:%S')
                         for keeper, discard, _ in to_remove_pairs:
                             f.write(f"[{timestamp}] 🔗 MERGE: '{discard.label}' → '{keeper.label}'\n")
@@ -717,6 +729,7 @@ class ObjectServices(Node):
         return response
         
 
+    @synchronized_world_model
     def _cb_add_object(self, request, response):
         try:
             bbox = {
@@ -730,7 +743,8 @@ class ObjectServices(Node):
             material    = request.material
 
             new_obj = Object(label, None, bbox, description, color, material)
-            new_obj.object_id = create_object_id(label, material, color, description)
+            # Identity remains stable when visual attributes are refined.
+            new_obj.object_id = f"obj_{uuid.uuid4().hex}"
             new_obj.creation_time = time.time()
             new_obj.relations = {
                 "isIn": set(),
@@ -785,7 +799,7 @@ class ObjectServices(Node):
             room_entry = self.room_manager.scene_graph.get(assigned_room)
             if room_entry is None:
                 # difesa extra: se per qualche motivo la entry non esiste ancora, creala
-                room_entry = self.room_manager._ensure_room_entry(assigned_room)
+                room_entry = self.room_manager.init_room_node(assigned_room)
 
             if label not in room_entry["objects"]:
                 room_entry["objects"].append(label)
@@ -817,7 +831,7 @@ class ObjectServices(Node):
                 self.exploration_step_counter += 1
 
             try:
-                with open('/root/exchange/output/operations.txt', 'a') as f:
+                with open(SYNTHETIC_LOG_FILE, 'a') as f:
                     timestamp = datetime.now().strftime('%H:%M:%S')
                     cx = (bbox["x_min"] + bbox["x_max"]) / 2.0
                     cy = (bbox["y_min"] + bbox["y_max"]) / 2.0
@@ -873,6 +887,7 @@ class ObjectServices(Node):
         return response
 
 
+    @synchronized_world_model
     def _cb_update_object(self, request, response):
         try:
             obj_id = request.object_id
@@ -910,7 +925,7 @@ class ObjectServices(Node):
             description_embedding = getattr(request, "description_embedding", None)
 
             updated_obj = best_match
-            updated_obj.object_id = create_object_id(best_match.label, best_match.material, best_match.color, best_match.description)
+            updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
             distance = 0.0
             iou = 0.0
 
@@ -923,6 +938,16 @@ class ObjectServices(Node):
 
                 else:
                     old_bbox = best_match.bbox
+                    if old_bbox is None:
+                        best_match.bbox = bbox
+                        save_persistent_perceptions(self)
+                        response.success = True
+                        response.message = "bbox initialized"
+                        response.object_id = best_match.object_id
+                        response.distance = 0.0
+                        response.iou = 0.0
+                        response.replaced = False
+                        return response
                     iou = compute_iou_3d(bbox, old_bbox)
 
                     old_x = (old_bbox["x_min"] + old_bbox["x_max"]) / 2.0
@@ -980,7 +1005,7 @@ class ObjectServices(Node):
                             best_match.color,
                             best_match.material
                         )
-                        updated_obj.object_id = create_object_id(best_match.label, best_match.material, best_match.color, best_match.description)
+                        updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
                         updated_obj.embedding = description_embedding
                         updated_obj.relations = getattr(best_match, "relations", {
                             "isIn": set(),
@@ -991,6 +1016,8 @@ class ObjectServices(Node):
                         })
 
                         new_room = self.room_manager.assign_room_by_geometry(bbox)
+                        if not new_room:
+                            new_room = self.room_manager.current_room_id
                         updated_obj.room_id = new_room
                         self.room_manager.update_room_geometry(new_room, bbox)
 
@@ -1007,7 +1034,7 @@ class ObjectServices(Node):
             self.log_both("info", f"UPDATE {obj_id} dist={distance:.2f}m iou={iou:.2f} replaced={replaced}")
 
             try:
-                with open("/root/exchange/output/operations.txt", "a") as f:
+                with open(SYNTHETIC_LOG_FILE, "a") as f:
                     timestamp = datetime.now().strftime("%H:%M:%S")
                     cx = (bbox["x_min"] + bbox["x_max"]) / 2.0
                     cy = (bbox["y_min"] + bbox["y_max"]) / 2.0
@@ -1035,6 +1062,7 @@ class ObjectServices(Node):
             response.replaced = False
             return response
 
+    @synchronized_world_model
     def _cb_query_objects(self, request, response):
         try:
             pool = self.uncertain_objects if request.uncertain_only else wm.persistent_perceptions
@@ -1072,6 +1100,7 @@ def main(args=None):
     rclpy.init(args=args)
     room_manager = RoomManager(
         w2v_model=world2vec,
+        map_topic='/rtabmap/map',
         cloud_map_topic='/rtabmap/cloud_map',
     )
     service_node = ObjectServices(room_manager)
