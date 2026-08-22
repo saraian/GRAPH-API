@@ -47,7 +47,6 @@ install(PROGRAMS
   src/perception_module/object_manager_6.py
   src/perception_module/object_services.py
   src/perception_module/room_manager.py
-  src/perception_module/room_manager_2.py
   src/perception_module/habitat_camera_node.py
   src/perception_module/walls_rooms.py
   src/perception_module/vlm_call.py
