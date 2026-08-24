@@ -48,7 +48,7 @@ _DEFAULTS = {
         # (x right, y down, z forward). Publishing a body pose under this name
         # puts depth into the height axis — see habitat_camera_node.py, which
         # publishes habitat_camera (body) -> habitat_camera_optical.
-        "camera": "habitat_camera",
+        "camera": "habitat_camera_optical",
     },
     "paths": {
         "operations_log": "/root/exchange/output/operations.txt",

@@ -206,6 +206,8 @@ def mask_list_to_pointcloud2(
 
     labels = labels or [f"obj_{i}" for i in range(len(masks))]
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
+    # Depth pixels are expressed in the OPTICAL pinhole frame; the config default
+    # is the optical frame for exactly that reason.
     camera_frame = CFG["frames"]["camera"]
 
     current_points, id_to_label = [], {}
@@ -264,7 +266,7 @@ def mask_list_to_pointcloud2(
     if transform is not None:
         header = Header(stamp=camera_info.header.stamp, frame_id="map")
     else:
-        header = Header(stamp=node.get_clock().now().to_msg(), frame_id=camera_frame)
+        header = Header(stamp=camera_info.header.stamp, frame_id=camera_frame)
     cloud_msg = point_cloud2.create_cloud(header, fields, current_points)
 
     qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)

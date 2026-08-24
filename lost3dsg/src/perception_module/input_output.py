@@ -10,6 +10,13 @@ from lost3dsg.msg import Bbox3dArray, ObjectDescriptionArray
 from perception_utils import compute_fov_volume_from_depth
 from utils import draw_detections
 
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = (
+    _MODULE_DIR.split('/install/', 1)[0]
+    if '/install/' in _MODULE_DIR
+    else os.path.abspath(os.path.join(_MODULE_DIR, "../.."))
+)
+
 
 class PerceptionIOMixin:
     def make_header_msg(self, msg_type, stamp=None, frame_id="map"):
@@ -27,7 +34,7 @@ class PerceptionIOMixin:
             self.log_both("error", f"Background crop save failed ({path}): {exc}")
 
     def write_perceptions_json(self, perceptions_snapshot):
-        perceptions_path = "/root/exchange/lost3dsg/output/actual_perceptions.json"
+        perceptions_path = os.path.join(PROJECT_ROOT, "output", "actual_perceptions.json")
         try:
             os.makedirs(os.path.dirname(perceptions_path), exist_ok=True)
             with open(perceptions_path, "w") as file_obj:

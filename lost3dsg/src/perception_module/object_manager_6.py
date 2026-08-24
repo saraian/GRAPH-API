@@ -25,6 +25,7 @@ from object_services import (
     save_persistent_perceptions,
     ensure_relations,
     infer_spatial_relations,
+    synchronized_world_model,
 )
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Bool
@@ -77,6 +78,7 @@ SYNTHETIC_LOG_FILE = os.path.join(log_dir, "operations.txt")
 AGENT_POSES_LOG_FILE = os.path.join(log_dir, "agent_poses.json")
 GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL", "http://127.0.0.1:8080")
 GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
+GRAPH_API_AUTOSTART = os.environ.get("GRAPH_API_AUTOSTART", "1").lower() not in {"0", "false", "no"}
 SYNC_BUFFER_LIMIT = 20
 
 def _launch_graph_api_bridge():
@@ -87,6 +89,13 @@ def _launch_graph_api_bridge():
 
     proc = subprocess.Popen(
         [sys.executable, bridge_path],
+        env={
+            **os.environ,
+            # The bridge and RoomManager must read the same live output
+            # directory even when one process is launched from src and the
+            # other from install.
+            "LOST3DSG_OUTPUT_DIR": os.path.join(PROJECT_ROOT, "output"),
+        },
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -104,6 +113,14 @@ def _launch_graph_api_bridge():
 
     threading.Thread(target=_pipe_logs, daemon=True).start()
     return proc
+
+
+def _graph_api_is_running(base_url):
+    try:
+        response = requests.get(f"{base_url.rstrip('/')}/rooms", timeout=0.5)
+        return response.ok
+    except requests.RequestException:
+        return False
 
 
 # ============= HELPER FUNCTIONS =============
@@ -448,6 +465,7 @@ class ObjectManagerService(Node):
         self.room_manager = RoomManager(
             w2v_model=world2vec,
             node=self,
+            map_topic='/rtabmap/map',
             cloud_map_topic='/rtabmap/cloud_map',
         )
         self.object_services = ObjectServices(self.room_manager)
@@ -459,7 +477,7 @@ class ObjectManagerService(Node):
         self.decision_log = DecisionLog(CFG["hooks"]["decisions_log"] or os.path.join(log_dir, "hook_decisions.jsonl"))
         self.get_logger().info(f"hooks: filter={self.filter_hook.name} refiner={self.refiner_hook.name} "
                                f"log={self.decision_log.path}")
-        
+
         self.wall_sub = self.create_subscription(
             String,
             '/detected_wall_segments',
@@ -521,6 +539,26 @@ class ObjectManagerService(Node):
 
         self._bbox_timer = self.create_timer(2.0, self.periodic_bbox_publisher)
         #self._uncertain_cleanup_timer = self.create_timer(5.0, self._cleanup_uncertain_by_time)
+
+    @synchronized_world_model
+    def reassign_objects_to_rooms(self):
+        """Synchronize persistent object assignments after map resegmentation."""
+        changed = self.room_manager.reassign_objects_by_geometry(wm.persistent_perceptions)
+        if not changed:
+            return
+
+        for obj, old_room, new_room in changed:
+            self.object_services.db.on_object_room_changed(
+                obj, old_room, new_room, step=self.object_services.tracking_step_counter
+            )
+            self.get_logger().info(
+                f"Object '{obj.label}' riassegnato: {old_room} -> {new_room}"
+            )
+
+        publish_persistent_bboxes(self, wm, self.persistent_bbox_pub)
+        publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
+        save_persistent_perceptions(self.object_services)
+
     def movement_callback(self, msg):
         # Sincronizza lo stato reale: True se si muove, False se è fermo
         self.robot_has_moved = msg.data
@@ -565,6 +603,7 @@ class ObjectManagerService(Node):
             key=lambda entry: abs(float(entry.get("timestamp", timestamp_sec)) - float(timestamp_sec))
         )
 
+    @synchronized_world_model
     def check_tracking_transition(self, label_base, color, material, description_embedding, bbox):
         best_match = None
         highest_similarity = -1.0
@@ -611,6 +650,7 @@ class ObjectManagerService(Node):
         
         return False, None, 0.0
 
+    @synchronized_world_model
     def update_spatial_relations(self):
         for obj in wm.persistent_perceptions:
             ensure_relations(obj)
@@ -629,6 +669,7 @@ class ObjectManagerService(Node):
                 for _, pred, target in infer_spatial_relations(obj_a, obj_b):
                     obj_a.relations[pred].add(target)
 
+    @synchronized_world_model
     def publish_kb_relation_facts(self):
         facts = []
 
@@ -1228,6 +1269,7 @@ class ObjectManagerService(Node):
             if revision:
                 self.decision_log.write("revision", object_id, refiner=self.refiner_hook.name, reason=reason, revision=revision)
 
+    @synchronized_world_model
     def periodic_bbox_publisher(self):
         self._drain_reevaluations()
         if self.robot_has_moved:
@@ -1267,6 +1309,10 @@ from rclpy.executors import MultiThreadedExecutor
 
 def main(args=None):
     rclpy.init(args=args)
+    bridge_process = None
+    if GRAPH_API_AUTOSTART and GRAPH_API_BASE_URL.startswith(("http://127.0.0.1", "http://localhost")):
+        if not _graph_api_is_running(GRAPH_API_BASE_URL):
+            bridge_process = _launch_graph_api_bridge()
     service_node = ObjectManagerService()
 
     executor = MultiThreadedExecutor(num_threads=4)
@@ -1285,6 +1331,8 @@ def main(args=None):
 
     finally:
         executor.shutdown()
+        if bridge_process is not None and bridge_process.poll() is None:
+            bridge_process.terminate()
         service_node.object_services.destroy_node()
         service_node.destroy_node()
         if rclpy.ok():

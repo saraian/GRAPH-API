@@ -31,7 +31,7 @@ class SyncedCameraData:
         self.node = node
         self.bridge = CvBridge()
         self.sync_tolerance_sec = float(sync_tolerance_ms) / 1000.0
-        self.default_camera_frame = "habitat_camera"
+        self.default_camera_frame = "habitat_camera_optical"
 
         # Data cache - ALWAYS UPDATED with the most recent messages
         self.cached_rgb = None

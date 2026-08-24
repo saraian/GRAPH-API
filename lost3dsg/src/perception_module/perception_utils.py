@@ -37,11 +37,14 @@ def compute_fov_volume_from_depth(
 
         points_habitat = _pixels_to_points_habitat_camera(xs, ys, zs, fx, fy, cx, cy)
 
-        if output_frame == "habitat_camera":
+        if output_frame == "habitat_camera_optical":
             points_out = points_habitat
         else:
             points_out = np.asarray([
-                _transform_point_xyz(tuple(point), "habitat_camera", output_frame, stamp=stamp, node=node)
+                _transform_point_xyz(
+                    tuple(point), "habitat_camera_optical", output_frame,
+                    stamp=stamp, node=node
+                )
                 for point in points_habitat
             ])
 

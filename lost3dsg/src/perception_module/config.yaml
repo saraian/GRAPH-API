@@ -38,7 +38,7 @@ frames:
   # OPTICAL frame (x right, y down, z forward) the perception back-projects
   # into. If you point this at a BODY frame (x forward, z up), depth lands in
   # the height axis and every object position is silently wrong.
-  camera: "habitat_camera"
+  camera: "habitat_camera_optical"
 
 paths:
   operations_log: "/root/exchange/output/operations.txt"

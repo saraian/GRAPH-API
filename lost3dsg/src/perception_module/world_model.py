@@ -12,6 +12,8 @@ class WorldModel:
             cls._instance = super().__new__(cls)
             cls._instance._actual_perceptions = []
             cls._instance._persistent_perceptions = []
+            import threading
+            cls._instance.lock = threading.RLock()
         return cls._instance
     
     @property
