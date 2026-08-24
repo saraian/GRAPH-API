@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 import rclpy
@@ -20,16 +21,19 @@ from lost3dsg.srv import (
 
 app = FastAPI(title="Graph API")
 
-PERSISTENT_PATH = Path("/root/exchange/output/persistent_perception.json")
-ROOM_PATH = Path("/root/exchange/output/room.json")
+_DEFAULT_OUT = "/root/exchange/output"
+PERSISTENT_PATH = Path(os.environ.get("GRAPH_API_OUTPUT_DIR", _DEFAULT_OUT)) / "persistent_perception.json"
+ROOM_PATH = Path(os.environ.get("GRAPH_API_OUTPUT_DIR", _DEFAULT_OUT)) / "room.json"
 
 _node = None
 
-app.mount("/viewer", StaticFiles(directory="viewer"), name="viewer")
+# resolve next to this file, not the CWD — the node is launched from anywhere
+_VIEWER_DIR = Path(__file__).resolve().parent / "viewer"
+app.mount("/viewer", StaticFiles(directory=str(_VIEWER_DIR)), name="viewer")
 
 @app.get("/", include_in_schema=False)
 def viewer():
-    return FileResponse("viewer/viewer.html")
+    return FileResponse(str(_VIEWER_DIR / "viewer.html"))
 
 
 @app.get("/persistent_perception")
@@ -43,7 +47,10 @@ def persistent_perception():
 
 
 @app.get("/rooms")
-def persistent_perception():
+def rooms():
+    # Was also named `persistent_perception`, shadowing the /persistent_perception
+    # handler above. Both routes worked (FastAPI binds the function object at
+    # decoration time), but the module-level name pointed at this one only.
     if not ROOM_PATH.exists():
         return []
     try:

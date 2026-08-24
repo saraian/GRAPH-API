@@ -1,57 +1,45 @@
 #!/usr/bin/env python3
 
-import rclpy, json, os, time, threading, re
+import rclpy, json, os, time
 from rclpy.node import Node
-from rclpy.duration import Duration
 from rclpy.qos import QoSProfile, DurabilityPolicy
 import numpy as np
-from openai import OpenAI
-from lost3dsg.msg import ObjectDescriptionArray, Bbox3dArray
 from lost3dsg.srv import (
-    ObjectTrackingService,
     AddObject, RemoveObject, UpdateObject, MergeObjects, DeleteObjects, QueryObjects,
 )
 import uuid
 from visualization_msgs.msg import Marker, MarkerArray
 from room_manager import RoomManager
-from std_msgs.msg import Bool
 from object_info import Object
 from world_model import wm
-import gensim.downloader as api
 from utils import *
 from nlp_utils import *
 from datetime import datetime
 from cv_utils import *
 from map_database import MapDatabase
-from gensim.models import KeyedVectors
-from std_msgs.msg import String
+from hooks import load_store
+from config import CFG
 from tf2_ros import Buffer, TransformListener
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-import json
 import hashlib
 from datetime import timezone
 from builtin_interfaces.msg import Time as TimeMsg
 
 
-# =============  EXPLORATION PARAMETERS =============
-EXPLORATION_IOU_THRESHOLD = 0.10
-SIM_THRESHOLD = 0.85
-TRACKING_IOU_THRESHOLD = 0.3
-VOLUME_EXPANSION_RATIO = 0.01
-EXPLORATION_FRAME_LIMIT = 10  # Numero di frame in exploration prima di passare a tracking
-OBJECT_STABILITY_TIMEOUT = 3.0  # Secondi minimi di vita prima di poter essere 'MOVED'
-POV_SCALE_FACTOR = 1.0
+# =============  EXPLORATION PARAMETERS (config.yaml: association) =============
+EXPLORATION_IOU_THRESHOLD = CFG["association"]["exploration_iou_threshold"]
+SIM_THRESHOLD = CFG["association"]["sim_threshold"]
+TRACKING_IOU_THRESHOLD = CFG["association"]["tracking_iou_threshold"]
+VOLUME_EXPANSION_RATIO = CFG["association"]["volume_expansion_ratio"]
+EXPLORATION_FRAME_LIMIT = CFG["association"]["exploration_frame_limit"]
+OBJECT_STABILITY_TIMEOUT = CFG["association"]["object_stability_timeout"]
+POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
 
-# Load OpenAI API key & Paths
 file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
 PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir else os.path.abspath(os.path.join(current_dir, "../.."))
 
-world2vec = KeyedVectors.load_word2vec_format(
-    '/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz', 
-    binary=True,
-    limit=200000  # <--- ECCO LA MAGIA CHE SALVA LA RAM!
-)
+# world2vec arrives via `from nlp_utils import *` — loaded once there.
+OPERATIONS_LOG = CFG["paths"]["operations_log"]
 
 log_dir = os.path.join(PROJECT_ROOT, "output")
 os.makedirs(log_dir, exist_ok=True)
@@ -208,13 +196,23 @@ def publish_persistent_bboxes(node, wm, pub):
         marker.id = i
         marker.type = Marker.CUBE
         marker.action = Marker.ADD
-        marker.pose.orientation.w = 1.0
-        marker.pose.position.x = (obj.bbox['x_min'] + obj.bbox['x_max']) / 2.0
-        marker.pose.position.y = (obj.bbox['y_min'] + obj.bbox['y_max']) / 2.0
-        marker.pose.position.z = (obj.bbox['z_min'] + obj.bbox['z_max']) / 2.0
-        marker.scale.x = obj.bbox['x_max'] - obj.bbox['x_min']
-        marker.scale.y = obj.bbox['y_max'] - obj.bbox['y_min']
-        marker.scale.z = obj.bbox['z_max'] - obj.bbox['z_min']
+        if "yaw" in obj.bbox and obj.bbox.get("oriented_extents"):
+            # Draw the PCA-oriented box (yaw about z) instead of the AABB.
+            yaw = obj.bbox["yaw"]
+            cx, cy, cz = obj.bbox["oriented_center"]
+            ex, ey, ez = obj.bbox["oriented_extents"]
+            marker.pose.orientation.z = float(np.sin(yaw / 2.0))
+            marker.pose.orientation.w = float(np.cos(yaw / 2.0))
+            marker.pose.position.x, marker.pose.position.y, marker.pose.position.z = cx, cy, cz
+            marker.scale.x, marker.scale.y, marker.scale.z = ex, ey, ez
+        else:
+            marker.pose.orientation.w = 1.0
+            marker.pose.position.x = (obj.bbox['x_min'] + obj.bbox['x_max']) / 2.0
+            marker.pose.position.y = (obj.bbox['y_min'] + obj.bbox['y_max']) / 2.0
+            marker.pose.position.z = (obj.bbox['z_min'] + obj.bbox['z_max']) / 2.0
+            marker.scale.x = obj.bbox['x_max'] - obj.bbox['x_min']
+            marker.scale.y = obj.bbox['y_max'] - obj.bbox['y_min']
+            marker.scale.z = obj.bbox['z_max'] - obj.bbox['z_min']
         marker.color.a = 0.5
         marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
         marker_array.markers.append(marker)
@@ -359,7 +357,8 @@ class ObjectServices(Node):
         self.tracking_step_counter = 0
         self.exploration_step_counter = 0
         
-        self.db = MapDatabase(db_path=os.path.join(log_dir, "tiago_temporal_map_5.db"))
+        # Persistence adapter (config `hooks.store`); default = the SQLite temporal map
+        self.db = load_store(CFG, lambda: MapDatabase(db_path=os.path.join(log_dir, "tiago_temporal_map_5.db")))
         qos_latch = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.persistent_bbox_pub = self.create_publisher(MarkerArray, '/persistent_bbox', qos_latch)
         self.persistent_centroids_pub = self.create_publisher(MarkerArray, '/persistent_centroids', qos_latch)
@@ -486,7 +485,7 @@ class ObjectServices(Node):
                     save_persistent_perceptions(self)
 
                     try:
-                        with open('/root/exchange/output/operations.txt', 'a') as f:
+                        with open(OPERATIONS_LOG, 'a') as f:
                             timestamp = datetime.now().strftime('%H:%M:%S')
                             for lbl in deleted_labels:
                                 f.write(f"[{timestamp}] 🗑️ CANCELLATO (non visto): {lbl}\n")
@@ -507,7 +506,7 @@ class ObjectServices(Node):
                     print(f"🗑️ [UNCERTAIN RIMOSSO] '{uncertain_obj.label}'")
 
                     try:
-                        with open('/root/exchange/output/operations.txt', 'a') as f:
+                        with open(OPERATIONS_LOG, 'a') as f:
                             timestamp = datetime.now().strftime('%H:%M:%S')
                             f.write(f"[{timestamp}] ⚠️ UNCERTAIN RIMOSSO: {uncertain_obj.label}\n")
                     except Exception as e:
@@ -581,16 +580,15 @@ class ObjectServices(Node):
                         a.embedding = get_embedding(world2vec, a.description)
                     if not hasattr(b, 'embedding') or b.embedding is None:
                         b.embedding = get_embedding(world2vec, b.description)
-                    if a.embedding is None or b.embedding is None:
-                        print(f"   ⚠️ Embedding mancante, skip")
-                        continue
+                    # missing description embeddings are absent evidence, not a
+                    # reason to skip the pair (lost_similarity renormalises)
 
                     sim = lost_similarity(world2vec, a_label, b_label,
                                         a.color, b.color,
                                         a.material, b.material,
                                         a.embedding, b.embedding)
 
-                    print(f"   Sim semantiche:")
+                    print("   Sim semantiche:")
                     print(f"     Label: '{a_label}' vs '{b_label}'")
                     print(f"     Colore: '{a.color}' vs '{b.color}'")
                     print(f"     Materiale: '{a.material}' vs '{b.material}'")
@@ -639,7 +637,7 @@ class ObjectServices(Node):
                             (merged_bbox['y_max']-merged_bbox['y_min']) *
                             (merged_bbox['z_max']-merged_bbox['z_min']))
 
-                    print(f"   ✅ MERGE!")
+                    print("   ✅ MERGE!")
                     print(f"     Volume A: {vol_a:.3f}m³ | Volume B: {vol_b:.3f}m³ → Media: {vol_m:.3f}m³")
                     print(f"     Tenuto: '{keeper.label}' | Rimosso: '{discard.label}'")
                     print(f"     Desc keeper: '{keeper.description[:40]}...'")
@@ -685,7 +683,7 @@ class ObjectServices(Node):
                 publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
 
                 try:
-                    with open('/root/exchange/output/operations.txt', 'a') as f:
+                    with open(OPERATIONS_LOG, 'a') as f:
                         timestamp = datetime.now().strftime('%H:%M:%S')
                         for keeper, discard, _ in to_remove_pairs:
                             f.write(f"[{timestamp}] 🔗 MERGE: '{discard.label}' → '{keeper.label}'\n")
@@ -693,7 +691,7 @@ class ObjectServices(Node):
                     self.get_logger().error(f"Impossibile scrivere su operations.txt: {e}")
 
             elif not to_remove_pairs:
-                print(f"\n✅ NESSUN duplicato trovato.")
+                print("\n✅ NESSUN duplicato trovato.")
 
             print("══════════════════════════════════════════════\n")
 
@@ -774,6 +772,10 @@ class ObjectServices(Node):
                 assigned_room = self.room_manager.current_room_id
 
             if not assigned_room:
+                # config seam: without SLAM-derived room polygons no room can
+                # ever be known, which would reject every object forever
+                assigned_room = CFG["rooms"]["default_room_id"]
+            if not assigned_room:
                 raise ValueError(
                     f"Impossibile assegnare l'oggetto '{label}': nessuna stanza corrente "
                     f"nota (robot fuori da qualsiasi poligono o posa non ancora disponibile)."
@@ -817,7 +819,7 @@ class ObjectServices(Node):
                 self.exploration_step_counter += 1
 
             try:
-                with open('/root/exchange/output/operations.txt', 'a') as f:
+                with open(OPERATIONS_LOG, 'a') as f:
                     timestamp = datetime.now().strftime('%H:%M:%S')
                     cx = (bbox["x_min"] + bbox["x_max"]) / 2.0
                     cy = (bbox["y_min"] + bbox["y_max"]) / 2.0
@@ -1007,7 +1009,7 @@ class ObjectServices(Node):
             self.log_both("info", f"UPDATE {obj_id} dist={distance:.2f}m iou={iou:.2f} replaced={replaced}")
 
             try:
-                with open("/root/exchange/output/operations.txt", "a") as f:
+                with open(OPERATIONS_LOG, "a") as f:
                     timestamp = datetime.now().strftime("%H:%M:%S")
                     cx = (bbox["x_min"] + bbox["x_max"]) / 2.0
                     cy = (bbox["y_min"] + bbox["y_max"]) / 2.0
@@ -1062,7 +1064,7 @@ class ObjectServices(Node):
                 "room_id":     getattr(o, 'room_id', 'unknown')
             } for o in results])
             response.success = True
-        except Exception as e:
+        except Exception:
             response.success = False
             response.serialized_json = "[]"
         return response

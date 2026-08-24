@@ -11,8 +11,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from hooks import Store
 
-class MapDatabase:
+
+class MapDatabase(Store):
+    """Default `hooks.Store`: the SQLite temporal map. Another backend (config
+    `hooks.store`) subclasses Store and receives the same four events."""
+    name = "sqlite"
 
     def __init__(self, db_path: str):
         """
@@ -198,6 +203,29 @@ class MapDatabase:
             )
 
         print(f"[MapDB] ❌ DELETED '{obj.label}' ({reason})")
+
+    # ------------------------------------------------------------------ #
+    #  READS (the Store contract; same rows query_map.py reads offline)    #
+    # ------------------------------------------------------------------ #
+
+    def objects(self, only_active: bool = True):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM objects" + (" WHERE is_active=1" if only_active else "")).fetchall()
+        return [{"id": r["id"], "label": r["label"], "color": r["color"], "material": r["material"],
+                 "description": r["description"], "bbox": json.loads(r["bbox_json"]) if r["bbox_json"] else None,
+                 "room_id": r["room_id"], "is_active": bool(r["is_active"]), "is_uncertain": bool(r["is_uncertain"]),
+                 "first_seen": r["first_seen"], "last_seen": r["last_seen"], "last_event": r["last_event"]}
+                for r in rows]
+
+    def history(self, object_id):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM object_history WHERE object_id=? ORDER BY timestamp", (object_id,)).fetchall()
+        return [{"timestamp": r["timestamp"], "event_type": r["event_type"], "phase": r["phase"], "step": r["step"],
+                 "bbox_old": json.loads(r["bbox_old"]) if r["bbox_old"] else None,
+                 "bbox_new": json.loads(r["bbox_new"]) if r["bbox_new"] else None,
+                 "distance": r["distance"], "iou": r["iou"], "notes": r["notes"]} for r in rows]
 
     def on_uncertain_added(self, obj, step: int = 0):
         """Chiama quando aggiungi a uncertain_objects in modify_existing_object()."""

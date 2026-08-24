@@ -8,21 +8,18 @@ Includes Topological Semantic Mapping (Room Manager) with Scene Graph generation
 Room changes are handled by the Room Manager using detected wall segments and
 its normal scene-evaluation logic.
 """
-import rclpy, json, os, time, threading, re, subprocess, sys
+import rclpy, json, os, time, threading, subprocess, sys
 import urllib.parse
 from collections import deque
 from rclpy.node import Node
-from rclpy.duration import Duration
-from rclpy.qos import QoSProfile, DurabilityPolicy
+from rclpy.qos import DurabilityPolicy
 import numpy as np
 import requests
-from openai import OpenAI
 from lost3dsg.msg import ObjectDescriptionArray, Bbox3dArray
 from lost3dsg.srv import (
     ObjectTrackingService,
-    AddObject, RemoveObject, UpdateObject, MergeObjects, DeleteObjects, QueryObjects,
+    UpdateObject,
 )
-import uuid
 from object_services import (
     ObjectServices,
     save_persistent_perceptions,
@@ -31,47 +28,47 @@ from object_services import (
 )
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Bool
-from sensor_msgs.msg import PointCloud2
-from object_info import Object
 from world_model import wm
-import gensim.downloader as api
 from utils import *
 from room_manager import RoomManager
 from nlp_utils import *
 from datetime import datetime
 from cv_utils import *
-from map_database import MapDatabase
-from gensim.models import KeyedVectors
+from config import CFG
+from hooks import DecisionLog, load_hooks
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
-import json
 import hashlib
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from builtin_interfaces.msg import Time as TimeMsg
 from datetime import timezone
 
-# ============= EXPLORATION PARAMETERS =============
-EXPLORATION_IOU_THRESHOLD = 0.10
-SIM_THRESHOLD = 0.85
-TRACKING_IOU_THRESHOLD = 0.3
-VOLUME_EXPANSION_RATIO = 0.01
-EXPLORATION_FRAME_LIMIT = 10 # Numero di frame in exploration prima di passare a tracking
-OBJECT_STABILITY_TIMEOUT = 3.0 # Secondi minimi di vita prima di poter essere 'MOVED'
-POV_SCALE_FACTOR = 1.0
-MAX_VOLUME_THRESHOLD = 0.5
-BBOX_REDUCTION_RATIO = 0.30
+# ============= EXPLORATION PARAMETERS (config.yaml: association) =============
+EXPLORATION_IOU_THRESHOLD = CFG["association"]["exploration_iou_threshold"]
+SIM_THRESHOLD = CFG["association"]["sim_threshold"]
+TRACKING_IOU_THRESHOLD = CFG["association"]["tracking_iou_threshold"]
+VOLUME_EXPANSION_RATIO = CFG["association"]["volume_expansion_ratio"]
+EXPLORATION_FRAME_LIMIT = CFG["association"]["exploration_frame_limit"]
+OBJECT_STABILITY_TIMEOUT = CFG["association"]["object_stability_timeout"]
+POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
+MAX_VOLUME_THRESHOLD = CFG["association"]["max_volume_threshold"]
+BBOX_REDUCTION_RATIO = CFG["association"]["bbox_reduction_ratio"]
+MAX_MATCH_DISTANCE = CFG["association"].get("max_match_distance_m", 0.0)
 
-# Load OpenAI API key & Paths
+
+def bbox_center_distance(a, b):
+    return float(np.linalg.norm([
+        (a["x_min"] + a["x_max"] - b["x_min"] - b["x_max"]) / 2.0,
+        (a["y_min"] + a["y_max"] - b["y_min"] - b["y_max"]) / 2.0,
+        (a["z_min"] + a["z_max"] - b["z_min"] - b["z_max"]) / 2.0,
+    ]))
+
 file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
 PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir else os.path.abspath(os.path.join(current_dir, "../.."))
 
-world2vec = KeyedVectors.load_word2vec_format(
-    '/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz',
-    binary=True,
-    limit=200000 # <--- ECCO LA MAGIA CHE SALVA LA RAM!
-)
+# world2vec arrives via `from nlp_utils import *` — loaded once there.
 
 # Setup path per il file sintetico di operazioni
 log_dir = os.path.join(PROJECT_ROOT, "output")
@@ -455,6 +452,13 @@ class ObjectManagerService(Node):
         )
         self.object_services = ObjectServices(self.room_manager)
         self.last_room_check_time = time.time()
+
+        # Extension seam (config `hooks`, see hooks.py): admission filter, node
+        # refiner and the re-evaluation queue. Blueprints unless configured.
+        self.filter_hook, self.refiner_hook, self.reeval = load_hooks(CFG)
+        self.decision_log = DecisionLog(CFG["hooks"]["decisions_log"] or os.path.join(log_dir, "hook_decisions.jsonl"))
+        self.get_logger().info(f"hooks: filter={self.filter_hook.name} refiner={self.refiner_hook.name} "
+                               f"log={self.decision_log.path}")
         
         self.wall_sub = self.create_subscription(
             String,
@@ -573,10 +577,11 @@ class ObjectManagerService(Node):
 
             if not hasattr(obj, "embedding") or obj.embedding is None:
                 obj.embedding = get_embedding(world2vec, obj.description)
-            
-            if obj.embedding is None or description_embedding is None:
-                continue
-            
+            # FIX (same bug as in the two association loops): a missing description
+            # embedding is absent evidence, not a reason to skip. With "unknown"
+            # descriptions (VLM down) every embedding is None, so this `continue`
+            # made the EXPLORATION -> TRACKING transition impossible: the stack never
+            # reached updates, the uncertain pool or merging.
             similarity = lost_similarity(world2vec, label_base, obj_label_base, color, obj.color,
                                          material, obj.material, description_embedding, obj.embedding)
             
@@ -614,7 +619,8 @@ class ObjectManagerService(Node):
 
         for obj in wm.persistent_perceptions:
             ensure_relations(obj)
-            room_id = getattr(obj, "room_id", None)
+            # unused — room_id was fetched but never consumed in this loop
+            # room_id = getattr(obj, "room_id", None)
 
         for i, obj_a in enumerate(wm.persistent_perceptions):
             for j, obj_b in enumerate(wm.persistent_perceptions):
@@ -762,7 +768,7 @@ class ObjectManagerService(Node):
                 )
 
                 if transition:
-                    self.object_services.log_both('warn', f"[TRANSITION] Switching from EXPLORATION to TRACKING mode")
+                    self.object_services.log_both('warn', "[TRANSITION] Switching from EXPLORATION to TRACKING mode")
                     self.exploration_mode = False
                     self.tracking_step_counter = 1
                     tracking_activated = True
@@ -782,6 +788,7 @@ class ObjectManagerService(Node):
                         )
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
+                        self._note_update(update_response.object_id)
                     else:
                         self.object_services.log_both('warn', f"Update fallito per {obj.label}: {update_response.message}")
                     already_seen = True
@@ -791,8 +798,10 @@ class ObjectManagerService(Node):
                     obj_label_base = obj.label.split('#')[0] if '#' in obj.label else obj.label
                     if not hasattr(obj, "embedding"):
                         obj.embedding = get_embedding(world2vec, obj.description)
-                    if obj.embedding is None:
-                        continue
+                    # FIX: a missing description embedding is not a reason to
+                    # skip the candidate — lost_similarity now treats it as
+                    # absent evidence. Skipping here left undescribed objects
+                    # unmatched forever (every re-detection became a new node).
 
                     similarity = lost_similarity(
                         world2vec, label_base, obj_label_base, color, obj.color,
@@ -831,8 +840,10 @@ class ObjectManagerService(Node):
                 for obj in wm.persistent_perceptions:
                     if not hasattr(obj, "embedding"):
                         obj.embedding = get_embedding(world2vec, obj.description)
-                    if obj.embedding is None:
-                        continue
+                    # FIX: a missing description embedding is not a reason to
+                    # skip the candidate — lost_similarity now treats it as
+                    # absent evidence. Skipping here left undescribed objects
+                    # unmatched forever (every re-detection became a new node).
 
                     obj_label_base = obj.label.split('#')[0] if '#' in obj.label else obj.label
                     similarity = lost_similarity(
@@ -845,6 +856,13 @@ class ObjectManagerService(Node):
                             iou = compute_iou_3d(bbox, obj.bbox)
                             if iou >= TRACKING_IOU_THRESHOLD:
                                 similarity = 1.0
+
+                    # Spatial gate (config association.max_match_distance_m, 0 = off):
+                    # with label-only evidence two same-label objects across the
+                    # map would otherwise merge; attribute similarity is not position.
+                    if MAX_MATCH_DISTANCE > 0 and obj.bbox is not None and bbox is not None:
+                        if bbox_center_distance(bbox, obj.bbox) > MAX_MATCH_DISTANCE:
+                            continue
 
                     if similarity > SIM_THRESHOLD and similarity > best_score:
                         best_score = similarity
@@ -861,14 +879,27 @@ class ObjectManagerService(Node):
                         )
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
+                        self._note_update(update_response.object_id)
                     else:
                         self.object_services.log_both('warn', f"Update fallito per {best_match.label}: {update_response.message}")
 
             if not already_seen:
+                # Admission seam: the configured Filter sees exactly what would be
+                # sent to the Graph API and may refuse it (blueprint: never does).
+                proposal = {
+                    "label": label, "bbox": bbox, "color": color, "material": material,
+                    "description": description_text,
+                    "room_id": self.room_manager.assign_room_by_geometry(bbox),
+                }
+                decision = self.filter_hook.judge(proposal)
+                self.decision_log.write("admission", label, filter=self.filter_hook.name, outcome=decision.outcome,
+                                        reason=decision.reason, annotation=decision.annotation)
+                if not decision.admitted:
+                    self.object_services.log_both('warn', f"[{self.filter_hook.name}] refused {label}: {decision.reason}")
+                    continue
                 new_obj = self.add_new_object(
                     label, bbox, description_text, color, material,
-                    description_embedding, in_exploration,
-                    self.room_manager.assign_room_by_geometry(bbox)
+                    description_embedding, in_exploration, proposal["room_id"]
                 )
                 if new_obj is not None:
                     current_perception_objects.append(new_obj)
@@ -881,8 +912,12 @@ class ObjectManagerService(Node):
         if not in_exploration:
             uncertain_deleted = False
 
+            # FIX: scaled_pov_volume was computed here and never used — the
+            # unscaled pov_volume was passed below, so pov_scale_factor had no
+            # effect (invisible while it defaulted to 1.0). Now the scaled
+            # volume is actually applied.
             if pov_volume:
-                scaled_pov_volume = shrink_pov_volume(pov_volume, POV_SCALE_FACTOR)
+                pov_volume = shrink_pov_volume(pov_volume, POV_SCALE_FACTOR)
 
             uncertain_deleted = self.delete_uncertain_objects(pov_volume)
 
@@ -1150,7 +1185,51 @@ class ObjectManagerService(Node):
         except Exception as e:
             print(f"[ERROR] Errore nel salvataggio muri: {e}")
 
+    # --- re-evaluation seam (hooks.Reevaluation / hooks.Refiner) ---
+    @staticmethod
+    def _node_dict(obj):
+        return {"object_id": getattr(obj, "object_id", None) or obj.label, "label": obj.label,
+                "color": obj.color, "material": obj.material, "description": obj.description,
+                "bbox": obj.bbox, "room_id": getattr(obj, "room_id", None)}
+
+    def _find_node(self, object_id):
+        return next((o for o in wm.persistent_perceptions
+                     if (getattr(o, "object_id", None) or o.label) == object_id), None)
+
+    def _neighbours(self, node, radius):
+        return [o for o in wm.persistent_perceptions
+                if o is not node and o.bbox is not None and node.bbox is not None
+                and bbox_center_distance(node.bbox, o.bbox) <= radius]
+
+    def _note_update(self, object_id):
+        """A node changed: its spatial neighbours (within the association gate, 2 m when
+        the gate is off) deserve a second look. The trigger policy — which neighbours,
+        graph-distance instead of metres — is the queue subclass's to refine."""
+        node = self._find_node(object_id)
+        if node is None:
+            return
+        radius = MAX_MATCH_DISTANCE or 2.0
+        self.reeval.on_update(object_id, [self._node_dict(o)["object_id"] for o in self._neighbours(node, radius)])
+
+    def _drain_reevaluations(self):
+        """Periodic: hand every queued node, with its neighbours, to the Refiner and log
+        what it proposes. Proposals are recorded, not applied — applying one is an
+        UpdateObject with the revised fields, wired once the policy is settled."""
+        for object_id, reason in self.reeval.drain():
+            node = self._find_node(object_id)
+            if node is None:
+                continue
+            neighbours = [self._node_dict(o) for o in self._neighbours(node, MAX_MATCH_DISTANCE or 2.0)]
+            try:
+                revision = self.refiner_hook.refine(self._node_dict(node), neighbours)
+            except Exception as exc:
+                self.get_logger().warn(f"[{self.refiner_hook.name}] refine failed for {object_id}: {exc}")
+                continue
+            if revision:
+                self.decision_log.write("revision", object_id, refiner=self.refiner_hook.name, reason=reason, revision=revision)
+
     def periodic_bbox_publisher(self):
+        self._drain_reevaluations()
         if self.robot_has_moved:
            return
         if len(wm.persistent_perceptions) > 0:
