@@ -20,23 +20,19 @@ from cv_bridge import CvBridge
 import numpy as np
 import cv2
 from cv_utils import _clear_markers
-import time
 from dataclasses import dataclass
 from typing import Tuple
 from collections import Counter
-from matplotlib.colors import to_rgb
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
-from datetime import datetime
 import re
-import itertools
 
 # Project imports
 from cv_utils import *
 import utils
 from utils import draw_detections, apply_nms
-from models import DINO, VitSam, OWLv2
-from lost3dsg.msg import Centroid, CentroidArray, Bbox3d, Bbox3dArray
+from models import VitSam, OWLv2
+from lost3dsg.msg import CentroidArray, Bbox3d, Bbox3dArray
 from object_info import Object
 from world_model import wm
 from lost3dsg.msg import ObjectDescription, ObjectDescriptionArray
@@ -44,7 +40,7 @@ from std_msgs.msg import Bool
 import torch
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
-from cv_utils import _transform_point_xyz, init_bbox_publisher
+from cv_utils import init_bbox_publisher
 
 def compute_fov_volume_from_depth(depth_image, camera_info, node, depth_threshold=4.0):
     """

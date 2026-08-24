@@ -125,7 +125,7 @@ def find_best_matches(query: str, objects: list, model, top_k=3, threshold=0.2, 
     clean_query = " ".join(meaningful_words)
     
     if debug:
-        print(f"\n  📊 DEBUG MATCHING PROCESS")
+        print("\n  📊 DEBUG MATCHING PROCESS")
         print(f"  ├─ Query originale: '{query}'")
         print(f"  ├─ Parole rilevanti: {meaningful_words}")
         print(f"  └─ Query pulita: '{clean_query}'")
@@ -137,7 +137,7 @@ def find_best_matches(query: str, objects: list, model, top_k=3, threshold=0.2, 
     query_vec = get_sentence_embedding(model, clean_query)
     if query_vec is None:
         if debug:
-            print(f"  ❌ Impossibile creare embedding per la query!")
+            print("  ❌ Impossibile creare embedding per la query!")
         return []
     
     if debug:
@@ -164,13 +164,13 @@ def find_best_matches(query: str, objects: list, model, top_k=3, threshold=0.2, 
                 print(f"  ├─ Core text: '{core_text}'")
                 print(f"  ├─ Core vec norm: {np.linalg.norm(core_vec):.4f}")
             else:
-                print(f"  ├─ ⚠️ Core vec: None")
+                print("  ├─ ⚠️ Core vec: None")
             
             if desc_vec is not None:
                 print(f"  ├─ Description: '{desc[:50]}...' " if len(desc) > 50 else f"  ├─ Description: '{desc}'")
                 print(f"  ├─ Desc vec norm: {np.linalg.norm(desc_vec):.4f}")
             else:
-                print(f"  ├─ Description vec: None (no description)")
+                print("  ├─ Description vec: None (no description)")
         
         # Similarità diretta col nome dell'oggetto (Es. "computer" vs "monitor")
         sim_core = cosine_similarity(query_vec, core_vec) if core_vec is not None else 0.0
@@ -241,7 +241,7 @@ def main():
     db = MapQuery(db_path)
     model = load_w2v(w2v_path)
 
-    print(f"\n🤖 TIAGO MAP — PURE SEMANTIC SEARCH")
+    print("\n🤖 TIAGO MAP — PURE SEMANTIC SEARCH")
     print(f"   DB  : {db_path}")
     print(f"   W2V : {w2v_path}")
     print("─" * 60)
@@ -290,7 +290,8 @@ def main():
         
         # Estraiamo un eventuale intento specifico (storia/spostato) prima di cercare
         check_history = "stori" in tl or "history" in tl
-        check_moved = "spostat" in tl or "mov" in tl
+        # unused — the moved-intent flag is never consumed (history is); restore when a MOVED query path exists
+        # check_moved = "spostat" in tl or "mov" in tl
         
         # Puliamo la query da queste parole per non inquinare l'embedding
         clean_query = re.sub(r'(storia|history|spostat[oaie]|moved?)', '', tl).strip()
@@ -318,7 +319,7 @@ def main():
 
         # Se ci sono altri match vicini, li suggerisce
         if len(matches) > 1:
-            print(f"  💡 Altri oggetti simili trovati:")
+            print("  💡 Altri oggetti simili trovati:")
             for sim, obj, txt in matches[1:]:
                 print(f"     • {obj['color']} {obj['label']} (Sim: {sim:.2f})")
 

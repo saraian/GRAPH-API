@@ -91,9 +91,9 @@ def genera_grafo_corretto():
             pass
         os.chmod(OUTPUT_HTML, 0o666)
         
-        print(f"\n✅ Grafo generato con successo!")
+        print("\n✅ Grafo generato con successo!")
         print(f"📍 Percorso: {OUTPUT_HTML}")
-        print(f"✨ Etichette corrette: 'World' -> 'Room X' -> 'Oggetto'")
+        print("✨ Etichette corrette: 'World' -> 'Room X' -> 'Oggetto'")
     except Exception as e:
         print(f"❌ Errore: {e}")
 

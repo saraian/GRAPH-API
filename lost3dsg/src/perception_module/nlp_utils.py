@@ -1,9 +1,29 @@
+import os
+import re
+
 import numpy as np
 import webcolors
-import re
+
+from config import CFG
 
 
 EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+def _load_word2vec():
+    # Loaded once here; object_manager_6 / object_services pick it up via
+    # their star imports instead of each loading their own copy.
+    from gensim.models import KeyedVectors
+    path = CFG["embedding"]["word2vec_path"]
+    limit = CFG["embedding"]["word2vec_limit"]
+    if os.path.exists(path):
+        return KeyedVectors.load_word2vec_format(path, binary=True, limit=limit)
+    print(f"[WARN] word2vec not found at {path}; downloading via gensim (once, cached)")
+    import gensim.downloader
+    return gensim.downloader.load("word2vec-google-news-300")
+
+
+world2vec = _load_word2vec()
 
 def semantic_similarity(word2vec_model, word1: str, word2: str) -> float:
     """Calculate semantic similarity between two words using Word2Vec."""
@@ -36,7 +56,7 @@ def semantic_similarity(word2vec_model, word1: str, word2: str) -> float:
         similarity = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
         return max(0.0, float(similarity))
 
-    except Exception as e:
+    except Exception:
         return 0.0
 
 
@@ -137,9 +157,9 @@ def get_embedding(model, text):
     Sostituisce OpenAI per funzionare 100% offline e senza API key.
     """
     try:
-        if not text:
-            return None
-        
+        if not text or not _known(text):
+            return None  # no description = no evidence (see lost_similarity)
+
         # Estrae le singole parole dalla descrizione
         words = re.findall(r'\w+', text)
         
@@ -196,26 +216,27 @@ def lost_similarity(word2vec_model, label1, label2, color1, color2, material1, m
     Returns:
         float: Overall similarity [0, 1]
     """
-    alpha = 0.05   # label weight
-    beta = 0.30    # color weight
-    gamma = 0.15   # material weight (reduced from 0.25)
-    delta = 0.50  # description weight (increased from 0.25)
+    alpha = CFG["similarity"]["label"]
+    beta = CFG["similarity"]["color"]
+    gamma = CFG["similarity"]["material"]
+    delta = CFG["similarity"]["description"]
 
-    # Calculate individual similarities
-    label_sim = semantic_similarity(word2vec_model, label1, label2)
-
-    # MODIFIED: Use RGB distance for colors instead of word2vec (with fallback)
-    color_sim = color_similarity_rgb(color1, color2, word2vec_model)
-
-    material_sim = semantic_similarity(word2vec_model, material1, material2)
-
-    # For description, use cosine similarity between embeddings
+    # FIX: "unknown"/empty attributes are ABSENCE of evidence, not agreement.
+    # Before, unknown==unknown scored 1.0 on color, material and description,
+    # so any two undescribed objects reached 0.95 > SIM_THRESHOLD and every
+    # detection merged into the first object in memory. Terms without evidence
+    # on both sides are dropped and the remaining weights renormalised.
+    terms = [(alpha, semantic_similarity(word2vec_model, label1, label2))]
+    if _known(color1) and _known(color2):
+        terms.append((beta, color_similarity_rgb(color1, color2, word2vec_model)))
+    if _known(material1) and _known(material2):
+        terms.append((gamma, semantic_similarity(word2vec_model, material1, material2)))
     if desc1 is not None and desc2 is not None:
-        desc_sim = cosine_similarity(desc1, desc2)
-    else:
-        desc_sim = 0.0
+        terms.append((delta, cosine_similarity(desc1, desc2)))
 
-    # Calculate weighted similarity
-    total_sim = alpha * label_sim + beta * color_sim + gamma * material_sim + delta * desc_sim
+    weight = sum(w for w, _ in terms)
+    return sum(w * s for w, s in terms) / weight if weight > 0 else 0.0
 
-    return total_sim
+
+def _known(value):
+    return bool(value) and str(value).strip().lower() not in ("unknown", "none", "n/a")

@@ -688,10 +688,11 @@ class RoomManager:
         margin_px = max(1, int(self._params['gvd_cut_margin_px']))
         for point in critical_points:
             if len(point) >= 4:
-                y, x, theta, _ = point
+                y, x, theta, _ = point  # theta unused below; kept only by the unpacking
             else:
                 y, x = point[:2]
-                theta = 0.0
+                # unused — nothing below reads theta
+                # theta = 0.0
             radius = int(round(float(dist_real[y, x]))) + margin_px
             radius = max(1, radius)
             cv2.circle(cut, (int(x), int(y)), radius, 0, -1)
@@ -955,8 +956,11 @@ class RoomManager:
         return min(matches, key=lambda r: r.area_m2).room_id if matches else None
 
     def _nearest_room(self, xy):
+        # FIX: the guard used to return bare None while every other path
+        # returns a (room_id, distance) tuple — callers unpack the result, so
+        # the first query before any room existed crashed the node.
         if xy is None or not self.regions:
-            return None
+            return None, float('inf')
         best_room = None
         best_distance = float('inf')
         for region in self.regions.values():
