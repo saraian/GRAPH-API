@@ -1,6 +1,5 @@
 from object_info import Object
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from rclpy.time import Time as ROS2Time
 from rclpy.duration import Duration as ROS2Duration
 import numpy as np
 from cv_bridge import CvBridge
@@ -14,8 +13,8 @@ from rclpy.time import Time
 bridge = CvBridge()
 
 file_path = os.path.abspath(__file__)
-ENCODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path),"utils", "l2_encoder.onnx")
-DECODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path),"utils", "l2_decoder.onnx")
+ENCODER_VITSAM_PATH = config.CFG["paths"]["vitsam_encoder"] or os.path.join(os.path.dirname(file_path), "utils", "l2_encoder.onnx")
+DECODER_VITSAM_PATH = config.CFG["paths"]["vitsam_decoder"] or os.path.join(os.path.dirname(file_path), "utils", "l2_decoder.onnx")
 
 
 class SyncedCameraData:
@@ -98,7 +97,7 @@ class SyncedCameraData:
                 target_frame,
                 camera_frame,
                 lookup_time,
-                timeout=ROS2Duration(seconds=0.1)
+                timeout=ROS2Duration(seconds=config.CFG["tf"]["lookup_timeout"])
             )
             first_time = self.cached_transform is None
             self.cached_transform = transform

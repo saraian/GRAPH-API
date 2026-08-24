@@ -5,6 +5,7 @@ import numpy as np
 
 from utils import apply_nms
 from detection_types import Detection
+from config import CFG
 
 
 class DetectionPipelineMixin:
@@ -51,8 +52,19 @@ class DetectionPipelineMixin:
 
     def _extract_detection_labels(self, rgb_image):
         t0 = time.time()
-        prompt_path = os.path.join(os.path.dirname(__file__), "object_identification_prompt.txt")
-        labels = self.vlm.call_labels(prompt_path, rgb_image)
+        prompt_path = CFG["paths"]["identification_prompt"] or os.path.join(
+            os.path.dirname(__file__), "prompts", "object_identification_prompt.txt")
+        try:
+            labels = self.vlm.call_labels(prompt_path, rgb_image)
+        except Exception as exc:
+            # Config seam: with vlm.fallback_labels set, an unreachable VLM
+            # degrades to a static open-vocab list (loudly) instead of killing
+            # the detection cycle. Empty list (default) = raise as before.
+            fallback = CFG["vlm"].get("fallback_labels") or []
+            if not fallback:
+                raise
+            self.log_both("warn", f"VLM labels unavailable ({exc}); using {len(fallback)} fallback labels")
+            labels = list(fallback)
         self.log_both("info", f"[PROFILE] VLM labels: {time.time() - t0:.3f}s")
         self.log_both("info", f"[PROFILE] Labels: {labels}")
 

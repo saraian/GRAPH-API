@@ -6,11 +6,6 @@ import torchvision.transforms as transforms
 from efficientvit.export_encoder import SamResize
 from efficientvit.inference import SamDecoder, SamEncoder
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
-import cv2
-from PIL import Image
-import torch
-import cv2
-import numpy as np
 from PIL import Image
 from transformers import Owlv2Processor, Owlv2ForObjectDetection
 

@@ -22,18 +22,17 @@ sys.setdlopenflags(flags | ctypes.RTLD_GLOBAL)
 sys.path.insert(0, "/root/exchange/habitat-sim/examples")
 
 
-import magnum as mn
 import numpy as np
 import rclpy
+from config import CFG
 from geometry_msgs.msg import TransformStamped
 from habitat_sim.utils.settings import default_sim_settings
-from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 
-from viewer import HabitatSimInteractiveViewer, Timer
+from viewer import HabitatSimInteractiveViewer
 
 
 
@@ -444,20 +443,13 @@ def main():
     sim_settings: Dict[str, Any] = default_sim_settings.copy()
 
 
-    # Scena e dataset
-    sim_settings["scene"] = (
-        "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/"
-        "00801-HaxA7YrQdEC/HaxA7YrQdEC.basis.glb"
-    )
-    sim_settings["scene_dataset"] = (
-        "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/"
-        "hm3d_annotated_basis.scene_dataset_config.json"
-    )
-
+    # Scena e dataset (config.yaml: habitat)
+    sim_settings["scene"] = CFG["habitat"]["scene"]
+    sim_settings["scene_dataset"] = CFG["habitat"]["scene_dataset"]
 
     # Risoluzione camera
-    sim_settings["width"] = 640
-    sim_settings["height"] = 480
+    sim_settings["width"] = CFG["habitat"]["width"]
+    sim_settings["height"] = CFG["habitat"]["height"]
 
 
     # Sensori da abilitare
