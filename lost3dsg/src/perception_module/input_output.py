@@ -4,7 +4,6 @@ import re
 from datetime import datetime
 
 import cv2
-from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Header
 from lost3dsg.msg import Bbox3dArray, ObjectDescriptionArray
 
@@ -38,7 +37,9 @@ class PerceptionIOMixin:
 
     def publish_empty_state(self, depth, camera_info, cycle_stamp=None):
         stamp = cycle_stamp if cycle_stamp is not None else self.get_clock().now().to_msg()
-        self.pcl_objects_pub.publish(PointCloud2(header=Header(stamp=stamp, frame_id="map"), height=1, width=0))
+        # The object cloud (/pcl_objects, latched) is deliberately NOT wiped here: an
+        # empty cycle used to overwrite the last detection's cloud with a zero-point
+        # message, so rviz showed object clouds only for the instant between two cycles.
         self.pub_object_descriptions.publish(self.make_header_msg(ObjectDescriptionArray, stamp=stamp, frame_id="map"))
 
         empty_bboxes = self.make_header_msg(Bbox3dArray, stamp=stamp, frame_id="map")

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import numpy as np
 from sensor_msgs.msg import CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
@@ -7,11 +8,13 @@ from matplotlib.colors import to_rgb
 import cv2
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Header, String, ColorRGBA
+from std_msgs.msg import Header, String
 from sensor_msgs.msg import PointField
 import json
 from geometry_msgs.msg import Point
 from utils import statistical_outlier_removal, get_distinct_color
+from box_view import BOX_EDGES, box_corners_map, project_visible
+from config import CFG
 import struct
 from openai import OpenAI
 import base64
@@ -20,11 +23,8 @@ from rclpy.time import Time
 from rclpy.duration import Duration as ROS2Duration
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from builtin_interfaces.msg import Time as TimeMsg
-import ollama
 file_path = os.path.abspath(__file__)
-from groq import Groq
 import time
-from rclpy.time import Time as RclpyTime
 import itertools
 import tf2_ros
 
@@ -114,7 +114,9 @@ def _get_R_and_T(trans):
     return R, T
 
 
-def _transform_point_xyz(pt_xyz, source_frame, target_frame, stamp=None, timeout=0.1, node=None, tf_buffer=None):
+def _transform_point_xyz(pt_xyz, source_frame, target_frame, stamp=None, timeout=None, node=None, tf_buffer=None):
+    if timeout is None:
+        timeout = CFG["tf"]["lookup_timeout"]
     if target_frame == source_frame:
         return np.array(pt_xyz).reshape(3)
 
@@ -193,13 +195,18 @@ def mask_list_to_pointcloud2(
     max_points_per_obj=20000,
     publisher=None,
     labels_publisher=None,
+    transform=None,
 ):
+    """Per-object coloured cloud. With `transform` (map<-optical of this frame, the
+    same one the boxes are lifted with) the cloud is published in the map frame;
+    without it, in CFG frames.camera — which must then be the OPTICAL frame, or the
+    cloud renders rotated (depth into the height axis) and looks absent in rviz."""
     if not isinstance(camera_info, CameraInfo):
         raise TypeError("camera_info must be CameraInfo")
 
     labels = labels or [f"obj_{i}" for i in range(len(masks))]
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
-    camera_frame = "habitat_camera"
+    camera_frame = CFG["frames"]["camera"]
 
     current_points, id_to_label = [], {}
 
@@ -223,12 +230,15 @@ def mask_list_to_pointcloud2(
 
         xs, ys, zs = xs[valid], ys[valid], zs[valid]
 
-        x = (xs - cx) * zs / fx
-        y = (ys - cy) * zs / fy
+        # unused — superseded by _pixels_to_points_habitat_camera below
+        # x = (xs - cx) * zs / fx
+        # y = (ys - cy) * zs / fy
         pts = _pixels_to_points_habitat_camera(xs, ys, zs, fx, fy, cx, cy)
 
         if len(pts) == 0:
             continue
+        if transform is not None:
+            pts = _apply_transform(pts, transform)
 
         unique_id = node.pcl_object_id_counter
         rgb_packed = _pack_rgb(get_distinct_color(unique_id))
@@ -251,7 +261,10 @@ def mask_list_to_pointcloud2(
         PointField(name="object_id", offset=16, datatype=PointField.INT32, count=1),
     ]
 
-    header = Header(stamp=node.get_clock().now().to_msg(), frame_id=camera_frame)
+    if transform is not None:
+        header = Header(stamp=camera_info.header.stamp, frame_id="map")
+    else:
+        header = Header(stamp=node.get_clock().now().to_msg(), frame_id=camera_frame)
     cloud_msg = point_cloud2.create_cloud(header, fields, current_points)
 
     qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -276,7 +289,7 @@ def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, 
     labels       = labels or [f"obj_{i}" for i in range(len(masks))]
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
     #camera_frame = "head_front_camera_color_optical_frame"
-    camera_frame = "habitat_camera"
+    camera_frame = CFG["frames"]["camera"]
     palette      = [to_rgb(c) for c in ('red','green','blue','magenta','cyan','yellow','orange','purple','brown','pink')]
     qos          = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
     stamp        = timestamp or node.get_clock().now().to_msg()
@@ -295,7 +308,7 @@ def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, 
                              max_points_per_obj=max_points_per_obj,
                              remove_outliers=remove_outliers, sor_k=sor_k, sor_std=sor_std)
         if pts is None:
-            node.get_logger().warn(f"{label}: no valid points after filtering")
+            node.get_logger().warn(f"{labels[obj_idx]}: no valid points after filtering")
             continue
         
         # Transform if needed
@@ -319,6 +332,8 @@ def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, 
             node.get_logger().warn(f"Obj {obj_id} ({labels[obj_idx]}): no points after filtering")
             continue
 
+        r, g, b = (int(c * 255) for c in palette[obj_id % len(palette)])
+        rgb_packed = struct.unpack('f', struct.pack('I', (r << 16) | (g << 8) | b))[0]
         points = [(float(p[0]), float(p[1]), float(p[2]), rgb_packed, obj_id) for p in pts]
 
         # Publish
@@ -351,7 +366,8 @@ def points_list_to_rviz_3d(points, node, centroid_marker_pub=None, labels=None,
         if point is None:
             continue
         uid   = node._centroid_marker_id_counter
-        label = labels[i] if labels and i < len(labels) else f"obj_{i}"
+        # unused — markers carry no text; restore if a TEXT_VIEW_FACING label marker is added
+        # label = labels[i] if labels and i < len(labels) else f"obj_{i}"
         m = Marker()
         m.header.frame_id = frame_id
         m.header.stamp    = stamp
@@ -383,14 +399,46 @@ def _apply_transform(pts, transform):
     R, T = _get_R_and_T(transform)
     pts = np.asarray(pts, dtype=np.float64)
     return pts.dot(R.T) + T
-  
+
+
+def draw_boxes_3d(img, bboxes_3d, labels, camera_info, transform, depth=None):
+    """Draw each 3D box (map frame) as a wireframe in the image it was measured from.
+
+    `transform` is the map<-optical transform of this very frame (the one the points
+    were lifted with), so this is the exact inverse of _apply_transform followed by the
+    pinhole. Orange = PCA-oriented box, blue = axis-aligned fallback. With `depth`
+    the box is subject to the same visibility rule as the simulator overlay
+    (box_view.project_visible): not drawn when out of view or occluded, thin when
+    only partially visible.
+    """
+    fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
+    h, w = img.shape[:2]
+    R, T = _get_R_and_T(transform)
+    for bbox, label in zip(bboxes_3d, labels):
+        corners, oriented = box_corners_map(bbox)
+        if not corners:
+            continue
+        cam = (np.asarray(corners + [np.mean(corners, axis=0)]) - T) @ R   # R^T (p - T): map -> optical
+        px, n_vis = project_visible(cam, depth, fx, fy, cx, cy, w, h)
+        if not n_vis:
+            continue
+        colour = (0, 165, 255) if oriented else (255, 160, 0)
+        thick = 2 if n_vis >= 5 else 1
+        for i, j in BOX_EDGES:
+            cv2.line(img, px[i], px[j], colour, thick, cv2.LINE_AA)
+        top = min(px, key=lambda p: p[1])
+        cv2.putText(img, str(label), (top[0], max(14, top[1] - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, thick, cv2.LINE_AA)
+    return img
+
+
 def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, node,
                                     bbox_marker_pub=None, centroid_marker_pub=None,
                                     max_points_per_obj=20000, remove_outliers=True,
                                     sor_k=30, sor_std=1.5, transform=None,
                                     output_frame="map"):
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
-    camera_frame = "habitat_camera"
+    camera_frame = CFG["frames"]["camera"]
     centroids_3d, bboxes_3d, all_markers = [], [], []
     stamp = camera_info.header.stamp
 
@@ -632,31 +680,61 @@ def vlm_call(prompt, encoded_image):
     return resp.choices[0].message.content
 
 '''
-with open(os.path.join(os.path.dirname(file_path), "api.txt"), "r") as f:
-    api_key = f.read().strip()
 
-client = OpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="ollama",
-)
+_client = None
+
+
+def _resolve_api_key():
+    key = CFG["vlm"]["api_key"] or os.environ.get("OPENAI_API_KEY", "")
+    if not key:
+        legacy = os.path.join(os.path.dirname(file_path), "api.txt")
+        if os.path.exists(legacy):
+            key = open(legacy).read().strip()
+    return key or "ollama"
+
+
+def _vlm_client():
+    # Lazy: no api.txt read and no client construction at import time.
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            base_url=CFG["vlm"]["base_url"],
+            api_key=_resolve_api_key(),
+            timeout=CFG["vlm"]["timeout"],
+            max_retries=0,  # vlm_call owns retries (cfg vlm.retries); SDK backoff just adds latency
+        )
+    return _client
+
 
 def vlm_call(prompt, encoded_image):
-    agent = client.chat.completions.create(
-        model="gemma4:e2b",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
+    """One VLM round-trip. Transport failures (timeout, malformed envelope)
+    retry up to cfg vlm.retries times, then raise — never silently degraded.
+    A well-formed response is returned as-is (may be empty: a semantic outcome
+    the callers already handle)."""
+    last_err = None
+    for _ in range(CFG["vlm"]["retries"] + 1):
+        try:
+            agent = _vlm_client().chat.completions.create(
+                model=CFG["vlm"]["model"],
+                messages=[
                     {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{encoded_image}"}
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{encoded_image}"}
+                            }
+                        ],
                     }
-                ],
-            }
-        ]
-    )
-    return agent.choices[0].message.content
+                ]
+            )
+            if not getattr(agent, "choices", None) or agent.choices[0].message is None:
+                raise RuntimeError(f"malformed VLM response: {agent!r:.200}")
+            return agent.choices[0].message.content
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"VLM unreachable after {CFG['vlm']['retries'] + 1} attempts") from last_err
 
 def numpy_to_base64(img, fmt='.png'):
     _, buf = cv2.imencode(fmt, img)

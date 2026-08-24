@@ -9,8 +9,8 @@ from threading import Lock
 import numpy as np
 import rclpy
 import tf2_ros
+from config import CFG
 from tf2_ros import TransformException
-from tf2_ros.transform_listener import TransformListener
 import torch
 from cv_bridge import CvBridge
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
@@ -19,9 +19,8 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.logging import LoggingSeverity
-from sensor_msgs.msg import Image, JointState, PointCloud2
+from sensor_msgs.msg import Image, PointCloud2
 from std_msgs.msg import Bool, String
-from visualization_msgs.msg import MarkerArray
 from geometry_msgs.msg import PoseStamped
 
 # Compat shim for older transforms3d/tf_transformations on NumPy >= 1.24
@@ -31,7 +30,7 @@ if not hasattr(np, "float"):
 from tf_transformations import quaternion_inverse, quaternion_multiply, euler_from_quaternion
 
 import utils
-from cv_utils import _clear_markers, init_bbox_publisher, vlm_call, numpy_to_base64,mask_list_to_centroid_and_bbox, mask_list_to_pointcloud2, publish_individual_pointclouds_by_id
+from cv_utils import _clear_markers, init_bbox_publisher, vlm_call, numpy_to_base64,mask_list_to_centroid_and_bbox, mask_list_to_pointcloud2, publish_individual_pointclouds_by_id, draw_boxes_3d
 from detection_pipeline import DetectionPipelineMixin
 from lost3dsg.msg import Bbox3d, Bbox3dArray, ObjectDescription, ObjectDescriptionArray
 from models import OWLv2, VitSam
@@ -252,6 +251,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             max_points_per_obj=1000,
             publisher=self.pcl_objects_pub,
             labels_publisher=self.pcl_objects_labels_pub,
+            transform=camera_data.get("transform"),   # map frame, like the boxes
         )
 
         if not self.publish_individual_objects:
@@ -274,7 +274,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
     def process_crop_vlm(self, crop_info):
         if crop_info is None:
             return None
-        prompt_path = os.path.join(os.path.dirname(__file__), "visual_prompt.txt")
+        prompt_path = CFG["paths"]["visual_prompt"] or os.path.join(
+            os.path.dirname(__file__), "prompts", "visual_prompt.txt")
         return self.vlm.call_crop_full(prompt_path, crop_info["label"], crop_info["cropped"])
 
     def publish_objects(self):
@@ -308,18 +309,15 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.get_logger().error("Processing interrupted: robot moving during detection")
             return
         if not detections:
+            self._publish_image_with_bb(image_raw, [], [], camera_info, camera_data["transform"], cycle_stamp, depth)
             self.publish_empty_state(depth, camera_info, cycle_stamp)
             return
 
         self._io_executor.submit(self.save_visualizations, image_raw.copy(), depth.copy(), list(detections), PROJECT_ROOT)
-        drawn = draw_detections(image_raw.copy(), detections)
-        img_msg = self.bridge.cv2_to_imgmsg(drawn, "bgr8")
-        img_msg.header.stamp = cycle_stamp
-        img_msg.header.frame_id = camera_info.header.frame_id
-        self.pub_image.publish(img_msg)
 
         self._assign_instance_labels(detections)
         centroids_3d, bboxes_3d = self._compute_3d_geometry(detections, depth, camera_info, camera_data["transform"])
+        self._publish_image_with_bb(image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth)
         crops_data = self.prepare_crops(detections, image_raw, PROJECT_ROOT)
         self.publish_crops(crops_data)
         vlm_results = self._run_crop_vlm_batch(crops_data)
@@ -331,6 +329,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._publish_agent_pose(cycle_stamp)
         self.waiting_for_input = False
         self.log_both("info", "publish_objects completed")
+
+    def _publish_image_with_bb(self, image_raw, detections, bboxes_3d, camera_info, transform, stamp, depth=None):
+        """/image_with_bb shows the 3D boxes projected back into the frame they were
+        measured from, under the same visibility rule as the simulator overlay; the
+        flat 2D rectangle is kept only for detections that got no 3D box. Published
+        on every cycle, empty ones included, so a subscriber that joins late (rviz)
+        sees the latest frame instead of "No image"."""
+        drawn = image_raw.copy()
+        if detections:
+            flat = [det for det, box in zip(detections, bboxes_3d) if not box]
+            if flat:
+                draw_detections(drawn, flat)
+            draw_boxes_3d(drawn, bboxes_3d, [det.instance_label for det in detections], camera_info, transform, depth)
+        img_msg = self.bridge.cv2_to_imgmsg(drawn, "bgr8")
+        img_msg.header.stamp = stamp
+        img_msg.header.frame_id = camera_info.header.frame_id
+        self.pub_image.publish(img_msg)
 
     def _assign_instance_labels(self, detections):
         label_counts = Counter(det.label for det in detections)
@@ -387,7 +402,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             box_msg = Bbox3d()
             box_msg.label = det.instance_label
             for key, value in bbox_3d.items():
-                setattr(box_msg, key, value)
+                # Only copy keys the msg actually has: bbox dicts may carry
+                # extra fields (added before the msg grows a matching one) and
+                # a blind setattr would raise AttributeError on the msg slots.
+                if hasattr(box_msg, key):
+                    setattr(box_msg, key, value)
             msg.boxes.append(box_msg)
         self.bbox_pub.publish(msg)
 
