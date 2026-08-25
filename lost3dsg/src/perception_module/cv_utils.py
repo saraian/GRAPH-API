@@ -687,9 +687,14 @@ _client = None
 
 
 def _resolve_api_key():
-    key = CFG["vlm"]["api_key"] or os.environ.get("OPENAI_API_KEY", "")
+    key = (
+        CFG.get("vlm", {}).get("api_key")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("REGOLO_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY", "")
+    )
     if not key:
-        legacy = os.path.join(os.path.dirname(file_path), "api.txt")
+        legacy = os.path.join(os.path.dirname(__file__), "api.txt")
         if os.path.exists(legacy):
             key = open(legacy).read().strip()
     return key or "ollama"

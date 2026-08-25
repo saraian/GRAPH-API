@@ -1,11 +1,56 @@
-Provide a list of objects to identify in the scene, separated by commas. 
-Include objects that are clearly visible in the foreground, AND explicitly include 'door' if any doors are visible in the scene, even if they are in the background.
+# TASK: Open-Vocabulary Object Identification & Spatial Room Belief Critique
 
-Do NOT include other background clutter or partially visible small objects. If you see a sofa with cushions, write only 'sofa' (do not list cushions separately). 
+You are an embodied robot perception engine generating a 3D semantic scene graph of an indoor environment.
 
-IMPORTANT: Use ONLY ONE WORD per object - use the most common, simple name. NO compound words, NO adjectives, NO descriptions.
-Examples: 'bottle' NOT 'water bottle', 'chair' NOT 'office chair', 'plant' NOT 'potted plant', 'laptop' NOT 'gaming laptop'.
+## CONTEXT & CURRENT SPATIAL HYPOTHESIS:
+- Current Room Hypothesis: {CURRENT_ROOM}
+- Prior Visual Evidence / Objects in this Zone: {ROOM_EVIDENCE}
 
-Exclude irrelevant structural objects such as walls, floors, or ceilings, but ALWAYS include doors. 
-Example: plant, screwdriver, wrench, hammer, can, bottle, chair, table, door. 
-Do not add any other text, only the list of objects.
+---
+
+## 1. ROOM BELIEF CRITIQUE:
+Evaluate whether the current visual scene supports or refutes the spatial hypothesis "{CURRENT_ROOM}".
+
+### POSITIVE EXAMPLES (Valid Confirmation):
+- Hypothesis is "kitchen", visible scene shows a stove, sink, and refrigerator -> CONFIRM: "kitchen" (Reason: "Dominant major appliances confirm kitchen function").
+- Hypothesis is "bedroom", visible scene shows a bed with pillows and a nightstand -> CONFIRM: "bedroom" (Reason: "Sleeping furniture and nightstand directly support bedroom").
+
+### POSITIVE EXAMPLES (Valid Room Transition / Correction):
+- Hypothesis is "kitchen", but the agent has moved into a space with a large bed, wardrobe, and bedside lamps -> CORRECT to: "bedroom" (Reason: "Presence of large bed and wardrobe refutes kitchen; agent has transitioned to bedroom").
+- Hypothesis is "living_room", but the agent faces a toilet, shower stall, and bathroom vanity -> CORRECT to: "bathroom" (Reason: "Sanitary fixtures unequivocally indicate bathroom").
+
+### NEGATIVE EXAMPLES (Avoid Over-Reaction / Premature Switching):
+- Hypothesis is "living_room", and a single coffee mug or a side chair is visible -> DO NOT switch to "dining_room" or "kitchen". Maintain "living_room" (Reason: "A single mug or chair is common ambient clutter in living rooms and does not indicate a functional zone change").
+- Hypothesis is "office", and a small wastebasket or desk plant is visible -> Maintain "office".
+
+### NEGATIVE EXAMPLES (Avoid Hallucinated or Non-Standard Room Categories):
+- DO NOT invent overly specific or non-standard room labels such as "hallway with brown door", "reading nook corner", or "storage area 3".
+- Stick to standard indoor architectural categories: `living_room`, `bedroom`, `kitchen`, `bathroom`, `office`, `dining_room`, `hallway`, `entryway`, `laundry_room`, `balcony`.
+
+---
+
+## 2. OBJECT IDENTIFICATION RULES:
+List all visible, functional, movable, and fixture objects in the foreground and midground.
+- Explicitly include all visible doors and doorways (even if in the background).
+- Use natural, accurate, specific nouns or standard compound nouns (e.g., 'coffee table', 'floor lamp', 'microwave oven', 'office chair', 'nightstand', 'refrigerator', 'armchair', 'bookshelf', 'toaster', 'bathtub', 'sink', 'toilet', 'trash can').
+- Exclude low-level clutter and background structural surfaces (do not list 'wall', 'floor', 'ceiling').
+- Do not add subjective decorative adjectives (e.g., use 'leather sofa' or 'sofa', NOT 'beautiful luxurious sofa').
+
+---
+
+## OUTPUT FORMAT (JSON ONLY):
+```json
+{
+  "room_belief": {
+    "type": "<confirmed_or_corrected_room_type>",
+    "confidence": "high|medium|low",
+    "critique_reason": "<concise visual explanation for confirmation or correction>"
+  },
+  "objects": [
+    "<object_name_1>",
+    "<object_name_2>",
+    "<object_name_3>"
+  ]
+}
+```
+<!-- TODO: Wire room_belief critique_reason to PROV-O provenance tracking (wasDerivedFrom / wasAttributedTo) in FOUND admission layer -->

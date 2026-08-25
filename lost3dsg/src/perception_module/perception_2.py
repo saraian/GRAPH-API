@@ -1,45 +1,63 @@
 #!/usr/bin/env python3
+import json
 import logging
 import os
+import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from threading import Lock
 
-import numpy as np
-import rclpy
-import tf2_ros
-from config import CFG
-from tf2_ros import TransformException
-import torch
-from cv_bridge import CvBridge
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
-from rclpy.duration import Duration
-from rclpy.executors import MultiThreadedExecutor
-from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile
-from rclpy.logging import LoggingSeverity
-from sensor_msgs.msg import Image, PointCloud2
-from std_msgs.msg import Bool, String
-from geometry_msgs.msg import PoseStamped
+# Ensure local sibling packages and directories (e.g. cloud/) are on sys.path
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+import rclpy  # noqa: E402
+import tf2_ros  # noqa: E402
+import torch  # noqa: E402
+from config import CFG  # noqa: E402
+from cv_bridge import CvBridge  # noqa: E402
+from geometry_msgs.msg import PoseStamped  # noqa: E402
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup  # noqa: E402
+from rclpy.duration import Duration  # noqa: E402
+from rclpy.executors import MultiThreadedExecutor  # noqa: E402
+from rclpy.logging import LoggingSeverity  # noqa: E402
+from rclpy.node import Node  # noqa: E402
+from rclpy.qos import DurabilityPolicy, QoSProfile  # noqa: E402
+from sensor_msgs.msg import Image, PointCloud2  # noqa: E402
+from std_msgs.msg import Bool, String  # noqa: E402
+from tf2_ros import TransformException  # noqa: E402
 
 # Compat shim for older transforms3d/tf_transformations on NumPy >= 1.24
 if not hasattr(np, "float"):
     np.float = float  # type: ignore[attr-defined]
 
-from tf_transformations import quaternion_inverse, quaternion_multiply, euler_from_quaternion
+import utils  # noqa: E402
+from cloud import get_perception_backend  # noqa: E402
+from cv_utils import (  # noqa: E402
+    _clear_markers,
+    draw_boxes_3d,
+    init_bbox_publisher,
+    mask_list_to_centroid_and_bbox,
+    mask_list_to_pointcloud2,
+    numpy_to_base64,
+    publish_individual_pointclouds_by_id,
+    vlm_call,
+)
+from detection_pipeline import DetectionPipelineMixin  # noqa: E402
+from input_output import PerceptionIOMixin  # noqa: E402
+from models import OWLv2, VitSam  # noqa: E402
+from object_info import Object  # noqa: E402
+from perception_utils import compute_fov_volume_from_depth, get_project_root  # noqa: E402
+from tf_transformations import euler_from_quaternion, quaternion_inverse, quaternion_multiply  # noqa: E402
+from utils import draw_detections  # noqa: E402
+from vlm_call import VlmClient  # noqa: E402
+from world_model import wm  # noqa: E402
 
-import utils
-from cv_utils import _clear_markers, init_bbox_publisher, vlm_call, numpy_to_base64,mask_list_to_centroid_and_bbox, mask_list_to_pointcloud2, publish_individual_pointclouds_by_id, draw_boxes_3d
-from detection_pipeline import DetectionPipelineMixin
-from lost3dsg.msg import Bbox3d, Bbox3dArray, ObjectDescription, ObjectDescriptionArray
-from models import OWLv2, VitSam
-from object_info import Object
-from perception_utils import compute_fov_volume_from_depth, get_project_root
-from input_output import PerceptionIOMixin
-from vlm_call import VlmClient
-from world_model import wm
-from utils import draw_detections
+from lost3dsg.msg import Bbox3d, Bbox3dArray, ObjectDescription, ObjectDescriptionArray  # noqa: E402
 
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
@@ -61,6 +79,18 @@ else:
 
 DESCRIPTION_FIELDS = ("description", "color", "material", "shape")
 
+# ponytail: fixed cap for images sent to the VLM; make it a CFG["vlm"] knob if a
+# model ever needs finer input. The base64 payload dominates vlm_ms, not the answer.
+VLM_IMAGE_MAX_SIDE = 512
+
+
+def _encode_for_vlm(img):
+    h, w = img.shape[:2]
+    scale = VLM_IMAGE_MAX_SIDE / float(max(h, w))
+    if scale < 1.0:
+        img = cv2.resize(img, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
+    return numpy_to_base64(img)
+
 
 class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
     LOG_METHODS = {
@@ -80,9 +110,16 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.file_logger.info("=== DetectObjectsNode initialized ===")
 
         self.bridge = CvBridge()
-        self.detector = OWLv2()
-        self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
-        self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=numpy_to_base64)
+        self.perception_backend = get_perception_backend(CFG)
+        backend_type = CFG.get("perception", {}).get("backend", "local").lower()
+        if backend_type == "local":
+            self.detector = OWLv2()
+            self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
+        else:
+            self.detector = None
+            self.vitsam = None
+            self.file_logger.info(f"Using Cloud Perception Backend: {backend_type}")
+        self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=_encode_for_vlm)
 
         self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -276,7 +313,27 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             return None
         prompt_path = CFG["paths"]["visual_prompt"] or os.path.join(
             os.path.dirname(__file__), "prompts", "visual_prompt.txt")
-        return self.vlm.call_crop_full(prompt_path, crop_info["label"], crop_info["cropped"])
+        yaw = crop_info.get("yaw", 0.0)
+        distance = crop_info.get("distance", 1.0)
+        image_id = crop_info.get("image_id", "")
+        return self.vlm.call_crop_full(
+            prompt_path, crop_info["label"], crop_info["cropped"],
+            yaw=yaw, distance=distance, image_id=image_id
+        )
+
+    # -------------------------------------------------------------------------
+    # TODO (Lazy Two-Stage Crop Refinement & Property Separation):
+    # - Stage 1 (Hot Detection Cycle): Detector produces primary class noun (e.g. "chair").
+    # - Stage 2 (Lazy on Admission/Ambiguity): When an object is admitted or contested
+    #   by the ontological layer (found.admission), trigger this asynchronous crop VLM
+    #   query to refine the noun (e.g. "office chair") and extract extended traits.
+    # - Standard properties ("color", "material", "shape", "description") remain in the
+    #   primary metadata schema, while extended attributes ("style", "affordances", "state")
+    #   populate the instance attribute set for deep ontological alignment.
+    # -------------------------------------------------------------------------
+    def lazy_refine_object_crop(self, obj, crop_image):
+        """Asynchronous / Lazy refinement of object semantics and attributes."""
+        pass
 
     def publish_objects(self):
         self.processing_interrupted = False
@@ -317,9 +374,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
         self._assign_instance_labels(detections)
         centroids_3d, bboxes_3d = self._compute_3d_geometry(detections, depth, camera_info, camera_data["transform"])
+        self._add_pca_orientation(detections, bboxes_3d, depth, camera_info, camera_data["transform"])
         self._publish_image_with_bb(image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth)
         crops_data = self.prepare_crops(detections, image_raw, PROJECT_ROOT)
         self.publish_crops(crops_data)
+        self._attach_crop_embeddings(detections, crops_data)
         vlm_results = self._run_crop_vlm_batch(crops_data)
         descriptions = self._build_descriptions(detections, vlm_results)
         self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp)
@@ -366,29 +425,89 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             transform=transform,
         )
 
+    def _attach_crop_embeddings(self, detections, crops_data):
+        """CLIP image embedding per object, reusing the OWLv2 backbone already on
+        the GPU (OWLv2 is CLIP-based) — no extra model load. Sets det.clip_embedding
+        and queues the per-cycle sidecar dump (output/clip_embeddings.json)."""
+        # If detections already have clip_embedding from cloud backend, dump and return
+        if any(getattr(d, "clip_embedding", None) is not None for d in detections):
+            snapshot = {det.instance_label: det.clip_embedding for det in detections if getattr(det, "clip_embedding", None)}
+            if snapshot:
+                self._io_executor.submit(self.write_clip_embeddings, snapshot)
+            return
+
+        if not self.detector:
+            return
+
+        valid = [c for c in crops_data if c is not None]
+        embeddings = {}
+        if valid:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                images = [cv2.cvtColor(c["cropped"], cv2.COLOR_BGR2RGB) for c in valid]
+                inputs = self.detector.processor(images=images, return_tensors="pt")
+                pixel_values = inputs["pixel_values"].to(self.detector.device)
+                with torch.inference_mode():
+                    feats = self.detector.model.owlv2.get_image_features(pixel_values=pixel_values)
+                # transformers returns a tensor or BaseModelOutputWithPooling depending on version
+                if not torch.is_tensor(feats):
+                    feats = feats.pooler_output
+                feats = torch.nn.functional.normalize(feats, dim=-1).cpu().numpy()
+                embeddings = {c["idx"]: [round(float(v), 5) for v in feats[i]] for i, c in enumerate(valid)}
+            except Exception as exc:
+                self.log_both("warn", f"Crop embedding computation failed: {exc}")
+            finally:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        for idx, det in enumerate(detections):
+            det.clip_embedding = embeddings.get(idx)
+
+        snapshot = {det.instance_label: det.clip_embedding for det in detections if det.clip_embedding}
+        if snapshot:
+            self._io_executor.submit(self.write_clip_embeddings, snapshot)
+
+    def write_clip_embeddings(self, embeddings):
+        path = os.path.join(PROJECT_ROOT, "output", "clip_embeddings.json")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(embeddings, f)
+        except Exception as exc:
+            self.log_both("error", f"CLIP embedding dump failed: {exc}")
+
     def _run_crop_vlm_batch(self, crops_data):
         results = {}
         valid_crops = [crop for crop in crops_data if crop is not None]
         if not valid_crops:
             return results
 
-        max_workers = min(4, len(valid_crops))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        concurrency = int(CFG.get("vlm", {}).get("crop_concurrency", 4))
+        max_workers = min(concurrency, len(valid_crops))
+        timeout = float(CFG.get("vlm", {}).get("crop_timeout", 15.0))
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="crop_vlm") as executor:
             futures = {executor.submit(self.process_crop_vlm, crop): crop["label"] for crop in valid_crops}
             for future in as_completed(futures):
                 label = futures[future]
                 try:
-                    results[label] = future.result() or {}
+                    results[label] = future.result(timeout=timeout) or {}
                 except Exception as exc:
                     self.get_logger().error(f"Crop VLM future failed for {label}: {exc}")
                     results[label] = {}
         return results
 
     def _build_descriptions(self, detections, vlm_results):
-        return [
-            {field: (vlm_results.get(det.instance_label, {}) or {}).get(field, "unknown") for field in DESCRIPTION_FIELDS}
-            for det in detections
-        ]
+        descriptions = []
+        for det in detections:
+            res = (vlm_results.get(det.instance_label, {}) or {})
+            d = {field: res.get(field, "unknown") for field in DESCRIPTION_FIELDS}
+            d["confirmed"] = getattr(det, "is_confirmed", True)
+            if "provenance" in res:
+                d["provenance"] = res["provenance"]
+            descriptions.append(d)
+        return descriptions
 
     def _publish_bbox_array(self, detections, bboxes_3d, fov_volume, cycle_stamp):
         msg = self.make_header_msg(Bbox3dArray, stamp=cycle_stamp, frame_id="map")
@@ -423,7 +542,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
     def _update_world_model(self, detections, centroids_3d, bboxes_3d, descriptions):
         wm.actual_perceptions.clear()
         for det, centroid, bbox, desc in zip(detections, centroids_3d, bboxes_3d, descriptions):
-            wm.add_actual_perception(Object(det.label, centroid, bbox, **desc))
+            obj = Object(det.label, centroid, bbox, **desc)
+            # distinct from obj.embedding (the 300-d word2vec description vector)
+            obj.clip_embedding = getattr(det, "clip_embedding", None)
+            wm.add_actual_perception(obj)
 
     def _publish_agent_pose(self, cycle_stamp):
         try:
