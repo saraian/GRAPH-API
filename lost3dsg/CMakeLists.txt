@@ -49,6 +49,7 @@ install(PROGRAMS
   src/perception_module/room_manager.py
   src/perception_module/habitat_camera_node.py
   src/perception_module/habitat_feed_node.py
+  src/perception_module/graph_api_bridge.py
   src/perception_module/walls_rooms.py
   src/perception_module/vlm_call.py
   # sibling modules the nodes import at runtime — without these the installed
@@ -78,6 +79,10 @@ install(FILES
   DESTINATION lib/${PROJECT_NAME}/prompts
 )
 install(DIRECTORY src/perception_module/viewer
+  DESTINATION lib/${PROJECT_NAME}
+)
+# `cloud` perception backend package imported by perception_2.py
+install(DIRECTORY src/perception_module/cloud
   DESTINATION lib/${PROJECT_NAME}
 )
 # vendored library imported by models.py (VitSam preprocessing)

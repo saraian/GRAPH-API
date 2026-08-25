@@ -19,6 +19,8 @@ _DEFAULTS = {
         "api_key": "",
         "timeout": 30.0,
         "retries": 2,
+        "crop_concurrency": 4,
+        "crop_timeout": 15.0,
         # non-empty -> detection falls back to this static label list (with a
         # warning) when the VLM is unreachable, instead of failing the cycle
         "fallback_labels": [],
@@ -42,6 +44,8 @@ _DEFAULTS = {
         # tracking-mode match gate: candidates farther than this (bbox centres)
         # are never merged. 0 = disabled (historical behaviour)
         "max_match_distance_m": 0.0,
+        # moving-pass proposals cannot mutate or fuse into established boxes
+        "confirm_stationary": True,
     },
     "frames": {
         # The frame the perception back-projects into. Must be an OPTICAL frame
@@ -81,6 +85,10 @@ _DEFAULTS = {
         # storeys, and HM3D navmeshes join them through the stairs
         "single_floor": True,
         "floor_tolerance_m": 0.5,
+        "mapping_seconds": 150.0,
+        "walk_frames": 6,
+        "dwell_frames": 60,
+        "fps": 3.0,
     },
     # extension seam (see hooks.py): empty = the pass-through blueprints
     "hooks": {
@@ -89,6 +97,15 @@ _DEFAULTS = {
         "refiner": "",
         "store": "",           # subclass of hooks.Store; empty -> SQLite temporal map
         "decisions_log": "",   # empty -> <package>/output/hook_decisions.jsonl
+    },
+    "perception": {
+        "backend": "local",  # "modal", "managed", "local"
+        "modal_endpoint": "",  # e.g. "https://<user>--lost3dsg-perception-predict.modal.run"
+        "score_threshold": 0.15,
+        "nms_threshold": 0.50,
+        "reachability_strict": False,
+        # allow detection passes while moving, proposals marked as unconfirmed
+        "detect_while_moving": False,
     },
 }
 

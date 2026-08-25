@@ -57,6 +57,10 @@ habitat:
   # storeys and HM3D navmeshes join them through the stairs (goal filter on height)
   single_floor: true
   floor_tolerance_m: 0.5
+  mapping_seconds: 150.0   # initial continuous mapping coverage duration (seconds)
+  walk_frames: 6          # frames moving per burst
+  dwell_frames: 60        # frames stationary / dwelling for 3D perception
+  fps: 3.0                # simulator framerate
 
 hooks:
   # extension seam (hooks.py): admission Filter / node Refiner loaded from another
@@ -66,3 +70,9 @@ hooks:
   refiner: ""             # "pkg.module:ClassName", subclass of hooks.Refiner
   store: ""               # "pkg.module:ClassName", subclass of hooks.Store; empty = SQLite map
   decisions_log: ""       # JSONL of decisions/revisions; empty -> output/hook_decisions.jsonl
+
+perception:
+  backend: "local"        # "modal" | "managed" | "local"
+  modal_endpoint: "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
+  score_threshold: 0.15
+  nms_threshold: 0.50
