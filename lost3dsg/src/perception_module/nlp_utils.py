@@ -3,30 +3,85 @@ import re
 
 import numpy as np
 import webcolors
-
 from config import CFG
 
-
 EMBEDDING_MODEL = "text-embedding-3-small"
+_EMB_CACHE = {}
 
 
-def _load_word2vec():
-    # Loaded once here; object_manager_6 / object_services pick it up via
-    # their star imports instead of each loading their own copy.
-    from gensim.models import KeyedVectors
-    path = CFG["embedding"]["word2vec_path"]
-    limit = CFG["embedding"]["word2vec_limit"]
-    if os.path.exists(path):
-        return KeyedVectors.load_word2vec_format(path, binary=True, limit=limit)
-    print(f"[WARN] word2vec not found at {path}; downloading via gensim (once, cached)")
-    import gensim.downloader
-    return gensim.downloader.load("word2vec-google-news-300")
+class SemanticEmbedder:
+    """High-accuracy semantic similarity encoder using sentence-transformers or word2vec."""
+
+    def __init__(self):
+        self.st_model = None
+        self.w2v_model = None
+
+        # 1. Try SentenceTransformer (high accuracy, handles any open-vocabulary phrase)
+        try:
+            from sentence_transformers import SentenceTransformer
+            cache_folder = os.environ.get("HF_HOME") or "/models/hf"
+            self.st_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", cache_folder=cache_folder)
+            print("[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅")
+            return
+        except Exception:
+            pass
+
+        # 2. Fallback to Word2Vec KeyedVectors
+        try:
+            from gensim.models import KeyedVectors
+            path = CFG.get("embedding", {}).get("word2vec_path", "")
+            limit = CFG.get("embedding", {}).get("word2vec_limit", 200000)
+            if path and os.path.exists(path):
+                self.w2v_model = KeyedVectors.load_word2vec_format(path, binary=True, limit=limit)
+                print(f"[NLP] Loaded Word2Vec from {path} ✅")
+        except Exception as exc:
+            print(f"[NLP] Word2Vec fallback notice: {exc}")
+
+    def encode(self, text: str):
+        text = text.lower().strip()
+        if text in _EMB_CACHE:
+            return _EMB_CACHE[text]
+
+        if self.st_model is not None:
+            try:
+                emb = self.st_model.encode(text)
+                norm = np.linalg.norm(emb)
+                if norm > 0:
+                    emb = emb / norm
+                _EMB_CACHE[text] = emb
+                return emb
+            except Exception:
+                pass
+
+        if self.w2v_model is not None:
+            words = text.replace("_", " ").split()
+            vectors = [self.w2v_model[w] for w in words if w in self.w2v_model]
+            if vectors:
+                emb = np.mean(vectors, axis=0)
+                norm = np.linalg.norm(emb)
+                if norm > 0:
+                    emb = emb / norm
+                _EMB_CACHE[text] = emb
+                return emb
+
+        return None
+
+    def similarity(self, text1: str, text2: str) -> float:
+        t1, t2 = text1.lower().strip(), text2.lower().strip()
+        if t1 == t2:
+            return 1.0
+        v1 = self.encode(t1)
+        v2 = self.encode(t2)
+        if v1 is None or v2 is None:
+            return 0.0
+        return max(0.0, float(np.dot(v1, v2)))
 
 
-world2vec = _load_word2vec()
+world2vec = SemanticEmbedder()
+
 
 def semantic_similarity(word2vec_model, word1: str, word2: str) -> float:
-    """Calculate semantic similarity between two words using Word2Vec."""
+    """Calculate semantic similarity between two words/phrases."""
     word1 = word1.lower().strip()
     word2 = word2.lower().strip()
 
@@ -35,6 +90,9 @@ def semantic_similarity(word2vec_model, word1: str, word2: str) -> float:
 
     if word2vec_model is None:
         return 0.0
+
+    if isinstance(word2vec_model, SemanticEmbedder):
+        return word2vec_model.similarity(word1, word2)
 
     try:
         def get_phrase_vector(phrase):
@@ -80,7 +138,7 @@ def color_name_to_rgb(color_name: str) -> tuple:
         # Try with webcolors (supports standard CSS names)
         rgb = webcolors.name_to_rgb(color_name)
         return (rgb.red / 255.0, rgb.green / 255.0, rgb.blue / 255.0)
-    except:
+    except Exception:
         pass
 
     # Fallback: basic color dictionary
