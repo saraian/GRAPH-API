@@ -14,7 +14,11 @@ cd /ws
 colcon build --packages-select lost3dsg --cmake-args -DCMAKE_BUILD_TYPE=Release
 source /ws/install/setup.bash
 
-echo ">>> [2/5] msg has the PCA fields"
+echo ">>> [2/5] PCA fields ride the bbox dicts (detection_pipeline self-check)"
+# Bbox3d.msg stays AABB-only by design — yaw/oriented_* travel in the bbox dicts;
+# the pipeline's __main__ asserts them (and isotropic -> omitted).
+export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/smoke_config.yaml
+python3 /ws/install/lost3dsg/lib/lost3dsg/detection_pipeline.py
 
 echo ">>> [3/5] tiny word2vec for import smoke"
 python3 - <<'PY'
@@ -31,7 +35,6 @@ print(f"    {len(words)} words written")
 PY
 
 echo ">>> [4/5] import every node module from the installed tree"
-export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/smoke_config.yaml
 cd /ws/install/lost3dsg/lib/lost3dsg
 for m in config vlm_call nlp_utils world_model object_info map_database \
          utils cv_utils detection_types detection_pipeline perception_utils \
@@ -39,8 +42,6 @@ for m in config vlm_call nlp_utils world_model object_info map_database \
          perception_2 models query_map; do
   python3 -c "import $m" && echo "    import $m OK" || { echo "!! import $m FAILED"; exit 1; }
 done
-python3.py
-python3 config.py
 
 echo ">>> [5/5] object_manager_6 stays alive for 10 s"
 timeout 10 ros2 run lost3dsg object_manager_6.py > /tmp/om6_smoke.log 2>&1 && rc=$? || rc=$?

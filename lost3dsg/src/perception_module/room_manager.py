@@ -229,9 +229,11 @@ class RoomManager:
             return
 
         try:
-            points = np.asarray(
-                list(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True)),
-                dtype=np.float64)
+            raw_pts = list(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True))
+            if raw_pts:
+                points = np.array([[float(p[0]), float(p[1]), float(p[2])] for p in raw_pts], dtype=np.float64)
+            else:
+                points = np.empty((0, 3), dtype=np.float64)
         except Exception as exc:
             self._log('warn', f'Failed to parse 3D cloud: {exc}')
             return
@@ -1069,10 +1071,11 @@ class RoomManager:
         try:
             from openai import OpenAI
 
-            model_name = os.environ.get("ROOM_VLM_MODEL", "gemma4:e2b")
+            from config import CFG
+            model_name = os.environ.get("ROOM_VLM_MODEL", CFG["vlm"]["model"])
             client = OpenAI(
-                base_url="http://localhost:11434/v1",
-                api_key="ollama",
+                base_url=CFG["vlm"]["base_url"],
+                api_key=CFG["vlm"]["api_key"] or os.environ.get("OPENAI_API_KEY", "ollama"),
             )
 
             text_prompt = (
@@ -1095,7 +1098,7 @@ class RoomManager:
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": content}],
-                timeout=15.0
+                timeout=CFG["vlm"]["timeout"]
             )
 
             raw_content = (response.choices[0].message.content or "").strip()

@@ -10,3 +10,7 @@ log/
 utils/
 tiago_habitat/
 lost3dsg/word2vec-google-news-300/
+.codegraph/
+.handoff/
+*.pdf
+.pytest_cache/

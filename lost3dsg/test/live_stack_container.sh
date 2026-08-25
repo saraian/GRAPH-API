@@ -24,16 +24,32 @@ kv.add_vectors(words, np.random.default_rng(0).normal(size=(len(words), 32)).ast
 kv.save_word2vec_format("/tmp/smoke_w2v.bin", binary=True)
 PY
 
-export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/smoke_config.yaml
+# CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set)
+export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/${CFG_NAME:-smoke_config.yaml}
 export GRAPH_API_OUTPUT_DIR=/ws/output
-mkdir -p /ws/output /out
+LOG_DIR=/ws/output/logs
+mkdir -p "$LOG_DIR" /ws/output/crops /ws/output/snapshots /out
+
+# Ensure logs stream directly to the persistent host-mounted volume
+touch "$LOG_DIR/feed_node.log" "$LOG_DIR/rtabmap.log" "$LOG_DIR/om6.log" "$LOG_DIR/bridge.log" "$LOG_DIR/perception.log" "$LOG_DIR/saver.log"
+ln -sfn "$LOG_DIR/feed_node.log" /tmp/feed_node.log
+ln -sfn "$LOG_DIR/rtabmap.log" /tmp/rtabmap.log
+ln -sfn "$LOG_DIR/om6.log" /tmp/om6.log
+ln -sfn "$LOG_DIR/bridge.log" /tmp/bridge.log
+ln -sfn "$LOG_DIR/perception.log" /tmp/perception.log
+ln -sfn "$LOG_DIR/saver.log" /tmp/saver.log
+
+container_exit_cleanup() {
+  cp /tmp/*.log "$LOG_DIR/" 2>/dev/null || true
+}
+trap container_exit_cleanup EXIT
 
 # Occupancy-grid hygiene. rtabmap's defaults put floor, ceiling and far depth
 # into the grid (whole rooms painted as obstacles). Heights are relative to
 # base_link, which sits on the floor; the camera is 1.5 m up, ceilings ~2.7 m.
 RTABMAP_GRID_ARGS=${RTABMAP_GRID_ARGS:-"--Grid/NormalsSegmentation false --Grid/MaxGroundHeight 0.25 --Grid/MaxObstacleHeight 1.8 --Grid/RangeMax 4.0 --Grid/RayTracing true --Grid/NoiseFilteringRadius 0.1 --Grid/NoiseFilteringMinNeighbors 5 --Grid/CellSize 0.05"}
 
-echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> web viewer :8080)"
+echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> web viewer :8081)"
 ros2 run lost3dsg habitat_feed_node.py > /tmp/feed_node.log 2>&1 &
 # same rtabmap arguments as launch/habitat_launch.py (odometry from /odom, no TF publish)
 ros2 launch rtabmap_launch rtabmap.launch.py visual_odometry:=false odom_topic:=/odom \

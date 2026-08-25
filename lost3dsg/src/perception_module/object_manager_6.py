@@ -76,7 +76,8 @@ log_dir = os.path.join(PROJECT_ROOT, "output")
 os.makedirs(log_dir, exist_ok=True)
 SYNTHETIC_LOG_FILE = os.path.join(log_dir, "operations.txt")
 AGENT_POSES_LOG_FILE = os.path.join(log_dir, "agent_poses.json")
-GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL", "http://127.0.0.1:8080")
+# must match the bridge's own default (BRIDGE_PORT=8081); :8080 is the FOUND dashboard server
+GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL", "http://127.0.0.1:8081")
 GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
 GRAPH_API_AUTOSTART = os.environ.get("GRAPH_API_AUTOSTART", "1").lower() not in {"0", "false", "no"}
 SYNC_BUFFER_LIMIT = 20
@@ -870,8 +871,14 @@ class ObjectManagerService(Node):
                         if similarity > SIM_THRESHOLD and iou >= EXPLORATION_IOU_THRESHOLD:
                             already_seen = True
                             current_perception_objects.append(obj)
-                            obj.bbox = bbox
-                            objects_modified = True
+                            # Guard: moving-pass detections must not mutate established boxes under confirm_stationary
+                            confirm_stationary = CFG.get("association", {}).get("confirm_stationary", True)
+                            is_moving = getattr(self.object_services, "is_moving", False)
+                            if not confirm_stationary or not is_moving:
+                                obj.bbox = bbox
+                                objects_modified = True
+                            else:
+                                self.object_services.log_both('debug', f"[MOVING PASS] Matched '{obj.label}' — keeping established bbox (confirm_stationary)")
                             break
 
             else:
@@ -911,7 +918,12 @@ class ObjectManagerService(Node):
 
                 if best_match:
                     already_seen = True
-                    update_response = self.modify_existing_object(best_match, bbox, description_embedding)
+                    confirm_stationary = CFG.get("association", {}).get("confirm_stationary", True)
+                    is_moving = getattr(self.object_services, "is_moving", False)
+                    target_bbox = best_match.bbox if (confirm_stationary and is_moving and best_match.bbox is not None) else bbox
+                    if confirm_stationary and is_moving and best_match.bbox is not None:
+                        self.object_services.log_both('debug', f"[MOVING PASS] Tracking update for '{best_match.label}' preserving established bbox (confirm_stationary)")
+                    update_response = self.modify_existing_object(best_match, target_bbox, description_embedding)
                     if update_response.success:
                         matching_obj = next(
                             (o for o in wm.persistent_perceptions

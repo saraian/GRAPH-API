@@ -52,7 +52,7 @@ mapping phase, then walk/dwell detection) and the container stack: feed node →
 (RELIABLE QoS on rgb/depth/camera_info/odom and an `odom->base_link` TF are required,
 or rtabmap silently receives nothing) → perception → object manager → web viewer.
 
-Watch: **http://localhost:8080** (viewer), `./view_rviz.sh` (rviz in a sibling
+Watch: **http://localhost:8081** (viewer), `./view_rviz.sh` (rviz in a sibling
 container), snapshots and logs in `$OUT_DIR` (default `/tmp/graphapi_live`).
 
 Useful env overrides (defaults in the script): `HM3D_ROOT`, `HABITAT_SCENE`,
