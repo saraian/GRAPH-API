@@ -123,8 +123,14 @@ echo "    feed host up"
 MON_PID=$!
 
 echo ">>> ROS stack in container (web viewer -> http://localhost:8081)"
+export FOUND_ENFORCE="${FOUND_ENFORCE:-0}"
+export FOUND_ROOM_ENFORCE="${FOUND_ROOM_ENFORCE:-0}"
+export FOUND_STORE_PATH="${FOUND_STORE_PATH:-/ws/output/knowledge_graph.ttl}"
+export FOUND_SCENE="${FOUND_SCENE:-$SCENE_ARG}"
+
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
   -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL \
+  -e FOUND_ENFORCE -e FOUND_ROOM_ENFORCE -e FOUND_STORE_PATH -e FOUND_SCENE \
   -v "$REPO":/graph_api:ro \
   -v /DATA/FOUND:/found \
   -v "$RUN_DIR":/ws/output \

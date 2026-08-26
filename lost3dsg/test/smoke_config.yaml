@@ -44,6 +44,10 @@ habitat:
   dwell_frames: 60       # frames stationary for perception
   fps: 3.0
 
+hooks:
+  search_paths: ["/found"]
+  filter: "found.filter:OntologicalFilter"
+
 perception:
   backend: "modal"
   modal_endpoint: "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
