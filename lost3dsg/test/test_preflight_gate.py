@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -160,6 +161,65 @@ def test_a5_checks_the_scratch_directory_not_only_the_bundle():
         os.remove(old_json)
         ok, d = g.a5_bundle_clean(run, start, scratch)
         check(ok is True, f"a stale file that is never archived must NOT fail the gate: {d}")
+
+
+# --- a4: the two failure directions are not the same finding -------------------------------
+# Measured on the first gated run: attempt 1 timed out, attempt 2 returned in 20.5 s against a
+# remote backend. That is a cold start. The fault a4 was built for is the OPPOSITE order — the
+# CLIP text head built on the first call and never reused, so the service answered once and
+# 500'd after. Both fail the run; conflating them sends the operator to widen a timeout when
+# the finding was a broken service, or to restart a service when it only needed warming.
+def test_a4_tells_a_cold_start_apart_from_the_serve_once_fault():
+    """Runs the real probe with the two container-only imports stubbed, so the branch logic
+    is exercised rather than described."""
+    fake_cfg = types.ModuleType("config")
+    fake_cfg.CFG = {}
+    fake_client = types.ModuleType("cloud.client")
+    fake_cloud = types.ModuleType("cloud")
+    fake_cloud.client = fake_client
+
+    def with_pattern(results):
+        """results[i] False -> that attempt raises."""
+        seq = iter(results)
+
+        class Stub:
+            def detect_and_segment(self, frame, labels):
+                if not next(seq):
+                    raise TimeoutError("The read operation timed out")
+
+        fake_client.get_perception_backend = lambda cfg: Stub()
+        saved = {k: sys.modules.get(k) for k in ("config", "cloud", "cloud.client")}
+        sys.modules.update({"config": fake_cfg, "cloud": fake_cloud,
+                            "cloud.client": fake_client})
+        try:
+            return g.a4_perception_twice()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    ok, d = with_pattern([True, True])
+    check(ok is True, f"two good calls pass: {d}")
+
+    # The fault a4 was built for: answers once, fails after.
+    ok, d = with_pattern([True, False])
+    check(ok is False, "serve-once must fail")
+    check("exists for" in d["why"], d)
+
+    # The opposite order, measured on the first gated run: attempt 1 timed out, attempt 2
+    # returned in 20.5 s from a remote backend. Still refused -- a run whose first frames time
+    # out is not a run -- but the remedy is to warm it, not to restart a broken service.
+    ok, d = with_pattern([False, True])
+    check(ok is False, "a cold start must still refuse the run")
+    check("WARM THE BACKEND" in d["why"], d)
+    check("Do not widen the timeout" in d["why"],
+          "one sample must not become a timeout change")
+
+    ok, d = with_pattern([False, False])
+    check(ok is False, "neither call answered")
+    check("unreachable, not cold" in d["why"], d)
 
 
 # --- a7: an expectation that never arrived asserts nothing ---------------------------------

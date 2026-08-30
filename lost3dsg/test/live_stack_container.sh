@@ -24,6 +24,17 @@ kv.add_vectors(words, np.random.default_rng(0).normal(size=(len(words), 32)).ast
 kv.save_word2vec_format("/tmp/smoke_w2v.bin", binary=True)
 PY
 
+# The KG aligner's bridge, and the model cache. found/kg_align.py inserts KG_BRIDGE_SRC
+# (default /DATA/ASPIRE/knowledge_bridge, a HOST path that does not exist in here) and then
+# imports knowledge_bridge.alignment.embedder. Without /kb on the path that raises, and the
+# perception node dies when it loads the hook. Without HF_HOME the in-container default points
+# at a host path that does not exist here, so MiniLM is re-fetched from the hub every run.
+#
+# This hunk was marked "port" in the lane's own plan and was not ported. The first gated run
+# found it: a1 could not import `found` and reported it as a probe fault.
+export PYTHONPATH=/kb:${PYTHONPATH}
+export HF_HOME=/found/.hf_cache
+
 # CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).
 # No default. This line used to read ${CFG_NAME:-smoke_config.yaml}, and because
 # live_run.sh assigned CFG_NAME without exporting it, `docker run -e CFG_NAME`

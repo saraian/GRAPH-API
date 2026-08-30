@@ -329,6 +329,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e PREFLIGHT_EXPECT_CFG_SHA -e PREFLIGHT_EXPECT_MERGED_SHA -e PREFLIGHT_EXPECT_SRC_SHA \
   -v "$REPO":/graph_api:ro \
   -v /DATA/FOUND:/found \
+  -v "${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}":/kb:ro \
   -v "$RUN_DIR":/ws/output \
   -v /DATA/models/efficientvit_sam:/models/vitsam:ro \
   -v /DATA/huggingface_cache:/models/hf \

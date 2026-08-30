@@ -111,8 +111,28 @@ def a1_aligner_identity():
     raises on first use still reports as 'kg'. So the probe also aligns a golden label whose
     correct answer is on record from a live run — couch -> Sofa at 0.903.
     """
-    from found.dims import DimensionDB
-    from found.kg_align import make_aligner
+    # Reach `found` the way the RUN reaches it, rather than assuming it is importable.
+    # The node gets it from hooks.load_hook doing sys.path.insert over CFG hooks.search_paths;
+    # this probe is a separate process that never loads a hook, so on the first gated run it
+    # raised ModuleNotFoundError and reported a probe fault where the real finding was that
+    # /kb was not mounted. Resolving from the CONFIG keeps the identity assertion intact: a
+    # wrong search_paths still fails, it just fails saying so.
+    sys.path.insert(0, "/ws/install/lost3dsg/lib/lost3dsg")
+    import config as cfgmod
+    search_paths = ((cfgmod.CFG.get("hooks") or {}).get("search_paths") or [])
+    for sp in search_paths:
+        if sp and sp not in sys.path:
+            sys.path.insert(0, sp)
+    try:
+        from found.dims import DimensionDB
+        from found.kg_align import make_aligner
+    except ImportError as exc:
+        return False, {"search_paths": search_paths, "error": f"{type(exc).__name__}: {exc}",
+                       "why": ("the aligner package the run is configured to load is not "
+                               "importable from the paths the config names. CHECK THE MOUNTS "
+                               "FIRST — /found and /kb must both be mounted, and "
+                               "PYTHONPATH must carry /kb, before concluding anything about "
+                               "the aligner itself.")}
 
     want = os.environ.get("FOUND_ALIGNER", "kg")
     aligner = make_aligner(DimensionDB().types())
@@ -245,8 +265,29 @@ def a4_perception_twice():
             attempts.append({"attempt": i, "ok": True, "ms": round((time.time() - t0) * 1000)})
         except Exception as exc:
             attempts.append({"attempt": i, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
-    return all(a["ok"] for a in attempts), {"backend": type(backend).__name__,
-                                            "attempts": attempts}
+    first, second = attempts[0]["ok"], attempts[1]["ok"]
+    detail = {"backend": type(backend).__name__, "attempts": attempts}
+    if first and not second:
+        # The fault this probe was built for: the CLIP text head was constructed on the first
+        # call and never reused, so the service answered once and 500'd afterwards. A one-shot
+        # liveness check passes this.
+        detail["why"] = ("the backend answered once and then failed. This is the fault a4 "
+                         "exists for — a one-shot liveness check would have passed it, and a "
+                         "run would have produced detections from the first frame only.")
+    elif not first and second:
+        # The opposite direction, and it is NOT the same finding. Measured on the first gated
+        # run: attempt 1 timed out, attempt 2 returned in 20.5 s against a remote Modal
+        # backend. That reads as a cold start rather than a broken service.
+        detail["why"] = ("the backend failed the first call and answered the second — a "
+                         "warm-up, not the serve-once fault. The run is still refused, "
+                         "because a measured run whose first frames time out is not a run. "
+                         "WARM THE BACKEND AND RE-RUN. Do not widen the timeout from this "
+                         "one sample: a probe that passes on the second attempt is not a "
+                         "backend that works, and any new timeout should come from a "
+                         "measured distribution.")
+    elif not first and not second:
+        detail["why"] = "the backend answered neither call; it is unreachable, not cold."
+    return (first and second), detail
 
 
 # Only these reach the bundle: live_run.sh copies *.json, *.jsonl and *.log out of the
