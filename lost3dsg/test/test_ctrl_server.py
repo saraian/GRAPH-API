@@ -5,6 +5,7 @@ Stubs habitat_sim/config/box_view, imports the module, starts the HTTP server
 on a free port and exercises every endpoint the bridge proxies.
 Run: python3 test_ctrl_server.py
 """
+import importlib.util
 import json
 import os
 import sys
@@ -24,6 +25,10 @@ fake_box.BOX_EDGES, fake_box.box_corners_map, fake_box.project_visible = [], Non
 sys.modules["box_view"] = fake_box
 fake_cfg = types.ModuleType("config")
 fake_cfg.CFG = {"habitat": {"single_floor": True, "floor_tolerance_m": 0.5}}
+# GA-52: habitat_feed_host logs WHICH config it loaded, so it imports CFG_PATH beside CFG.
+# None is the honest stub value — it is what config.py returns when no file was read, and it
+# exercises the warning branch rather than the quiet one.
+fake_cfg.CFG_PATH = None
 sys.modules["config"] = fake_cfg
 
 os.environ["FEED_CTRL_PORT"] = "0"  # kernel-assigned free port
@@ -35,7 +40,7 @@ def get(port, path):
         return json.loads(r.read().decode())
 
 
-def demo():
+def test_ctrl_server():
     httpd = h.ThreadingHTTPServer(("127.0.0.1", 0), h.CtrlHandler)
     h.threading.Thread(target=httpd.serve_forever, daemon=True).start()
     port = httpd.server_address[1]
@@ -52,6 +57,59 @@ def demo():
     cfg = get(port, "/set_config?perceive_while_moving=true&seg=1")["config"]
     assert cfg == {"perceive_while_moving": "true", "seg": "1"}
     assert get(port, "/get_config")["config"] == cfg
+
+    # Placed AFTER the exact-equality check above: /set_config MERGES, so keys set by the
+    # block below would still be in the dict that assertion compares against.
+    # --- the visibility gate, resolved from what the HOST sends -----------------------------
+    # GA-56 part 4. The control server hands /set_config values through as query STRINGS —
+    # "true", "5" — never as the bool and int a yaml would give. visibility() is the only
+    # thing that coerces them, and it is also where the strict toggle is applied, so an
+    # uncoerced "false" is truthy and the switch silently does nothing.
+    #
+    # The real function, not the stub. `fake_cfg` above replaces the config module with a
+    # two-key namespace so habitat_feed_host can import it; asserting against that would
+    # test the stub and prove nothing about the run. This loads config.py from disk and
+    # calls ITS visibility, which resolves against the real _DEFAULTS.
+    _spec = importlib.util.spec_from_file_location(
+        "real_config", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "src", "perception_module", "config.py"))
+    real_config = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(real_config)
+
+    cfg = get(port, "/set_config?strict_visibility=true&min_visible_points=5")["config"]
+    assert cfg["strict_visibility"] == "true", cfg   # a string, not a bool
+    assert cfg["min_visible_points"] == "5", cfg     # a string, not an int
+
+    # The strict toggle alone must bite. min_visible_points is seeded at startup, so it is
+    # never absent, and a "default when missing" made this switch a no-op on both overlays.
+    assert real_config.visibility(cfg)[0] == 5, "strict must raise the floor to 5"
+    off = get(port, "/set_config?strict_visibility=false&min_visible_points=1")["config"]
+    assert real_config.visibility(off)[0] == 1, "not strict must leave the value alone"
+    assert real_config.visibility(
+        get(port, "/set_config?strict_visibility=true")["config"])[0] == 5
+    assert real_config.visibility(
+        get(port, "/set_config?strict_visibility=false")["config"])[0] == 1
+
+    # Strict is a FLOOR, not a fixed value: it may raise the count and never lower it.
+    high = get(port, "/set_config?strict_visibility=true&min_visible_points=8")["config"]
+    assert real_config.visibility(high)[0] == 8, "strict must not lower an explicit 8"
+
+    # Garbage must never raise. These arrive from a URL a person typed.
+    # /set_config MERGES rather than replaces, so strict_visibility is still "true" from the
+    # call above. It is set explicitly here: a test that depends on state left by an earlier
+    # request reads as an assertion about junk handling and is really an assertion about
+    # request order, and it breaks when someone inserts a line between the two.
+    junk = get(port, "/set_config?min_visible_points=junk&depth_tol_abs=nonsense"
+                     "&strict_visibility=false")["config"]
+    assert real_config.visibility(junk)[0] == 1, "unparsable count falls back, does not raise"
+    assert real_config.visibility(junk)[1] == 0.10, "unparsable tolerance falls back"
+    # and the same junk under strict still resolves to the floor rather than raising
+    strict_junk = dict(junk, strict_visibility="true")
+    assert real_config.visibility(strict_junk)[0] == 5
+
+    # No live state at all resolves entirely from the configuration.
+    assert real_config.visibility()[1:] == (0.10, 0.05)
+    # ----------------------------------------------------------------------------------------
 
     h.print("[feed] test line")
     assert "[feed] test line" in get(port, "/logs")["logs"]
@@ -79,4 +137,8 @@ def demo():
 
 
 if __name__ == "__main__":
-    demo()
+    # A pytest-collectable name AND a script entry. Named `demo` before, which pytest does not
+    # collect -- so `pytest lost3dsg/test/` reported success over an empty collection while this
+    # file's assertions never ran. An empty collection reporting green is the defect, not the
+    # layout: it is a gate that cannot fail.
+    test_ctrl_server()

@@ -46,7 +46,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "perception_module"))
 from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  (ROS-free)
-from config import CFG  # noqa: E402
+from config import CFG, CFG_PATH  # noqa: E402
 
 _print = functools.partial(print, flush=True)  # nohup/file logs must not buffer
 _log_ring = collections.deque(maxlen=400)      # served by the control server's /logs
@@ -70,6 +70,18 @@ SEND_TIMEOUT = float(os.environ.get("FEED_SEND_TIMEOUT", "10"))
 CTRL_PORT = int(os.environ.get("FEED_CTRL_PORT", "7790"))
 SINGLE_FLOOR = bool(hab_cfg.get("single_floor", True))
 FLOOR_TOL = float(hab_cfg.get("floor_tolerance_m", 0.5))
+
+# GA-52: say WHICH config was loaded, and the two values that come only from it.
+# Every other habitat value the feed host reads has an environment override that the launcher
+# always sets, so it is visible in the process line. These two have none — they are decided by
+# the config file alone, and config.py returns its defaults SILENTLY when that file is absent.
+# Nothing else in the tree reads them, so a two-storey arm that failed to take effect leaves a
+# bundle identical to the single-storey one. CFG_PATH is None when the defaults are in force.
+print(f"[config] loaded={CFG_PATH or '<defaults, no file found>'} "
+      f"single_floor={SINGLE_FLOOR} floor_tolerance_m={FLOOR_TOL}", flush=True)
+if CFG_PATH is None:
+    print("[config] WARNING: running on config.py defaults — no file was read. "
+          "Any value set in a yaml is NOT in force.", flush=True)
 W, H, HFOV = 640, 480, 90.0
 SENSOR_HEIGHT = 1.5
 

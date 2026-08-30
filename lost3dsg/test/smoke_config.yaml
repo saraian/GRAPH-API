@@ -22,8 +22,6 @@ embedding:
   word2vec_path: "/tmp/smoke_w2v.bin"
   word2vec_limit: 200000
 
-association:
-  max_match_distance_m: 1.5
 
 rooms:
   default_room_id: "room_0"   # no SLAM in this setup -> admit objects anyway

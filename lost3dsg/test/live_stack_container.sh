@@ -24,8 +24,17 @@ kv.add_vectors(words, np.random.default_rng(0).normal(size=(len(words), 32)).ast
 kv.save_word2vec_format("/tmp/smoke_w2v.bin", binary=True)
 PY
 
-# CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set)
-export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/${CFG_NAME:-smoke_config.yaml}
+# CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).
+# No default. This line used to read ${CFG_NAME:-smoke_config.yaml}, and because
+# live_run.sh assigned CFG_NAME without exporting it, `docker run -e CFG_NAME`
+# passed nothing and every live run silently used the smoke config while the bundle
+# recorded regolo. Guessing here is what made that invisible.
+: "${CFG_NAME:?CFG_NAME not set — live_run.sh must export it; refusing to guess a config}"
+export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/${CFG_NAME}
+# The config must EXIST. config.py::_load returns the defaults when it does not, silently —
+# so a mistyped or unported config name yields a run with hooks.filter empty, FOUND out of
+# the loop, and a bundle that looks complete. Fail here instead.
+[ -f "$GRAPH_API_CONFIG" ] || { echo "!! GRAPH_API_CONFIG=$GRAPH_API_CONFIG does not exist — refusing to run on defaults"; exit 1; }
 export GRAPH_API_OUTPUT_DIR=/ws/output
 LOG_DIR=/ws/output/logs
 mkdir -p "$LOG_DIR" /ws/output/crops /ws/output/snapshots /out
@@ -51,6 +60,38 @@ RTABMAP_GRID_ARGS=${RTABMAP_GRID_ARGS:-"--Grid/NormalsSegmentation false --Grid/
 
 echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> web viewer :8081)"
 ros2 run lost3dsg habitat_feed_node.py > /tmp/feed_node.log 2>&1 &
+
+# ---- Class A pre-flight gate -------------------------------------------------------------
+# Placed here on purpose: the feed node is up, so the TF probe has base_link -> habitat_camera
+# to look at, and nothing that writes a measured artefact has started yet — so a failure costs
+# a restart rather than a bundle. It is also the only correct moment for a7: the source copy
+# above has happened, so this is the freeze point.
+#
+# The gate rides the bringup the run ALREADY pays for. It adds its own probe time (~10 s) and
+# no second startup. A gate with its own two-minute bringup is a gate that gets skipped under
+# pressure, and a skipped gate is worse than no gate: it manufactures confidence nobody checked.
+#
+# PREFLIGHT_SKIP=1 exists for stack development and is deliberately NOT silent — the bundle
+# records verdict "skipped" and no digests, so no bundle can ever imply a gate that never ran.
+if [ "${PREFLIGHT_SKIP:-0}" = "1" ]; then
+  echo "!! PRE-FLIGHT SKIPPED (PREFLIGHT_SKIP=1) — this bundle is NOT gated"
+  echo '{"verdict": "skipped", "reason": "PREFLIGHT_SKIP=1"}' > /ws/output/preflight.json
+else
+  echo ">>> pre-flight gate (Class A)"
+  python3 /graph_api/lost3dsg/test/preflight_gate.py \
+      --out /ws/output/preflight.json \
+      --run-dir /ws/output \
+      --scratch-dir /out \
+      --run-start "${RUN_START_EPOCH:-0}" \
+      --expect-config-name "$CFG_NAME" \
+      --expect-config-sha "${PREFLIGHT_EXPECT_CFG_SHA:-}" \
+      --expect-merged-sha "${PREFLIGHT_EXPECT_MERGED_SHA:-}" \
+      --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
+      --expect-policy "${PREFLIGHT_EXPECT_POLICY:-}" \
+    || { echo "!! PRE-FLIGHT FAILED — no measured run produced. See /ws/output/preflight.json"; exit 1; }
+fi
+# -------------------------------------------------------------------------------------------
+
 # same rtabmap arguments as launch/habitat_launch.py (odometry from /odom, no TF publish)
 ros2 launch rtabmap_launch rtabmap.launch.py visual_odometry:=false odom_topic:=/odom \
   rgb_topic:=/camera/rgb depth_topic:=/camera/depth camera_info_topic:=/camera/camera_info \
