@@ -283,6 +283,30 @@ def get_embedding(model, text):
         # explicit "no evidence" returns above.
         raise RuntimeError(f"get_embedding failed for {text!r} with model {type(model).__name__}") from e
 
+def _comparable_embeddings(a, b):
+    """Can these two embeddings actually be compared? GA-171.
+
+    `desc1 is not None and desc2 is not None` was not enough. An EMPTY ARRAY is not None --
+    it passed the guard and crashed inside the dot product with
+    `shapes (384,) and (0,) not aligned`, because `_serialize_embedding` encodes absence as
+    `[]` and the decoder turned that back into a real array of length zero.
+
+    The root cause is fixed at the boundary (object_services.normalise_embedding), but this
+    guard states the requirement in the place that depends on it: an embedding is EVIDENCE
+    only if it exists, has length, and has the SAME length as the one it is compared with.
+    Two vectors of different widths are not a low similarity -- they are two things that
+    cannot be compared, and GA-101's whole design is that such a term is DROPPED and the
+    remaining weights renormalised, never scored.
+    """
+    if a is None or b is None:
+        return False
+    try:
+        la, lb = len(a), len(b)
+    except TypeError:
+        return False
+    return la > 0 and la == lb
+
+
 def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
 
@@ -364,7 +388,7 @@ def lost_similarity_detailed(word2vec_model, label1, label2, color1, color2,
     if _known(material1) and _known(material2):
         terms.append((gamma, semantic_similarity(word2vec_model, material1, material2)))
         evidence["material"] = True
-    if desc1 is not None and desc2 is not None:
+    if _comparable_embeddings(desc1, desc2):
         terms.append((delta, cosine_similarity(desc1, desc2)))
         evidence["description"] = True
 

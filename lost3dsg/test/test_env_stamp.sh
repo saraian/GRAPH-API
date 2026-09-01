@@ -158,10 +158,12 @@ done
 # 8. The run's live output path. RESULTS/, never /tmp — owner ruling, relayed. The path needs
 #    RUN_TIMESTAMP and SCENE_ARG, both defined 99 lines below where OUT_DIR used to sit, so the
 #    assignment moved rather than the value changing. Evaluated here rather than eyeballed.
-_out=$(RUN_TIMESTAMP=20260831_140000 SCENE_ARG=hm3d_00861 bash -c \
-       'eval "$(sed -n "/^export OUT_DIR=\${OUT_DIR:-\/DATA\/FOUND\/results/p" '"$SRC"')"; echo "$OUT_DIR"')
-[ "$_out" = "/DATA/FOUND/results/20260831_140000_hm3d_00861" ] \
-  || fail "OUT_DIR default is '$_out', expected /DATA/FOUND/results/<timestamp>_<scene>"
+#    FOUND_ROOT is now DERIVED from the script's location so a clone anywhere can run, so this
+#    supplies one rather than expecting the machine this was written on.
+_out=$(RUN_TIMESTAMP=20260831_140000 SCENE_ARG=hm3d_00861 FOUND_ROOT=/tmp/fake_found bash -c \
+       'eval "$(sed -n "/^export OUT_DIR=\${OUT_DIR:-\$FOUND_ROOT\/results/p" '"$SRC"')"; echo "$OUT_DIR"')
+[ "$_out" = "/tmp/fake_found/results/20260831_140000_hm3d_00861" ] \
+  || fail "OUT_DIR default is '$_out', expected \$FOUND_ROOT/results/<timestamp>_<scene>"
 
 #    and an explicit OUT_DIR must still win, because the scratch-rename guard exists for the
 #    operator who reuses one. The default got safer; the hazard did not go away.

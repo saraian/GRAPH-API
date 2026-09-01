@@ -406,6 +406,97 @@ def start_ctrl_server():
 
 
 
+TEST_MODE = os.environ.get("FEED_TEST_MODE", "0").lower() in ("1", "true", "yes", "on")
+TEST_RADIUS_M = float(os.environ.get("FEED_TEST_RADIUS", "4.0"))
+
+# GA-213. AN EXPLICIT TEST SPAWN, in HABITAT coordinates, "x,y,z".
+#
+# Set it and the density search is skipped entirely. Three reasons that matters, and the
+# third is why it exists at all:
+#   1. REPRODUCIBLE. The search samples random navigable points, so two runs of the same
+#      config could stand in different rooms and their object counts would not be comparable.
+#   2. FAST. The search cost 400 navigable samples before the first frame, which delayed the
+#      feed host past probe a6's 20 s window and SKIPPED it -- a skipped probe fails the gate.
+#   3. It is the owner's decision which room a test runs in, and a decision belongs in a
+#      config value rather than in the outcome of a random draw.
+#
+# The value for hm3d_00861's ground floor is recorded in the run config; the search PRINTS
+# the point it chose in this same format, so a good spot found once can be pinned.
+TEST_SPAWN = os.environ.get("FEED_TEST_SPAWN", "").strip()
+
+
+def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
+    """A navigable point with the MOST annotated objects around it. GA-212.
+
+    TEST MODE exists to measure the pipeline, not the navigation. A tour spends most of its
+    frames in corridors and doorways, so a short run sees few objects and the association
+    layer -- which needs PAIRS -- gets almost nothing to decide. Standing still in the
+    busiest room and turning gives the densest object stream the scene can offer, from one
+    pose, with no path-following to fail.
+
+    Density is counted from the scene's OWN semantic annotations, not from a previous run's
+    output: the annotations are in the simulator's frame and need no map, no localisation
+    and no assumption about what a past run happened to detect. When a scene carries no
+    annotations this falls back to the ordinary spawn and SAYS SO -- an unannotated scene is
+    not a reason to invent a density.
+    """
+    try:
+        scene = sim.semantic_scene
+        objs = [o for o in (scene.objects or []) if o is not None and o.aabb is not None]
+    except Exception as exc:
+        print(f"[feed] test mode: no semantic annotations ({type(exc).__name__}); "
+              f"falling back to the ordinary spawn")
+        return _spawn_point(sim, spawn_floor), None
+    if not objs:
+        print("[feed] test mode: scene carries no annotated objects; ordinary spawn")
+        return _spawn_point(sim, spawn_floor), None
+
+    centres = np.array([[o.aabb.center[0], o.aabb.center[1], o.aabb.center[2]] for o in objs])
+
+    # THE SAME-STOREY FILTER IS GONE, AND IT HAS TO BE. Measured on hm3d_00861: EVERY
+    # annotated object and region reports `aabb.center[1] == 0.00`, so the height channel
+    # carries no information at all. A filter on it compared 0.0 against the navmesh height
+    # and passed for BOTH floors -- it looked like a storey guard and was a no-op, which is
+    # worse than no guard because it reads as one.
+    #
+    # THE NAVMESH IS THE ONE THAT WORKS. `spawn_floor` (FEED_SPAWN_FLOOR) constrains the
+    # candidate points to a real storey, measured from navmesh geometry rather than from an
+    # annotation that turns out to be empty. Density is then scored in x/z ONLY, where the
+    # annotation is sound. Objects on the floor above still count toward a point below them,
+    # and that is a KNOWN limitation of this scene's annotations, not an oversight.
+    flat_ok = float(np.abs(centres[:, 1]).max()) < 1e-6
+    if flat_ok:
+        print("[feed] test mode: annotation heights are all zero in this scene; relying on "
+              "FEED_SPAWN_FLOOR for the storey and scoring density in x/z only")
+    best_n, best_pt = -1, None
+    on_floor = 0
+    for _ in range(candidates):
+        p = np.array(sim.pathfinder.get_random_navigable_point())
+        if spawn_floor is not None and abs(float(p[1]) - spawn_floor) > FLOOR_TOL:
+            continue
+        on_floor += 1
+        d = np.linalg.norm(centres[:, [0, 2]] - p[[0, 2]], axis=1)
+        n = int((d < radius_m).sum())
+        if n > best_n:
+            best_n, best_pt = n, p
+    if spawn_floor is not None:
+        print(f"[feed] test mode: {on_floor}/{candidates} sampled points were on floor "
+              f"{spawn_floor:+.2f} (tolerance {FLOOR_TOL:.2f} m)")
+    if best_pt is None:
+        print("[feed] test mode: no navigable point matched the floor; ordinary spawn")
+        return _spawn_point(sim, spawn_floor), None
+    print(f"[feed] TEST MODE: spawning at the densest point — {best_n} annotated objects "
+          f"within {radius_m:.1f} m; the agent will TURN IN PLACE and never navigate")
+    # Printed in the exact form FEED_TEST_SPAWN accepts, so this spot can be pinned and the
+    # search never repeated. THE COUNT IS AN OVERCOUNT where a scene's annotation heights are
+    # degenerate: with every aabb.center[1] == 0, objects on the floor ABOVE still fall inside
+    # an x/z radius. It ranks candidate points honestly against each other; it is not a claim
+    # about what the camera will see.
+    print(f"[feed] TEST MODE: pin this spot with "
+          f"FEED_TEST_SPAWN={best_pt[0]:.4f},{best_pt[1]:.4f},{best_pt[2]:.4f}")
+    return best_pt, best_n
+
+
 def _spawn_point(sim, spawn_floor, tries=4000):
     """A navigable point, on the REQUESTED floor when one is asked for.
 
@@ -595,6 +686,11 @@ class Tour:
         return pts
 
     def step(self, agent):
+        if TEST_MODE:
+            # GA-212: turn, and only turn. No goal, no follower, no path that can fail --
+            # the point of test mode is that a stalled run cannot be blamed on navigation.
+            agent.act("turn_left")
+            return
         if self.scan_left > 0:
             agent.act("turn_left")
             self.scan_left -= 1
@@ -626,7 +722,32 @@ def main():
     state = habitat_sim.AgentState()
     if have_nav:
         sim.pathfinder.seed(SEED)
-        state.position = _spawn_point(sim, SPAWN_FLOOR)
+        if TEST_MODE and TEST_SPAWN:
+            try:
+                _p = np.array([float(v) for v in TEST_SPAWN.split(",")], dtype=np.float32)
+                if _p.shape != (3,):
+                    raise ValueError("need exactly three comma-separated values")
+                # Snapped to the navmesh: an explicit point a few centimetres off it is not
+                # navigable and the agent would be unable to turn. Snapping is stated rather
+                # than silent, because a large correction means the pinned point is stale --
+                # a different scene, or a navmesh rebuilt since it was recorded.
+                _snap = np.array(sim.pathfinder.snap_point(_p), dtype=np.float32)
+                _d = float(np.linalg.norm(_snap - _p))
+                state.position = _snap
+                print(f"[feed] TEST MODE: PINNED spawn {TEST_SPAWN}"
+                      + (f" (snapped {_d:.3f} m to the navmesh)" if _d > 1e-3 else "")
+                      + "; the agent will TURN IN PLACE and never navigate")
+                if _d > 0.5:
+                    print(f"[feed] !! the pinned point moved {_d:.2f} m when snapped — it may "
+                          f"belong to a different scene or an older navmesh")
+            except (ValueError, TypeError) as exc:
+                print(f"[feed] !! FEED_TEST_SPAWN={TEST_SPAWN!r} is not 'x,y,z' ({exc}); "
+                      f"falling back to the density search")
+                state.position, _dense_n = _dense_spawn_point(sim, SPAWN_FLOOR, TEST_RADIUS_M)
+        elif TEST_MODE:
+            state.position, _dense_n = _dense_spawn_point(sim, SPAWN_FLOOR, TEST_RADIUS_M)
+        else:
+            state.position = _spawn_point(sim, SPAWN_FLOOR)
     else:
         bb = sim.get_active_scene_graph().get_root_node().cumulative_bb
         c = (np.array(bb.min) + np.array(bb.max)) / 2

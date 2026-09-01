@@ -32,15 +32,16 @@ from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, QoSProfile
-from sensor_msgs_py import point_cloud2
 from sensor_msgs.msg import PointCloud2
+from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
-PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir else os.path.abspath(os.path.join(current_dir, "../.."))
+PROJECT_ROOT = (current_dir.split('/install/')[0] if '/install/' in current_dir
+                else os.path.abspath(os.path.join(current_dir, "../..")))
 
 
 @dataclass
@@ -710,29 +711,63 @@ class RoomManager:
         """
         skel_bool = skeleton > 0
         if not np.any(skel_bool):
+            self._last_critical_stats = {"branches": 0, "reason": "empty skeleton"}
             return []
         door_radius_px = (self._params['gvd_door_max_m'] / 2.0) / max(resolution, 1e-6)
         branches = self._trace_branches(skel_bool)
         points = set()
 
+        # GA-196. WHY a branch was rejected, counted. `branches_cut=0` was the only signal
+        # this stage produced, and it is the same shape as every unlogged exit this review
+        # has found: it says a thing did not happen and nothing about which test refused it.
+        # Measured over two runs, 87% of sweeps cut nothing while the skeleton was ~18,600
+        # px and NEVER empty -- so the failure is here, among these four filters, and no
+        # bundle could say which. Counters only; no behaviour changes.
+        rej = {"too_short_px": 0, "too_short_m": 0, "wider_than_door": 0,
+               "no_end_clearance": 0, "not_a_bottleneck": 0, "accepted": 0}
+        min_branch_px = max(4, int(round(
+            self._params['gvd_prune_min_branch_m'] / max(resolution, 1e-6))))
+        narrowest = None
+
         for path in branches:
             if len(path) < 2:
+                rej["too_short_px"] += 1
                 continue
-            if len(path) < max(4, int(round(self._params['gvd_prune_min_branch_m'] / max(resolution, 1e-6)))):
+            if len(path) < min_branch_px:
+                rej["too_short_m"] += 1
                 continue
             vals = [float(dist[y, x]) for y, x in path]
             min_idx = int(np.argmin(vals))
             min_val = vals[min_idx]
             end_clearance = max(vals[0], vals[-1])
+            # The narrowest clearance any branch offered, in METRES of free width, so the
+            # log says how far from a doorway the map actually was rather than only that
+            # nothing qualified. A run where this sits just above gvd_door_max_m is a
+            # threshold question; one where it sits far above is a map question.
+            width_m = 2.0 * min_val * resolution
+            if narrowest is None or width_m < narrowest:
+                narrowest = width_m
 
             if min_val > door_radius_px:
+                rej["wider_than_door"] += 1
                 continue
             if end_clearance <= 1e-6:
+                rej["no_end_clearance"] += 1
                 continue
             if min_val > float(self._params['gvd_bottleneck_ratio']) * end_clearance:
+                rej["not_a_bottleneck"] += 1
                 continue
             y, x = path[min_idx]
             points.add((int(y), int(x), float(self._branch_direction(path, min_idx)), float(min_val)))
+            rej["accepted"] += 1
+
+        self._last_critical_stats = {
+            "branches": len(branches),
+            "min_branch_px": min_branch_px,
+            "door_max_m": float(self._params['gvd_door_max_m']),
+            "narrowest_branch_m": (None if narrowest is None else round(narrowest, 3)),
+            **rej,
+        }
         return list(points)
 
     def _cut_free_space(self, free, dist_real, critical_points):
@@ -875,10 +910,18 @@ class RoomManager:
         # so the line reads like a result. skeleton_px=0 means no branches, nothing to cut,
         # and exactly one region per floor: the room gate, the room prior and every
         # room-scoped number downstream are then no-ops over a single room.
+        # GA-196: the rejection breakdown travels with the line that reports the cut count,
+        # so a bundle can say WHICH test refused every branch instead of only that none
+        # survived. Rendered as key=value pairs; an exact-field reader parses it, and a
+        # substring grep over `N regions` does not (rule 50 -- that grep is how the branch
+        # count was misread as a region count in the first place).
+        _cstats = getattr(self, '_last_critical_stats', {}) or {}
+        _cdesc = ' '.join(f'{k}={v}' for k, v in _cstats.items())
         self._log(
             'warn' if _skel_px == 0 else 'info',
             f'GVD segmentation: skeleton_px={_skel_px} '
             f'branches_cut={len(critical_points)} regions={int(markers.max())}'
+            + (f' | critical_points: {_cdesc}' if _cdesc else '')
             + (' -- SKELETON EMPTY: no segmentation happened, every object will land in one'
                ' room. regions= here is the watershed count, not evidence of a split.'
                if _skel_px == 0 else ''))
@@ -956,6 +999,10 @@ class RoomManager:
                 'objects': [], 'polygon': [], 'area_m2': 0.0,
                 'centroid': [], 'walls': [], 'wall_segments': [],
                 'confirmed': False, 'boundaries': {}, 'last_seen': time.time(),
+                # GA-185: whether the region backing this room is currently detected. A
+                # retired room stays in the registry and stays referenceable; it is simply
+                # not the robot's current room any more.
+                'active': True, 'retired_at': None,
             }
         return self.scene_graph[room_id]
 
@@ -970,7 +1017,9 @@ class RoomManager:
         old = list(self.regions.values())
         used = set()
         for polygon, area, centroid, _ in candidates:
-            best = None; best_score = -1.0; best_index = None
+            best = None
+            best_score = -1.0
+            best_index = None
             for i, previous in enumerate(old):
                 if i in used:
                     continue
@@ -981,7 +1030,8 @@ class RoomManager:
                 if score >= self._params['region_match_iou_min'] and score > best_score:
                     best, best_score, best_index = previous, score, i
             if best is None:
-                region_id = f'region_{self.region_counter}'; self.region_counter += 1
+                region_id = f'region_{self.region_counter}'
+                self.region_counter += 1
                 best = Region(region_id, polygon, area, centroid)
                 best.room_id = self._new_room_id()
                 self.init_room_node(best.room_id)
@@ -1012,10 +1062,29 @@ class RoomManager:
         stale_s = self._params['room_stale_prune_s']
         for room_id in list(self.scene_graph.keys()):
             if room_id in active_room_ids:
+                self.scene_graph[room_id]['active'] = True
                 continue
             last_seen = self.scene_graph[room_id].get('last_seen', 0)
             if now2 - last_seen > stale_s:
-                del self.scene_graph[room_id]
+                # GA-185: RETIRED, NOT DELETED. This used to `del` the room, and
+                # `room_stale_prune_s` is 10 SECONDS while a room's `last_seen` is refreshed
+                # only while the robot is IN it -- so every room the tour left for more than
+                # ten seconds was erased from the registry within one sweep.
+                #
+                # MEASURED in run 20260901_055513: room.json listed ONE room while the
+                # objects carried two, `room_0` holding 41 of the 186. The objects outlived
+                # the room they point at, and the published room count became "how many
+                # rooms were visible in the last ten seconds" rather than "how many rooms
+                # were mapped" -- which is also why run 044225 reported 4 and this one 1.
+                #
+                # A mapped room is part of the building whether or not it is in view. The
+                # pruning intent -- stop treating it as CURRENT -- is kept by the flag; the
+                # record is kept because objects still reference it and a dangling reference
+                # is worse than a stale one.
+                room = self.scene_graph[room_id]
+                if room.get('active', True):
+                    room['retired_at'] = now2
+                room['active'] = False
                 if self.current_room_id == room_id:
                     self.current_room_id = None
 
@@ -1075,7 +1144,8 @@ class RoomManager:
                 label = getattr(obj, 'label', 'unknown')
             if room_id == self.current_room_id:
                 label = str(label).strip()
-                if label and all(self._object_label_key(label) != self._object_label_key(existing) for existing in labels):
+                if label and all(self._object_label_key(label) != self._object_label_key(existing)
+                                 for existing in labels):
                     labels.append(label)
         room['objects'] = sorted(labels)
         room['last_seen'] = time.time()
@@ -1093,7 +1163,8 @@ class RoomManager:
         by_room = {}
         for obj in persistent_objects or []:
             if isinstance(obj, dict):
-                room_id = obj.get('room_id'); label = obj.get('label', 'unknown')
+                room_id = obj.get('room_id')
+                label = obj.get('label', 'unknown')
             else:
                 room_id = getattr(obj, 'room_id', None)
                 label = getattr(obj, 'label', 'unknown')
@@ -1143,9 +1214,8 @@ class RoomManager:
         labels_str = ", ".join(set(room_objects_labels))
 
         try:
-            from openai import OpenAI
-
             from config import CFG
+            from openai import OpenAI
             model_name = os.environ.get("ROOM_VLM_MODEL", CFG["vlm"]["model"])
             client = OpenAI(
                 base_url=CFG["vlm"]["base_url"],
@@ -1301,7 +1371,8 @@ class RoomManager:
         room_labels = []
         for label in room_node.get("objects", []) or []:
             label = str(label).strip()
-            if label and all(self._object_label_key(label) != self._object_label_key(existing) for existing in room_labels):
+            if label and all(self._object_label_key(label) != self._object_label_key(existing)
+                             for existing in room_labels):
                 room_labels.append(label)
 
         for o in persistent_objects or []:
@@ -1313,7 +1384,8 @@ class RoomManager:
                 obj_label = getattr(o, 'label', '')
             if obj_room_id == room_id:
                 cleaned = str(obj_label or '').strip()
-                if cleaned and all(self._object_label_key(cleaned) != self._object_label_key(existing) for existing in room_labels):
+                if cleaned and all(self._object_label_key(cleaned) != self._object_label_key(existing)
+                                   for existing in room_labels):
                     room_labels.append(cleaned)
 
         room_labels_vlm = [self._vlm_room_label(label) for label in room_labels if str(label).strip()]
@@ -1385,7 +1457,8 @@ class RoomManager:
     def _publish_geometry(self, grid):
         if self._marker_pub is None:
             return
-        output = MarkerArray(); current = set()
+        output = MarkerArray()
+        current = set()
         for room_id, room in self.scene_graph.items():
             polygon = room.get('polygon', [])
             if len(polygon) < 3:
@@ -1397,34 +1470,50 @@ class RoomManager:
             current.add(marker_id)
             color_r, color_g, color_b = self._room_color(room_id)
 
-            fill = Marker(); fill.header = grid.header
-            fill.ns = 'room_fill'; fill.id = marker_id
-            fill.type = Marker.TRIANGLE_LIST; fill.action = Marker.ADD
+            fill = Marker()
+            fill.header = grid.header
+            fill.ns = 'room_fill'
+            fill.id = marker_id
+            fill.type = Marker.TRIANGLE_LIST
+            fill.action = Marker.ADD
             fill.pose.orientation.w = 1.0
             fill.scale.x = fill.scale.y = fill.scale.z = 1.0
             fill.color.r, fill.color.g, fill.color.b = color_r, color_g, color_b
             fill.color.a = 0.28
             for x, y in self._ear_clip_triangulate(polygon):
-                point = Point(); point.x = float(x); point.y = float(y); point.z = 0.02
+                point = Point()
+                point.x = float(x)
+                point.y = float(y)
+                point.z = 0.02
                 fill.points.append(point)
             output.markers.append(fill)
 
-            marker = Marker(); marker.header = grid.header
-            marker.ns = 'rooms'; marker.id = marker_id
-            marker.type = Marker.LINE_STRIP; marker.action = Marker.ADD
-            marker.pose.orientation.w = 1.0; marker.scale.x = 0.10
+            marker = Marker()
+            marker.header = grid.header
+            marker.ns = 'rooms'
+            marker.id = marker_id
+            marker.type = Marker.LINE_STRIP
+            marker.action = Marker.ADD
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 0.10
             marker.color.r, marker.color.g, marker.color.b = color_r, color_g, color_b
             marker.color.a = 1.0
             for x, y in polygon + [polygon[0]]:
-                point = Point(); point.x = float(x); point.y = float(y); point.z = 0.05
+                point = Point()
+                point.x = float(x)
+                point.y = float(y)
+                point.z = 0.05
                 marker.points.append(point)
             output.markers.append(marker)
 
             centroid = room.get('centroid') or self._centroid(polygon)
             area = float(room.get('area_m2', 0.0))
-            text_marker = Marker(); text_marker.header = grid.header
-            text_marker.ns = 'room_labels'; text_marker.id = marker_id
-            text_marker.type = Marker.TEXT_VIEW_FACING; text_marker.action = Marker.ADD
+            text_marker = Marker()
+            text_marker.header = grid.header
+            text_marker.ns = 'room_labels'
+            text_marker.id = marker_id
+            text_marker.type = Marker.TEXT_VIEW_FACING
+            text_marker.action = Marker.ADD
             text_marker.pose.position.x = float(centroid[0])
             text_marker.pose.position.y = float(centroid[1])
             text_marker.pose.position.z = 0.6
@@ -1441,8 +1530,11 @@ class RoomManager:
 
         for marker_id in self._last_marker_ids - current:
             for ns in ('rooms', 'room_labels', 'room_fill'):
-                marker = Marker(); marker.header = grid.header
-                marker.ns = ns; marker.id = marker_id; marker.action = Marker.DELETE
+                marker = Marker()
+                marker.header = grid.header
+                marker.ns = ns
+                marker.id = marker_id
+                marker.action = Marker.DELETE
                 output.markers.append(marker)
         self._last_marker_ids = current
         self._marker_pub.publish(output)
@@ -1450,15 +1542,20 @@ class RoomManager:
         if self._room_areas_pub is not None:
             areas = {rid: round(float(r.get('area_m2', 0.0)), 2) for rid, r in self.scene_graph.items()}
             payload = {'current_room_id': self.current_room_id, 'areas_m2': areas}
-            msg = String(); msg.data = json.dumps(payload, ensure_ascii=False)
+            msg = String()
+            msg.data = json.dumps(payload, ensure_ascii=False)
             self._room_areas_pub.publish(msg)
 
     @staticmethod
     def _json_safe(value):
-        if isinstance(value, dict): return {k: RoomManager._json_safe(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)): return [RoomManager._json_safe(v) for v in value]
-        if isinstance(value, np.generic): return RoomManager._json_safe(value.item())
-        if isinstance(value, float) and not math.isfinite(value): return None
+        if isinstance(value, dict):
+            return {k: RoomManager._json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [RoomManager._json_safe(v) for v in value]
+        if isinstance(value, np.generic):
+            return RoomManager._json_safe(value.item())
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
         return value
 
     def _save_rooms(self, force=False):

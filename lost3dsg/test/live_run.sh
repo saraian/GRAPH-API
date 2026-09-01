@@ -8,6 +8,16 @@
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
+# WHERE FOUND IS. Derived from this script's own location, not hardcoded: the submodule sits at
+# <FOUND>/vendor/graph-api, so two levels above $REPO is the FOUND checkout whatever it is called
+# and wherever it lives. $FOUND_ROOT was written into ten places and a clone anywhere else could
+# not run at all — the launcher would look for maps, results and the found/ package on a machine
+# that has none of them.
+#
+# Override only to run against a FOUND checkout other than the one this submodule is inside.
+FOUND_ROOT=${FOUND_ROOT:-$(cd "$REPO/../.." && pwd)}
+[ -d "$FOUND_ROOT/found" ] || { echo "!! FOUND_ROOT=$FOUND_ROOT has no found/ package."; \
+  echo "   This script expects to live at <FOUND>/vendor/graph-api/lost3dsg/test, or FOUND_ROOT set."; exit 1; }
 
 MON_PID=""
 FEED_PID=""
@@ -26,7 +36,7 @@ FEED_PID=""
 # CEILING, stated: this separates measured-nothing from measured-something. It CANNOT separate
 # truncated from complete -- that is the flow question and it belongs to a post-run check.
 _publish_map_if_earned() {
-  # The map library lives on the HOST at /DATA/FOUND/maps/<scene>/, not inside a bundle — a
+  # The map library lives on the HOST at $FOUND_ROOT/maps/<scene>/, not inside a bundle — a
   # library that lives in one run's output directory is not a library. The container cannot write
   # there, so it leaves a marker and the host copies.
   #
@@ -101,7 +111,7 @@ print('   spread: %.2f m, basis: %s' % (d['node_z_spread_m'], d['single_floor_ba
 d=json.load(open(sys.argv[1]))
 z=d.get('nearest_scene_floor'); z=d['floor_height_m'] if z is None else z
 print(f'floor_{z:+.2f}')" "${db}.floor.json")
-  local dest="/DATA/FOUND/maps/${SCENE_ARG}/${fl}"
+  local dest="$FOUND_ROOT/maps/${SCENE_ARG}/${fl}"
   mkdir -p "$dest"
   # HARD LINK, NOT COPY. Every published map existed twice — once in maps/ and once in the bundle
   # it came from — and at 0.3-1.2 GB each that was 4.7 GB of duplication with /DATA at 99% full.
@@ -200,10 +210,10 @@ echo "    config: $CFG_NAME"
 RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SCENE_ARG=${1:-hm3d_00861}
 
-# Live run output. A TIMESTAMPED DIRECTORY under /DATA/FOUND/results/, never /tmp.
+# Live run output. A TIMESTAMPED DIRECTORY under $FOUND_ROOT/results/, never /tmp.
 # Owner ruling, relayed to this lane rather than given to it directly (rule 8's second half):
 #   "no output should go to the temp directory, always in a timestamped experiment results dir
-#    inside the results/ dir inside the /DATA/FOUND directory."
+#    inside the results/ dir inside the $FOUND_ROOT directory."
 #
 # Assigned HERE and not at the top of the file because the name needs RUN_TIMESTAMP and
 # SCENE_ARG. The only earlier references are inside cleanup(), a function body evaluated when
@@ -225,7 +235,7 @@ SCENE_ARG=${1:-hm3d_00861}
 # Found by the warning that replaced the fallback chain, on the first run after it landed.
 # The class is "two paths that agree by accident until one of them moves". Nothing else in this
 # tree reports it, so that warning is permanent.
-export OUT_DIR=${OUT_DIR:-/DATA/FOUND/results/${RUN_TIMESTAMP}_${SCENE_ARG}}
+export OUT_DIR=${OUT_DIR:-$FOUND_ROOT/results/${RUN_TIMESTAMP}_${SCENE_ARG}}
 mkdir -p "$OUT_DIR"
 echo "    live output: $OUT_DIR"
 # Stamped BEFORE the bundle directory is created, so every artefact the run legitimately
@@ -245,7 +255,7 @@ if [ -n "$(ls -A "$OUT_DIR" 2>/dev/null)" ]; then
 fi
 
 RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
-FOUND_RUNS_DIR=${FOUND_RUNS_DIR:-/DATA/FOUND/runs}
+FOUND_RUNS_DIR=${FOUND_RUNS_DIR:-$FOUND_ROOT/runs}
 RUN_DIR="$FOUND_RUNS_DIR/$RUN_ID"
 mkdir -p "$RUN_DIR/logs" "$RUN_DIR/crops" "$RUN_DIR/snapshots"
 echo "    run bundle: $RUN_DIR (symlinked as $FOUND_RUNS_DIR/latest)"
@@ -380,9 +390,9 @@ export FEED_SPAWN_FLOOR="${FEED_SPAWN_FLOOR:-}"
 # confidently wrong.
 if [ "${MAPPING_ONLY:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   if [ -n "$FEED_SPAWN_FLOOR" ]; then
-    _mapdir=$(printf "/DATA/FOUND/maps/%s/floor_%+.2f" "$SCENE_ARG" "$FEED_SPAWN_FLOOR")
+    _mapdir=$(printf "$FOUND_ROOT/maps/%s/floor_%+.2f" "$SCENE_ARG" "$FEED_SPAWN_FLOOR")
   else
-    _mapdir="/DATA/FOUND/maps/$SCENE_ARG"
+    _mapdir="$FOUND_ROOT/maps/$SCENE_ARG"
   fi
   # A CHECKED FALLBACK, not a guess. The canonical hm3d map lives at the SCENE level rather than
   # under floor_<z>, because it was published before per-floor publication existed. Falling back to
@@ -390,17 +400,17 @@ if [ "${MAPPING_ONLY:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   # fallback is allowed only when the map's OWN STAMP says it covers the requested floor — the
   # nearest_scene_floor that stamp_floor.py measured from its node poses.
   if [ ! -f "$_mapdir/rtabmap.db" ] && [ -n "$FEED_SPAWN_FLOOR" ] \
-     && [ -f "/DATA/FOUND/maps/$SCENE_ARG/rtabmap.db.floor.json" ]; then
+     && [ -f "$FOUND_ROOT/maps/$SCENE_ARG/rtabmap.db.floor.json" ]; then
     if python3 -c "import json,sys
 d=json.load(open(sys.argv[1]))
 sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2])) < 1e-6 else 1)" \
-        "/DATA/FOUND/maps/$SCENE_ARG/rtabmap.db.floor.json" "$FEED_SPAWN_FLOOR" 2>/dev/null; then
-      _mapdir="/DATA/FOUND/maps/$SCENE_ARG"
+        "$FOUND_ROOT/maps/$SCENE_ARG/rtabmap.db.floor.json" "$FEED_SPAWN_FLOOR" 2>/dev/null; then
+      _mapdir="$FOUND_ROOT/maps/$SCENE_ARG"
       echo "    scene-level map stamped for floor $FEED_SPAWN_FLOOR — using it"
     fi
   fi
   if [ -f "$_mapdir/rtabmap.db" ]; then
-    export RTABMAP_LOCALIZE_DB="${_mapdir#/DATA/FOUND}"
+    export RTABMAP_LOCALIZE_DB="${_mapdir#$FOUND_ROOT}"
     export RTABMAP_LOCALIZE_DB="/found${RTABMAP_LOCALIZE_DB}/rtabmap.db"
     export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-0}"
     echo "    localizing against $_mapdir/rtabmap.db (mapping phase 0s)"
@@ -438,7 +448,7 @@ corpus_order=${FOUND_CORPUS_ORDER:-abo,metrictree} kg_aliases=${FOUND_KG_ALIASES
 # plausible sixteen-hex provenance stamp for a hash that covered zero files.
 #
 # The roots are typed. Only $REPO/lost3dsg is copied into the container at startup, so only it
-# has a freeze point; /DATA/FOUND/found and knowledge_bridge are live on the path for the whole
+# has a freeze point; $FOUND_ROOT/found and knowledge_bridge are live on the path for the whole
 # run and are SAMPLED, never asserted frozen.
 _tree_sha() {
   local out
@@ -446,7 +456,7 @@ _tree_sha() {
   echo "$out"
 }
 read -r SRC_SHA SRC_N   <<<"$(_tree_sha "$REPO/lost3dsg")"
-read -r FOUND_SHA FOUND_N <<<"$(_tree_sha /DATA/FOUND/found)"
+read -r FOUND_SHA FOUND_N <<<"$(_tree_sha $FOUND_ROOT/found)"
 KB_SRC=${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}
 read -r KB_SHA KB_N     <<<"$(_tree_sha "$KB_SRC")"
 CFG_SHA=$(sha256sum "$HERE/$CFG_NAME" | cut -c1-16)
@@ -466,7 +476,7 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # recording them pins going forward and proves nothing about any earlier run.
 IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble}
 IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
-HF_CACHE=${HF_CACHE:-/DATA/FOUND/.hf_cache}
+HF_CACHE=${HF_CACHE:-$FOUND_ROOT/.hf_cache}
 # >>> TEST-EXTRACT _enc_rev  (test_env_stamp.sh sources the block between these markers.
 # It guessed the boundary with a sed pattern twice and was wrong twice: /^$/ swallowed the
 # call sites below, and /; }$/ ran to end-of-file because this definition is a single line,
@@ -583,31 +593,45 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "gt_semantic": ${FEED_GT_SEMANTIC:-0},
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
     "mapping_seconds_effective": $FEED_MAPPING_SECONDS,
-    "yaml_resolved": $(python3 -c "
-import sys, json, yaml
-c = yaml.safe_load(open(sys.argv[1])) or {}
-def g(*path, default=None):
-    cur = c
+    "effective_config": $(GRAPH_API_CONFIG="$HERE/$CFG_NAME" python3 -c "
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from config import CFG, CFG_PATH
+def g(*path):
+    cur = CFG
     for k in path:
-        if not isinstance(cur, dict): return default
+        if not isinstance(cur, dict): return None
         cur = cur.get(k)
-        if cur is None: return default
     return cur
 print(json.dumps({
-    'archive.per_detection': g('archive', 'per_detection', default=None),
-    'gvd_method': g('rooms', 'gvd_method', default=g('gvd_method', default=None)),
-    'crop.construction': g('crop', 'construction', default=None),
-    'perception.backend': g('perception', 'backend', default=None),
-    'cloud_timeout_s': g('perception', 'cloud_timeout_s', default=g('cloud_timeout_s', default=None)),
-    'min_floor_share': g('habitat', 'min_floor_share', default=None),
-    'floor_confinement': g('habitat', 'floor_confinement', default=None),
-    '_note': 'null means THE KEY IS ABSENT FROM THE CONFIG FILE, not that the setting is off. '
-             'The code default then applies and is listed in _code_defaults below for the '
-             'settings this launcher owns. For the others, null means resolve it from the owning '
-             'module rather than reading it as a value.',
-    '_code_defaults': {'min_floor_share': 0.10, 'floor_confinement': 'teleport',
-                       'floor_tolerance_m': 0.5, 'single_floor': True},
-}))" "$HERE/$CFG_NAME" 2>/dev/null || echo '{}')
+    '_source': 'the MERGED config the code reads (perception_module/config.py CFG), not the yaml '
+               'file alone. Reading the yaml gave null for every key it does not set, and the '
+               'module default then applied unseen: gvd_method read null while ridge was in '
+               'force, and habitat.width read 1280 from my own code default while the merged '
+               'config supplied 640 and the sensor stayed at 640x480.',
+    '_config_file': CFG_PATH,
+    'rooms.gvd_method': g('rooms', 'gvd_method'),
+    # GA-204. The engine that decides a merge MUST be stamped. It was set in the config
+    # rather than by environment precisely so the bundle would record it -- and this list is
+    # hand-maintained, so a new key resolves at runtime and appears in no artefact. Run
+    # 20260901_144539 ran with association.merge_engine absent from its own metadata.
+    # NO BACKTICKS IN THIS HEREDOC: it is unquoted, so a backtick is command substitution.
+    # This comment used them and bash reported 'association.merge_engine: command not found'
+    # at the heredoc's opening line -- the trap the docker-block comment already documents.
+    'association.merge_engine': g('association', 'merge_engine'),
+    'association.merge_cost_ratio': g('association', 'merge_cost_ratio'),
+    'association.merge_min_consecutive': g('association', 'merge_min_consecutive'),
+    'archive.per_detection': g('archive', 'per_detection'),
+    'crop.construction': g('crop', 'construction'),
+    'perception.backend': g('perception', 'backend'),
+    'perception.cloud_timeout_s': g('perception', 'cloud_timeout_s'),
+    'habitat.width': g('habitat', 'width'),
+    'habitat.height': g('habitat', 'height'),
+    'habitat.min_floor_share': g('habitat', 'min_floor_share'),
+    'habitat.floor_confinement': g('habitat', 'floor_confinement'),
+    'habitat.floor_tolerance_m': g('habitat', 'floor_tolerance_m'),
+    'habitat.single_floor': g('habitat', 'single_floor'),
+}))" "$REPO/lost3dsg/src/perception_module" 2>/dev/null || echo '{"error": "config could not be resolved on the host; read config.yaml in the bundle"}')
   },
   "perception_service": {
     "endpoint": "$(python3 -c "import sys,yaml;c=yaml.safe_load(open(sys.argv[1]));print((c.get('perception') or {}).get('modal_endpoint',''))" "$HERE/$CFG_NAME" 2>/dev/null)",
@@ -682,12 +706,12 @@ echo ">>> ROS stack in container (web viewer -> http://localhost:8081)"
 # `\` swallows the continuation, and a backtick-comment terminates an assignment prefix. Both were
 # measured on 2026-08-31; both pass `bash -n`.
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
-  -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL \
+  -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL -e MERGE_ENGINE \
   -e FOUND_ENFORCE -e FOUND_HOLD_BAND -e FOUND_MIN_SUPPORT -e FOUND_ROOM_ENFORCE \
   -e FOUND_ALIGNER -e FOUND_ONTOLOGY_EXT -e FOUND_STORE_PATH -e FOUND_SCENE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
   -e MAPPING_ONLY -e FEED_MAPPING_SECONDS -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
-  -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES \
+  -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
   -e FOUND_EMBED_MODEL -e FOUND_KG_TOP -e FOUND_KG_Z -e FOUND_LEXICAL -e FOUND_ONTOLOGY \
   -e FOUND_ROOM_TYPES_PATH -e FOUND_ROOM_VLM_API_KEY -e FOUND_ROOM_VLM_BASE_URL \
   -e FOUND_ROOM_VLM_MODEL -e FOUND_SCENE_INSTANCE -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \
@@ -700,11 +724,11 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e PREFLIGHT_EXPECT_CFG_SHA -e PREFLIGHT_EXPECT_MERGED_SHA -e PREFLIGHT_EXPECT_SRC_SHA \
   -v "$REPO":/graph_api:ro \
   -v graphapi_ws:/ws \
-  -v /DATA/FOUND:/found \
+  -v $FOUND_ROOT:/found \
   -v "${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}":/kb:ro \
   -v "$RUN_DIR":/ws/output \
-  -v /DATA/models/efficientvit_sam:/models/vitsam:ro \
-  -v /DATA/huggingface_cache:/models/hf \
+  -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
+  -v "${HF_SHARED_CACHE:-/DATA/huggingface_cache}":/models/hf \
   -v "$OUT_DIR":/out \
   graphapi-run:humble /graph_api/lost3dsg/test/live_stack_container.sh
 

@@ -121,12 +121,33 @@ def _tight_crop(image, detector_box, meta):
     return crop, meta
 
 
-def mask_bbox(mask):
-    """Tight bbox of the mask as (x1, y1, x2, y2), or None if the mask is empty."""
+def as_2d_mask(mask):
+    """-> a 2-D boolean mask, or None. THE SHAPE THE REST OF THE TREE ACTUALLY CARRIES.
+
+    GA-165. `detection_types.Detection.mask` is THREE-DIMENSIONAL -- every other consumer in
+    the tree writes `det.mask[:, :, 0]` (perception_2.py:315 and :495, cloud/client.py). This
+    module was written and self-checked against 2-D boolean fixtures I created myself, so
+    `np.nonzero` returned three arrays instead of two and `mask_bbox` raised
+    `ValueError: too many values to unpack (expected 2)` on the FIRST real detection with a
+    mask -- killing the node two seconds into the second cycle of the first run that ever got
+    that far.
+
+    Normalised in ONE place, so every entry point gets the same treatment rather than each
+    caller remembering. A fixture I invent has the shape I imagine; the artefact has the
+    shape it has.
+    """
     if mask is None:
         return None
-    m = np.asarray(mask).astype(bool)
-    if not m.any():
+    m = np.asarray(mask)
+    while m.ndim > 2:
+        m = m[..., 0]
+    return m.astype(bool)
+
+
+def mask_bbox(mask):
+    """Tight bbox of the mask as (x1, y1, x2, y2), or None if the mask is empty."""
+    m = as_2d_mask(mask)
+    if m is None or not m.any():
         return None
     ys, xs = np.nonzero(m)
     return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
@@ -178,9 +199,9 @@ def adaptive_pad(box, frame_shape,
 
 def mask_outline(mask, thickness=CONTOUR_THICKNESS_PX):
     """Boolean outline of the mask, `thickness` px thick. Pure numpy — no cv2 needed."""
-    m = np.asarray(mask).astype(bool)
-    if not m.any():
-        return np.zeros_like(m)
+    m = as_2d_mask(mask)
+    if m is None or not m.any():
+        return np.zeros_like(m if m is not None else np.zeros((1, 1), bool))
     eroded = m.copy()
     for _ in range(max(1, int(thickness))):
         e = eroded.copy()
@@ -277,6 +298,7 @@ def build_context_crop(image, mask, detector_box=None, size=0,
         meta["reason"] = "no image"
         return None, meta
 
+    mask = as_2d_mask(mask)          # GA-165: normalise ONCE, at the entry point
     box = mask_bbox(mask)
     if box is not None:
         meta["used_mask_bbox"] = True
@@ -632,6 +654,23 @@ def demo():
     print(f"  large object: window {m_b['source_window_px']} -> 224 "
           f"(upsampled={m_b['upsampled']}) — real pixels discarded")
     assert m_b["upsampled"] is False
+
+    # --- 10. THE SHAPE THE TREE ACTUALLY CARRIES: Detection.mask is 3-D --------------------
+    # GA-165. Every fixture above is a 2-D bool mask I wrote myself, and that is exactly why
+    # this file crashed the first run that reached it: the real Detection.mask has a trailing
+    # axis, np.nonzero returned three arrays, and mask_bbox raised on the first detection.
+    m3 = mask[:, :, None].astype(np.uint8) * 255          # (H, W, 1) uint8, as SAM2 gives it
+    assert m3.ndim == 3
+    b3 = mask_bbox(m3)
+    assert b3 == mask_bbox(mask), f"3-D mask must give the same bbox: {b3} vs {mask_bbox(mask)}"
+    c3, meta3 = build_context_crop(img, m3, detector_box=det_box, construction=CONTOUR, size=224)
+    assert c3 is not None and c3.shape == (224, 224, 3) and meta3["contour"]
+    assert meta3["used_mask_bbox"] is True
+    print(f"  3-D mask (H,W,1) uint8, as Detection carries : bbox {b3}, crop {c3.shape}, "
+          f"contour {meta3['contour']} — same answer as the 2-D fixture")
+    # and a 4-D one, since nothing forbids it
+    assert mask_bbox(m3[:, :, :, None]) == b3
+    print("  extra trailing axes tolerated; normalised once at the entry point")
 
     print("\ncrop_context self-check OK")
 

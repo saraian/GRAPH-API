@@ -91,6 +91,8 @@ def mask_sampled_appearance(image, mask, bbox_xyxy):
     """
     if image is None or bbox_xyxy is None:
         return None
+    from crop_context import as_2d_mask
+    mask = as_2d_mask(mask)          # GA-165: Detection.mask is 3-D
     h, w = image.shape[:2]
     x1, y1, x2, y2 = [int(round(float(v))) for v in bbox_xyxy]
     x1, y1 = max(0, x1), max(0, y1)

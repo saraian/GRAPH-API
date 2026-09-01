@@ -3,7 +3,6 @@
 
 import os
 
-
 os.environ["DISPLAY"] = ":1"
 
 
@@ -11,8 +10,8 @@ import ctypes
 import math
 import sys
 from typing import Any, Callable, Dict, Optional, Tuple
-from nav_msgs.msg import Odometry
 
+from nav_msgs.msg import Odometry
 
 flags = sys.getdlopenflags()
 sys.setdlopenflags(flags | ctypes.RTLD_GLOBAL)
@@ -22,18 +21,19 @@ sys.setdlopenflags(flags | ctypes.RTLD_GLOBAL)
 sys.path.insert(0, "/root/exchange/habitat-sim/examples")
 
 
-import numpy as np
-import rclpy
-from config import CFG
-from geometry_msgs.msg import TransformStamped
-from habitat_sim.utils.settings import default_sim_settings
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import CameraInfo, Image
-from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
-
-
-from viewer import HabitatSimInteractiveViewer
-
+# These imports MUST follow the sys.path.insert above: they resolve against the
+# habitat-sim examples directory added there, so moving them to the top of the file
+# breaks them. Marked rather than moved -- an autofix that reorders imports breaks an
+# import that had to come first for its side effect.
+import numpy as np  # noqa: E402
+import rclpy  # noqa: E402
+from config import CFG  # noqa: E402
+from geometry_msgs.msg import TransformStamped  # noqa: E402
+from habitat_sim.utils.settings import default_sim_settings  # noqa: E402
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy  # noqa: E402
+from sensor_msgs.msg import CameraInfo, Image  # noqa: E402
+from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster  # noqa: E402
+from viewer import HabitatSimInteractiveViewer  # noqa: E402
 
 
 def numpy_to_image_msg_rgb(np_img, stamp, frame_id: str = "habitat_camera_optical"):

@@ -59,6 +59,16 @@ _DEFAULTS = {
         # the label weight alone, so two identical labels score exactly 1.0000 -- above any
         # threshold, on zero measured evidence. 0 restores the old behaviour.
         "merge_min_evidence": 1,
+        # GA-83 / GA-94: input-starvation watchdog. Seconds of /bbox_3d silence per check,
+        # and consecutive silent checks before the node ends the run.
+        "input_silence_timeout_s": 60.0,
+        "input_silence_max_strikes": 3,
+        # GA-94b. Robot STOPS that must pass with no detection before the producer is called
+        # dead. Detection is gated on the robot stopping, so with dwell=0 a two-minute
+        # silence is a normal gap between incidental halts -- run 042828 had 4 cycles and 3
+        # stops in 9 minutes, and the time-only guard ended a healthy run. Stops are the unit
+        # in which "the producer had its chance and did not take it" is measurable.
+        "input_silence_min_stops": 3,
         "tracking_iou_threshold": 0.3,
         "volume_expansion_ratio": 0.01,
         "exploration_frame_limit": 10,
@@ -87,6 +97,11 @@ _DEFAULTS = {
     },
     "paths": {
         "operations_log": "/root/exchange/output/operations.txt",
+        # GA-166. THE RUN'S OUTPUT DIRECTORY -- what the bundle collector reads. The
+        # per-detection archive resolves here, and NOT from operations_log's directory: a
+        # log's directory is not where data goes, and deriving one from the other put an
+        # entire run's archive in /tmp.
+        "output_dir": "/root/exchange/output",
         # empty -> <this package>/utils/l2_{encoder,decoder}.onnx
         "vitsam_encoder": "",
         "vitsam_decoder": "",
@@ -219,6 +234,12 @@ _DEFAULTS = {
         "depth_tol_rel": 0.05,
     },
     "perception": {
+        # GA-164. Oldest frame get_synced_data will accept, seconds. Was a hardcoded 1.0
+        # that no config could reach. At 1280x960 frames arrived a MEDIAN 7.14 s stale and
+        # this check rejected all 1650 of them, so ZERO perception cycles ran in 17 minutes.
+        # The backlog itself is fixed by QoS depth=1 (see utils.py); this stays 1.0 so the
+        # freshness guarantee is unchanged, and is now a knob rather than a literal.
+        "max_frame_age_s": 1.0,
         "backend": "local",  # "modal", "managed", "local"
         "modal_endpoint": "",  # e.g. "https://<user>--lost3dsg-perception-predict.modal.run"
         "score_threshold": 0.15,

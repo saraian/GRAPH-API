@@ -804,7 +804,7 @@ class ObjectManagerService(Node):
 
         # 2. Se abbiamo trovato un best match, controlliamo se si è spostato
         if best_match:
-            print(f"🔍 [BEST MATCH FOUND] Rilevato: '{label_base}' -> Best Memoria: '{best_match.label}' (Score: {highest_similarity:.3f})")
+            print(f"🔍 [BEST MATCH FOUND] Detected: '{label_base}' -> Best in memory: '{best_match.label}' (Score: {highest_similarity:.3f})")
             
             if best_match.bbox is None:
                 return False, None, 0.0

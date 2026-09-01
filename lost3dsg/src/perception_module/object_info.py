@@ -23,3 +23,11 @@ class Object:
         self.color= color
         self.material=material
         self.shape=shape
+        # GA-186. One entry per SIGHTING: which perception frame, from where, at what
+        # centroid. `association.py` has needed this since it was written and the tree
+        # recorded it nowhere, which is why co-visibility could not be used as a constraint
+        # and why appearance had no way to know whether two views were comparable. Held on
+        # the object rather than in a side table so a sighting cannot outlive its subject.
+        # Populated by ObjectManagerService._record_sighting; empty is legitimate and every
+        # channel that needs observations ABSTAINS on it rather than assuming.
+        self.observations = []

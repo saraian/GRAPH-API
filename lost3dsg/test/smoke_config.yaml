@@ -41,6 +41,20 @@ habitat:
   walk_frames: 6         # frames moving per burst
   dwell_frames: 0       # 0 = agent never stops (owner, 2026-08-31). FEED_DWELL in live_run.sh overrides this.
   fps: 3.0
+  # OWNER RULING 25, 2026-09-01: 1280x960. SET HERE AND NOT ONLY IN CODE, because
+  # perception_module/config.py supplies habitat.width 640 as a module default and the merged
+  # config wins over habitat_feed_host.py's own fallback — I raised the code default to 1280 and
+  # the effective value stayed 640. Found by resolving CFG the way room_manager does rather than
+  # by reading my own change and believing it.
+  #
+  # Measured: 89.1 ms/frame render at 1280x960, 11.2 fps against a 3 fps feed, 8.60 MB/frame.
+  # 4x the pixels for no frame-rate cost. The air-conditioner sliver goes 28x14 -> 56x28.
+  width: 1280
+  height: 960
+  # Both explicit rather than left to a code default, so the bundle's resolved_config reports a
+  # value that came from a file somebody can read.
+  min_floor_share: 0.10   # UNMEASURED; storeys measured at 46.8/45.9%, non-floors at 0.7/3.3%
+  floor_confinement: teleport
 
 hooks:
   search_paths: ["/found"]

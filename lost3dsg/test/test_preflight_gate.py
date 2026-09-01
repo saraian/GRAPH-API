@@ -486,7 +486,7 @@ def test_a4_refuses_a_backend_that_cannot_answer():
 
 
 def test_run_output_lives_outside_every_hashed_root():
-    """Run output goes to /DATA/FOUND/results/<timestamp>_<scene>, and it must move no digest.
+    """Run output goes to $FOUND_ROOT/results/<timestamp>_<scene>, and it must move no digest.
 
     This is the property my own deny-list broke: `output/` was inside the hashed set, so running
     the stack moved the frozen root and "frozen" was unachievable while being reported achieved.
@@ -494,15 +494,21 @@ def test_run_output_lives_outside_every_hashed_root():
     asserted rather than assumed."""
     roots = ("/DATA/FOUND/vendor/graph-api/lost3dsg", "/DATA/FOUND/found",
              "/DATA/ASPIRE/knowledge_bridge")
-    out = "/DATA/FOUND/results"
+    # $FOUND_ROOT, not /DATA/FOUND. The launcher derives its root from its own location so a
+    # clone anywhere can run; this assertion used to encode the one machine the code was written
+    # on, and it failed the moment the hardcoding it was guarding against was removed.
+    out = "$FOUND_ROOT/results"
     for r in roots:
         check(not out.startswith(r.rstrip("/") + "/") and out != r,
               f"run output at {out} is inside hashed root {r} — the frozen root cannot hold still")
 
     # and the launcher must actually default there
     body = open(os.path.join(HERE, "live_run.sh")).read()
-    check("OUT_DIR=${OUT_DIR:-/DATA/FOUND/results/" in body,
-          "live_run.sh must default OUT_DIR under /DATA/FOUND/results/, never /tmp")
+    check("OUT_DIR=${OUT_DIR:-$FOUND_ROOT/results/" in body,
+          "live_run.sh must default OUT_DIR under $FOUND_ROOT/results/, never /tmp")
+    check("FOUND_ROOT=${FOUND_ROOT:-$(cd \"$REPO/../..\" && pwd)}" in body,
+          "FOUND_ROOT must be DERIVED from the script's location, not hardcoded — a clone "
+          "anywhere else cannot run if it is")
 
 
 # --- the extension seam: GRAPH-API ships the harness, FOUND ships what asserts about FOUND ---

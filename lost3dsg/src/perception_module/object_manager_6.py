@@ -44,6 +44,7 @@ from nlp_utils import get_embedding, lost_similarity, world2vec
 from datetime import datetime
 from cv_utils import publish_persistent_bboxes
 from config import CFG
+from association import Observation
 from hooks import DecisionLog, load_hooks
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
@@ -106,6 +107,11 @@ AGENT_POSES_SERIES_FILE = os.path.join(log_dir, "agent_poses.jsonl")
 # from agent_poses.jsonl, so a lag here loses nothing.
 AGENT_POSES_SNAPSHOT_PERIOD = 5.0   # agent_poses.json whole-array rewrite
 AGENT_PATH_PUBLISH_PERIOD = 1.0     # /agent_path nav_msgs/Path for RViz
+# GA-186: how many sightings one object keeps. Bounded because the co-visibility channel
+# walks the two lists pairwise, so an unbounded list makes one comparison quadratic in the
+# number of frames an object was visible for -- and run 20260901_055513 had objects present
+# across 202 cycles. The covariance and the view spread both converge long before 64.
+MAX_OBSERVATIONS_PER_OBJECT = int(CFG["association"].get("max_observations_per_object", 64))
 # GA-83: how long /bbox_3d may be silent before the node says so. Long enough not to fire
 # between ordinary detection cycles, short enough that a dead producer is in the log within
 # a minute rather than in a process table an hour later.
@@ -115,6 +121,10 @@ INPUT_SILENCE_TIMEOUT = CFG["association"].get("input_silence_timeout_s", 60.0)
 # announced "the producer may have stopped" at 17:53:35 and then idled 36 more minutes
 # while the run was already dead.
 INPUT_SILENCE_MAX_STRIKES = CFG["association"].get("input_silence_max_strikes", 3)
+# GA-94b: how many robot STOPS must pass with no detection before the producer is called
+# dead. Detection only happens when the robot stops, so stops -- not seconds -- are the unit
+# in which "the producer had its chance" is measurable.
+INPUT_SILENCE_MIN_STOPS = CFG["association"].get("input_silence_min_stops", 3)
 # must match the bridge's own default (BRIDGE_PORT=8081); :8080 is the FOUND dashboard server
 GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL", "http://127.0.0.1:8081")
 GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
@@ -124,7 +134,7 @@ SYNC_BUFFER_LIMIT = 20
 def _launch_graph_api_bridge():
     bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph_api_bridge.py")
     if not os.path.exists(bridge_path):
-        print(f"[WARN] graph_api_bridge.py non trovato: {bridge_path}")
+        print(f"[WARN] graph_api_bridge.py not found: {bridge_path}")
         return None
 
     proc = subprocess.Popen(
@@ -149,7 +159,7 @@ def _launch_graph_api_bridge():
             for line in proc.stdout:
                 print(f"[BRIDGE] {line}", end="")
         except Exception as e:
-            print(f"[WARN] Errore lettura log graph_api_bridge: {e}")
+            print(f"[WARN] Error reading graph_api_bridge log: {e}")
 
     threading.Thread(target=_pipe_logs, daemon=True).start()
     return proc
@@ -307,7 +317,7 @@ def save_agent_poses(agent_poses):
         with open(AGENT_POSES_LOG_FILE, "w") as f:
             json.dump(agent_poses, f, indent=2)
     except Exception as e:
-        print(f"[WARN] Errore salvataggio agent_poses.json: {e}")
+        print(f"[WARN] Error saving agent_poses.json: {e}")
 
 
 def append_agent_pose(entry):
@@ -322,7 +332,7 @@ def append_agent_pose(entry):
         with open(AGENT_POSES_SERIES_FILE, "a") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception as e:
-        print(f"[WARN] Errore append agent_poses.jsonl: {e}")
+        print(f"[WARN] Error appending agent_poses.jsonl: {e}")
 
 
 def _stamp_from_seconds(timestamp_sec):
@@ -522,6 +532,7 @@ class ObjectManagerService(Node):
         self._last_bbox_at = None
         self._input_silence_reported = False
         self._input_silence_strikes = 0
+        self._stops_since_input = 0
 
         self.latest_descriptions = None
         self.latest_bboxes_msg = None
@@ -637,6 +648,11 @@ class ObjectManagerService(Node):
         # Sincronizza lo stato reale: True se si muove, False se è fermo
         was_moving = self.robot_has_moved
         self.robot_has_moved = msg.data
+        if was_moving and not msg.data:
+            # GA-94b: a STOP is the event that produces a detection. Counted so the input
+            # watchdog can measure silence in stops rather than in seconds -- see
+            # _check_input_silence.
+            self._stops_since_input = getattr(self, "_stops_since_input", 0) + 1
         if msg.data:
             if not was_moving:
                 now = self.get_clock().now().to_msg()
@@ -653,10 +669,10 @@ class ObjectManagerService(Node):
             # `latest_bboxes` is still cleared: it is the live view of what is in front of
             # the robot right now, and that really is invalidated by motion.
             self.latest_bboxes.clear()
-            self.object_services.log_both('warn', "[MOVEMENT] Robot is moving -> Blocco stanze attivato")
+            self.object_services.log_both('warn', "[MOVEMENT] Robot is moving -> room creation blocked")
         else:
             self._moving_since = None
-            self.object_services.log_both('info', "[MOVEMENT] Robot has stopped -> Creazione stanze permessa")
+            self.object_services.log_both('info', "[MOVEMENT] Robot has stopped -> room creation allowed")
             # Motion has ended: anything buffered from before it began is still valid.
             self._try_process()
 
@@ -731,7 +747,7 @@ class ObjectManagerService(Node):
                 best_match = obj
 
         if best_match:
-            print(f"[BEST MATCH FOUND] Rilevato: '{label_base}' -> Best Memoria: '{best_match.label}' (Score: {highest_similarity:.3f})")
+            print(f"[BEST MATCH FOUND] Detected: '{label_base}' -> Best in memory: '{best_match.label}' (Score: {highest_similarity:.3f})")
             
             if best_match.bbox is None:
                 return False, None, 0.0
@@ -787,6 +803,55 @@ class ObjectManagerService(Node):
 
         return facts
 
+    def _record_sighting(self, obj, perception_timestamp):
+        """Append one Observation to `obj`, or none at all. GA-186.
+
+        The camera position comes from `latest_agent_pose`, which is the pose stream the
+        bundle already records. WITHOUT A POSE THERE IS NO OBSERVATION: a sighting whose
+        camera position was guessed would put a fabricated bearing into the appearance
+        channel and a fabricated range into the covariance, and both would look exactly
+        like a measurement. Abstaining here is what makes every channel downstream able to
+        say "not evaluated" instead of "evaluated and equal".
+
+        `MAX_OBSERVATIONS_PER_OBJECT` bounds the memory: an object seen in 200 frames does
+        not need 200 records to establish its covariance or its view spread, and the list
+        is walked pairwise by the co-visibility channel. The OLDEST are dropped, keeping
+        the most recent views, because those are the ones a current comparison is about.
+        """
+        pose = getattr(self, "latest_agent_pose", None)
+        if pose is None:
+            return
+        centroid = getattr(obj, "centroid", None)
+        if centroid is None:
+            return
+        try:
+            obs = Observation(
+                frame_id=perception_timestamp,
+                camera_position=(pose["x"], pose["y"], pose["z"]),
+                centroid=centroid,
+                stamp=perception_timestamp,
+                # GA-186: this frame's DETECTOR box, carried in the bbox dict since the
+                # message grew `has_bbox_2d`. Absent stays None -- co-visibility abstains
+                # on a missing box and vetoes only on a measured disjoint one.
+                bbox_2d=(getattr(obj, "bbox", None) or {}).get("bbox_2d"),
+                # GA-190: this view's appearance embedding, so the appearance channel
+                # compares MEASURED crops rather than a shape descriptor derived from the
+                # box the two objects already agree on.
+                appearance=(getattr(obj, "bbox", None) or {}).get("clip_embedding"),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            # A malformed pose or centroid is a real defect and must not be silently
+            # replaced by a default; but it must also not kill the tracking callback for
+            # every other object in the frame. Logged loudly, counted, never substituted.
+            self.object_services.log_both(
+                'error', f"[ASSOC] sighting non registrata per '{getattr(obj, 'label', '?')}': {e}")
+            return
+        if not hasattr(obj, "observations") or obj.observations is None:
+            obj.observations = []
+        obj.observations.append(obs)
+        if len(obj.observations) > MAX_OBSERVATIONS_PER_OBJECT:
+            del obj.observations[:-MAX_OBSERVATIONS_PER_OBJECT]
+
     def publish_kb_facts(self, current_perception_objects):
         facts = []
 
@@ -812,7 +877,7 @@ class ObjectManagerService(Node):
             self.tracking_step_counter += 1
 
         if self.robot_has_moved:
-            self.object_services.log_both('warn', "Robot in movimento — dati scartati da object_tracking_callback")
+            self.object_services.log_both('warn', "Robot is moving — data discarded by object_tracking_callback")
             response.status = "moving"
             response.num_objects = len(wm.persistent_perceptions)
             response.tracking_mode_activated = False
@@ -865,6 +930,15 @@ class ObjectManagerService(Node):
                 bbox_data["yaw"] = float(box.yaw)
                 bbox_data["oriented_center"] = [float(v) for v in box.oriented_center]
                 bbox_data["oriented_extents"] = [float(v) for v in box.oriented_extents]
+            # GA-186: the detector's 2D box, and ONLY when the publisher says it carried
+            # one. Same rule as the oriented box above -- an absent 2D box read as
+            # (0,0,0,0) is a real box at the image origin as far as any reader can tell,
+            # and co-visibility would then compute a confident overlap of 0.0 and VETO.
+            if getattr(box, "has_bbox_2d", False):
+                bbox_data["bbox_2d"] = [float(v) for v in box.bbox_2d]
+            # GA-190: same rule, third field. Only when the publisher says it carried one.
+            if getattr(box, "has_clip_embedding", False):
+                bbox_data["clip_embedding"] = [float(v) for v in box.clip_embedding]
             temp_key = create_object_key(box.label, "", "", "")
             self.latest_bboxes[temp_key] = {
                 "bbox": bbox_data, "label": box.label,
@@ -885,7 +959,7 @@ class ObjectManagerService(Node):
                     room_msg = String()
                     room_msg.data = self.room_manager.current_room_id
                     self.room_pub.publish(room_msg)
-                    self.object_services.log_both('info', f"Cambio stanza rilevato! Inviato segnale a Perception per: {self.room_manager.current_room_id}")
+                    self.object_services.log_both('info', f"Room change detected! Signalled Perception for: {self.room_manager.current_room_id}")
 
             self.last_room_check_time = current_time
 
@@ -947,7 +1021,7 @@ class ObjectManagerService(Node):
                         # the failure is now a visible proposal rather than a lost object.
                         already_seen = True
                     else:
-                        self.object_services.log_both('warn', f"Update fallito per {obj.label}: {update_response.message}")
+                        self.object_services.log_both('warn', f"Update failed for {obj.label}: {update_response.message}")
                     continue
 
                 for obj in wm.snapshot():
@@ -1084,7 +1158,7 @@ class ObjectManagerService(Node):
                         self._note_update(update_response.object_id)
                         already_seen = True
                     else:
-                        self.object_services.log_both('warn', f"Update fallito per {best_match.label}: {update_response.message}")
+                        self.object_services.log_both('warn', f"Update failed for {best_match.label}: {update_response.message}")
 
             if not already_seen:
                 # Admission seam: the configured Filter sees exactly what would be
@@ -1123,11 +1197,34 @@ class ObjectManagerService(Node):
                     if decision_id and linked_id:
                         self.decision_log.write("link", linked_id,
                                                 decision_id=decision_id, label=label)
+
+                    # GA-192: carry the ONTOLOGY TYPE the filter just resolved onto the
+                    # object. The hook already computed it -- `entity` is the aligned class
+                    # and `alignment.status` says whether the alignment holds -- and it was
+                    # being written to the decision log and then dropped, so the association
+                    # layer's ontology channel abstained on EVERY pair for want of a type
+                    # that had already been derived one call earlier.
+                    #
+                    # Read out of the generic annotation dict, exactly as `decision_id` is:
+                    # this stays seam data and imports nothing from any particular filter.
+                    # ALIGNMENT IS REQUIRED BEFORE THE TYPE IS USABLE -- an unaligned guess
+                    # would let the channel compare two labels as if the ontology had
+                    # endorsed them, which is the one thing the design says it must not do.
+                    ann = decision.annotation or {}
+                    aligned = (ann.get("alignment") or {}).get("status") == "aligned"
+                    new_obj.onto_type = ann.get("entity") if aligned else None
+                    new_obj.onto_aligned = bool(aligned and new_obj.onto_type)
+
                     current_perception_objects.append(new_obj)
                     objects_modified = True
 
         for obj in current_perception_objects:
             obj.last_perception_time = perception_timestamp
+            # GA-186. Every object in this list was seen in THIS perception frame, so this
+            # loop is exactly the co-visibility relation: same frame_id means the two were
+            # observed together. Recorded here rather than in each match branch because
+            # there are four of those and a sighting missed in one of them is invisible.
+            self._record_sighting(obj, perception_timestamp)
         pov_volume = getattr(self, 'latest_fov_volume', None)
 
         if not in_exploration:
@@ -1251,7 +1348,7 @@ class ObjectManagerService(Node):
             if getattr(obj, "object_id", None) == object_id or (obj.label == label and obj.bbox == bbox):
                 return obj
 
-        self.get_logger().warn(f"Oggetto {label} creato via API ma non ritrovato in memoria")
+        self.get_logger().warn(f"Object {label} created via the API but not found in memory")
         return None
 
     def modify_existing_object(self, best_match, bbox, description_embedding=None):
@@ -1352,7 +1449,7 @@ class ObjectManagerService(Node):
         if to_remove:
             for obj in to_remove:
                 self.uncertain_objects.remove(obj)
-                self.object_services.log_both('info', f"[UNCERTAIN CLEANUP] Rimosso '{obj.label}' (tempo scaduto)")
+                self.object_services.log_both('info', f"[UNCERTAIN CLEANUP] Removed '{obj.label}' (expired)")
     
     def _descriptions_callback(self, msg):
         self._n_desc_msgs += 1
@@ -1398,6 +1495,28 @@ class ObjectManagerService(Node):
             self._input_silence_reported = False
             self._input_silence_strikes = 0
             return
+        # GA-94b. THE ORIGINAL PREMISE IS NO LONGER TRUE. This watchdog was written when a
+        # silent /bbox_3d meant a broken producer. Detection is gated on the robot STOPPING,
+        # and with dwell=0 the robot barely stops -- run 042828 had four cycles and three
+        # stop events in nine minutes, so a 118-second gap between incidental halts is
+        # NORMAL, not a dead producer. The guard fired correctly on a premise that had
+        # changed underneath it, and ended a healthy run: perception's last line at that
+        # moment was "CameraInfo received", no traceback, zero stale rejects.
+        #
+        # So silence is measured in the unit that actually produces input: STOPS. If the
+        # robot has stopped MIN_STOPS_BEFORE_DEAD times since the last detection arrived,
+        # the producer had its chance and did not take it -- that is a dead producer at any
+        # dwell. Time alone is not, any more.
+        stops = getattr(self, "_stops_since_input", 0)
+        if stops < INPUT_SILENCE_MIN_STOPS:
+            if not self._input_silence_reported:
+                self._input_silence_reported = True
+                self.object_services.log_both(
+                    'warn',
+                    f"[INPUT] no /bbox_3d for {silent_for:.0f}s, but only {stops} robot stop(s) "
+                    f"since the last one (need {INPUT_SILENCE_MIN_STOPS} to call it dead). "
+                    f"Detection is gated on stopping; with a low dwell this is expected.")
+            return
         self._input_silence_strikes += 1
         if not self._input_silence_reported:
             self._input_silence_reported = True
@@ -1434,6 +1553,7 @@ class ObjectManagerService(Node):
         self._n_bbox_msgs += 1
         self._last_bbox_at = time.time()
         self._input_silence_reported = False
+        self._stops_since_input = 0          # GA-94b: input arrived; the stop count restarts
         stamp = getattr(getattr(msg, "header", None), "stamp", None)
         if stamp is None:
             self._n_bbox_no_stamp += 1
@@ -1634,7 +1754,7 @@ def main(args=None):
     except KeyboardInterrupt:
         from datetime import datetime
         print(f"\nOBJECT MANAGER chiuso ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
-        print("Salvataggio dell'ultima stanza in corso...")
+        print("Saving the last room...")
 
         if hasattr(service_node, 'room_manager'):
             service_node.room_manager.finalize_current_room(wm.persistent_perceptions)

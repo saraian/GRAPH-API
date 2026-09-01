@@ -147,6 +147,10 @@ def rooms():
         return []
 
 
+# Frames that could not be decoded. Counted rather than swallowed: see _jpeg_from_msg.
+_FRAME_DECODE_FAILURES = {"n": 0, "last": None}
+
+
 class BridgeNode(Node):
     def __init__(self):
         super().__init__('graph_api_bridge')
@@ -177,7 +181,13 @@ class BridgeNode(Node):
                 img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
             _, jpeg = cv2.imencode('.jpg', img_np, [cv2.IMWRITE_JPEG_QUALITY, 80])
             return jpeg.tobytes()
-        except Exception:
+        except (ValueError, TypeError, AttributeError) as exc:
+            # A malformed frame (wrong buffer length for h*w*3, unexpected encoding) is a
+            # real per-frame condition and must not kill the subscription. It is COUNTED,
+            # so a feed quietly dropping every frame is visible in /health instead of
+            # looking like a feed that simply has nothing to send.
+            _FRAME_DECODE_FAILURES["n"] += 1
+            _FRAME_DECODE_FAILURES["last"] = f"{type(exc).__name__}: {exc}"
             return None
 
     def _on_annotated_image(self, msg: Image):
@@ -200,14 +210,20 @@ class BridgeNode(Node):
 
         future = client.call_async(req)
 
-        deadline = time.time() + 5.0
+        deadline = time.time() + SERVICE_CALL_TIMEOUT_SEC
         while time.time() < deadline:
             if future.done():
                 break
             time.sleep(0.05)
 
         if not future.done():
-            raise RuntimeError(f"Timeout in attesa del servizio '{key}'")
+            # The request WAS dispatched by call_async above; only our wait expired. Say so,
+            # because the caller's next move differs: a retry here re-runs work that is still
+            # in flight, and for `merge` that means merging an object twice (GA-183).
+            raise RuntimeError(
+                f"Timeout dopo {SERVICE_CALL_TIMEOUT_SEC:.0f}s in attesa del servizio '{key}'; "
+                f"la richiesta E' STATA INVIATA e puo' ancora completarsi -- non ritentare "
+                f"senza verificare lo stato (BRIDGE_SERVICE_TIMEOUT per allungare l'attesa)")
 
         result = future.result()
         if result is None:
@@ -230,6 +246,25 @@ def require_node():
     return node
 
 
+def _set_description_embedding(req, body):
+    """Fill `description_embedding` AND the flag that says whether it means anything.
+
+    GA-184. JSON can express absence -- `null`, or the key simply missing -- and the ROS
+    request cannot: `float32[]` has no null. So the distinction has to be carried in a
+    separate boolean, and THIS is the only place that knows both sides. `body.get(k, [])`
+    on its own silently turned "absent" into "empty" and the information was gone from
+    here on.
+
+    An explicit empty LIST in the JSON is still absence: nothing downstream can use a
+    zero-length embedding, and a caller that sends one is saying it has none.
+    """
+    raw = body.get("description_embedding")
+    values = [] if raw is None else [float(x) for x in raw]
+    req.description_embedding = values
+    req.has_description_embedding = bool(values)
+    return req.has_description_embedding
+
+
 @app.post("/objects")
 def add_object(body: dict):
     req = AddObject.Request()
@@ -244,7 +279,7 @@ def add_object(body: dict):
     req.y_max = float(body.get("y_max", 0.0))
     req.z_min = float(body.get("z_min", 0.0))
     req.z_max = float(body.get("z_max", 0.0))
-    req.description_embedding = [float(x) for x in body.get("description_embedding", [])]
+    _set_description_embedding(req, body)
     res = require_node().call('add', req)
     if not res.success:
         raise HTTPException(status_code=400, detail=res.message)
@@ -307,9 +342,7 @@ def update_object(object_id: str, body: dict):
         req.z_min = float(body.get("z_min", 0.0))
         req.z_max = float(body.get("z_max", 0.0))
 
-    req.description_embedding = [
-        float(x) for x in body.get("description_embedding", [])
-    ]
+    _set_description_embedding(req, body)
 
     res = require_node().call('update', req)
     if not res.success:
@@ -671,6 +704,7 @@ def graph_data(request: Request = None):
 
     # Parse on-hold and rejected objects for audit summary
     on_hold, rejected, abstained = [], [], []
+    on_hold_error = None
     u_path = out / "uncertain_objects.txt"
     if u_path.exists():
         try:
@@ -683,8 +717,11 @@ def graph_data(request: Request = None):
                     on_hold.append(cur)
                 elif cur and "Center position:" in line:
                     cur["position_str"] = line.split(":", 1)[1].strip()
-        except Exception:
-            pass
+        except (OSError, ValueError, IndexError) as exc:
+            # A truncated or half-written file is expected while the writer runs. The
+            # on-hold list is then INCOMPLETE, and a partial list must not be presented
+            # as the whole one.
+            on_hold_error = f"{u_path}: {type(exc).__name__}: {exc}"
 
     # Third reader of the same file; it shares the one parse now.
     _records, unreadable_records, decisions_error = _decision_log()
@@ -718,6 +755,7 @@ def graph_data(request: Request = None):
             "error": decisions_error,
             "unreadable_records": unreadable_records,
             "admitted_count": len([n for n in nodes if n.get("type") == "object"]),
+            "on_hold_error": on_hold_error,
             "on_hold_count": len(on_hold),
             "rejected_count": len(rejected),
             "abstained_count": len(abstained),
@@ -1015,6 +1053,12 @@ COMPOSITE_MAX_AGE_SEC = 30.0
 # so without this the dashboard pins itself to a single annotated frame forever.
 ANNOTATED_MAX_AGE_SEC = float(os.environ.get("BRIDGE_ANNOTATED_MAX_AGE", "1.5"))
 RAW_MAX_AGE_SEC = float(os.environ.get("BRIDGE_RAW_MAX_AGE", "3.0"))
+# GA-183. How long `call()` waits for a ROS service to answer. Was a bare 5.0, and `merge`
+# routinely exceeds it: run 20260901_055513 returned 500 on 89 of 140 merge POSTs while the
+# merges THEMSELVES SUCCEEDED -- 89 discarded objects left the world model against only 51
+# responses that said 200. The request is already dispatched when the wait expires, so a
+# timeout here is never evidence that the work did not happen.
+SERVICE_CALL_TIMEOUT_SEC = float(os.environ.get("BRIDGE_SERVICE_TIMEOUT", "30.0"))
 # resend an unchanged frame at least this often, so a motionless scene still looks live
 FEED_HEARTBEAT_SEC = 1.0
 
@@ -1057,7 +1101,9 @@ def _best_frame():
                 _feed_probe_blocked_until = 0.0
                 _last_frame_source = "simulator host"
                 return data
-        except Exception:
+        except (urllib.error.URLError, OSError, TimeoutError):
+            # Unreachable feed host: expected between runs. Back off rather than probing
+            # every frame. Anything else here is our bug and must raise.
             _feed_probe_blocked_until = now + FEED_PROBE_BACKOFF_SEC
     if node and node.raw_jpeg and (now - node.last_raw_time) < RAW_MAX_AGE_SEC:
         _last_frame_source = "raw camera"
@@ -1549,8 +1595,8 @@ def get_pipeline_health():
         try:
             with urllib.request.urlopen(f"{FEED_HOST}/bev_data", timeout=0.5):
                 feed_active = True
-        except Exception:
-            pass
+        except (urllib.error.URLError, OSError, TimeoutError):
+            feed_active = False      # unreachable is the answer, not an error to hide
     if not feed_active:
         fn_file = Path("/tmp/feed_node.log")
         fn_fresh = fn_file.exists() and (time.time() - fn_file.stat().st_mtime) < 30.0
@@ -1574,8 +1620,11 @@ def get_pipeline_health():
             components["perception"] = {"name": "Perception Pipeline", "active": True, "details": "Active"}
         else:
             components["perception"] = {"name": "Perception Pipeline", "active": False, "details": "Node Stopped"}
-    except Exception:
-        components["perception"] = {"name": "Perception Pipeline", "active": False, "details": "Unreachable"}
+    except OSError as exc:
+        # Only the filesystem probe can fail here; _running_scripts handles its own.
+        # "we could not look" is not "it is stopped", so the detail says which it is.
+        components["perception"] = {"name": "Perception Pipeline", "active": False,
+                              "details": f"Unknown: could not read /tmp/perception.log ({type(exc).__name__})"}
 
     try:
         om_file = Path("/tmp/om6.log")
@@ -1585,8 +1634,11 @@ def get_pipeline_health():
             components["object_manager"] = {"name": "3D Object Manager", "active": True, "details": "Active"}
         else:
             components["object_manager"] = {"name": "3D Object Manager", "active": False, "details": "Node Stopped"}
-    except Exception:
-        components["object_manager"] = {"name": "3D Object Manager", "active": False, "details": "Unreachable"}
+    except OSError as exc:
+        # Only the filesystem probe can fail here; _running_scripts handles its own.
+        # "we could not look" is not "it is stopped", so the detail says which it is.
+        components["object_manager"] = {"name": "3D Object Manager", "active": False,
+                              "details": f"Unknown: could not read /tmp/om6.log ({type(exc).__name__})"}
 
     all_active = all(c["active"] for c in components.values())
     return {
@@ -1599,6 +1651,7 @@ def get_pipeline_health():
 @app.get("/logs")
 def get_logs(lines: int = 200):
     output = []
+    log_problems = []
     log_files = [
         ("feed", "/tmp/habitat_feed_host.log"),
         ("feed_node", "/tmp/feed_node.log"),
@@ -1614,8 +1667,8 @@ def get_logs(lines: int = 200):
                 for line in content:
                     if line.strip():
                         output.append(f"[{tag}] {line}")
-            except Exception:
-                pass
+            except OSError as exc:
+                log_problems.append(f"{filepath}: {type(exc).__name__}: {exc}")
 
     try:
         with urllib.request.urlopen(f"{FEED_HOST}/logs", timeout=1.5) as r:
@@ -1624,21 +1677,31 @@ def get_logs(lines: int = 200):
                 for line in data["logs"]:
                     if line.strip():
                         output.append(f"[feed] {line}")
-    except Exception:
-        pass
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as exc:
+        log_problems.append(f"{FEED_HOST}/logs: {type(exc).__name__}: {exc}")
 
     if not output:
-        output.append("[bridge] System active and listening. Log stream initialized.")
+        # This said "[bridge] System active and listening. Log stream initialized." -- an
+        # assertion that the system was healthy, emitted exactly when NOTHING could be
+        # read, in the panel a person opens to find out what went wrong. The same line was
+        # removed from found/dashboard/server.py; THIS is the copy the 8082 viewer renders.
+        output.append("[bridge] no log source could be read")
+        output.extend(f"[bridge] {problem}" for problem in log_problems)
+        if not log_problems:
+            output.append("[bridge] every source was reachable and empty")
 
-    return {"logs": output[-600:]}
+    return {"logs": output[-600:], "source_errors": log_problems or None}
 
 @app.get("/auto_mode")
 def set_auto_mode(enabled: str = "true"):
     try:
         with urllib.request.urlopen(f"{FEED_HOST}/auto_mode?enabled={enabled}", timeout=2.0) as r:
             return JSONResponse(content=json.loads(r.read().decode()))
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as e:
+        # The feed host being unreachable is a reportable outcome. A TypeError in our own
+        # request-building is not -- that must raise rather than be dressed up as a
+        # control-surface failure someone will go and investigate at the simulator.
+        return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
 @app.get("/action")
 @app.get("/control")
@@ -1648,8 +1711,11 @@ def send_action(act: str = "", action: str = "", x: float = 0.0, y: float = 0.0,
         url = f"{FEED_HOST}/action?act={action_name}&x={x}&y={y}&z={z}&amount={amount}"
         with urllib.request.urlopen(url, timeout=2.0) as r:
             return JSONResponse(content=json.loads(r.read().decode()))
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as e:
+        # The feed host being unreachable is a reportable outcome. A TypeError in our own
+        # request-building is not -- that must raise rather than be dressed up as a
+        # control-surface failure someone will go and investigate at the simulator.
+        return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
 @app.get("/set_config")
 def set_config(request: Request):
@@ -1659,16 +1725,22 @@ def set_config(request: Request):
         url = f"{FEED_HOST}/set_config?{request.url.query}"
         with urllib.request.urlopen(url, timeout=2.0) as r:
             return JSONResponse(content=json.loads(r.read().decode()))
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as e:
+        # The feed host being unreachable is a reportable outcome. A TypeError in our own
+        # request-building is not -- that must raise rather than be dressed up as a
+        # control-surface failure someone will go and investigate at the simulator.
+        return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
 @app.get("/get_config")
 def get_feed_config():
     try:
         with urllib.request.urlopen(f"{FEED_HOST}/get_config", timeout=2.0) as r:
             return JSONResponse(content=json.loads(r.read().decode()))
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as e:
+        # The feed host being unreachable is a reportable outcome. A TypeError in our own
+        # request-building is not -- that must raise rather than be dressed up as a
+        # control-surface failure someone will go and investigate at the simulator.
+        return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
 if __name__ == "__main__":
     rclpy.init()

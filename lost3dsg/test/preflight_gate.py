@@ -810,6 +810,64 @@ def load_external_probes(cfg):
     return out
 
 
+def a9_feed_streaming(log_path="/tmp/feed_node.log", window_s=12.0, min_new=2):
+    """Are frames STILL ARRIVING? Sampled twice, seconds apart, after the stack is up.
+
+    THE GAP THIS FILLS, measured on run 20260901_140710: every other probe passed, both nodes
+    were alive, the port was open — and the feed node had relayed ONE frame and was spinning
+    on a closed socket. `recv()` returns b'' at end of stream WITHOUT raising, so its framing
+    loop appended nothing forever: RUNNABLE, burning a core, logging nothing. Six minutes of
+    that looked exactly like a slow cold start, and the run produced no detection at all.
+
+    a4 proves the DETECTOR answers twice. Nothing proved the FEED keeps coming, and a stream
+    that stops after one frame is not a state any single-sample check can distinguish from a
+    stream that has not started.
+
+    Reads the node's own counter rather than subscribing: the probe must not open a second
+    connection to a feed host that accepts one client, and must not perturb what it measures.
+    """
+    import re as _re
+    import time as _t
+
+    def _count():
+        """The LAST frame count in the log, from either line that carries one.
+
+        The node writes two: an occasional `frames relayed: N` milestone and a periodic
+        `feed heartbeat: frames=N reconnects=N`. The first version of this probe read only
+        the milestone — which is written rarely — so on run 20260901_144539 it sampled the
+        same stale `frames relayed: 1` twice and reported a stall while the heartbeat beside
+        it read `frames=35 connected=True`. A FALSE ALARM ON A HEALTHY RUN, and rule 50's
+        shape once more: the pattern matched a line that exists but is not the counter that
+        moves. Both forms are read now, and the maximum wins.
+        """
+        try:
+            with open(log_path) as f:
+                text = f.read()
+        except OSError:
+            return None
+        hits = [int(x) for x in _re.findall(r"frames relayed: (\d+)", text)]
+        hits += [int(x) for x in _re.findall(r"feed heartbeat: frames=(\d+)", text)]
+        return max(hits) if hits else 0
+
+    first = _count()
+    if first is None:
+        return False, {"why": f"{log_path} is not readable; the feed node writes it on start",
+                       "log": log_path}
+    _t.sleep(window_s)
+    second = _count()
+    delta = (second or 0) - first
+    detail = {"log": log_path, "window_s": window_s, "frames_before": first,
+              "frames_after": second, "new_frames": delta, "required": min_new}
+    if delta >= min_new:
+        return True, detail
+    detail["why"] = (
+        f"the feed relayed {delta} new frame(s) in {window_s:.0f}s (need {min_new}). "
+        f"A frozen counter with a live process is the GA-200 shape: the node holds a dead "
+        f"socket and spins. Check /tmp/feed_node.log for 'feed connection lost' and the host "
+        f"log for 'client disconnected'.")
+    return False, detail
+
+
 PROBES = {
     "a1": ("aligner_identity", a1_aligner_identity),
     "a2": ("config_identity", a2_config_identity),
@@ -819,6 +877,20 @@ PROBES = {
     "a6": ("camera_pose_offset", a6_camera_pose_offset),
     "a7": ("source_frozen", a7_source_frozen),
     "a8": ("stack_imports", a8_stack_imports),
+}
+
+# PROBES THAT ONLY MAKE SENSE AFTER THE STACK IS UP, kept in a SEPARATE dict on purpose.
+#
+# a9 observes a node that does not exist when the other eight run. Registering it in PROBES
+# put it in the DEFAULT set, where it raised KeyError (no entry in `bound`), was recorded
+# SKIPPED, and a skipped probe fails the gate -- so run 20260901_143918 was refused before it
+# started. The comment said "not part of the pre-start gate" while the code said otherwise,
+# and the gate was right to stop it: a check that could not run has asserted nothing.
+#
+# These are merged in ONLY when named explicitly with --only, so the default gate is exactly
+# the eight probes that can answer before the stack exists.
+POST_START_PROBES = {
+    "a9": ("feed_streaming", a9_feed_streaming),
 }
 
 
@@ -834,7 +906,12 @@ def _kv(s):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Class A pre-flight gate")
     ap.add_argument("--out", default="/ws/output/preflight.json")
-    ap.add_argument("--only", help="comma-separated probe ids, e.g. a2,a3")
+    ap.add_argument("--only", help="comma-separated probe ids, e.g. a2,a3 (post-start probes "
+                                   "such as a9 are available ONLY through this flag)")
+    ap.add_argument("--feed-log", default="/tmp/feed_node.log",
+                    help="a9: the feed node's log, whose frame counter is sampled twice")
+    ap.add_argument("--feed-window-s", type=float, default=12.0,
+                    help="a9: seconds between the two samples")
     ap.add_argument("--expect-config-name")
     ap.add_argument("--expect-config-sha", help="sha of the config FILE, from the launcher")
     ap.add_argument("--expect-merged-sha", help="sha of the MERGED cfg, from the launcher")
@@ -903,6 +980,10 @@ def main(argv=None):
         pass          # not in the container; the built-ins still run
 
     all_probes = dict(PROBES)
+    # Post-start probes join the roster only when asked for by name. Without this guard they
+    # would run in the pre-start gate, which is where a9's first version broke a run.
+    if args.only:
+        all_probes.update(POST_START_PROBES)
     all_probes.update({pid: (name, fn) for pid, (name, fn, _spec) in external.items()})
 
     wanted = [p.strip() for p in args.only.split(",")] if args.only else list(all_probes)
@@ -916,6 +997,7 @@ def main(argv=None):
         "a6": lambda: a6_camera_pose_offset(args.camera_height),
         "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha)),
         "a8": lambda: a8_stack_imports(install=args.install_tree),
+        "a9": lambda: a9_feed_streaming(args.feed_log, args.feed_window_s),
     }
 
     bound.update({pid: fn for pid, (_n, fn, _s) in external.items()})

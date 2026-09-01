@@ -340,13 +340,51 @@ fi
 # that nothing ever started it — this line. It is in CMakeLists.txt:66 so `ros2 run` resolves it;
 # it subscribes /camera/depth and /camera/camera_info, the topics rtabmap already takes above, and
 # publishes /detected_wall_segments in the schema object_manager_6.walls_callback actually reads.
-ros2 run lost3dsg wall_detector.py > /tmp/walls.log 2>&1 &
+# GA-206. OPT-OUT, default OFF for this run. wall_detector.py measured at 4.4 CORES on
+# 2026-09-01 while rtabmap -- the ONLY source of the map->odom transform perception waits on --
+# was taking 2.1-2.4 s per iteration against its own 1.0 s rate limit. Every frame then aged out
+# with "Synced data not ready, missing: transform", and six launch attempts produced zero
+# detection cycles.
+#
+# The layer it feeds is separately known to produce nothing: ridge segmentation yields ZERO
+# critical points on ~87% of sweeps (GA-195), so no doorway is ever cut and no room is split.
+# Spending 4.4 cores on it while starving the transform chain buys a room layer that does not
+# work at the cost of the detections that do.
+#
+# WALL_DETECTOR=1 restores it. This is a resource decision for a contended machine, NOT a
+# claim that wall detection is wrong.
+if [ "${WALL_DETECTOR:-0}" = "1" ]; then
+  ros2 run lost3dsg wall_detector.py > /tmp/walls.log 2>&1 &
+else
+  echo ">>> wall_detector DISABLED (WALL_DETECTOR=1 to enable) — 4.4 cores returned to rtabmap"
+  : > /tmp/walls.log
+fi
 WALLS_PID=$!
 
 # periodic snapshots of the annotated detection image for the host
 ros2 run image_view image_saver --ros-args -r image:=/image_with_bb \
   -p filename_format:="/out/detection_%04d.png" -p sec_per_frame:=5.0 \
   > /tmp/saver.log 2>&1 &
+
+# GA-200 / probe a9. THE FEED MUST STILL BE ARRIVING, and only a node that exists can be
+# asked. The eight-probe gate runs BEFORE these nodes start, so it cannot see this: run
+# 20260901_140710 passed 8/8, brought up every node, relayed ONE frame and spun on a dead
+# socket for six minutes while every liveness signal said healthy.
+#
+# Non-fatal on purpose. A slow first frame is normal (a cold start has taken ~40 s), so this
+# WARNS rather than aborting -- the point is that a frozen feed becomes visible in the first
+# minute instead of being discovered when the bundle turns out empty.
+(
+  sleep 45
+  if python3 /graph_api/lost3dsg/test/preflight_gate.py --only a9 \
+       --feed-log /tmp/feed_node.log --feed-window-s 12 --out /tmp/preflight_a9.json \
+       >> /tmp/a9.log 2>&1; then
+    echo ">>> a9 feed_streaming: frames are arriving"
+  else
+    echo "!! a9 feed_streaming FAILED — the feed is not delivering. $(tail -2 /tmp/a9.log | tr '\n' ' ')"
+    echo "   the run will continue, but it is very likely to produce nothing. See GA-200."
+  fi
+) &
 
 echo ">>> stack up. logs in /tmp/*.log — tailing perception:"
 touch /tmp/perception.log /tmp/om6.log

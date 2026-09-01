@@ -127,6 +127,16 @@ class HabitatFeedNode(Node):
         self.pub_depth = self.create_publisher(Image, "/camera/depth", qos)
         self.pub_info = self.create_publisher(CameraInfo, "/camera/camera_info", qos)
         self.pub_odom = self.create_publisher(Odometry, "/odom", qos)
+        # GT-ONLY CHANNEL. habitat's semantic sensor renders its own instance id per pixel,
+        # which is the join a detection needs to be labelled with ground truth. The feed host
+        # has been putting it in the payload under `gt_semantic_instance` whenever
+        # FEED_GT_SEMANTIC=1, and NOTHING READ IT -- the channel existed at one end and was
+        # never opened at the other.
+        #
+        # The topic name says what it is so no runtime consumer can pick it up by accident:
+        # nothing in the perception or association path subscribes to it, and the only
+        # consumer is the per-detection archive, which is validation output.
+        self.pub_gt_semantic = self.create_publisher(Image, "/gt/semantic_instance", qos)
         self.tf = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
 
@@ -137,30 +147,95 @@ class HabitatFeedNode(Node):
             _tf(now, FRAME_CAMERA, FRAME_OPTICAL, (0.0, 0.0, 0.0), (-0.5, 0.5, -0.5, 0.5)),
         ])
 
-        host = os.environ.get("FEED_HOST", "127.0.0.1")
-        port = int(os.environ.get("FEED_PORT", "7799"))
-        self.sock = socket.create_connection((host, port), timeout=30)
-        self.sock.settimeout(30)
-        self.get_logger().info(f"connected to habitat feed at {host}:{port}")
+        self._host = os.environ.get("FEED_HOST", "127.0.0.1")
+        self._port = int(os.environ.get("FEED_PORT", "7799"))
+        self.sock = None
         self.buf = b""
         self.frames = 0
+        self._reconnects = 0
+        self._connect()
         self.create_timer(0.01, self.poll)
+        # GA-200: a heartbeat carrying the FRAME COUNT. The run that produced this fix sat
+        # for six minutes with one frame relayed and no further log line, and every liveness
+        # signal said healthy -- the process was up, the port was open, the preflight was
+        # green. A frozen counter has to be visible from the log, not only from `docker exec`.
+        self.create_timer(10.0, self._heartbeat)
+
+    def _connect(self):
+        """Open the feed socket. Raises on failure; the caller decides whether to retry."""
+        self.sock = socket.create_connection((self._host, self._port), timeout=30)
+        self.sock.settimeout(30)
+        self.buf = b""
+        self.get_logger().info(
+            f"connected to habitat feed at {self._host}:{self._port}"
+            + (f" (reconnect #{self._reconnects})" if self._reconnects else ""))
+
+    def _heartbeat(self):
+        self.get_logger().info(
+            f"feed heartbeat: frames={self.frames} reconnects={self._reconnects} "
+            f"connected={self.sock is not None}")
+
+    def _reconnect(self, why):
+        """Drop the dead socket and try again. NEVER spin silently.
+
+        The failure this exists for: the peer closes, `recv()` returns b'' WITHOUT raising,
+        and the framing loop below `while len(self.buf) < 4` appends nothing forever. The
+        process stays RUNNABLE, burns a core, logs nothing and relays no frame -- which is
+        indistinguishable from "busy" to every check we had.
+        """
+        self._reconnects += 1
+        self.get_logger().warn(f"feed connection lost ({why}); reconnecting (#{self._reconnects})")
+        try:
+            if self.sock is not None:
+                self.sock.close()
+        except OSError:
+            pass
+        self.sock = None
+        try:
+            self._connect()
+        except OSError as exc:
+            # Stay disconnected and try again on the next poll rather than dying: the host
+            # sits in accept() waiting, so the door is open and the next tick may succeed.
+            self.get_logger().warn(f"reconnect failed: {type(exc).__name__}: {exc}")
 
     def _recv_frame(self):
+        # GA-200: an EMPTY recv is END OF STREAM, not "no data yet". `recv` returns b'' when
+        # the peer has closed, and it does so WITHOUT raising -- so both loops below used to
+        # append nothing forever. Every read is checked; there is no path that appends b''.
         while len(self.buf) < 4:
-            self.buf += self.sock.recv(1 << 20)
+            chunk = self.sock.recv(1 << 20)
+            if not chunk:
+                raise ConnectionResetError("feed closed while reading the length prefix")
+            self.buf += chunk
         n = struct.unpack("!I", self.buf[:4])[0]
         while len(self.buf) < 4 + n:
-            self.buf += self.sock.recv(1 << 20)
+            chunk = self.sock.recv(1 << 20)
+            if not chunk:
+                raise ConnectionResetError(
+                    f"feed closed with {len(self.buf) - 4}/{n} bytes of the frame received")
+            self.buf += chunk
         frame = pickle.loads(self.buf[4:4 + n])
         self.buf = self.buf[4 + n:]
         return frame
 
     def poll(self):
+        if self.sock is None:
+            try:
+                self._connect()
+            except OSError:
+                return          # the 10 s heartbeat reports that we are still disconnected
         try:
             frame = self._recv_frame()
         except socket.timeout:
             self.get_logger().warn("feed timeout, retrying")
+            return
+        except (ConnectionError, OSError) as exc:
+            self._reconnect(f"{type(exc).__name__}: {exc}")
+            return
+        except (pickle.UnpicklingError, struct.error, EOFError) as exc:
+            # A malformed frame means the stream is out of sync; the buffer cannot be
+            # trusted from here, so drop the connection rather than reinterpret it.
+            self._reconnect(f"malformed frame: {type(exc).__name__}: {exc}")
             return
 
         stamp = self.get_clock().now().to_msg()
@@ -197,6 +272,19 @@ class HabitatFeedNode(Node):
         depth.header.frame_id = FRAME_OPTICAL
         depth.data = frame["depth"].tobytes()
         self.pub_depth.publish(depth)
+
+        sem = frame.get("gt_semantic_instance")
+        if sem is not None:
+            # int32, not uint32: uint32 has no ROS image encoding, and habitat's instance
+            # ids are small positives so the reinterpretation is lossless. Published with
+            # THE SAME STAMP as rgb and depth -- the join is by stamp and must be exact,
+            # because a GT label taken from a neighbouring frame is worse than no label.
+            sem_msg = Image(height=h, width=w, encoding="32SC1", is_bigendian=False,
+                            step=w * 4)
+            sem_msg.header.stamp = stamp
+            sem_msg.header.frame_id = FRAME_OPTICAL
+            sem_msg.data = sem.astype("<i4").tobytes()
+            self.pub_gt_semantic.publish(sem_msg)
 
         fx = (w / 2.0) / math.tan(math.radians(frame["hfov"]) / 2.0)
         info = CameraInfo(width=w, height=h, distortion_model="plumb_bob")

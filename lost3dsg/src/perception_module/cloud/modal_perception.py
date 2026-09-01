@@ -124,11 +124,29 @@ def rle_encode(mask_binary: np.ndarray) -> Dict[str, Any]:
     }
 
 
+# GA-207. MEASURED on run 20260901_151714: total_ms 54,404 per cycle, of which
+# backend_overhead_ms 38,728 -- 71% -- with wire_ms 38,695 against a 230 KB request. That is
+# not bandwidth (it would be 6 KB/s); it is a COLD START ON EVERY SINGLE CYCLE.
+#
+# scaledown_window=15 stopped the container after 15 s idle, while the pipeline's cycle time
+# is ~54 s. The container therefore died between every frame and paid a full model load to
+# answer the next one. The setting saved pennies of idle GPU and cost the entire run: three
+# detection cycles in nine minutes.
+#
+# scaledown_window=600 keeps it warm across a whole tour. At T4 pricing ($0.000164/s) an
+# idle hour is ~$0.59. min_containers=1 keeps one alive even before the first request, so
+# the FIRST cycle does not pay the load either.
+#
+# gpu="L4": the describer is a 31B multimodal model and a T4 has 16 GB with no bf16 tensor
+# cores, so it runs quantised and memory-bound. L4 is the smallest tier with bf16 and 24 GB.
+# THIS IS A COST DECISION MADE EXPLICITLY, at the owner's instruction that performance
+# outranks credits here.
 @app.cls(
-    gpu="T4",               # Economical GPU tier ($0.000164/sec) to conserve credits
-    scaledown_window=15,    # Aggressive scale-to-zero: stop container after 15s idle
-    max_containers=1,       # Budget guardrail: strictly at most 1 GPU instance
-    timeout=30,             # Kill hung jobs after 30s
+    gpu="L4",               # bf16 + 24 GB; T4 has neither and made the 31B model memory-bound
+    scaledown_window=600,   # keep warm across a tour; was 15 s against a ~54 s cycle
+    min_containers=1,       # no cold start on the FIRST request either
+    max_containers=2,       # headroom for an overlapping call; was a hard 1
+    timeout=120,            # was 30, which a cold start alone could exceed
 )
 class PerceptionService:
     @modal.enter()
@@ -338,10 +356,25 @@ class PerceptionService:
         return {
             "status": "ok",
             "detections": detections_out,
+            # GA-211. THE KEY NAMES ARE A CONTRACT WITH detection_pipeline.py, which reads
+            # `cloud_timings["detector"]` and `["sam2"]` at :120-127 and REFUSES to estimate a
+            # stage time from the wall clock when one is missing. This file emitted `owlv2`
+            # and `sam`; the checkout that had actually been deployed emitted `detector` and
+            # `sam2`. Deploying THIS file therefore replaced a working service with one whose
+            # timings the pipeline rejects, and probe a4 failed the run before it started —
+            # correctly: the pipeline would have raised on the FIRST successful detection.
+            #
+            # The two trees disagreeing about this is the defect the review already recorded
+            # ("the tree that runs has never received the fixes; the tree that received them
+            # does not run"), arriving in the one place it is expensive: a live deploy.
+            #
+            # `detector` and `sam2` are the required names. `nms` and `clip` are EXTRA stages
+            # this file measures and the other does not; a4 only refuses MISSING keys, so
+            # they are kept — they are real measurements and dropping them would lose data.
             "timings_ms": {
-                "owlv2": round(t_owlv2 * 1000, 1),
+                "detector": round(t_owlv2 * 1000, 1),   # pipeline reads this, outputs owlv2_ms
+                "sam2": round(t_sam * 1000, 1),
                 "nms": round(t_nms * 1000, 1),
-                "sam": round(t_sam * 1000, 1),
                 "clip": round(t_clip * 1000, 1),
                 "total": round(t_total * 1000, 1),
             }

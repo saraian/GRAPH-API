@@ -62,15 +62,34 @@ MAX_CHANNEL_LOG_ODDS = 8.0
 
 
 class Abstain:
-    """Marker for 'this channel could not measure anything'. Never a number."""
+    """Marker for 'this channel is not contributing a number'. Never a number.
 
-    __slots__ = ("reason",)
+    `measured` separates the two reasons a channel can decline, and they are NOT the same
+    thing downstream (GA-186):
 
-    def __init__(self, reason):
+      measured=False -- THE EVIDENCE WAS NEVER COLLECTED. No observations, no frame ids, no
+                        2D box. Nothing was looked at, so nothing can be concluded, and a
+                        decision resting on another channel is unsupported.
+      measured=True  -- THE EVIDENCE WAS COLLECTED AND IS INCONCLUSIVE FOR THIS CHANNEL.
+                        Co-visibility on two overlapping detections is the case: the boxes
+                        were compared and the pair is the duplicate-detection shape, which
+                        is not evidence of TWO objects -- but it is very much not "we did
+                        not look".
+
+    Collapsing the two is what made a measured duplicate pair HOLD: `containment_unchecked`
+    read the abstention as uncollected evidence and refused to commit a merge that the 2D
+    overlap had just supported. A held duplicate is the exact failure association exists to
+    fix, so the distinction is carried rather than inferred from the reason string.
+    """
+
+    __slots__ = ("reason", "measured")
+
+    def __init__(self, reason, measured=False):
         self.reason = reason
+        self.measured = measured
 
     def __repr__(self):
-        return f"Abstain({self.reason!r})"
+        return f"Abstain({self.reason!r}, measured={self.measured})"
 
 
 VETO = "veto"  # a hard negative no accumulation may override
@@ -89,18 +108,77 @@ class Observation:
     descriptors were even comparable. Both channels below need it, so it is added here.
     """
 
-    __slots__ = ("frame_id", "camera_position", "bearing", "range_m", "stamp", "centroid")
+    __slots__ = ("frame_id", "camera_position", "bearing", "range_m", "stamp", "centroid",
+                 "bbox_2d", "appearance")
 
-    def __init__(self, frame_id, camera_position, centroid, stamp=None):
+    def __init__(self, frame_id, camera_position, centroid, stamp=None, bbox_2d=None,
+                 appearance=None):
         self.frame_id = frame_id
         self.camera_position = np.asarray(camera_position, dtype=float)
         self.centroid = np.asarray(centroid, dtype=float)
         self.stamp = stamp
+        # GA-186: the DETECTOR's box in this frame, (x_min, y_min, x_max, y_max) in pixels,
+        # or None when the frame carried none. None is what makes co-visibility abstain
+        # instead of vetoing, so it must never be filled with a placeholder.
+        self.bbox_2d = None if bbox_2d is None else [float(v) for v in bbox_2d]
+        # GA-190: the crop's appearance embedding for THIS view, or None. Already computed
+        # by the detector backend on a model it has loaded anyway, and previously written
+        # to a sidecar nothing read. None stays None -- the appearance channel abstains on
+        # a missing descriptor and must never see a zero vector standing in for one.
+        self.appearance = (None if appearance is None
+                           else np.asarray(appearance, dtype=float).ravel())
         d = self.centroid - self.camera_position
         self.range_m = float(np.linalg.norm(d))
         # Unit bearing from camera to object, in the map frame. Two observations are
         # "comparable" for appearance only when their bearings are close (see cone_ok).
         self.bearing = d / self.range_m if self.range_m > 1e-9 else np.array([1.0, 0.0, 0.0])
+
+
+def shared_frame_overlap_2d(a, b):
+    """-> the 2D IoU of two objects in a frame they SHARE, or None. GA-186.
+
+    This is the function `AssocContext.overlap_2d_fn` wants. It answers the one question
+    that decides whether co-visibility is a hard negative or an abstention: in a frame where
+    both were detected, did the detector draw one region or two?
+
+    Returns None -- and the channel then abstains -- whenever the answer cannot be measured:
+    no shared frame, or either side's observation in that frame carried no 2D box. **A
+    missing box is not a disjoint box.** Assuming disjointness is precisely the error that
+    made this a wrong veto on 17 measured pairs (GA-181), so the absent case must not fall
+    through to 0.0.
+
+    MAX over shared frames, not mean: the pair is the same object if it was ever drawn as
+    one region, and averaging a 0.99 overlap with three frames of partial occlusion would
+    dilute exactly the evidence that matters.
+    """
+    if not a.observations or not b.observations:
+        return None
+    by_frame_b = {}
+    for o in b.observations:
+        if o.frame_id is not None and o.bbox_2d is not None:
+            by_frame_b.setdefault(o.frame_id, []).append(o.bbox_2d)
+    if not by_frame_b:
+        return None
+    best = None
+    for oa in a.observations:
+        if oa.frame_id is None or oa.bbox_2d is None:
+            continue
+        for box_b in by_frame_b.get(oa.frame_id, ()):
+            iou = _iou_2d(oa.bbox_2d, box_b)
+            if best is None or iou > best:
+                best = iou
+    return best
+
+
+def _iou_2d(p, q):
+    """Intersection over union of two (x_min, y_min, x_max, y_max) pixel boxes."""
+    px1, py1, px2, py2 = min(p[0], p[2]), min(p[1], p[3]), max(p[0], p[2]), max(p[1], p[3])
+    qx1, qy1, qx2, qy2 = min(q[0], q[2]), min(q[1], q[3]), max(q[0], q[2]), max(q[1], q[3])
+    iw = max(0.0, min(px2, qx2) - max(px1, qx1))
+    ih = max(0.0, min(py2, qy2) - max(py1, qy1))
+    inter = iw * ih
+    union = (px2 - px1) * (py2 - py1) + (qx2 - qx1) * (qy2 - qy1) - inter
+    return 0.0 if union <= 0 else inter / union
 
 
 def cone_ok(obs_a, obs_b, half_angle_rad):
@@ -340,8 +418,36 @@ def channel_separation(mu_a, cov_a, mu_b, cov_b, map_volume_m3):
 # ---------------------------------------------------------------------------------------
 
 
-def channel_covisibility(obs_a, obs_b):
-    """Two detections in ONE frame are necessarily different objects. No similarity overrides it.
+def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30):
+    """Two detections in one frame are different objects — UNLESS THEY ARE THE SAME PIXELS.
+
+    GA-181, MEASURED AND IT OVERTURNS THE ORIGINAL PREMISE. I wrote that "a single frame
+    cannot contain the same physical object twice as two separate detections". That is true
+    of OBJECTS and false of DETECTIONS, and the distinction is the whole channel.
+
+    Run 20260901_055513, 17 co-visible pairs that ground truth says are ONE object:
+
+      towel radiator#1 | toilet#2          2D IoU 0.991   3D distance 0.000 m
+      sink#1           | bathroom vanity#3 2D IoU 0.997   3D distance 0.000 m
+      bathroom vanity#1| laundry basket#2  2D IoU 0.976   3D distance 0.000 m
+      wastebasket#2    | wastebasket#3     2D IoU 0.488   3D distance 0.058 m
+      mirror#2         | mirror#3          2D IoU 0.482   3D distance 0.230 m
+
+    The high-IoU group is the SAME PIXELS detected twice under different open-vocabulary
+    labels — the detector firing twice on one region. The GT join is not wrong; the boxes
+    genuinely sit on one object. So a HARD veto here would refuse exactly the merges the
+    system exists to make, every time it saw one.
+
+    The rule therefore conditions on overlap: co-visible AND SPATIALLY DISJOINT is a hard
+    negative, because two separated regions in one frame really are two objects. Co-visible
+    and OVERLAPPING is not evidence either way — it is the duplicate-detection case, and the
+    channel ABSTAINS rather than vetoing.
+
+    `overlap_2d` is the pair's 2D IoU in the shared frame when the caller can supply it. With
+    no overlap information the channel abstains rather than assuming disjointness, because
+    assuming it is what made the veto wrong.
+
+    THE ORIGINAL REASONING, still right for the DISJOINT case:
 
     This is the only channel that returns a veto rather than a number, and deliberately so.
     It is not evidence to be weighed -- it is a fact about the world: a single frame cannot
@@ -359,9 +465,23 @@ def channel_covisibility(obs_a, obs_b):
     if not frames_a or not frames_b:
         return Abstain("observations carry no frame ids")
     shared = frames_a & frames_b
-    if shared:
-        return VETO, {"covisible_frames": sorted(shared)[:8], "n_covisible": len(shared)}
-    return 0.0, {"covisible_frames": [], "n_covisible": 0}
+    if not shared:
+        return 0.0, {"covisible_frames": [], "n_covisible": 0}
+
+    detail = {"covisible_frames": sorted(shared)[:8], "n_covisible": len(shared),
+              "overlap_2d": overlap_2d}
+    if overlap_2d is None:
+        # No overlap information. ABSTAIN rather than veto: assuming disjointness is exactly
+        # what made this channel wrong on 17 measured pairs.
+        return Abstain("co-visible, but no 2D overlap available to rule out a duplicate "
+                       "detection of one object")
+    if overlap_2d >= duplicate_iou:
+        # measured=True: the 2D boxes WERE compared and they overlap. Not evidence of two
+        # objects, and equally not an absence of evidence -- see Abstain.
+        return Abstain(f"co-visible but overlapping (2D IoU {overlap_2d:.2f}) — the "
+                       f"duplicate-detection case, not evidence of two objects",
+                       measured=True)
+    return VETO, detail
 
 
 # ---------------------------------------------------------------------------------------
@@ -457,10 +577,17 @@ def channel_appearance(descs_a, descs_b, cone_half_angle_rad, spread_a=None, spr
     if not descs_a or not descs_b:
         return Abstain("no descriptors on one or both sides")
 
+    # GA-190: same KIND, then same bearing cone. The shape guard below already skips a
+    # 512-d appearance vector against a 2-d extent ratio, so mixed kinds were safe BY
+    # ACCIDENT -- but two descriptor families that happened to share a length would have
+    # been compared as if they measured the same thing, and the log-odds would have looked
+    # like evidence. Kind is the layer the claim holds at; check it rather than rely on a
+    # coincidence of dimensions.
     pairs = [(da, db) for da in descs_a for db in descs_b
-             if cone_ok_vec(da.bearing, db.bearing, cone_half_angle_rad)]
+             if da.kind == db.kind
+             and cone_ok_vec(da.bearing, db.bearing, cone_half_angle_rad)]
     if not pairs:
-        return Abstain("no pair of views inside the comparability cone")
+        return Abstain("no pair of views of the same kind inside the comparability cone")
 
     sigma = _descriptor_sigma(spread_a, spread_b)
     if sigma is None:
@@ -538,17 +665,22 @@ class PairScore:
     survive whatever happens to the objects afterwards.
     """
 
-    __slots__ = ("total", "channels", "abstentions", "vetoed_by")
+    __slots__ = ("total", "channels", "abstentions", "vetoed_by", "_measured_abstentions")
 
     def __init__(self):
         self.total = 0.0
         self.channels = {}
         self.abstentions = {}
         self.vetoed_by = []
+        self._measured_abstentions = set()
 
     def add(self, name, result):
         if isinstance(result, Abstain):
             self.abstentions[name] = result.reason
+            if result.measured:
+                # The channel looked and could not conclude. Recorded separately from the
+                # reason text so `containment_unchecked` reads a flag, not a string.
+                self._measured_abstentions.add(name)
             return
         value, detail = result
         if value == VETO:
@@ -594,6 +726,12 @@ class PairScore:
         """
         if "covisibility" in self.channels:
             return False                      # it was evaluated; nothing to warn about
+        if "covisibility" in self._measured_abstentions:
+            # GA-186. It WAS evaluated: the 2D boxes were compared and the pair is the
+            # duplicate-detection shape. That is the case containment is RIGHT about, so
+            # holding here would refuse exactly the merges this module exists to make.
+            # Only an UNCOLLECTED co-visibility leaves overlap unsupported.
+            return False
         ov = self.channels.get("overlap", {}).get("log_odds")
         if ov is None or ov <= 0 or self.total <= 0:
             return False
@@ -618,7 +756,11 @@ def score_pair(a, b, ctx):
 
     # 3 first: a veto makes the rest moot for the decision, but the channels still run so
     # the record shows what the evidence WOULD have said. Diagnosis needs the disagreement.
-    s.add("covisibility", channel_covisibility(a.observations, b.observations))
+    # GA-181: the 2D overlap decides whether co-visibility is a veto or an abstention. With
+    # no 2D boxes to compare, `overlap_2d` stays None and the channel abstains rather than
+    # assuming the two detections are disjoint.
+    s.add("covisibility", channel_covisibility(a.observations, b.observations,
+                                               overlap_2d=ctx.overlap_2d(a, b)))
     s.add("overlap", channel_overlap(bounds_a, bounds_b, ctx.map_volume_m3))
 
     ov = s.channels.get("overlap", {})
@@ -872,10 +1014,21 @@ class AssocObject:
         self.room_id = room_id
         self.onto_type = onto_type
         self.onto_aligned = onto_aligned
-        if descriptors is None and b is not None and self.observations:
-            v = extent_descriptor(b)
-            descriptors = ([ViewDescriptor(o.bearing, v) for o in self.observations]
-                           if v is not None else [])
+        if descriptors is None and self.observations:
+            # GA-190. A MEASURED appearance descriptor beats a derived shape one, so views
+            # that carry an embedding form the set. The two are NOT mixed: an extent
+            # descriptor is a function of the box this object already agrees on, so pooling
+            # it with appearance would let shape similarity masquerade as visual similarity
+            # in the same channel. Extent remains the fallback when no view was embedded.
+            visual = [ViewDescriptor(o.bearing, o.appearance, kind="visual")
+                      for o in self.observations if o.appearance is not None
+                      and o.appearance.size]
+            if visual:
+                descriptors = visual
+            elif b is not None:
+                v = extent_descriptor(b)
+                descriptors = ([ViewDescriptor(o.bearing, v) for o in self.observations]
+                               if v is not None else [])
         self.descriptors = list(descriptors or [])
         self.descriptor_spread = descriptor_spread
         if self.descriptor_spread is None and len(self.descriptors) >= 2:
@@ -885,16 +1038,23 @@ class AssocObject:
 
 class AssocContext:
     __slots__ = ("map_volume_m3", "n_rooms", "n_types", "cone_half_angle_rad",
-                 "disjoint_fn", "cost_ratio")
+                 "disjoint_fn", "cost_ratio", "overlap_2d_fn")
 
     def __init__(self, map_volume_m3=None, n_rooms=None, n_types=None,
-                 cone_half_angle_rad=math.radians(45.0), disjoint_fn=None, cost_ratio=20.0):
+                 cone_half_angle_rad=math.radians(45.0), disjoint_fn=None, cost_ratio=20.0,
+                 overlap_2d_fn=None):
         self.map_volume_m3 = map_volume_m3
         self.n_rooms = n_rooms
         self.n_types = n_types
         self.cone_half_angle_rad = cone_half_angle_rad
         self.disjoint_fn = disjoint_fn
         self.cost_ratio = cost_ratio
+        # GA-181: supplied by the caller, which is the only place 2D boxes in a shared frame
+        # are available. None -> co-visibility abstains instead of vetoing.
+        self.overlap_2d_fn = overlap_2d_fn
+
+    def overlap_2d(self, a, b):
+        return None if self.overlap_2d_fn is None else self.overlap_2d_fn(a, b)
 
 
 # ---------------------------------------------------------------------------------------
@@ -934,8 +1094,27 @@ def demo():
                          observations=[_obs(7, [2, 0, 1], [0, 0, 0.5])])
     twin_b = AssocObject("p2", bbox=_box(0.05, 0, 0.5, 0.4, 0.4, 0.2), room_id="bedroom",
                          observations=[_obs(7, [2, 0, 1], [0.05, 0, 0.5])])
-    s2 = score_pair(twin_a, twin_b, ctx)
+    # GA-181: co-visible AND SPATIALLY DISJOINT is the hard negative.
+    ctx_disjoint = AssocContext(map_volume_m3=300.0, n_rooms=6, n_types=40, cost_ratio=20.0,
+                                overlap_2d_fn=lambda a, b: 0.0)
+    s2 = score_pair(twin_a, twin_b, ctx_disjoint)
     assert s2.vetoed and "covisibility" in s2.vetoed_by
+    # ...but co-visible and OVERLAPPING is the duplicate-detection case and must ABSTAIN.
+    # Measured, run 20260901_055513: 17 co-visible pairs that GT says are ONE object, e.g.
+    # "sink#1 | bathroom vanity#3" at 2D IoU 0.997 and 3D distance 0.000 m. A hard veto here
+    # refuses exactly the merges the system exists to make.
+    ctx_dup = AssocContext(map_volume_m3=300.0, n_rooms=6, n_types=40, cost_ratio=20.0,
+                           overlap_2d_fn=lambda a, b: 0.997)
+    s2b = score_pair(twin_a, twin_b, ctx_dup)
+    assert not s2b.vetoed, "an overlapping co-visible pair must not be vetoed"
+    assert "covisibility" in s2b.abstentions
+    print(f"  co-visible + OVERLAPPING (IoU 0.997) -> abstains, not vetoed "
+          f"({s2b.abstentions['covisibility'][:46]}...)")
+    # and with no overlap information it abstains rather than assuming disjointness
+    s2c = score_pair(twin_a, twin_b, ctx)
+    assert not s2c.vetoed and "covisibility" in s2c.abstentions
+    print("  co-visible + NO overlap info -> abstains (assuming disjoint is what was wrong)")
+
     h = Hypothesis(("p1", "p2")).update(s2, frame_id=7)
     for extra in range(3):
         h.update(s2, frame_id=8 + extra)

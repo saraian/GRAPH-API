@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+
 os.environ["DISPLAY"] = ":1"
 
 import ctypes
@@ -17,18 +18,23 @@ sys.setdlopenflags(flags | ctypes.RTLD_GLOBAL)
 # Aggiungi il path del viewer al sys.path
 sys.path.insert(0, "/root/exchange/habitat-sim/examples")
 
-import magnum as mn
-import numpy as np
-import rclpy
-import habitat_sim
-from geometry_msgs.msg import TransformStamped
-from habitat_sim.utils.settings import default_sim_settings
-from magnum.platform.glfw import Application
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import CameraInfo, Image
-from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
-
-from viewer import HabitatSimInteractiveViewer, Timer
+# These imports MUST follow the sys.path.insert above: they resolve against the
+# habitat-sim examples directory added there, so moving them to the top of the file
+# breaks them. Marked rather than moved -- an autofix that reorders imports breaks an
+# import that had to come first for its side effect.
+import habitat_sim  # noqa: E402
+import magnum as mn  # noqa: E402
+import numpy as np  # noqa: E402
+import rclpy  # noqa: E402
+from geometry_msgs.msg import TransformStamped  # noqa: E402
+from habitat_sim.utils.settings import default_sim_settings  # noqa: E402
+from magnum.platform.glfw import Application  # noqa: E402
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy  # noqa: E402
+from sensor_msgs.msg import CameraInfo, Image  # noqa: E402
+from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster  # noqa: E402
+# `Timer` was imported and never used. Removed rather than noqa'd: the module still loads
+# for HabitatSimInteractiveViewer, so no import side effect changes.
+from viewer import HabitatSimInteractiveViewer  # noqa: E402
 
 DEFAULT_REALISTIC_PATTERNS = [
     "cup",
@@ -456,7 +462,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
 
     def _remove_last_object(self) -> bool:
         if not self._spawned_object_ids:
-            self._ros_node.get_logger().info("Nessun oggetto spawnato da rimuovere.")
+            self._ros_node.get_logger().info("No spawned object to remove.")
             return False
 
         object_id = self._spawned_object_ids[-1]
@@ -476,7 +482,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             )
             return True
         except Exception as exc:
-            self._ros_node.get_logger().warn(f"Impossibile rimuovere oggetto id={object_id}: {exc}")
+            self._ros_node.get_logger().warn(f"Could not remove object id={object_id}: {exc}")
             return False
 
     def _remove_all_objects(self) -> bool:

@@ -19,3 +19,34 @@ bool has_orientation
 float32 yaw
 float32[3] oriented_center
 float32[3] oriented_extents
+
+# GA-186. The DETECTOR'S 2D box in the frame that produced this detection, in pixels
+# (x_min, y_min, x_max, y_max). It never left the perception node, so the object manager
+# could not tell "two detections of one object" from "two objects in one frame" -- and the
+# co-visibility channel, which is a HARD NEGATIVE, had to abstain on every co-visible pair
+# rather than assume. Measured on run 20260901_055513: 17 co-visible pairs shared a ground
+# truth id, with 2D IoU from 0.482 to 0.997, and a veto that assumed disjointness would have
+# refused every one of those merges.
+#
+# has_bbox_2d follows has_orientation above and for the same reason: without it, the (0,0,0,0)
+# of a detection whose box was never carried is indistinguishable from a real box at the image
+# origin, and a fabricated overlap of 0.0 is exactly what turns the abstention back into a
+# wrong veto.
+bool has_bbox_2d
+float32[4] bbox_2d
+
+# GA-190. The crop's APPEARANCE EMBEDDING for this detection, from the detector backend.
+# It is already computed on a model the backend has loaded anyway (OWLv2 is CLIP-based, so
+# there is no extra model load) and was written to a sidecar that nothing read -- the
+# module's own note says the field "reaches only detection_types.py, client.py and
+# perception_2.py, which stores it and dumps output/clip_embeddings.json".
+#
+# The association layer's appearance channel needs exactly this, per VIEW, and had been
+# falling back to a shape descriptor derived from the very box the objects already agree
+# on. Carrying it here is what lets appearance be evidence rather than a restatement.
+#
+# has_clip_embedding for the third time on this message and the same reason as the other
+# two: an all-zero vector from an absent embedding is a real embedding as far as any cosine
+# is concerned, and the channel must ABSTAIN rather than score a fabricated one.
+bool has_clip_embedding
+float32[] clip_embedding

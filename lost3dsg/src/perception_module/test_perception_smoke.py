@@ -134,6 +134,34 @@ def merge_path():
     object_services.ObjectServices._cb_merge_objects(svc, req, resp)
 
 
+def empty_embedding():
+    """GA-171: an EMPTY embedding must read as absent evidence, never crash the merge.
+
+    `_serialize_embedding` encodes None as `[]` to cross the Graph API; the decoder turned
+    that into an array of shape (0,), which passed every `is not None` guard and then raised
+    `shapes (384,) and (0,) not aligned` inside the dot product -- in the merge callback, the
+    first time the association stage ran long enough to update an object and then merge it.
+    """
+    import numpy as _np
+    from nlp_utils import lost_similarity_detailed, world2vec
+    from object_services import normalise_embedding
+    V = _np.ones(384, dtype=_np.float32) / _np.sqrt(384)
+    EMPTY = _np.asarray([], dtype=_np.float32)
+
+    # the boundary restores absence
+    assert normalise_embedding([]) is None
+    assert normalise_embedding(None) is None
+    assert normalise_embedding(V) is not None and len(normalise_embedding(V)) == 384
+
+    # and the similarity function survives one anyway
+    for d1, d2 in ((V, EMPTY), (EMPTY, V), (EMPTY, EMPTY),
+                   (V, _np.ones(300, dtype=_np.float32))):
+        score, ev = lost_similarity_detailed(world2vec, "chair", "chair", "red", "red",
+                                             "wood", "wood", d1, d2)
+        assert ev["description"] is False, "an uncomparable embedding must be ABSENT"
+        assert 0.0 <= score <= 1.0
+
+
 def install_list():
     """GA-128: every module imported by this package must be in CMakeLists' install list.
 
@@ -153,6 +181,7 @@ def install_list():
 
 for name, fn in [("description chain (build -> publish -> world model)", description_chain),
                  ("install list covers every import (GA-128)", install_list),
+                 ("empty embedding is absent, not a crash (GA-171)", empty_embedding),
                  ("inside_area", inside_area),
                  ("save_uncertain_objects", save_uncertain),
                  ("reassign_objects_by_geometry", reassign_rooms),

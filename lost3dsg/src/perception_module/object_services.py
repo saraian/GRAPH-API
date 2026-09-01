@@ -17,6 +17,7 @@ from world_model import wm
 # publish_persistent_bboxes is defined BELOW and also in cv_utils with a different body,
 # so importing it here would swap a 34-line implementation for a 5-line wrapper (GA-77).
 from utils import compute_iou_3d
+import association as assoc
 from nlp_utils import _known, get_embedding, lost_similarity_detailed, world2vec
 from datetime import datetime
 from cv_utils import publish_persistent_centroids, publish_pov_volume
@@ -71,6 +72,42 @@ if MERGE_MIN_SIMILARITY <= SIM_THRESHOLD:
         f"than association.sim_threshold ({SIM_THRESHOLD}): merging two objects destroys an "
         f"identity and must demand more evidence than matching them, never less")
 
+# GA-186. Which association engine decides a merge.
+#
+#   "legacy"   -- the hard-gate cascade: ALL PAIRS, then room-inequality -> similarity <
+#                 MERGE_MIN_SIMILARITY -> evidence -> distance > MERGE_MAX_DISTANCE, each a
+#                 refusal on a calibrated constant. This is what every run up to and
+#                 including 20260901_055513 measured.
+#   "evidence" -- association.py: kNN candidates from each object's OWN covariance shell,
+#                 then fused log-odds over overlap / separation / co-visibility / ontology
+#                 / appearance / room, committed against log(cost_ratio). No calibrated
+#                 similarity threshold, and abstention is a first-class outcome.
+#
+# DEFAULT IS "legacy" ON PURPOSE: flipping the engine changes every decision the system
+# makes, and it must be an explicit act in a run config, not something a reader of this
+# file discovers afterwards in a bundle. Set association.merge_engine or MERGE_ENGINE=evidence.
+MERGE_ENGINE = (os.environ.get("MERGE_ENGINE")
+                or CFG["association"].get("merge_engine", "legacy")).strip().lower()
+if MERGE_ENGINE not in ("legacy", "evidence"):
+    raise ValueError(f"association.merge_engine must be 'legacy' or 'evidence', got {MERGE_ENGINE!r}")
+
+# The cost of a FALSE MERGE relative to a MISSED MERGE. The only judgement call in the
+# evidence engine, and deliberately a config value rather than a threshold: a duplicate is
+# visible and repairable, a wrong merge destroys an identity, so it sits well above 1.
+# commit_threshold() turns it into log-odds -- there is no similarity constant to tune.
+MERGE_COST_RATIO = float(CFG["association"].get("merge_cost_ratio", 20.0))
+# How many nearest neighbours per object survive candidate generation. None = no cap, keep
+# everything inside the covariance shell. A cap that silently drops a pair is the defect
+# that lost the air-conditioner pair, so generate_candidates reports what the cap removed.
+_knn_k = CFG["association"].get("merge_knn_k", None)
+MERGE_KNN_K = None if _knn_k in (None, 0, "", "none") else int(_knn_k)
+# GA-188: how many CONSECUTIVE sweeps a pair must clear the commit threshold before the
+# merge is applied. 1 restores commit-on-first-sighting. Above 1, a transient geometry
+# error has to survive being re-measured before it can destroy an identity -- which is the
+# design's answer to "one lucky frame must not commit a merge", and it is enforced by
+# persistence rather than by inflating a score through repetition.
+MERGE_MIN_CONSECUTIVE = int(CFG["association"].get("merge_min_consecutive", 2))
+
 file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
 PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir else os.path.abspath(os.path.join(current_dir, "../.."))
@@ -90,6 +127,34 @@ def synchronized_world_model(callback):
         with wm.lock:
             return callback(*args, **kwargs)
     return wrapper
+
+def normalise_embedding(raw):
+    """-> a float32 vector, or None. THE ONE PLACE AN EMBEDDING BECOMES ABSENT OR PRESENT.
+
+    GA-171. `_serialize_embedding` encodes None as `[]` to cross the Graph API, and the
+    decoder turned that back into `np.asarray([])` -- an array of shape (0,). AN EMPTY ARRAY
+    IS NOT None: it passes every `is not None` guard in the tree and then fails inside the
+    dot product, which is where it surfaced:
+
+        ValueError: shapes (384,) and (0,) not aligned
+
+    The ADD path already handled it (object_services :1097-1105 maps size 0 back to None).
+    THE UPDATE PATH DID NOT -- it assigned the raw value straight onto the new object, so an
+    object that had been REPLACED carried an empty array where every other object carried
+    None or a vector. That is why it only appeared once the association stage was finally
+    running long enough to update and then merge the same object.
+
+    Absence has to survive a round trip. Encoding it as `[]` and decoding it as a value is
+    the same defect as `unknown` meaning both "measured" and "not reported" -- and the fix
+    is the same: one function decides, and it decides the same way for every caller.
+    """
+    if raw is None:
+        return None
+    arr = np.asarray(raw, dtype=np.float32).flatten()
+    if arr.size == 0:
+        return None
+    return arr
+
 
 def inside_area(o, bounds):
     """Is this object's box wholly inside `bounds` = (xmin, xmax, ymin, ymax, zmin, zmax)?
@@ -473,6 +538,13 @@ class ObjectServices(Node):
         self.decision_log = DecisionLog(
             CFG["hooks"]["decisions_log"] or os.path.join(log_dir, "hook_decisions.jsonl"))
 
+        # GA-188. Beliefs about pairs, carried ACROSS merge sweeps -- this is the state that
+        # makes `merge_min_consecutive` mean anything. Keyed by the sorted object-id pair,
+        # garbage-collected each sweep so it cannot grow for the life of the process.
+        # Unused by the legacy engine, which decides from a single scoring and keeps nothing.
+        self._hypotheses = {}
+        self._merge_sweep = 0
+
         with open(SYNTHETIC_LOG_FILE, "a") as f:
             f.write(f"\n{'='*50}\n")
             f.write(f"NUOVO AVVIO: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -536,7 +608,7 @@ class ObjectServices(Node):
 
             if not check_uncertain:
                 if not pov_volume:
-                    print("❌ ERRORE CRITICO TF: pov_volume è vuoto! "
+                    print("❌ CRITICAL TF ERROR: pov_volume is empty! "
                         "Il robot non sa dove sta guardando "
                         "(Controlla il frame in lookup_transform). "
                         "Cancellazione annullata.")
@@ -547,7 +619,7 @@ class ObjectServices(Node):
                 try:
                     publish_pov_volume(self, pov_volume, self.considered_volume_pub)
                 except Exception as e:
-                    print(f"⚠️ Impossibile pubblicare il volume visivo: {e}")
+                    print(f"⚠️ Could not publish the view volume: {e}")
 
                 objects_to_remove = []
 
@@ -577,7 +649,7 @@ class ObjectServices(Node):
                         obj.not_seen_in_pov_frames = 0
 
                 for obj in objects_to_remove:
-                    print(f"🗑️ [CANCELLATO] L'oggetto '{obj.label}' non è più "
+                    print(f"🗑️ [DELETED] Object '{obj.label}' is no longer "
                         f"presente nel volume osservato! RIMOSSO.")
 
                     if obj in wm.persistent_perceptions:
@@ -617,7 +689,7 @@ class ObjectServices(Node):
                             for lbl in deleted_labels:
                                 f.write(f"[{timestamp}] 🗑️ CANCELLATO (non visto): {lbl}\n")
                     except Exception as e:
-                        self.get_logger().error(f"Impossibile scrivere su operations.txt: {e}")
+                        self.get_logger().error(f"Could not write to operations.txt: {e}")
 
             if check_uncertain:
                 uncertain_to_remove = []
@@ -630,14 +702,14 @@ class ObjectServices(Node):
 
                 for uncertain_obj in uncertain_to_remove:
                     self.uncertain_objects.remove(uncertain_obj)
-                    print(f"🗑️ [UNCERTAIN RIMOSSO] '{uncertain_obj.label}'")
+                    print(f"🗑️ [UNCERTAIN REMOVED] '{uncertain_obj.label}'")
 
                     try:
                         with open(OPERATIONS_LOG, 'a') as f:
                             timestamp = datetime.now().strftime('%H:%M:%S')
                             f.write(f"[{timestamp}] ⚠️ UNCERTAIN RIMOSSO: {uncertain_obj.label}\n")
                     except Exception as e:
-                        self.get_logger().error(f"Impossibile scrivere su operations.txt: {e}")
+                        self.get_logger().error(f"Could not write to operations.txt: {e}")
 
                 uncertain_removed_count = len(uncertain_to_remove)
 
@@ -661,6 +733,142 @@ class ObjectServices(Node):
         return response
     
     @synchronized_world_model
+    def _hypothesis_gc(self, live_keys):
+        """Drop hypotheses whose pair no longer exists. GA-188.
+
+        Without this the store grows for the life of the process and keeps a belief about
+        objects that were merged away sweeps ago -- and a stale hypothesis whose object_id
+        is later reused would carry a streak nobody measured. Committed ones go too: the
+        merge is applied and its provenance is already in the decision record.
+        """
+        stale = [k for k, h in self._hypotheses.items() if h.committed or k not in live_keys]
+        for k in stale:
+            del self._hypotheses[k]
+        return len(stale)
+
+    def _assoc_build(self, objects):
+        """-> (AssocContext, {id(world_model_object): AssocObject}). GA-186.
+
+        The adapter between the world model's `Object` and `association.AssocObject`.
+        Everything it cannot measure is left as None so the corresponding channel ABSTAINS;
+        nothing here invents a value to keep a channel running.
+
+        `map_volume_m3` is the axis-aligned hull of the objects themselves, not the metric
+        map. It is the volume the overlap and separation priors are taken over -- "how
+        surprising is this much overlap in a space this big" -- and the objects' own extent
+        is the honest answer to that when no map volume is published. A tiny scene must not
+        read as a huge one, so it is floored rather than allowed to reach zero on a
+        single-object map.
+        """
+        boxes = [o.bbox for o in objects if getattr(o, "bbox", None)]
+        if boxes:
+            xs = [b["x_min"] for b in boxes] + [b["x_max"] for b in boxes]
+            ys = [b["y_min"] for b in boxes] + [b["y_max"] for b in boxes]
+            zs = [b["z_min"] for b in boxes] + [b["z_max"] for b in boxes]
+            map_volume = max((max(xs) - min(xs)) * (max(ys) - min(ys)) * (max(zs) - min(zs)), 1.0)
+        else:
+            map_volume = 1.0
+
+        rooms = {getattr(o, "room_id", None) for o in objects}
+        rooms.discard(None)
+        # GA-192: how many DISTINCT aligned types this scene actually contains. The channel
+        # needs it as the null model -- "how surprising is it that two objects share a type"
+        # depends on how many types were available to differ. MEASURED from the scene, never
+        # a guessed vocabulary size: a fabricated n_types turns an abstention into a
+        # confident prior, and the channel is explicitly built to abstain instead.
+        types = {getattr(o, "onto_type", None) for o in objects
+                 if getattr(o, "onto_aligned", False)}
+        types.discard(None)
+        n_types = len(types) if len(types) >= 2 else None
+        ctx = assoc.AssocContext(
+            map_volume_m3=map_volume,
+            n_rooms=max(len(rooms), 1),
+            n_types=n_types,
+            cost_ratio=MERGE_COST_RATIO,
+            # GA-186: the detector's 2D boxes now reach the object through Bbox3d.msg, so
+            # co-visibility can tell a duplicate detection of one object from two objects in
+            # one frame -- and vetoes only on a MEASURED disjoint overlap. The function
+            # returns None when a shared frame has no box on either side, which keeps the
+            # abstention for the case that was never measurable.
+            overlap_2d_fn=assoc.shared_frame_overlap_2d,
+        )
+
+        built = {}
+        for o in objects:
+            if getattr(o, "bbox", None) is None:
+                continue
+            try:
+                built[id(o)] = assoc.AssocObject(
+                    object_id=getattr(o, "object_id", None) or o.label,
+                    label=o.label,
+                    bbox=o.bbox,
+                    centroid=getattr(o, "centroid", None),
+                    observations=getattr(o, "observations", None) or [],
+                    room_id=getattr(o, "room_id", None),
+                    # GA-192: the type FOUND aligned this object to, and whether that
+                    # alignment held. Absent stays absent -- channel_ontology abstains on an
+                    # unaligned side rather than comparing labels the ontology never endorsed.
+                    onto_type=getattr(o, "onto_type", None),
+                    onto_aligned=bool(getattr(o, "onto_aligned", False)),
+                )
+            except (TypeError, ValueError, KeyError) as e:
+                # A malformed object must not be silently dropped from candidate
+                # generation -- that is the unlogged-skip defect this design exists to end.
+                self.log_both('error', f"[ASSOC] AssocObject non costruito per "
+                                       f"'{getattr(o, 'label', '?')}': {e}")
+        return ctx, built
+
+    def _merge_candidates(self, objects, _refused):
+        """-> (pairs, ctx, assoc_objects). Which pairs are even offered to a decision.
+
+        GA-186. The legacy engine offers EVERY pair, which is what the 961,074-pair sweep of
+        run 20260901_055513 was. The evidence engine offers only pairs inside the two
+        objects' combined covariance shells, and every exclusion is logged with its distance
+        and the radius that excluded it -- because a pair that is never compared is
+        invisible in exactly the way refusals were before they were logged, and that is how
+        eight air-conditioner pairs disappeared without trace.
+        """
+        if MERGE_ENGINE == "legacy":
+            pairs = [(objects[i], objects[j], {})
+                     for i in range(len(objects))
+                     for j in range(i + 1, len(objects))]
+            return pairs, None, {}
+
+        ctx, built = self._assoc_build(objects)
+        ordered = [o for o in objects if id(o) in built]
+        offered, excluded = assoc.generate_candidates(
+            [built[id(o)] for o in ordered], ctx, k=MERGE_KNN_K)
+
+        back = {id(built[id(o)]): o for o in ordered}
+        for aa, bb, meta in excluded:
+            a, b = back.get(id(aa)), back.get(id(bb))
+            if a is not None and b is not None:
+                # `meta` carries its own "reason" key, which COLLIDES with _refused's
+                # positional `reason` parameter -- passing it through as **meta raises
+                # TypeError: got multiple values for argument 'reason'. Renamed rather than
+                # dropped: why a pair was never offered is the whole point of logging it.
+                meta = dict(meta)
+                meta["exclusion_reason"] = meta.pop("reason", None)
+                _refused(a, b, "not_offered", None, **meta)
+
+        pairs = []
+        for aa, bb, meta in offered:
+            a, b = back.get(id(aa)), back.get(id(bb))
+            if a is not None and b is not None:
+                pairs.append((a, b, meta))
+        # One sweep = one hypothesis update per offered pair. The counter is the frame_id
+        # in each hypothesis's history, so the provenance says WHICH sweep saw what.
+        self._merge_sweep += 1
+        live = {tuple(sorted((str(getattr(a, "object_id", None) or a.label),
+                              str(getattr(b, "object_id", None) or b.label))))
+                for a, b, _m in pairs}
+        dropped = self._hypothesis_gc(live)
+        self.log_both('info', f"[ASSOC] sweep {self._merge_sweep}: {len(pairs)} offerti, "
+                              f"{len(excluded)} esclusi, su {len(ordered)} oggetti "
+                              f"(all-pairs sarebbe {len(ordered) * (len(ordered) - 1) // 2}); "
+                              f"ipotesi vive {len(self._hypotheses)}, scartate {dropped}")
+        return pairs, ctx, built
+
     def _cb_merge_objects(self, request, response):
         try:
             import json
@@ -745,31 +953,33 @@ class ObjectServices(Node):
                     self.get_logger().error(f"decision_log merge_refused failed: {e}")
 
             print("══════════════════════════════════════════════")
-            print(f"🔍 MERGE CHECK: {len(objects)} oggetti in memoria")
+            print(f"🔍 MERGE CHECK: {len(objects)} objects in memory")
             print("══════════════════════════════════════════════")
 
-            for i in range(len(objects)):
-                if objects[i] in to_remove:
-                    continue
-                for j in range(i + 1, len(objects)):
-                    # GA-23: objects[i] is tested ONCE, before this loop. A pair resolving
-                    # with keeper = b condemns objects[i] while this loop still holds it as
-                    # `a`, and it could then be chosen keeper again -- so the apply block
-                    # would write keeper.bbox onto an object already removed from the world
-                    # model. Today's `else` branch masks it by keeping `a` in three cases of
-                    # four; the evidence-based keeper rule below makes keeper = b common, so
-                    # fixing GA-25 alone would ARM this (rule 15). Re-test and stop.
-                    if objects[i] in to_remove:
-                        break
-                    if objects[j] in to_remove:
+            # GA-186. Candidate generation is a NAMED STEP now, and it is where the two
+            # engines differ first. "legacy" offers every pair, which is what every run to
+            # date measured. "evidence" offers only pairs inside the two objects' own
+            # covariance shells and RETURNS WHAT IT EXCLUDED, so a pair that was never
+            # compared is visible in the bundle instead of being invisible the way refusals
+            # were before they were logged.
+            pair_iter, assoc_ctx, assoc_objs = self._merge_candidates(objects, _refused)
+
+            for a, b, pair_meta in pair_iter:
+                    # GA-23: `a` is re-tested on every pair rather than once per outer
+                    # iteration. A pair resolving with keeper = b condemns `a` while later
+                    # pairs still hold it, and it could then be chosen keeper again -- so the
+                    # apply block would write keeper.bbox onto an object already removed from
+                    # the world model. The flat iteration makes this a plain per-pair check.
+                    if a in to_remove:
+                        continue
+                    if b in to_remove:
                         # Also logged: a pair skipped because one side is already condemned
                         # is a pair that was never judged on its own evidence, and the count
                         # of those is how you tell "the gate refused it" from "the gate
                         # never saw it".
-                        _refused(objects[i], objects[j], "already_condemned", None)
+                        _refused(a, b, "already_condemned", None)
                         continue
 
-                    a, b = objects[i], objects[j]
                     if a.bbox is None or b.bbox is None:
                         # THE LAST UNLOGGED EXIT IN THE SELECTION PATH, and it matters more
                         # than its two lines suggest. MEASURED in run 20260831_184822: a
@@ -807,8 +1017,76 @@ class ObjectServices(Node):
 
                     room_a = self.room_manager.room_at_bbox(a.bbox)
                     room_b = self.room_manager.room_at_bbox(b.bbox)
-                    if room_a is not None and room_b is not None and room_a != room_b:
-                        print(f"   ❌ STANZE DIVERSE ({room_a} != {room_b})")
+
+                    if MERGE_ENGINE == "evidence":
+                        # GA-186. No gate cascade and no similarity constant: every channel
+                        # runs, the log-odds are fused, and the pair commits only if the
+                        # total clears log(cost_ratio). Three outcomes, not two -- a HOLD is
+                        # not a refusal, and recording them as the same thing is what made
+                        # "the gate refused it" and "the gate could not tell" indistinguishable.
+                        aa = assoc_objs.get(id(a))
+                        bb = assoc_objs.get(id(b))
+                        if aa is None or bb is None:
+                            _refused(a, b, "assoc_object_missing", None)
+                            continue
+                        # Sorted, so the same pair keys identically whichever side is `a`
+                        # this sweep -- candidate order is not stable between sweeps and an
+                        # order-dependent key would start a fresh hypothesis every time,
+                        # silently disabling the persistence requirement below.
+                        hyp_key = tuple(sorted((str(getattr(a, "object_id", None) or a.label),
+                                                str(getattr(b, "object_id", None) or b.label))))
+                        ps = assoc.score_pair(aa, bb, assoc_ctx)
+                        threshold = assoc.commit_threshold(assoc_ctx.cost_ratio)
+
+                        # GA-188. The verdict comes from a HYPOTHESIS THAT PERSISTS ACROSS
+                        # SWEEPS, not from this one scoring. Scoring once and committing let
+                        # a single frame's geometry error destroy an identity; the design
+                        # says a decision must survive being re-measured. Hypothesis also
+                        # owns two things this branch was reimplementing badly: a veto is
+                        # PERMANENT for the pair (co-visibility is a fact, not evidence to
+                        # be outweighed later), and the full per-frame history is kept, so
+                        # the merge is explainable and reversible afterwards.
+                        h = self._hypotheses.get(hyp_key)
+                        if h is None:
+                            h = assoc.Hypothesis(hyp_key)
+                            self._hypotheses[hyp_key] = h
+                        h.update(ps, frame_id=self._merge_sweep)
+                        decision, why = h.decide(threshold,
+                                                 min_evidence=MERGE_MIN_EVIDENCE,
+                                                 min_consecutive=MERGE_MIN_CONSECUTIVE)
+
+                        rec = ps.as_record()
+                        rec.update(distance=pair_meta.get("distance_m"),
+                                   reach_m=pair_meta.get("reach_m"),
+                                   room_a=room_a, room_b=room_b, engine="evidence",
+                                   threshold=round(threshold, 4),
+                                   hypothesis_total=(None if h.vetoed_by else round(h.total, 4)),
+                                   updates=len(h.history), decision_reason=why)
+
+                        if decision != "merge":
+                            # "reject" (vetoed), "abstain" (nothing measured yet) and "hold"
+                            # (below threshold, or not yet persistent, or containment
+                            # unchecked) are DIFFERENT ANSWERS and are recorded as such. A
+                            # hold is not a refusal: the pair is still live and will be
+                            # re-decided on the next sweep.
+                            _refused(a, b, decision, None if h.vetoed_by else h.total, **rec)
+                            continue
+                        rec["provenance"] = h.provenance()
+                        h.committed = True
+
+                        # Committed. The apply block below is shared with the legacy engine
+                        # and reads `sim`, `dist` and `ev`, so they are filled from the
+                        # evidence result -- `sim` is LOG-ODDS here, not a 0..1 similarity,
+                        # which is why every record carries `engine`.
+                        sim = h.total
+                        ev = {"optional_count": ps.evidence_count}
+                        dist = pair_meta.get("distance_m")
+                        if dist is None:
+                            dist = float(np.linalg.norm(
+                                np.asarray(aa.centroid) - np.asarray(bb.centroid)))
+                    if (MERGE_ENGINE == "legacy"
+                            and room_a is not None and room_b is not None and room_a != room_b):
+                        print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b})")
                         # The similarity is computed HERE, on the refusal path only, and
                         # solely to be recorded. The gate ORDER is unchanged -- locality
                         # still decides before attributes (GA-25) and no similarity can
@@ -829,19 +1107,26 @@ class ObjectServices(Node):
                     by = (b.bbox['y_min'] + b.bbox['y_max']) / 2.0
                     bz = (b.bbox['z_min'] + b.bbox['z_max']) / 2.0
 
-                    print(f"\n📐 CONFRONTO [{i}]{a_label} vs [{j}]{b_label}:")
+                    # GA-186: the loop is flat now, so there are no `i`/`j` indices to print.
+                    # They were the enumeration of a nested loop that no longer exists, and
+                    # printing them here would have been a NameError on the legacy path.
+                    print(f"\n📐 COMPARISON {a_label} vs {b_label}:")
                     print(f"   Pos A: ({ax:.2f}, {ay:.2f}, {az:.2f})")
                     print(f"   Pos B: ({bx:.2f}, {by:.2f}, {bz:.2f})")
 
-                    # Embedding lazy; missing description embeddings are absent evidence,
-                    # not a reason to skip the pair (lost_similarity renormalises)
-                    sim, ev = _pair_similarity(a, b, a_label, b_label)
+                    if MERGE_ENGINE == "legacy":
+                        # Embedding lazy; missing description embeddings are absent evidence,
+                        # not a reason to skip the pair (lost_similarity renormalises).
+                        # GUARDED: in evidence mode `sim` and `ev` are already the fused
+                        # log-odds and the channel count, and recomputing them here would
+                        # silently overwrite the decision that was just made.
+                        sim, ev = _pair_similarity(a, b, a_label, b_label)
 
                     print("   Sim semantiche:")
                     print(f"     Label: '{a_label}' vs '{b_label}'")
                     print(f"     Colore: '{a.color}' vs '{b.color}'")
                     print(f"     Materiale: '{a.material}' vs '{b.material}'")
-                    print(f"     Similarità: {sim:.3f} (soglia: {MIN_SIMILARITY})")
+                    print(f"     Similarity: {sim:.3f} (threshold: {MIN_SIMILARITY})")
 
                     # GA-21: the `forzo merge` bypass that stood here is deleted. It fired
                     # ONLY when the evidence had already said do not merge, and overrode that
@@ -850,8 +1135,8 @@ class ObjectServices(Node):
                     # were correctly refused, and were then fused anyway. Overlap is locality,
                     # not similarity; the same confusion as GA-05, in the one operation that
                     # destroys an identity.
-                    if sim < MIN_SIMILARITY:
-                        print(f"   ❌ SIMILARITÀ BASSA ({sim:.2f} < {MIN_SIMILARITY})")
+                    if MERGE_ENGINE == "legacy" and sim < MIN_SIMILARITY:
+                        print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {MIN_SIMILARITY})")
                         _refused(a, b, "similarity", sim,
                                  evidence_count=ev["optional_count"],
                                  threshold=MIN_SIMILARITY, room_a=room_a, room_b=room_b)
@@ -869,19 +1154,20 @@ class ObjectServices(Node):
                     # a real signal -- a different-label pair with nothing else measured
                     # scored 0.0000 because the labels WERE compared and disagreed. This
                     # only refuses pairs that would otherwise have been merged.
-                    if ev["optional_count"] < MERGE_MIN_EVIDENCE:
-                        print(f"   ❌ NESSUNA EVIDENZA ({ev['optional_count']} termini "
-                              f"opzionali < {MERGE_MIN_EVIDENCE}; sim {sim:.3f} sulla sola label)")
+                    if MERGE_ENGINE == "legacy" and ev["optional_count"] < MERGE_MIN_EVIDENCE:
+                        print(f"   ❌ NO EVIDENCE ({ev['optional_count']} optional "
+                              f"terms < {MERGE_MIN_EVIDENCE}; sim {sim:.3f} on the label alone)")
                         _refused(a, b, "evidence_absent", sim,
                                  evidence_count=ev["optional_count"],
                                  required=MERGE_MIN_EVIDENCE, room_a=room_a, room_b=room_b)
                         continue
 
-                    dist = np.sqrt((ax - bx)**2 + (ay - by)**2 + (az - bz)**2)
-                    print(f"   Distanza: {dist:.3f}m (soglia: {MAX_DISTANCE}m)")
+                    if MERGE_ENGINE == "legacy":
+                        dist = np.sqrt((ax - bx)**2 + (ay - by)**2 + (az - bz)**2)
+                    print(f"   Distance: {dist:.3f}m (threshold: {MAX_DISTANCE}m)")
 
-                    if dist > MAX_DISTANCE:
-                        print(f"   ❌ TROPPO LONTANI ({dist:.2f}m > {MAX_DISTANCE}m)")
+                    if MERGE_ENGINE == "legacy" and dist > MAX_DISTANCE:
+                        print(f"   ❌ TOO FAR APART ({dist:.2f}m > {MAX_DISTANCE}m)")
                         _refused(a, b, "distance", sim,
                                  evidence_count=ev["optional_count"],
                                  distance=dist, threshold=MAX_DISTANCE,
@@ -937,10 +1223,10 @@ class ObjectServices(Node):
                             (merged_bbox['z_max']-merged_bbox['z_min']))
 
                     print("   ✅ MERGE!")
-                    print(f"     Volume A: {vol_a:.3f}m³ | Volume B: {vol_b:.3f}m³ → Tenuto: {vol_m:.3f}m³")
-                    print(f"     Tenuto: '{keeper.label}' | Rimosso: '{discard.label}'")
-                    print(f"     Desc keeper: '{keeper.description[:40]}...'")
-                    print(f"     Bbox tenuto: x[{merged_bbox['x_min']:.2f},{merged_bbox['x_max']:.2f}] "
+                    print(f"     Volume A: {vol_a:.3f}m³ | Volume B: {vol_b:.3f}m³ → Kept: {vol_m:.3f}m³")
+                    print(f"     Kept: '{keeper.label}' | Removed: '{discard.label}'")
+                    print(f"     Keeper desc: '{keeper.description[:40]}...'")
+                    print(f"     Bbox kept: x[{merged_bbox['x_min']:.2f},{merged_bbox['x_max']:.2f}] "
                         f"y[{merged_bbox['y_min']:.2f},{merged_bbox['y_max']:.2f}] "
                         f"z[{merged_bbox['z_min']:.2f},{merged_bbox['z_max']:.2f}]")
 
@@ -972,8 +1258,30 @@ class ObjectServices(Node):
                         "bbox_from_object_id": getattr(keeper, "object_id", None) or keeper.label,
                     })
 
+            # GA-197. THE MERGE RECORDS ARE WRITTEN WHETHER OR NOT THIS IS A DRY RUN, and
+            # they used to sit inside the `not dry_run` guard below. A dry run therefore
+            # decided merges, printed the "MERGE!" banner, filled `to_remove_pairs` -- and
+            # wrote NOTHING, while every REFUSAL logged normally. The bundle then showed a
+            # full refusal stream and zero merges, which reads as "the gate refused
+            # everything": exactly the ambiguity refusal-logging was introduced to end,
+            # reintroduced from the other side. The `dry_run` field on the record was dead
+            # by construction -- it could only ever be written as False.
+            #
+            # A dry run exists to say what the gate WOULD do. Its decisions are the output.
+            for pair in to_remove_pairs:
+                keeper, discard = pair["keeper"], pair["discard"]
+                try:
+                    self.decision_log.write(
+                        "merge", getattr(keeper, "object_id", keeper.label),
+                        merged_from=getattr(discard, "object_id", discard.label),
+                        keeper_label=keeper.label, discarded_label=discard.label,
+                        keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
+                        similarity=pair["similarity"], dry_run=bool(dry_run))
+                except Exception as e:
+                    self.get_logger().error(f"decision_log merge failed: {e}")
+
             if to_remove_pairs and not dry_run:
-                print(f"\n🗑️ RIMOZIONE: {len(to_remove_pairs)} oggetti duplicati:")
+                print(f"\n🗑️ REMOVING: {len(to_remove_pairs)} duplicate objects:")
 
                 for pair in to_remove_pairs:
                     keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
@@ -1009,33 +1317,15 @@ class ObjectServices(Node):
                             keeper, discard = pair["keeper"], pair["discard"]
                             f.write(f"[{timestamp}] 🔗 MERGE: '{discard.label}' → '{keeper.label}'\n")
                 except Exception as e:
-                    self.get_logger().error(f"Impossibile scrivere su operations.txt: {e}")
+                    self.get_logger().error(f"Could not write to operations.txt: {e}")
 
                 # A merge is the one decision that RE-ROUTES history: the discarded object stops
                 # existing and its past belongs to the keeper. Record both ids, so a reader
                 # reconstructing the keeper knows to follow the discarded one backwards, and a
                 # reader looking up the discarded id learns where it went instead of finding a
                 # history that simply stops.
-                for pair in to_remove_pairs:
-                    keeper, discard = pair["keeper"], pair["discard"]
-                    try:
-                        # GA-80: the rooms belong HERE, not only in merge_log. merge_log
-                        # becomes response.merge_log_json -- a service response field that
-                        # no bundle archives -- so the record this fix exists to produce
-                        # reached no artefact. The comment said what it was for, the code
-                        # did what the comment said, and the evidence never arrived. This
-                        # is the record C5 actually reads.
-                        self.decision_log.write(
-                            "merge", getattr(keeper, "object_id", keeper.label),
-                            merged_from=getattr(discard, "object_id", discard.label),
-                            keeper_label=keeper.label, discarded_label=discard.label,
-                            keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
-                            similarity=pair["similarity"], dry_run=bool(dry_run))
-                    except Exception as e:
-                        self.get_logger().error(f"decision_log merge failed: {e}")
-
             elif not to_remove_pairs:
-                print("\n✅ NESSUN duplicato trovato.")
+                print("\n✅ NO duplicates found.")
 
             print("══════════════════════════════════════════════\n")
 
@@ -1085,22 +1375,40 @@ class ObjectServices(Node):
             }
 
             raw_embedding = getattr(request, 'description_embedding', None)
+            # GA-184. The flag, not the length, says whether an embedding was SENT. A
+            # `float32[]` cannot carry null, so absence and emptiness are identical bytes on
+            # this boundary and `size == 0` had to stand in for both -- which is why one
+            # 58-minute run logged 190 "empty embedding serialised" warnings for objects
+            # that simply had no description to embed. That was the message type reporting
+            # its own limitation, not the producer misbehaving.
+            #
+            # `getattr(..., True)` is the compatibility default and it is the SAFE direction:
+            # against a service built before the flag existed it falls back to reading the
+            # length, which is exactly today's behaviour. Defaulting False would silently
+            # discard every real embedding the moment the two sides were out of step.
+            sent_embedding = bool(getattr(request, 'has_description_embedding', True))
 
-            if raw_embedding is None:
+            if raw_embedding is None or not sent_embedding:
+                # Absent, and SAID to be absent -- an ordinary state for an object with no
+                # usable description, so this is debug rather than a warning. It was logged
+                # at warn level and became 190 lines of noise that read like a defect.
                 self.log_both(
-                    'warn',
-                    f"[EMBEDDING] Campo description_embedding assente per '{label}' "
+                    'debug',
+                    f"[EMBEDDING] nessun embedding per '{label}' "
                     f"(descrizione='{description}')"
                 )
                 new_obj.embedding = None
             else:
                 embedding = np.asarray(raw_embedding, dtype=np.float32).flatten()
-                print(type(raw_embedding), len(raw_embedding))
                 if embedding.size == 0:
+                    # The flag SAYS one was sent and it is empty. Now that absence has its
+                    # own channel, this is a genuine contradiction between the two fields
+                    # and stays a warning.
                     self.log_both(
                         'warn',
-                        f"[EMBEDDING] Embedding vuoto serializzato per '{label}' "
-                        f"(descrizione='{description}')"
+                        f"[EMBEDDING] has_description_embedding=True ma array VUOTO per "
+                        f"'{label}' (descrizione='{description}') -- i due campi si "
+                        f"contraddicono"
                     )
                     new_obj.embedding = None
                 else:
@@ -1173,7 +1481,7 @@ class ObjectServices(Node):
                     f.write(f"[{timestamp}] 🟢 AGGIUNTO: {label} in {assigned_room} "
                             f"a pos({cx:.2f}, {cy:.2f}, {cz:.2f})\n")
             except Exception as e:
-                self.get_logger().error(f"Impossibile scrivere su operations.txt: {e}")
+                self.get_logger().error(f"Could not write to operations.txt: {e}")
 
             response.success   = True
             response.message   = f"Object '{label}' added to {assigned_room}"
@@ -1356,7 +1664,10 @@ class ObjectServices(Node):
                             best_match.material
                         )
                         updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
-                        updated_obj.embedding = description_embedding
+                        # GA-171: normalised, exactly as the add path does. This line used
+                        # to assign the raw request value, so a replaced object could carry
+                        # an empty array that every `is not None` guard downstream accepted.
+                        updated_obj.embedding = normalise_embedding(description_embedding)
                         updated_obj.relations = getattr(best_match, "relations", {
                             "isIn": set(),
                             "isOn": set(),
@@ -1435,7 +1746,7 @@ class ObjectServices(Node):
                     tag = "SPOSTATO" if replaced else "AGGIORNATO"
                     f.write(f"{timestamp} {tag} {obj_id} a pos=({cx:.2f}, {cy:.2f}, {cz:.2f}) dist={distance:.2f}m iou={iou:.2f}\n")
             except Exception as e:
-                self.get_logger().error(f"Impossibile scrivere su operations.txt: {e}")
+                self.get_logger().error(f"Could not write to operations.txt: {e}")
 
             response.success = True
             response.message = f"Object {obj_id} updated dist={distance:.2f}m, iou={iou:.2f}"

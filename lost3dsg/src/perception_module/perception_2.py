@@ -6,7 +6,7 @@ import sys
 import time
 import urllib.request
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from threading import Lock
 
@@ -27,7 +27,8 @@ import rclpy  # noqa: E402
 import tf2_ros  # noqa: E402
 import torch  # noqa: E402
 from config import CFG  # noqa: E402
-from detection_archive import DetectionArchive, frame_id_from_stamp  # noqa: E402
+from detection_archive import (  # noqa: E402
+    DetectionArchive, frame_id_from_stamp, resolve_archive_dir)
 from config import visibility as visibility_cfg  # noqa: E402
 from cv_bridge import CvBridge  # noqa: E402
 from geometry_msgs.msg import PoseStamped  # noqa: E402
@@ -138,6 +139,13 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.vitsam = None
             self.file_logger.info(f"Using Cloud Perception Backend: {backend_type}")
         self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=_encode_for_vlm)
+        # GA-210. ONE executor for the life of the node, so a description outlives the cycle
+        # that asked for it. Per-call executors joined on exit, which is what made the
+        # describer synchronous.
+        self._vlm_executor = ThreadPoolExecutor(
+            max_workers=int(CFG.get("vlm", {}).get("crop_concurrency", 4)),
+            thread_name_prefix="crop_vlm")
+        self._vlm_pending = {}
 
         # GA-95: one source for the cache window. utils.CameraData drops a frame whose stamp
         # is older than this, so the two must not drift apart.
@@ -155,6 +163,31 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._create_timers()
 
         self.get_logger().info(f"Log saved in: {file_handler.baseFilename}")
+
+
+        # GA-167. Built ONCE, here, in __init__. It previously sat inside process_crop_vlm --
+        # once PER CROP -- because I anchored the edit on a line I assumed was in __init__ and
+        # asserted only that the anchor was UNIQUE. It was unique and it was in the wrong
+        # function. A unique anchor is not a correct anchor.
+        #
+        # The cost was not cosmetic: cycle 1 of run 042828 called _archive_detections before
+        # any crop had been processed, found no archive, and returned silently -- ELEVEN
+        # detections never recorded. And rebuilding the object 29 times reset _frames_written,
+        # so the frame dedupe was not running at all; three frames for three frame_ids held
+        # only because rewriting the same path is idempotent. It LOOKED like it worked.
+        self.detection_archive = DetectionArchive(
+            resolve_archive_dir(CFG, PROJECT_ROOT),
+            enabled=bool(CFG["archive"]["per_detection"]),
+            logger=self.get_logger())
+        if self.detection_archive.enabled:
+            self.log_both("info", f"[ARCHIVE] per-detection archiving ON -> "
+                                  f"{self.detection_archive.root}")
+            # GT-ONLY. Subscribed ONLY when archiving is on, so the runtime path cannot
+            # acquire a ground-truth channel as a side effect of anything else. Keyed by
+            # exact stamp: a GT label from a neighbouring frame would be worse than none.
+            self._gt_semantic = {}
+            self.create_subscription(Image, "/gt/semantic_instance",
+                                     self._gt_semantic_callback, 10)
 
     def _init_publishers(self):
         qos_latched = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -206,12 +239,26 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # perception-cycle crashes were invisible to any error-level scan of the node's
             # output while sitting in plain sight in the file log. Rule 2: assert what
             # answered, not that something answered.
-            emit = {"debug": self.get_logger().debug,
-                    "warn": self.get_logger().warn,
-                    "error": self.get_logger().error}.get(level, self.get_logger().info)
-            emit(f"[{level.upper()}] {message}")
+            # GA-164b: each severity is emitted from its OWN call site. rclpy caches a
+            # log call site by caller location and raises "Logger severity cannot be
+            # changed between calls" when the same site is used for a second distinct
+            # severity -- so funnelling four levels through one `emit(...)` line threw on
+            # every level change. 238 of those in run 035141, exactly 2 per cycle.
+            #
+            # NOT THE CAUSE OF THAT RUN'S FAILURE, and worth stating so nobody re-fixes it:
+            # the same error appears 839 times in run 184822, which detected normally. It
+            # is noise that made the log unreadable, not the thing that stopped the cycle.
+            text = f"[{level.upper()}] {message}"
+            if level == "debug":
+                self.get_logger().debug(text)
+            elif level == "warn":
+                self.get_logger().warn(text)
+            elif level == "error":
+                self.get_logger().error(text)
+            else:
+                self.get_logger().info(text)
         except Exception as exc:
-            self.get_logger().error(f"Errore: {exc}")
+            self.get_logger().error(f"Error: {exc}")
 
         try:
             if level == "debug":
@@ -223,7 +270,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             else:
                 self.file_logger.info(message)
         except Exception as exc:
-            self.get_logger().error(f"Errore: {exc}")
+            self.get_logger().error(f"Error: {exc}")
 
     def _abort_if_moving(self, stage):
         if not self.is_stationary:
@@ -349,14 +396,6 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
     def process_crop_vlm(self, crop_info):
         if crop_info is None:
             return None
-        _arch_dir = CFG["archive"]["dir"] or os.path.dirname(
-            CFG["paths"]["operations_log"] or "") or PROJECT_ROOT
-        self.detection_archive = DetectionArchive(
-            _arch_dir, enabled=bool(CFG["archive"]["per_detection"]),
-            logger=self.get_logger())
-        if self.detection_archive.enabled:
-            self.log_both("info", f"[ARCHIVE] per-detection archiving ON -> {_arch_dir}")
-
         prompt_path = CFG["paths"]["visual_prompt"] or os.path.join(
             os.path.dirname(__file__), "prompts", "visual_prompt.txt")
         yaw = crop_info.get("yaw", 0.0)
@@ -421,10 +460,17 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._assign_instance_labels(detections)
         centroids_3d, bboxes_3d = self._compute_3d_geometry(detections, depth, camera_info, camera_data["transform"])
         self._add_pca_orientation(detections, bboxes_3d, depth, camera_info, camera_data["transform"])
-        self._archive_detections(detections, bboxes_3d, centroids_3d, image_raw,
-                                 camera_data.get("transform"), cycle_stamp)
         self._publish_image_with_bb(image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth)
         crops_data = self.prepare_crops(detections, image_raw, PROJECT_ROOT)
+        # GA-172: archived AFTER prepare_crops so the row can carry `crop_meta`, and still
+        # BEFORE the VLM batch so a describer failure cannot cost the record of what was
+        # detected. It used to run before prepare_crops, so crop_meta DID NOT YET EXIST when
+        # the row was written -- every row carried null, and the four-way status that
+        # separates `unanswerable` from `model_abstained` was unrecoverable. The status was
+        # computed correctly and thrown away one line too early.
+        self._archive_detections(detections, bboxes_3d, centroids_3d, image_raw,
+                                 camera_data.get("transform"), cycle_stamp,
+                                 crops_data=crops_data)
         self.publish_crops(crops_data)
         self._attach_crop_embeddings(detections, crops_data)
         vlm_results = self._run_crop_vlm_batch(crops_data)
@@ -566,24 +612,69 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.log_both("error", f"CLIP embedding dump failed: {exc}")
 
     def _run_crop_vlm_batch(self, crops_data):
-        results = {}
+        """Submit this cycle's crops, return the ones that have ALREADY finished. GA-210.
+
+        THE CYCLE NO LONGER WAITS FOR THE DESCRIBER. The previous version used futures and
+        then joined on them -- `with ThreadPoolExecutor(...)` blocks on exit -- so a single
+        slow crop stalled the whole pipeline. Measured on run 20260901_151714: vlm_ms 13,713
+        for five crops against a provider median of 0.55 s, i.e. the batch waiting on one
+        straggler, in a cycle that took 54 s end to end.
+
+        WHY IT IS SAFE TO NOT WAIT, and this is the part that needed no new machinery: an
+        object with no description yet is ALREADY a supported state everywhere downstream.
+        `_build_descriptions` fills an absent entry with {}; the association layer's
+        description term is only computed when BOTH embeddings exist and drops out with the
+        weights renormalised otherwise; the admission gate treats missing evidence as
+        ABSTAIN, never as a low score; and `Hypothesis` persists across sweeps, so a pair
+        that cannot be decided now is re-decided when the description arrives. The object is
+        held out of a merge decision by the evidence rules that already exist -- it is not
+        hidden from the loop, it simply carries nothing to compare on yet.
+
+        THE COST, stated: a description lands one or more cycles after its detection, so an
+        object may be admitted before it is describable. The gate's answer to thin evidence
+        is to abstain, so the failure direction is MORE ABSTENTIONS, not wrong admissions.
+
+        The executor is per-node, not per-call, so work outlives the cycle that queued it.
+        """
         valid_crops = [crop for crop in crops_data if crop is not None]
-        if not valid_crops:
-            return results
 
-        concurrency = int(CFG.get("vlm", {}).get("crop_concurrency", 4))
-        max_workers = min(concurrency, len(valid_crops))
-        timeout = float(CFG.get("vlm", {}).get("crop_timeout", 15.0))
-
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="crop_vlm") as executor:
-            futures = {executor.submit(self.process_crop_vlm, crop): crop["label"] for crop in valid_crops}
-            for future in as_completed(futures):
-                label = futures[future]
+        # Harvest whatever finished since the last cycle, whenever it was submitted.
+        results = {}
+        still_pending = {}
+        for label, fut in self._vlm_pending.items():
+            if fut.done():
                 try:
-                    results[label] = future.result(timeout=timeout) or {}
+                    results[label] = fut.result() or {}
                 except Exception as exc:
                     self.get_logger().error(f"Crop VLM future failed for {label}: {exc}")
                     results[label] = {}
+            else:
+                still_pending[label] = fut
+        self._vlm_pending = still_pending
+
+        if not valid_crops:
+            if results:
+                self.log_both("info", f"[VLM] {len(results)} deferred description(s) landed; "
+                                      f"{len(self._vlm_pending)} still in flight")
+            return results
+
+        # BOUNDED. Without a cap a describer slower than the cycle rate queues without limit
+        # and the backlog only grows -- the object would never get its description AND the
+        # memory would climb. Dropping the oldest is visible in the log; an unbounded queue
+        # is not.
+        max_pending = int(CFG.get("vlm", {}).get("max_pending_crops", 64))
+        for crop in valid_crops:
+            label = crop["label"]
+            if label in self._vlm_pending:
+                continue          # already queued and not yet answered; do not ask twice
+            if len(self._vlm_pending) >= max_pending:
+                self.log_both("warn", f"[VLM] backlog at {max_pending}; not queueing "
+                                      f"'{label}' this cycle (describer slower than detection)")
+                break
+            self._vlm_pending[label] = self._vlm_executor.submit(self.process_crop_vlm, crop)
+
+        self.log_both("info", f"[VLM] queued {len(valid_crops)} crop(s), "
+                              f"{len(results)} landed, {len(self._vlm_pending)} in flight")
         return results
 
     def _build_descriptions(self, detections, vlm_results):
@@ -597,8 +688,29 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             descriptions.append(d)
         return descriptions
 
+    def _gt_semantic_callback(self, msg):
+        """Cache habitat's per-pixel instance frame, keyed by its EXACT stamp.
+
+        A small bounded cache rather than a single slot: the semantic frame and the cycle
+        that consumes it are not guaranteed to arrive in lockstep, and matching on "the
+        latest one" would silently pair a detection with a different frame's ground truth --
+        which is the failure this whole night has been about, in the one place where it
+        would corrupt the measurement rather than the map.
+        """
+        key = frame_id_from_stamp(msg.header.stamp)
+        if key is None:
+            return
+        arr = np.frombuffer(msg.data, dtype="<i4")
+        if arr.size != msg.height * msg.width:
+            self.log_both("warn", f"[GT] semantic frame {key} has {arr.size} values for "
+                                  f"{msg.height}x{msg.width}; ignored")
+            return
+        self._gt_semantic[key] = arr.reshape(msg.height, msg.width)
+        while len(self._gt_semantic) > 8:
+            self._gt_semantic.pop(next(iter(self._gt_semantic)))
+
     def _archive_detections(self, detections, bboxes_3d, centroids_3d, image_raw,
-                            transform, cycle_stamp):
+                            transform, cycle_stamp, crops_data=None):
         """Write the frame and one row per detection. No-op unless archiving is enabled.
 
         Placed AFTER the 3D geometry so the row carries the 3D box and centroid too, and
@@ -613,6 +725,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         if frame_id is None:
             return
         arch.record_frame(frame_id, image_raw)
+        # EXACT stamp match only. If the semantic frame for THIS frame_id is not held, the
+        # rows carry no GT and say why -- never the nearest available frame.
+        semantic = getattr(self, "_gt_semantic", {}).get(frame_id)
         cam = None
         try:
             t = transform.transform.translation
@@ -626,8 +741,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                           and i < len(centroids_3d) else None),
                 bbox_3d=(bboxes_3d[i] if bboxes_3d is not None
                          and i < len(bboxes_3d) else None),
+                crop_meta=((crops_data[i] or {}).get("crop_meta")
+                           if crops_data is not None and i < len(crops_data) else None),
                 stamp=frame_id,
-                room_id=getattr(self, "current_room_id", None))
+                room_id=getattr(self, "current_room_id", None),
+                semantic_frame=semantic)
 
     def _publish_bbox_array(self, detections, bboxes_3d, fov_volume, cycle_stamp):
         msg = self.make_header_msg(Bbox3dArray, stamp=cycle_stamp, frame_id="map")
@@ -661,6 +779,28 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 box_msg.oriented_extents = [float(v) for v in oe]
             else:
                 box_msg.has_orientation = False
+
+            # GA-186: the detector's own 2D box, so the object manager can tell a duplicate
+            # detection of one object from two objects sharing a frame. `det.bbox` is the
+            # (x1, y1, x2, y2) the archive already writes as `bbox_2d`; carried here because
+            # co-visibility is a hard negative and must never be evaluated on a guess.
+            det_box_2d = getattr(det, "bbox", None)
+            if det_box_2d is not None and len(det_box_2d) == 4:
+                box_msg.has_bbox_2d = True
+                box_msg.bbox_2d = [float(v) for v in det_box_2d]
+            else:
+                box_msg.has_bbox_2d = False
+
+            # GA-190: the appearance embedding, already computed and until now only dumped
+            # to a sidecar. `clip_embedding` is None whenever the backend could not embed
+            # that crop -- a degenerate mask, for instance -- and None must stay absent
+            # rather than become a zero vector.
+            det_embed = getattr(det, "clip_embedding", None)
+            if det_embed:
+                box_msg.has_clip_embedding = True
+                box_msg.clip_embedding = [float(v) for v in det_embed]
+            else:
+                box_msg.has_clip_embedding = False
             msg.boxes.append(box_msg)
         self.bbox_pub.publish(msg)
 

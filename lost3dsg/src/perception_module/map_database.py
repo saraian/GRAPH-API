@@ -192,7 +192,7 @@ class MapDatabase(Store):
         with sqlite3.connect(self.db_path) as conn:
             row = self._find_active(conn, obj)
             if not row:
-                print(f"[MapDB] ⚠️  on_object_moved: '{obj.label}' non trovato nel DB, salto.")
+                print(f"[MapDB] ⚠️  on_object_moved: '{obj.label}' not found in the DB, skipping.")
                 return
             obj_id = row["id"]
             conn.execute(
@@ -243,7 +243,7 @@ class MapDatabase(Store):
         with sqlite3.connect(self.db_path) as conn:
             row = self._find_active(conn, obj)
             if not row:
-                print(f"[MapDB] ⚠️  on_object_deleted: '{obj.label}' non trovato nel DB, salto.")
+                print(f"[MapDB] ⚠️  on_object_deleted: '{obj.label}' not found in the DB, skipping.")
                 return
             obj_id = row["id"]
             conn.execute(
@@ -294,7 +294,7 @@ class MapDatabase(Store):
         with sqlite3.connect(self.db_path) as conn:
             row = self._find_active(conn, obj)
             if not row:
-                print(f"[MapDB] ⚠️  on_uncertain_added: '{obj.label}' non trovato nel DB, salto.")
+                print(f"[MapDB] ⚠️  on_uncertain_added: '{obj.label}' not found in the DB, skipping.")
                 return
             obj_id = row["id"]
             conn.execute(
