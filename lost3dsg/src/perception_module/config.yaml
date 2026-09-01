@@ -32,7 +32,8 @@ association:
   pov_scale_factor: 1.0
   max_volume_threshold: 0.5
   bbox_reduction_ratio: 0.30
-  max_match_distance_m: 0.0    # tracking match gate on bbox-centre distance; 0 = off
+  reevaluation_radius_m: 2.0   # GA-49: radius (m) within which a changed object re-evaluates its neighbours
+                               # (replaced max_match_distance_m, which no code has read since GA-04)
 
 frames:
   # OPTICAL frame (x right, y down, z forward) the perception back-projects
@@ -76,3 +77,6 @@ perception:
   modal_endpoint: "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
   score_threshold: 0.15
   nms_threshold: 0.50
+  # seconds; a remote perception call. 25.0 was hardcoded and sat below all
+  # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
+  cloud_timeout_s: 60.0

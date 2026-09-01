@@ -39,7 +39,7 @@ habitat:
   floor_tolerance_m: 0.5
   mapping_seconds: 150.0  # continuous mapping tour (seconds)
   walk_frames: 6         # frames moving per burst
-  dwell_frames: 60       # frames stationary for perception
+  dwell_frames: 0       # 0 = agent never stops (owner, 2026-08-31). FEED_DWELL in live_run.sh overrides this.
   fps: 3.0
 
 hooks:
@@ -49,3 +49,20 @@ hooks:
 perception:
   backend: "modal"
   modal_endpoint: "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
+  # seconds; a remote perception call. 25.0 was hardcoded and sat below all
+  # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
+  # INTERIM, NOT MEASURED. 180 was not derived from a distribution and must not be cited as
+  # one. It is a diagnostic ceiling: the in-run call has exceeded 60 s in three runs and the
+  # raise records no elapsed time, so nobody knows whether the real figure is 65 s or 300.
+  # This is set high enough for a run to survive and produce per-cycle timings — the
+  # measurement that should replace it.
+  #
+  # This is NOT the widen-the-timeout move a4's ruling forbids. That ruling forbids choosing a
+  # number from one sample and calling it right. This number is labelled wrong on purpose.
+  #
+  # Isolated calls to the same endpoint with the same payload run 43.6 s cold and 1.2-1.4 s
+  # warm, so the service is not the suspect — the in-container context is: the call happens
+  # after a ~42 s VLM call in the same cycle, beside rtabmap and the object manager.
+  #
+  # REPLACE FROM MEASURED IN-RUN VALUES.
+  cloud_timeout_s: 180.0

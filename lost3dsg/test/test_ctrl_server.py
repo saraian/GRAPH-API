@@ -133,7 +133,9 @@ def test_ctrl_server():
     except urllib.error.HTTPError as e:
         assert e.code == 404
     httpd.shutdown()
-    print("test_ctrl_server: OK")
+    import datetime
+    print("test_ctrl_server: OK |",
+          datetime.datetime.now().astimezone().isoformat(timespec="seconds"))
 
 
 if __name__ == "__main__":

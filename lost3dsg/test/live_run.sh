@@ -8,11 +8,131 @@
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
-OUT_DIR=${OUT_DIR:-/tmp/graphapi_live}
-mkdir -p "$OUT_DIR"
 
 MON_PID=""
 FEED_PID=""
+# `latest` means THE LAST BUNDLE WORTH READING. Two conditions, and it runs from the EXIT trap
+# so it fires HOWEVER the run ends.
+#
+#   1. the gate passed  -- a pre-flight verdict: the run was allowed to start
+#   2. the bundle holds a measured artefact -- it actually produced something
+#
+# It lived after `docker run` and never ran when the script was stopped with Ctrl-C, which is
+# the documented way to stop it. `20260831_024019` -- gate 8/8, 952 decisions, the largest
+# bundle this project has produced -- did not claim `latest`, while an aborted run from 20:31
+# with no decisions still held it. Moving the check EARLY let bad runs claim the pointer;
+# moving it LATE stopped good ones claiming it. The trap is where it belongs.
+#
+# CEILING, stated: this separates measured-nothing from measured-something. It CANNOT separate
+# truncated from complete -- that is the flow question and it belongs to a post-run check.
+_publish_map_if_earned() {
+  # The map library lives on the HOST at /DATA/FOUND/maps/<scene>/, not inside a bundle — a
+  # library that lives in one run's output directory is not a library. The container cannot write
+  # there, so it leaves a marker and the host copies.
+  #
+  # The marker is written ONLY by a passing integrity_check. No marker means either the check
+  # failed or it never ran (GA-98: rtabmap did not close). BOTH mean do not publish, and the
+  # message says which is which, because unchecked and torn are different states.
+  [ "${MAPPING_ONLY:-0}" = "1" ] || return 0
+  local db="$RUN_DIR/rtabmap.db" mark="$RUN_DIR/rtabmap.db.INTEGRITY_OK"
+  if [ ! -f "$mark" ]; then
+    echo "!! map NOT published: no INTEGRITY_OK marker — the map either failed integrity_check or was never checked."
+    return 0
+  fi
+  # GA-119. STAMP THE FLOOR BEFORE PUBLISHING, and publish INTO that floor's directory.
+  #
+  # hm3d_00861 has four floors and only one has ever been mapped. Until tonight the map did not
+  # say which, so a robot loading it could not tell whether it was the right storey and every
+  # coverage claim citing it was silently a claim about one floor.
+  #
+  # The height is MEASURED from the map's own Node poses, never from the floor the run was asked
+  # for. A run that requested 0.43 and spawned on 1.35 publishes to floor_+1.35, and the sidecar
+  # says 1.35. The artefact reports what happened, not what was intended.
+  #
+  # The scene's floor set comes from bev_data.json, which the feed host already writes into
+  # OUT_DIR — the same navmesh clustering the BEV renders (GA-93). Not scraped from a log.
+  local floors="[]"
+  [ -f "$OUT_DIR/bev_data.json" ] && floors=$(python3 -c \
+    "import json,sys;print(json.dumps(json.load(open(sys.argv[1])).get('floors') or []))" \
+    "$OUT_DIR/bev_data.json" 2>/dev/null || echo "[]")
+  python3 "$HERE/stamp_floor.py" "$db" "$floors" || {
+    echo "!! map NOT published: the floor could not be measured from its own node poses."
+    echo "   An unstamped map is honest; a map published without knowing its storey is not."
+    return 0; }
+  # Directory name from the NEAREST SCENE FLOOR when the clustering supplies one, so two runs of
+  # the same storey land in the same directory rather than floor_+1.207 and floor_+1.209. Falls
+  # back to the measured median when the scene floors are unknown.
+  # OWNER RULING 25, 2026-09-01, their words: "a map spanning two storeys will flatten and become
+  # a wrong map." So single_floor is a PUBLISH PRECONDITION, not a sidecar field to read later.
+  #
+  # A 2D occupancy grid has one cell per (x, y). Two storeys stacked into it put the upstairs
+  # furniture into the downstairs grid as obstacles that are not there. The map is not merely
+  # incomplete — it is WRONG in a way a robot cannot detect at navigation time.
+  #
+  # Measured on the -1.59 run, which is why this exists: 251 nodes on -1.59, 99 on +1.35, 18 on
+  # +0.43. A third of the map was a different floor. It published, because the gate only asked
+  # whether the database opened. That map is now relabelled out of the canonical namespace.
+  # COVERAGE, the sibling precondition. A map can be one storey, open cleanly, and be a map of
+  # nowhere: floor_+0.43 published 471 nodes of SEVENTEEN distinct viewpoints in a 1.04 x 0.42 m
+  # box and passed every check there was. Node count does not separate that from a real map;
+  # distinct poses does.
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get('covers_a_storey', True) else 1)" \
+      "${db}.floor.json" || {
+    echo "!! map NOT published: it COVERS ALMOST NOTHING."
+    python3 -c "import json,sys
+d=json.load(open(sys.argv[1]))
+print('   %d nodes but only %d distinct poses, footprint %s m (threshold %d distinct)'
+      % (sum(d['nodes_per_nearest_floor'].values()), d['distinct_poses'],
+         d['footprint_m'], d['min_distinct_poses']))" "${db}.floor.json"
+    echo "   Either the tour could not move, or the target is not a storey. Check the feed log's"
+    echo "   floor_detail: a cluster below min_floor_share is a landing or a gallery, not a floor."
+    return 0; }
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d['single_floor'] else 1)" \
+      "${db}.floor.json" || {
+    echo "!! map NOT published: it SPANS MORE THAN ONE STOREY and a 2D grid cannot represent that."
+    python3 -c "import json,sys
+d=json.load(open(sys.argv[1]))
+print('   nodes per storey:', d['nodes_per_nearest_floor'])
+print('   spread: %.2f m, basis: %s' % (d['node_z_spread_m'], d['single_floor_basis']))" "${db}.floor.json"
+    echo "   The bundle keeps the map; the library does not take it. Fix the tour's floor"
+    echo "   confinement (habitat.floor_confinement) and re-run this floor."
+    return 0; }
+  local fl; fl=$(python3 -c "import json,sys
+d=json.load(open(sys.argv[1]))
+z=d.get('nearest_scene_floor'); z=d['floor_height_m'] if z is None else z
+print(f'floor_{z:+.2f}')" "${db}.floor.json")
+  local dest="/DATA/FOUND/maps/${SCENE_ARG}/${fl}"
+  mkdir -p "$dest"
+  # HARD LINK, NOT COPY. Every published map existed twice — once in maps/ and once in the bundle
+  # it came from — and at 0.3-1.2 GB each that was 4.7 GB of duplication with /DATA at 99% full.
+  # A link is one copy on disk with both paths valid, and it survives the bundle being read later.
+  # Falls back to a copy across filesystems, where a link is impossible.
+  #
+  # A write through EITHER path would change both. Nothing writes a published map — the
+  # localization branch mounts it read-only now — but that is the property to preserve.
+  ln "$db" "$dest/rtabmap.db" 2>/dev/null || cp "$db" "$dest/rtabmap.db"
+  cp "${db}.floor.json" "$dest/rtabmap.db.floor.json"
+  cp "$RUN_DIR/rtabmap.db.params-sha" "$dest/rtabmap.db.params-sha" 2>/dev/null || true
+  echo "    map published: $dest/rtabmap.db ($(cat "$mark"))"
+}
+
+_point_latest_if_earned() {
+  local verdict measured f
+  verdict=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict','absent'))" \
+              "$RUN_DIR/preflight.json" 2>/dev/null || echo absent)
+  measured=""
+  for f in hook_decisions.jsonl actual_perceptions.json perception_latencies.jsonl; do
+    [ -s "$RUN_DIR/$f" ] && { measured="$f"; break; }
+  done
+  if [ "$verdict" = "pass" ] && [ -n "$measured" ]; then
+    ln -sfn "$RUN_DIR" "$FOUND_RUNS_DIR/latest"
+    echo ">>> gate passed, measured output present ($measured) -- $RUN_DIR is now latest"
+  else
+    echo ">>> latest NOT moved: preflight '$verdict', measured artefact '${measured:-none}'."
+    echo "    it still points at $(readlink "$FOUND_RUNS_DIR/latest" 2>/dev/null || echo '<unset>')"
+  fi
+}
+
 cleanup() {
   # PID-scoped: only kill what THIS instance started. A pattern-based
   # pkill here would let two concurrent live_run.sh instances destroy
@@ -26,6 +146,8 @@ cleanup() {
   if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
     cp "$OUT_DIR"/*.json "$OUT_DIR"/*.jsonl "$RUN_DIR/" 2>/dev/null || true
     cp "$OUT_DIR"/*.log "$RUN_DIR/logs/" 2>/dev/null || true
+    _point_latest_if_earned
+    _publish_map_if_earned
   fi
 }
 trap cleanup EXIT
@@ -77,6 +199,35 @@ echo "    config: $CFG_NAME"
 # Setup persistent FOUND run bundle (never overwritten across runs)
 RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SCENE_ARG=${1:-hm3d_00861}
+
+# Live run output. A TIMESTAMPED DIRECTORY under /DATA/FOUND/results/, never /tmp.
+# Owner ruling, relayed to this lane rather than given to it directly (rule 8's second half):
+#   "no output should go to the temp directory, always in a timestamped experiment results dir
+#    inside the results/ dir inside the /DATA/FOUND directory."
+#
+# Assigned HERE and not at the top of the file because the name needs RUN_TIMESTAMP and
+# SCENE_ARG. The only earlier references are inside cleanup(), a function body evaluated when
+# the trap fires — long after this line — so moving the assignment down is safe. That was
+# checked rather than assumed.
+#
+# results/ is outside every hashed root, so run output moves no digest. A test asserts it.
+# runs/<id> stays the curated archive that every tool and criterion reads; results/ is the
+# live working directory. Two things at once is the anti-pattern of the week.
+# GA-99. EXPORTED, and the export is the whole fix.
+#
+# This was a bare assignment from f3fc88a (2026-08-24) until 2026-08-31, and HARMLESS for six days
+# because its default was /tmp/graphapi_live -- the same directory habitat_feed_host.py fell back
+# to. The two agreed by COINCIDENCE, not by wiring. Moving this default to results/ (same day)
+# made the missing export real, and the feed host's fallback chain then hid it: every run wrote
+# feed_stats.json and bev_data.json outside its own bundle, which is why NO BUNDLE HAS EVER
+# CONTAINED THEM -- not run 19, not run A, not run B.
+#
+# Found by the warning that replaced the fallback chain, on the first run after it landed.
+# The class is "two paths that agree by accident until one of them moves". Nothing else in this
+# tree reports it, so that warning is permanent.
+export OUT_DIR=${OUT_DIR:-/DATA/FOUND/results/${RUN_TIMESTAMP}_${SCENE_ARG}}
+mkdir -p "$OUT_DIR"
+echo "    live output: $OUT_DIR"
 # Stamped BEFORE the bundle directory is created, so every artefact the run legitimately
 # writes is newer than it. The gate's a5 probe fails on anything older — a scratch directory
 # left dirty by the previous run, or a file copied in by hand.
@@ -136,9 +287,136 @@ export FOUND_HOLD_BAND="${FOUND_HOLD_BAND:-0.05}"
 export FOUND_MIN_SUPPORT="${FOUND_MIN_SUPPORT:-30}"
 export FOUND_ROOM_ENFORCE="${FOUND_ROOM_ENFORCE:-0}"
 export FOUND_ALIGNER="${FOUND_ALIGNER:-kg}"
-export FOUND_ONTOLOGY_EXT="${FOUND_ONTOLOGY_EXT:-default}"
+# EMPTY means "use the built-in extension". found/kg_align.py:88-91 reads this as a PATH when
+# it is non-empty and raises FileNotFoundError if that path is absent — so the literal string
+# "default" was passed as a filename and every gated run failed a1 with
+# `FOUND_ONTOLOGY_EXT set to default, which does not exist`.
+#
+# The word came from run_metadata.json's policy block, where "default" is a human-readable
+# LABEL. I exported the label as the value. The bundle still records "default"; the process
+# receives the empty string that actually means it.
+# Owner rulings 13 and 15. EXPORTED AND PASSED, not merely stamped.
+#
+# These arrived recorded in run_metadata.json but neither exported nor on the docker run -e list.
+# Today that is harmless because both sides default to the same thing — found/dims.py's
+# _DEFAULT_CORPUS_ORDER is ("abo","metrictree") and kg_align defaults aliases to 1, matching the
+# ${VAR:-default} the bundle stamps. THE AGREEMENT IS COINCIDENTAL, which is the GA-99 shape
+# exactly: two paths that agree by accident until one of them moves.
+#
+# The live consequence is sharper than a future one. dims.py:60 says the point of making the
+# corpus order configurable is that an ablation arm can be attributed — "otherwise the arm would
+# be labelled and not applied". Without the passthrough that is the CURRENT state: setting
+# FOUND_CORPUS_ORDER host-side would be written into the bundle and never reach the code.
+export FOUND_CORPUS_ORDER="${FOUND_CORPUS_ORDER:-}"
+export FOUND_KG_ALIASES="${FOUND_KG_ALIASES:-}"
+export FOUND_ONTOLOGY_EXT="${FOUND_ONTOLOGY_EXT:-}"
 export FOUND_STORE_PATH="${FOUND_STORE_PATH:-/ws/output/knowledge_graph.ttl}"
 export FOUND_SCENE="${FOUND_SCENE:-$SCENE_ARG}"
+
+# Feed geometry. These were interpolated ONLY into the launch line 160 lines below and appeared
+# NOWHERE in the bundle — a run recorded its seed and nothing else about how the agent moved.
+#
+# FEED_DWELL DEFAULT IS 0 AS OF 2026-08-31, by the owner, relayed by the orchestrator in the
+# owner's words: "I think we should try removing dwell completely and try making it work from
+# there." The ruling stands on its own; the two numbers that were quoted alongside it here do
+# not, and both were struck the same afternoon by the lanes that checked them.
+#
+# STRUCK, and NOT to be restored to this comment:
+#
+#   "dwell held the agent still 20 s of every 22 s in run 19" — NOT MEASURED FOR RUN 19. That
+#   bundle has no feed block, no feed_stats.json, and a feed_host.log that prints phase NAMES
+#   and never the numbers. It is an estimate from the then-default of 60, and its own config.yaml
+#   cannot confirm it (see below). Experiment lane, from the artefacts.
+#
+#   "0/5 merges under 0.925 versus 87% under the old gate" — the COUNT is right and the
+#   INFERENCE is not. Run 19 compared 20 pairs, refused 19 on similarity, and the highest
+#   similarity observed across all of them was 0.797. The 0.85-0.925 band is EMPTY, so the old
+#   threshold would have refused every one of these pairs too. That run measures the scene and
+#   the detections, not the knob. Testing lane, recovered from logs/om6.log — object_manager_6's
+#   stdout, symlinked into the bundle at live_stack_container.sh:57. NOT perception.log, which I
+#   cited first and which holds zero of those lines: om6.log 20, perception.log 0.
+#
+#   CONFIRMED AGAIN on run A (20260831_174209) with a second, larger sample: 137 pairs reaching a
+#   decision, similarity-refused ceiling 0.827. The 0.85-0.925 gap is empty there too, so the
+#   0.85 -> 0.925 change would have refused ZERO additional pairs on either run. Two independent
+#   samples now say the knob is inert on this scene.
+#
+# A BUNDLE'S config.yaml IS NOT EVIDENCE OF ITS FEED SETTINGS. Every bundle carries a copy, so
+# it looks like dwell was always recorded. The environment wins over it at habitat_feed_host.py
+# :505, and the copy is of the file, not of what took effect. Measured: bundle 20260831_033330
+# has config.yaml mapping_seconds 0.0 while its feed_stats.json says 150.0 and its log announces
+# a 150 s mapping phase. Where a pre-stamp bundle has feed_stats.json, phase_dwell_frames is
+# written AFTER the override and is the recoverable value (20260826_112549 and run 13: both 60).
+# Where it does not, the setting is simply absent and must not be inferred from the run date.
+#
+# dwell=0 STARTS A NEW BUNDLE FAMILY: runs before this line are not comparable to runs after it.
+# That is why these values are now IN run_metadata.json — the family boundary belongs in the
+# artefact, not in the message that announced it, and not in a file that records the intent
+# rather than the effect.
+#
+# EXPECTED COST, to be measured and not assumed: the agent never stops, so every frame carries
+# motion blur that a dwell frame did not. If association degrades, that is a finding to record,
+# not a reason to quietly restore 60.
+export FEED_SEED="${FEED_SEED:-7}"
+export FEED_FPS="${FEED_FPS:-3}"
+export FEED_WALK="${FEED_WALK:-6}"
+export FEED_DWELL="${FEED_DWELL:-0}"
+# MAPPING_ONLY builds a localization map and runs no detector. 900 s is a STARTING POINT AND
+# NOT A MEASUREMENT: the only dwell=0 coverage figure that exists is run A's 7.5 m in 636 s, and
+# run A did not achieve full coverage -- it is the run that died. hm3d_00861's navmesh has FOUR
+# floor levels (measured on run B: [-1.59, 0.43, 1.35, 2.21]), so five minutes was never
+# plausible. REPLACE FROM THE FIRST MAPPING RUN'S OWN COVERAGE STATS.
+export MAPPING_ONLY="${MAPPING_ONLY:-0}"
+export FEED_SPAWN_FLOOR="${FEED_SPAWN_FLOOR:-}"
+
+# MAPPING IS THE EXCEPTION NOW, NOT THE DEFAULT. A detection run used to rebuild an occupancy map
+# from scratch for 150 s unless somebody remembered FEED_MAPPING_SECONDS=0 — and forgetting cost a
+# run tonight. If a published map exists for this scene and floor, localize against it and map for
+# zero seconds. If none exists, map, and SAY SO rather than doing it silently.
+#
+# The published map is chosen by the requested spawn floor when there is one, because a map of a
+# different storey is not a map of this run's world. With no spawn floor, only a scene-level map
+# is eligible: guessing a floor here would localize against the wrong one and every pose would be
+# confidently wrong.
+if [ "${MAPPING_ONLY:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
+  if [ -n "$FEED_SPAWN_FLOOR" ]; then
+    _mapdir=$(printf "/DATA/FOUND/maps/%s/floor_%+.2f" "$SCENE_ARG" "$FEED_SPAWN_FLOOR")
+  else
+    _mapdir="/DATA/FOUND/maps/$SCENE_ARG"
+  fi
+  # A CHECKED FALLBACK, not a guess. The canonical hm3d map lives at the SCENE level rather than
+  # under floor_<z>, because it was published before per-floor publication existed. Falling back to
+  # it blindly would localize a floor-1.35 run against whatever that file happens to be. So the
+  # fallback is allowed only when the map's OWN STAMP says it covers the requested floor — the
+  # nearest_scene_floor that stamp_floor.py measured from its node poses.
+  if [ ! -f "$_mapdir/rtabmap.db" ] && [ -n "$FEED_SPAWN_FLOOR" ] \
+     && [ -f "/DATA/FOUND/maps/$SCENE_ARG/rtabmap.db.floor.json" ]; then
+    if python3 -c "import json,sys
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2])) < 1e-6 else 1)" \
+        "/DATA/FOUND/maps/$SCENE_ARG/rtabmap.db.floor.json" "$FEED_SPAWN_FLOOR" 2>/dev/null; then
+      _mapdir="/DATA/FOUND/maps/$SCENE_ARG"
+      echo "    scene-level map stamped for floor $FEED_SPAWN_FLOOR — using it"
+    fi
+  fi
+  if [ -f "$_mapdir/rtabmap.db" ]; then
+    export RTABMAP_LOCALIZE_DB="${_mapdir#/DATA/FOUND}"
+    export RTABMAP_LOCALIZE_DB="/found${RTABMAP_LOCALIZE_DB}/rtabmap.db"
+    export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-0}"
+    echo "    localizing against $_mapdir/rtabmap.db (mapping phase 0s)"
+  else
+    echo "    NO published map at $_mapdir — this run will MAP from scratch."
+    echo "    That is the fallback, not the intent: publish a map for this scene and floor and"
+    echo "    subsequent runs will localize instead of re-mapping."
+  fi
+fi
+if [ "$MAPPING_ONLY" = "1" ]; then
+  export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-900}"
+else
+  export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-150}"
+fi
+export FEED_OVERLAY="${FEED_OVERLAY:-1}"
+export FEED_SHOW="${FEED_SHOW:-1}"
 
 # What the launcher INTENDS the policy to be. The gate compares this against the environment
 # actually present inside the container, rather than echoing whatever it finds there — an echo
@@ -150,7 +428,8 @@ PREFLIGHT_EXPECT_POLICY="$PREFLIGHT_EXPECT_POLICY,FOUND_ALIGNER=$FOUND_ALIGNER"
 export PREFLIGHT_EXPECT_POLICY
 echo "    policy: enforce=$FOUND_ENFORCE hold_band=$FOUND_HOLD_BAND \
 min_support=$FOUND_MIN_SUPPORT rooms_enforced=$FOUND_ROOM_ENFORCE \
-aligner=$FOUND_ALIGNER ontology_ext=$FOUND_ONTOLOGY_EXT"
+aligner=$FOUND_ALIGNER ontology_ext=${FOUND_ONTOLOGY_EXT:-default} \
+corpus_order=${FOUND_CORPUS_ORDER:-abo,metrictree} kg_aliases=${FOUND_KG_ALIASES:-1}"
 
 # ---- provenance ---------------------------------------------------------------------------
 # WHICH CODE produced this bundle. The digests come from preflight_gate.py rather than from a
@@ -226,7 +505,17 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 : "${FOUND_MIN_SUPPORT:?not set at run_metadata.json}"
 : "${FOUND_ROOM_ENFORCE:?not set at run_metadata.json}"
 : "${FOUND_ALIGNER:?not set at run_metadata.json}"
-: "${FOUND_ONTOLOGY_EXT:?not set at run_metadata.json}"
+: "${FOUND_ONTOLOGY_EXT?not set at run_metadata.json}"   # no colon: empty is a legal value here
+# Six NUMERIC positions in the feed block below. An empty expansion yields `"dwell_frames": ,`
+# and the validator kills the run — which is the correct outcome, but these refuse first and say
+# which name is missing.
+: "${FEED_SEED:?not set at run_metadata.json — the feed exports must precede this heredoc}"
+: "${FEED_FPS:?not set at run_metadata.json}"
+: "${FEED_WALK:?not set at run_metadata.json}"
+: "${FEED_DWELL?not set at run_metadata.json}"   # no colon: 0 is the point of this variable
+: "${FEED_MAPPING_SECONDS:?not set at run_metadata.json}"
+: "${MAPPING_ONLY?not set at run_metadata.json}"
+: "${FEED_SPAWN_FLOOR?not set at run_metadata.json}"   # no colon: empty means "no floor requested"   # no colon: 0 is a legal value
 : "${SRC_SHA:?not set at run_metadata.json — the provenance block must precede this heredoc}"
 : "${SRC_N:?not set at run_metadata.json}"
 : "${FOUND_SHA:?not set at run_metadata.json}"
@@ -256,9 +545,26 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "container_path": "recorded by the gate in preflight.json (a2.loaded_path)"
   },
   "seed": ${FEED_SEED:-7},
+  "feed": {
+    "walk_frames": $FEED_WALK,
+    "dwell_frames": $FEED_DWELL,
+    "fps": $FEED_FPS,
+    "mapping_seconds": $FEED_MAPPING_SECONDS,
+    "mapping_only": $([ "$MAPPING_ONLY" = "1" ] && echo true || echo false),
+    "spawn_floor_requested": $([ -n "$FEED_SPAWN_FLOOR" ] && echo "$FEED_SPAWN_FLOOR" || echo null),
+    "spawn_floor_note": "what was ASKED for. What the run actually mapped is measured from the map's own node poses into rtabmap.db.floor.json. If these two disagree the STAMP is right and this field records the intent that was not met.",
+    "mapping_only_note": "true means NO DETECTOR RAN. A mapping bundle with zero detections is a mapping run, not a detection run that found nothing -- the two are otherwise indistinguishable from the artefacts, which is the failure that cost run 19 its merge question.",
+    "overlay": $FEED_OVERLAY,
+    "show": $FEED_SHOW,
+    "note": "how the agent moved. ABSENT from every bundle before 2026-08-31, so a run's dwell setting cannot be recovered from an older bundle and must not be guessed from its date.",
+    "dwell_note": "dwell_frames 0 means the agent never stops. Bundles with dwell_frames 0 are a DIFFERENT FAMILY from bundles with 60 and must not be pooled with them or differenced against them."
+  },
   "policy": {"enforce": $FOUND_ENFORCE, "hold_band": $FOUND_HOLD_BAND,
              "min_support": $FOUND_MIN_SUPPORT, "rooms_enforced": $FOUND_ROOM_ENFORCE,
-             "aligner": "$FOUND_ALIGNER", "ontology_ext": "$FOUND_ONTOLOGY_EXT"},
+             "aligner": "$FOUND_ALIGNER", "ontology_ext": "${FOUND_ONTOLOGY_EXT:-default}",
+             "corpus_order": "${FOUND_CORPUS_ORDER:-abo,metrictree}",
+             "kg_aliases": ${FOUND_KG_ALIASES:-1},
+             "policy_note": "corpus_order and kg_aliases were added 2026-09-01 (owner rulings 13, 15). ABSENT from every earlier bundle, so an older run's corpus order is metrictree,abo and its alias count is 0 -- read, never guessed from the date."},
   "provenance_intent": {
     "note": "host-side, taken BEFORE docker run. provenance_confirmed in preflight.json is taken after the container copies its sources, and is the authoritative record of what executed.",
     "graph_api_src_sha256_16": "$SRC_SHA", "graph_api_files": $SRC_N,
@@ -268,6 +574,45 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "frozen_roots": ["graph_api"],
     "live_roots": ["found", "kb"],
     "live_root_note": "not copied into the container; on sys.path for the whole run, so sampled rather than asserted frozen"
+  },
+  "resolved_config": {
+    "note": "OWNER RULING 16. The RESOLVED values that were in force, not hashes of the files they came from. A bundle must state its own configuration: config_name and the shas say WHICH files were read, and a reader still had to re-resolve them to learn what they said. GA-156 — per-detection archiving silently off — was found by hand for exactly this reason.",
+    "sensor": {"width": $(python3 -c "import sys,yaml,os;c=yaml.safe_load(open(sys.argv[1])) or {};h=(c.get('habitat') or {});print(os.environ.get('FEED_WIDTH') or h.get('width',1280))" "$HERE/$CFG_NAME" 2>/dev/null || echo 1280),
+               "height": $(python3 -c "import sys,yaml,os;c=yaml.safe_load(open(sys.argv[1])) or {};h=(c.get('habitat') or {});print(os.environ.get('FEED_HEIGHT') or h.get('height',960))" "$HERE/$CFG_NAME" 2>/dev/null || echo 960),
+               "note": "raised from 640x480 by owner ruling 25. A gain measured here is a gain of the SYSTEM: resolution moves detector, segmentation, depth and describer together and cannot be attributed to one without a second arm."},
+    "gt_semantic": ${FEED_GT_SEMANTIC:-0},
+    "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
+    "mapping_seconds_effective": $FEED_MAPPING_SECONDS,
+    "yaml_resolved": $(python3 -c "
+import sys, json, yaml
+c = yaml.safe_load(open(sys.argv[1])) or {}
+def g(*path, default=None):
+    cur = c
+    for k in path:
+        if not isinstance(cur, dict): return default
+        cur = cur.get(k)
+        if cur is None: return default
+    return cur
+print(json.dumps({
+    'archive.per_detection': g('archive', 'per_detection', default=None),
+    'gvd_method': g('rooms', 'gvd_method', default=g('gvd_method', default=None)),
+    'crop.construction': g('crop', 'construction', default=None),
+    'perception.backend': g('perception', 'backend', default=None),
+    'cloud_timeout_s': g('perception', 'cloud_timeout_s', default=g('cloud_timeout_s', default=None)),
+    'min_floor_share': g('habitat', 'min_floor_share', default=None),
+    'floor_confinement': g('habitat', 'floor_confinement', default=None),
+    '_note': 'null means THE KEY IS ABSENT FROM THE CONFIG FILE, not that the setting is off. '
+             'The code default then applies and is listed in _code_defaults below for the '
+             'settings this launcher owns. For the others, null means resolve it from the owning '
+             'module rather than reading it as a value.',
+    '_code_defaults': {'min_floor_share': 0.10, 'floor_confinement': 'teleport',
+                       'floor_tolerance_m': 0.5, 'single_floor': True},
+}))" "$HERE/$CFG_NAME" 2>/dev/null || echo '{}')
+  },
+  "perception_service": {
+    "endpoint": "$(python3 -c "import sys,yaml;c=yaml.safe_load(open(sys.argv[1]));print((c.get('perception') or {}).get('modal_endpoint',''))" "$HERE/$CFG_NAME" 2>/dev/null)",
+    "identity": null,
+    "identity_note": "MEASURED ABSENCE, 31 Aug: the endpoint is a URL, not an identity. A live call with a real 640x480 frame returned timing keys ['detector','sam2','total'] and NO model name, version or image digest. So no bundle can say which service answered, and a service that changed under a fixed URL would leave no trace. This field is where a real identity lands the day the server reports one; null means it reported none, not that nobody looked."
   },
   "environment": {
     "image_tag": "$IMAGE_TAG",
@@ -286,18 +631,20 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
 EOF
 python3 -m json.tool "$RUN_DIR/run_metadata.json" > /dev/null   || { echo "!! run_metadata.json is not valid JSON — aborting rather than shipping an unreadable bundle"; exit 1; }
 
-# `latest` is repointed only AFTER the bundle validates. It used to move before the checks, so
-# an abort left the archive's most-followed path aimed at a directory holding an unreadable
-# run_metadata.json, no logs and no preflight.json. A reader following `latest` cannot tell a
-# truncated run from a complete one, and three shipped bundles already have that shape.
-ln -sfn "$RUN_DIR" "$FOUND_RUNS_DIR/latest"
-echo "    run bundle: $RUN_DIR (symlinked as $FOUND_RUNS_DIR/latest)"
+echo "    run bundle: $RUN_DIR"
+echo "    (latest is repointed at the end, and only if the gate passes)"
 
+# The FEED_* names are exported above and stamped into run_metadata.json from those same
+# values — one default per name, so the bundle cannot disagree with the process.
+#
+# NEVER put a comment between two continued lines here. `A=1 \` followed by `# ...` does not
+# comment the line: the `#` swallows the continuation and A IS SILENTLY DROPPED. Measured, not
+# reasoned about. `bash -n` passes it. I wrote exactly that bug into this spot on 31 Aug and it
+# would have thrown away HABITAT_SCENE and HABITAT_DATASET, running the default scene under a
+# bundle stamped with the requested one.
 HABITAT_SCENE=${HABITAT_SCENE:-$DEF_SCENE} \
 HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
-FEED_SEED=${FEED_SEED:-7} FEED_FPS=${FEED_FPS:-3} FEED_WALK=${FEED_WALK:-6} FEED_DWELL=${FEED_DWELL:-60} \
-FEED_MAPPING_SECONDS=${FEED_MAPPING_SECONDS:-150} FEED_OVERLAY=${FEED_OVERLAY:-1} \
-FEED_SHOW=${FEED_SHOW:-1} DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
+DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
 GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
   nohup "$HOME/miniconda3/envs/habitat_env/bin/python" "$HERE/habitat_feed_host.py" \
   > "$OUT_DIR/feed_host.log" 2>&1 &
@@ -321,13 +668,38 @@ echo "    feed host up"
 MON_PID=$!
 
 echo ">>> ROS stack in container (web viewer -> http://localhost:8081)"
+# OWNER RULING 22, 2026-09-01: fifteen settings looked adjustable from the host and reached
+# nothing. Every -e below is a variable some container-side module actually reads; docker passes
+# an `-e NAME` only when NAME is set in the environment, so listing one costs nothing while it is
+# unused and makes it work the first time somebody needs it.
+#
+# BRIDGE_PORT is why this matters: it was the only mitigation available for the 8081 port conflict
+# and setting it host-side did nothing at all, silently.
+#
+# check_env_passthrough.py holds this list to the code: it ast-parses every container-side module
+# for os.environ reads and fails if one is neither listed here, set inside the container, nor
+# declared host-only. Do NOT put comments between the continued lines below — a comment after a
+# `\` swallows the continuation, and a backtick-comment terminates an assignment prefix. Both were
+# measured on 2026-08-31; both pass `bash -n`.
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
   -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL \
   -e FOUND_ENFORCE -e FOUND_HOLD_BAND -e FOUND_MIN_SUPPORT -e FOUND_ROOM_ENFORCE \
   -e FOUND_ALIGNER -e FOUND_ONTOLOGY_EXT -e FOUND_STORE_PATH -e FOUND_SCENE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
+  -e MAPPING_ONLY -e FEED_MAPPING_SECONDS -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
+  -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES \
+  -e FOUND_EMBED_MODEL -e FOUND_KG_TOP -e FOUND_KG_Z -e FOUND_LEXICAL -e FOUND_ONTOLOGY \
+  -e FOUND_ROOM_TYPES_PATH -e FOUND_ROOM_VLM_API_KEY -e FOUND_ROOM_VLM_BASE_URL \
+  -e FOUND_ROOM_VLM_MODEL -e FOUND_SCENE_INSTANCE -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \
+  -e KG_BRIDGE_SRC \
+  -e BRIDGE_PORT -e BRIDGE_RAW_MAX_AGE -e BRIDGE_ANNOTATED_MAX_AGE -e BRIDGE_FEED_PROBE_BACKOFF \
+  -e FEED_HOST -e FEED_PORT -e LOST3DSG_OUTPUT_DIR \
+  -e GRAPH_API_AUTOSTART -e GRAPH_API_BASE_URL -e GRAPH_API_TIMEOUT \
+  -e ROOM_VLM_MODEL -e OPENROUTER_API_KEY -e REGOLO_API_KEY \
+  -e HABITAT_EXAMPLE_OBJECTS_DIR -e DISPLAY \
   -e PREFLIGHT_EXPECT_CFG_SHA -e PREFLIGHT_EXPECT_MERGED_SHA -e PREFLIGHT_EXPECT_SRC_SHA \
   -v "$REPO":/graph_api:ro \
+  -v graphapi_ws:/ws \
   -v /DATA/FOUND:/found \
   -v "${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}":/kb:ro \
   -v "$RUN_DIR":/ws/output \
@@ -340,4 +712,16 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
 cp "$OUT_DIR"/*.log "$RUN_DIR/logs/" 2>/dev/null || true
 cp "$OUT_DIR"/*.json "$RUN_DIR/" 2>/dev/null || true
 cp "$OUT_DIR"/*.jsonl "$RUN_DIR/" 2>/dev/null || true
-echo ">>> Run complete. All artifacts safely archived in $RUN_DIR"
+
+# `latest` means THE LAST BUNDLE WORTH READING, so it moves here and only on a passing gate.
+#
+# It has claimed an aborted bundle three times. It was first moved at bundle-creation time; the
+# fix conditioned it on run_metadata.json being valid JSON, and two aborted runs then claimed it
+# anyway — because valid metadata says the launcher wrote a coherent header, and says NOTHING
+# about whether a run happened. Both of those runs wrote a good header and then failed.
+#
+# The gate's verdict is the only thing that distinguishes them, and it is written by the process
+# that actually looked. A bundle with no preflight.json never got that far; one with
+# verdict "fail" or "skipped" was refused or was never checked. None of those is worth reading,
+# and `latest` is what a tool follows when nobody told it which bundle to open.
+_verdict=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict','absent'))"              "$RUN_DIR/preflight.json" 2>/dev/null || echo absent)

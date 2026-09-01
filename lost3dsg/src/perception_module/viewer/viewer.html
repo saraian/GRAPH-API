@@ -65,9 +65,10 @@
     /* Live Feed Container */
     .feed-container {
       position: relative; background: #000; border-radius: 8px; border: 1px solid var(--border);
-      overflow: hidden; display: flex; align-items: center; justify-content: flex-start; width: 100%; height: 100%;
+      overflow: hidden; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
+      --hud-col: 324px; /* overlay width + margins; minimap left, dpad right, feed centered between */
     }
-    .feed-img { height: 100%; max-width: 100%; object-fit: contain; object-position: left center; }
+    .feed-img { height: 100%; max-width: 100%; object-fit: contain; object-position: center center; }
 
     /* Feed / Pipeline Degraded Collapsible Toast (Top-Right Corner) */
     .feed-offline-overlay {
@@ -100,7 +101,7 @@
 
     /* Aero Glass Topology Radar Minimap */
     .minimap-hud {
-      position: absolute; top: 12px; right: 12px; width: 230px; height: 195px;
+      position: absolute; top: 12px; left: 12px; width: 300px; height: 250px;
       background: rgba(15, 23, 42, 0.75); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
       border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 10px; overflow: hidden;
       box-shadow: 0 8px 32px rgba(0,0,0,0.5); cursor: pointer; transition: all 0.2s ease;
@@ -139,12 +140,12 @@
       background: rgba(15, 23, 42, 0.75); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
       border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 14px;
       box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
-      display: flex; flex-direction: column; gap: 6px; width: 230px; z-index: 20;
+      display: flex; flex-direction: column; gap: 6px; width: 300px; z-index: 20;
     }
     .dpad-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; text-align: center; }
     .dpad-btn {
-      padding: 7px 0; background: rgba(30, 41, 59, 0.7); color: #f8fafc;
-      font-size: 0.85rem; border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 10px 0; background: rgba(30, 41, 59, 0.7); color: #f8fafc;
+      font-size: 0.95rem; border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 8px; cursor: pointer; transition: all 0.15s ease;
       display: flex; align-items: center; justify-content: center;
     }
@@ -470,8 +471,9 @@
       #panelWidgets { height: auto !important; min-height: 320px; }
       .tab-content { height: auto; }
       .resizer-h, .resizer-v { display: none; }
-      .teleop-overlay { width: 190px; padding: 8px; }
-      .minimap-hud { width: 175px; height: 150px; }
+      .teleop-overlay { width: 210px; padding: 8px; }
+      .minimap-hud { width: 200px; height: 170px; }
+      .feed-container { --hud-col: 234px; }
       .minimap-modal { width: 94vw; }
       .minimap-modal > div[style*="grid"] { grid-template-columns: 1fr !important; }
     }
@@ -498,8 +500,8 @@
       <div id="colLeft" class="col-pane" style="width: 58%; min-width: 350px;">
         <!-- Top Left: Live Simulator Feed -->
         <div id="panelFeed" class="feed-container" style="height: 46%; min-height: 180px; position: relative;">
-          <div id="feedWrapper" style="position:relative; height:100%; width:100%; display:inline-flex; align-items:center; justify-content:flex-start;">
-            <img id="habitatFeedImg" class="feed-img" src="/feed" onerror="onFeedError()" onload="onFeedFrameLoaded()" />
+          <div id="feedWrapper" style="position:relative; height:100%; width:100%; padding:0 var(--hud-col); box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center;">
+            <img id="habitatFeedImg" class="feed-img" src="/feed" />
 
             <!-- Collapsible Pipeline Warning Card (Top-Right Corner) -->
             <div id="feedOfflineOverlay" class="feed-offline-overlay">
@@ -520,19 +522,14 @@
             <div class="minimap-hud-header" onclick="toggleMinimapModal(true)">
               <span style="display:flex;align-items:center;gap:4px;"><i data-lucide="compass" style="width:12px;height:12px;"></i> BEV</span>
               <div style="display:flex;align-items:center;gap:4px;">
-                <select class="viz-btn" style="padding:1px 3px; font-size:0.56rem; background:#0f172a; text-transform:none;" onchange="event.stopPropagation(); onFloorChange(this.value);">
+                <select id="hudFloorSelect" class="viz-btn" style="padding:1px 3px; font-size:0.56rem; background:#0f172a; text-transform:none;" onchange="event.stopPropagation(); onFloorChange(this.value);">
                   <option value="auto">Auto Floor</option>
-                  <option value="-2.5">Floor -2.5m</option>
-                  <option value="-1.5">Floor -1.5m</option>
-                  <option value="0.0">Floor 0.0m</option>
-                  <option value="0.5">Floor 0.5m</option>
-                  <option value="1.8">Floor 1.8m</option>
                 </select>
                 <button onclick="event.stopPropagation(); recenterBEV();" class="viz-btn" style="padding:1px 4px; font-size:0.56rem;" title="Recenter on Agent"><i data-lucide="crosshair" style="width:10px;height:10px;"></i></button>
                 <i data-lucide="maximize-2" style="width:10px;height:10px;"></i>
               </div>
             </div>
-            <canvas id="bevCanvasHUD" width="220" height="165"></canvas>
+            <canvas id="bevCanvasHUD" width="298" height="223"></canvas>
           </div>
 
           <!-- Aero Glass D-Pad Controller Overlay -->
@@ -573,11 +570,20 @@
         </div>
 
         <!-- Standalone Status & Visualization Layers Toolbar Strip -->
-        <div class="viz-layer-bar-outside" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+        <!-- nowrap + fixed height: these badges change text constantly (phase, cycle ages,
+             feed watchdog). With flex-wrap they spilled onto a second line whenever the
+             text grew, which grew this strip and SHRANK THE FEED ABOVE IT -- the feed box
+             changed height every few seconds. The strip now keeps one line and scrolls. -->
+        <div class="viz-layer-bar-outside" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: nowrap; height: 26px; overflow-x: auto; overflow-y: hidden; white-space: nowrap;">
           <!-- Left: Feed Watchdog & Perception Status Badges -->
           <div style="display: flex; align-items: center; gap: 6px;">
             <span id="feedStatusBadge" class="feed-heartbeat-badge live"><span class="pulse-dot"></span> <span id="feedStatusText">FEED • STREAMING</span></span>
-            <span id="perceptionStatusBadge" class="perception-state-badge dwell"><i data-lucide="activity" style="width:11px;height:11px;"></i> <span id="perceptionStatusText">DWELL (DETECTING 3D)</span></span>
+            <!-- Ships phase-neutral: the stats poll sets both the class and the text. -->
+            <span id="perceptionStatusBadge" class="perception-state-badge"><i data-lucide="activity" style="width:11px;height:11px;"></i> <span id="perceptionStatusText">&mdash;</span></span>
+            <!-- Which cycle each panel is showing. Graph, metrics and feed are produced by
+                 different processes at different rates and can disagree silently. -->
+            <span id="cycleStamp" title="Age of the data in each panel" style="font-size:0.6rem; font-weight:700; letter-spacing:0.03em; color:var(--muted); font-family:ui-monospace,monospace;">CYCLE —</span>
+            <span id="statusLine" style="font-size:0.62rem; font-weight:700; color:#38bdf8;"></span>
           </div>
 
           <!-- Right: Interactive Visualization Layers -->
@@ -700,7 +706,7 @@
               <span style="font-size:0.8rem; font-weight:800; color:#38bdf8; text-transform:uppercase; letter-spacing:0.04em;">
                 <i data-lucide="activity" style="width:13px;height:13px;display:inline-block;vertical-align:middle;margin-right:4px;"></i> LIVE PERCEPTION PIPELINE
               </span>
-              <span id="compStatusBadge" class="perception-state-badge dwell" style="font-size:0.62rem;">DWELL (PERCEIVING)</span>
+              <span id="compStatusBadge" class="perception-state-badge" style="font-size:0.62rem;">&mdash;</span>
             </div>
 
             <!-- Visual Pipeline Stage Stepper Flow -->
@@ -789,6 +795,29 @@
               </label>
               <div style="font-size: 0.74rem; color: var(--muted); margin-top: 4px; margin-left: 24px;">
                 Execute 3D detection while agent is in motion without requiring stationary dwell stops.
+              </div>
+            </div>
+
+            <div style="background: #090d16; padding: 12px; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 12px;">
+              <label style="font-size: 0.82rem; font-weight: 600; display: flex; align-items: center; gap: 8px; cursor: pointer; color: #fff;">
+                <input type="checkbox" id="chkStrictVisibility" onchange="toggleStrictVisibility(this.checked)" />
+                HIDE OCCLUDED 3D BOXES
+              </label>
+              <div style="font-size: 0.74rem; color: var(--muted); margin-top: 4px; margin-left: 24px;">
+                Strict visibility: only draw 3D boxes whose test points are visible in the current frame (occluded boxes are hidden).
+              </div>
+              <div style="margin-top: 10px; margin-left: 24px;">
+                <label style="font-size: 0.72rem; font-weight: 700; color: #38bdf8; display: flex; justify-content: space-between; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 4px;">
+                  <span>Min visible points</span>
+                  <span id="minVisiblePointsVal" style="font-family: monospace; color: #10b981;">5</span>
+                </label>
+                <input type="range" id="minVisiblePointsSlider" min="1" max="9" value="5" step="1"
+                       oninput="document.getElementById('minVisiblePointsVal').textContent = this.value"
+                       onchange="setMinVisiblePoints(this.value)"
+                       style="width: 100%; accent-color: #0284c7; cursor: pointer;" />
+                <div style="font-size: 0.65rem; color: var(--muted); margin-top: 3px;">
+                  Of the 9 box test points (8 corners + centre), require at least N visible before drawing.
+                </div>
               </div>
             </div>
 
@@ -882,11 +911,15 @@
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
               <div style="background: #090d16; padding: 8px; border-radius: 6px; border: 1px solid var(--border);">
                 <div style="font-size: 0.68rem; color: var(--muted); text-transform: uppercase;">Dwell Stationary Window</div>
-                <div id="statDwellFrames" style="font-size: 0.95rem; font-weight: bold; color: #10b981; margin-top: 2px;">60 frames (~20s)</div>
+                <!-- Ships as an em dash, not a number: this tile is written only by the stats poll
+                     below, and a hardcoded default here reads as measured telemetry. With
+                     FEED_DWELL=0 the old "60 frames (~20s)" also named a phase the agent
+                     never enters. The poll restores the live colour when a real value arrives. -->
+                <div id="statDwellFrames" style="font-size: 0.95rem; font-weight: bold; color: var(--muted); margin-top: 2px;">&mdash;</div>
               </div>
               <div style="background: #090d16; padding: 8px; border-radius: 6px; border: 1px solid var(--border);">
                 <div style="font-size: 0.68rem; color: var(--muted); text-transform: uppercase;">Walk Motion Burst</div>
-                <div id="statWalkFrames" style="font-size: 0.95rem; font-weight: bold; color: #38bdf8; margin-top: 2px;">6 frames (~2s)</div>
+                <div id="statWalkFrames" style="font-size: 0.95rem; font-weight: bold; color: var(--muted); margin-top: 2px;">&mdash;</div>
               </div>
             </div>
 
@@ -923,8 +956,7 @@
           <div>
             <label style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; letter-spacing: 0.04em; text-transform: uppercase;">Floor Elevation:</label>
             <select id="floorSelect" onchange="onFloorChange(this.value);" style="width: 100%; padding: 6px; margin-top: 6px; background: #0f172a; color: #fff; border: 1px solid var(--border); border-radius: 4px; font-size: 0.75rem;">
-              <option value="-2.5">Ground Floor (-2.5m)</option>
-              <option value="0.5">First Floor (0.5m)</option>
+              <option value="auto">Auto Follow Agent</option>
             </select>
           </div>
           <div>
@@ -951,6 +983,7 @@
     let cy = null;
     let graphRefreshTimer = null;
     let graphRefreshInFlight = false;
+    let lastGraphVersion = null;
     let lastAdmissionSummary = null;
     let lastAdmittedNodes = [];
 
@@ -1043,6 +1076,21 @@
       fetch('/set_config?' + new URLSearchParams(vizLayers).toString()).catch(() => {});
     }
 
+    // Strict visibility: hide occluded 3D boxes + min-visible-points threshold
+    function toggleStrictVisibility(checked) {
+      fetch('/set_config?strict_visibility=' + (checked ? 'true' : 'false')).catch(() => {});
+    }
+
+    function setMinVisiblePoints(val) {
+      fetch('/set_config?min_visible_points=' + val).catch(() => {});
+    }
+
+    function togglePerceiveMoving(checked) {
+      isPerceiveWhileMoving = checked;
+      updatePerceptionUI(checked);
+      fetch('/set_config?perceive_while_moving=' + (checked ? 'true' : 'false')).catch(() => {});
+    }
+
     const LIN_STEPS = [0.05, 0.1, 0.25, 0.5, 1.0, 2.0];
     const ROT_STEPS = [5, 10, 15, 30, 45, 90];
     let linIdx = 2; // 0.25m
@@ -1082,6 +1130,26 @@
         .catch(err => {
           if (statusEl) statusEl.textContent = `OFFLINE (${err.message})`;
         });
+    }
+
+    function drawBEVOffline(canvasId) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = 'rgba(9, 13, 22, 0.85)';
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = 'rgba(38, 55, 85, 0.4)';
+      ctx.lineWidth = 1;
+      const step = 35;
+      for (let x = 0; x < w; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+      for (let y = 0; y < h; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.7)';
+      ctx.font = 'bold 10px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('BEV OFFLINE', w / 2, h / 2);
+      ctx.textAlign = 'start';
     }
 
     function handleFeedOffline(isOffline) {
@@ -1134,6 +1202,8 @@
               offlineList.push(`❌ <b>${comp.name}</b>: ${comp.details}`);
             }
           }
+
+          renderCycleStamp(data.stamp);
 
           const overlay = document.getElementById('feedOfflineOverlay');
           const detailsEl = document.getElementById('overlayDetails');
@@ -1208,10 +1278,55 @@
     let clientTraveledPath = [];
     let currentNavGoal = null;
     selectedFloorY = 'auto';
+    const topdownImgCache = {};
+
+    function syncFloorOptions(floors, agentZ) {
+      const hudSel = document.getElementById('hudFloorSelect');
+      const modSel = document.getElementById('floorSelect');
+      if (!Array.isArray(floors) || floors.length === 0) return;
+
+      const currentVal = selectedFloorY;
+      const sig = floors.join(',');
+
+      [hudSel, modSel].forEach(sel => {
+        if (!sel) return;
+        if (sel.dataset.floorsSig !== sig) {
+          sel.dataset.floorsSig = sig;
+          sel.innerHTML = '';
+          const isHud = (sel.id === 'hudFloorSelect');
+
+          const autoOpt = document.createElement('option');
+          autoOpt.value = 'auto';
+          const curTxt = (agentZ !== undefined && agentZ !== null) ? `${Number(agentZ).toFixed(1)}m` : '—';
+          autoOpt.textContent = isHud ? `Auto (${curTxt})` : `Auto Follow Agent (${curTxt})`;
+          sel.appendChild(autoOpt);
+
+          floors.forEach((f, idx) => {
+            const opt = document.createElement('option');
+            opt.value = String(f);
+            const name = (idx === 0) ? `Ground Floor (${f}m)` : `Floor ${idx + 1} (${f}m)`;
+            opt.textContent = isHud ? `Floor ${f}m` : name;
+            sel.appendChild(opt);
+          });
+        }
+
+        if (sel.value !== String(currentVal)) {
+          sel.value = String(currentVal);
+        }
+      });
+    }
 
     function onFloorChange(val) {
       selectedFloorY = val;
+      const hudSel = document.getElementById('hudFloorSelect');
+      const modSel = document.getElementById('floorSelect');
+      if (hudSel && hudSel.value !== String(val)) hudSel.value = String(val);
+      if (modSel && modSel.value !== String(val)) modSel.value = String(val);
+
       updateBEV();
+      if (lastBEVData) {
+        drawBEV(lastBEVData);
+      }
     }
 
     function updateBEV() {
@@ -1221,7 +1336,11 @@
           return r.json();
         })
         .then(data => {
+          lastBEVData = data;
           handleFeedOffline(false);
+          if (data && data.floors) {
+            syncFloorOptions(data.floors, data.agent ? data.agent.z : null);
+          }
           if (typeof data.auto_mode === 'boolean' && data.auto_mode !== isAutoMode) {
             updateAutoModeUI(data.auto_mode);
           }
@@ -1264,13 +1383,17 @@
 
             const elDwell = document.getElementById('statDwellFrames');
             const elWalk = document.getElementById('statWalkFrames');
+            // The tiles ship as an em dash in the muted colour. The measured colour is
+            // applied here and only here, so a value that is shown in green was polled.
             if (elDwell && s.phase_dwell_frames !== undefined) {
               const sec = (s.phase_dwell_frames / 3.0).toFixed(0);
               elDwell.textContent = `${s.phase_dwell_frames} frames (~${sec}s)`;
+              elDwell.style.color = '#10b981';
             }
             if (elWalk && s.phase_walk_frames !== undefined) {
               const sec = (s.phase_walk_frames / 3.0).toFixed(0);
               elWalk.textContent = `${s.phase_walk_frames} frames (~${sec}s)`;
+              elWalk.style.color = '#38bdf8';
             }
 
             const phaseBadge = document.getElementById('perceptionStatusBadge');
@@ -1280,6 +1403,16 @@
               const countdown = (s.phase_remaining_frames !== undefined) ? ` (${s.phase_remaining_frames}f)` : '';
               phaseBadge.className = isMoving ? 'perception-state-badge' : 'perception-state-badge dwell';
               phaseText.textContent = isMoving ? `${s.phase} (MOTION PAUSE${countdown})` : `${s.phase} (DETECTING 3D${countdown})`;
+              // compStatusBadge had no writer anywhere in this file, so it read
+              // "DWELL (PERCEIVING)" in every phase of every run. Drive it from the same
+              // polled phase rather than leaving a second, silently wrong phase label.
+              const compBadge = document.getElementById('compStatusBadge');
+              if (compBadge) {
+                compBadge.className = isMoving
+                  ? 'perception-state-badge' : 'perception-state-badge dwell';
+                compBadge.textContent = isMoving
+                  ? `${s.phase} (MOTION)` : `${s.phase} (PERCEIVING${countdown})`;
+              }
             }
 
             if (elMET && s.elapsed_sec !== undefined) {
@@ -1301,7 +1434,9 @@
 
     function exportTelemetry(format) {
       if (!lastBEVData) {
-        alert('No telemetry data available to export yet.');
+        // Was a modal browser alert: it blocks the page AND strands any automated session
+        // driving the dashboard, which is a worse failure than the empty export.
+        setStatusLine('No telemetry to export yet', 'warn');
         return;
       }
       const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1443,22 +1578,47 @@
       const yaw = data.agent.yaw || 0;
       const floorH = (selectedFloorY === 'auto') ? (data.agent.z || 0) : parseFloat(selectedFloorY);
 
-      // 1. Top-down Rendered Scene Map Background
-      if (data.map && data.map.image) {
-        if (!topdownImgObj || topdownImgObj.src !== data.map.image) {
-          topdownImgObj = new Image();
-          topdownImgObj.src = data.map.image;
+      // Select active top-down map slice matching floorH
+      let activeMap = data.map;
+      if (data.maps && typeof data.maps === 'object') {
+        let bestKey = null;
+        let minDiff = 999;
+        for (const k of Object.keys(data.maps)) {
+          const diff = Math.abs(parseFloat(k) - floorH);
+          if (diff < minDiff) {
+            minDiff = diff;
+            bestKey = k;
+          }
         }
-        if (topdownImgObj.complete) {
+        if (bestKey && data.maps[bestKey]) {
+          activeMap = data.maps[bestKey];
+        }
+      }
+
+      // 1. Top-down Rendered Scene Map Background.
+      // The bridge now sends `url` (/bev_map/<content-hash>) instead of a base64
+      // `image`, so the map is fetched once and browser-cached rather than
+      // re-shipped inside every 500 ms /bev_data poll. `image` is still honoured
+      // so an older bridge keeps working.
+      const mapSrc = activeMap && (activeMap.url || activeMap.image);
+      if (mapSrc) {
+        if (!topdownImgCache[mapSrc]) {
+          const img = new Image();
+          img.src = mapSrc;
+          img.onload = () => { if (lastBEVData) drawBEV(lastBEVData); };
+          topdownImgCache[mapSrc] = img;
+        }
+        const imgObj = topdownImgCache[mapSrc];
+        if (imgObj && imgObj.complete && imgObj.naturalWidth > 0) {
           ctx.save();
-          const bMin = data.map.bounds_min;
-          const bMax = data.map.bounds_max;
+          const bMin = activeMap.bounds_min;
+          const bMax = activeMap.bounds_max;
           const mapW = (bMax[0] - bMin[0]) * scale;
           const mapH = (bMax[2] - bMin[2]) * scale;
           const imgX = cx + (bMin[0] - ax) * scale;
           const imgY = cy + (bMin[2] - az) * scale;
           ctx.globalAlpha = 0.85;
-          ctx.drawImage(topdownImgObj, imgX, imgY, mapW, mapH);
+          ctx.drawImage(imgObj, imgX, imgY, mapW, mapH);
           ctx.restore();
         }
       }
@@ -1514,11 +1674,11 @@
         ctx.setLineDash([]);
       }
 
-      // 6. Render 3D Object Instances on BEV Map (color coded by status)
+      // 6. Render 3D Object Instances & Bounding Boxes on BEV Map (Color-Coded)
       const objectsToDraw = data.objects || (lastGraphData ? (lastGraphData.objects || lastGraphData.nodes) : []);
       if (Array.isArray(objectsToDraw)) {
         objectsToDraw.forEach(obj => {
-          if (obj.type === 'room') return;
+          if (obj.type === 'room' || obj.type === 'concept') return;
           const pos = obj.position || obj.bbox_3d;
           if (!pos || pos.length < 2) return;
           const ox = pos[0], oy = pos[1];
@@ -1527,20 +1687,53 @@
 
           let statusColor = '#38bdf8'; // Active blue
           const st = (obj.status || '').toLowerCase();
-          if (st.includes('perm') || st.includes('confirm') || (obj.confidence && obj.confidence > 0.7)) {
+          // `confidence` is the aligner's similarity score, not evidence that an object
+          // is confirmed. It used to be empty, which is the only reason a `> 0.7` test
+          // here was harmless; now that the column is populated from real scores
+          // (0.858-0.951 on the 31 Aug run) it would paint EVERY aligned object
+          // confirmed-green whatever its actual status. `status` already carries
+          // permanence, so ask that and only that.
+          if (st.includes('perm') || st.includes('confirm')) {
             statusColor = '#10b981'; // Confirmed green
-          } else if (st.includes('temp') || st.includes('unconfirm') || st.includes('raw')) {
+          } else if (st.includes('temp') || st.includes('unconfirm') || st.includes('raw') || st.includes('hold')) {
             statusColor = '#f59e0b'; // Temporary yellow
+          } else if (st.includes('reject')) {
+            statusColor = '#ef4444'; // Rejected red
           }
 
-          ctx.fillStyle = statusColor;
-          ctx.beginPath(); ctx.arc(px, py, 3.5, 0, 2 * Math.PI); ctx.fill();
-          ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1; ctx.stroke();
+          // Draw Bounding Box Footprint Rectangle if bbox coordinates available
+          const bbox = obj.bbox;
+          if (bbox && bbox.x_min !== undefined && bbox.y_min !== undefined) {
+            const bxMin = cx + (bbox.x_min - ax) * scale;
+            const byMin = cy + (bbox.y_min - az) * scale;
+            const bw = Math.max(6, (bbox.x_max - bbox.x_min) * scale);
+            const bh = Math.max(6, (bbox.y_max - bbox.y_min) * scale);
+            ctx.strokeStyle = statusColor;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(bxMin, byMin, bw, bh);
+          }
 
-          if (currentZoom > 0.8 && (obj.name || obj.label)) {
-            ctx.fillStyle = '#e2e8f0';
-            ctx.font = '10px Inter, sans-serif';
-            ctx.fillText(obj.name || obj.label, px + 5, py + 3);
+          // Center Centroid Dot
+          ctx.fillStyle = statusColor;
+          ctx.beginPath();
+          ctx.arc(px, py, 4, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+
+          // Label Pill
+          if (currentZoom > 0.75 && (obj.name || obj.label)) {
+            const labelText = String(obj.name || obj.label).split('#')[0];
+            ctx.font = 'bold 9px Inter, sans-serif';
+            const tw = ctx.measureText(labelText).width;
+            ctx.fillStyle = 'rgba(11, 19, 41, 0.85)';
+            ctx.fillRect(px + 6, py - 6, tw + 6, 12);
+            ctx.strokeStyle = 'rgba(51, 65, 85, 0.8)';
+            ctx.lineWidth = 0.8;
+            ctx.strokeRect(px + 6, py - 6, tw + 6, 12);
+            ctx.fillStyle = '#f8fafc';
+            ctx.fillText(labelText, px + 9, py + 3);
           }
         });
       }
@@ -1706,7 +1899,8 @@
         feedFpsCounter = 0;
         lastFpsSampleTime = now;
         const textEl = document.getElementById('feedStatusText');
-        if (textEl) textEl.textContent = `LIVE • ${fps} FPS`;
+        const src = (textEl && textEl.dataset.source) ? textEl.dataset.source : 'unknown source';
+        if (textEl) textEl.textContent = `LIVE · ${src} · ${fps} FPS`;
       }
       const badge = document.getElementById('feedStatusBadge');
       if (badge) {
@@ -1721,18 +1915,63 @@
       if (textEl) textEl.textContent = 'FEED OFFLINE';
     }
 
+    let statusLineTimer = null;
+    function setStatusLine(msg, kind) {
+      const el = document.getElementById('statusLine');
+      if (!el) return;
+      el.textContent = msg;
+      el.style.color = kind === 'warn' ? '#f59e0b' : (kind === 'error' ? '#ef4444' : '#38bdf8');
+      if (statusLineTimer) clearTimeout(statusLineTimer);
+      statusLineTimer = setTimeout(() => { el.textContent = ''; }, 5000);
+    }
+
+    // Item 1: one header saying which moment each panel is from. Ages come from
+    // /health's stamp (server clock), so a skewed browser clock cannot fake freshness.
+    let lastStamp = null;
+    function renderCycleStamp(stamp) {
+      lastStamp = stamp || null;
+      const el = document.getElementById('cycleStamp');
+      if (!el || !stamp) return;
+      const age = (t) => (t ? Math.max(0, stamp.now - t) : null);
+      const fmt = (a) => (a === null ? '—' : (a < 99 ? a.toFixed(1) + 's' : '99+s'));
+      const p = age(stamp.perception_at), g = age(stamp.graph_at), f = age(stamp.frame_at);
+      const known = [p, g, f].filter(a => a !== null);
+      const spread = known.length > 1 ? Math.max(...known) - Math.min(...known) : 0;
+      el.textContent = `CYCLE ${stamp.cycle ?? '—'} · PERCEPTION ${fmt(p)} · GRAPH ${fmt(g)} · FEED ${fmt(f)}`;
+      // Panels more than 10 s apart are showing different moments; say so rather
+      // than letting three stale panels look like one live view.
+      el.style.color = spread > 10 ? '#f59e0b' : 'var(--muted)';
+      el.title = spread > 10
+        ? `Panels disagree by ${spread.toFixed(1)}s — they are showing different cycles`
+        : 'Age of the data in each panel';
+      if (stamp.frame_source) {
+        const textEl = document.getElementById('feedStatusText');
+        if (textEl) textEl.dataset.source = stamp.frame_source;
+      }
+    }
+
     function checkFeedHeartbeat() {
       const elapsed = Date.now() - lastFrameTimestamp;
       const badge = document.getElementById('feedStatusBadge');
       const textEl = document.getElementById('feedStatusText');
+      // Item 4: source and age are ALWAYS on screen. _best_frame has four sources
+      // that render identically — a live perception overlay and a 25 s old composite
+      // looked the same, and the badge only spoke up after six seconds of silence.
+      const src = (textEl && textEl.dataset.source) ? textEl.dataset.source : 'unknown source';
+      const age = (elapsed / 1000).toFixed(1) + 's';
       if (elapsed > 6000) {
         if (badge) badge.className = 'feed-heartbeat-badge offline';
-        if (textEl) textEl.textContent = `FEED OFFLINE (${Math.round(elapsed/1000)}s)`;
+        if (textEl) textEl.textContent = `FEED OFFLINE · ${src} · ${age}`;
         const img = document.getElementById('habitatFeedImg');
+        // Silent re-src: say it happened rather than looking like a spontaneous recovery.
+        setStatusLine(`Feed silent ${age} — reconnecting`, 'warn');
         if (img) img.src = '/feed?t=' + Date.now();
       } else if (elapsed > 2000) {
         if (badge) badge.className = 'feed-heartbeat-badge stalled';
-        if (textEl) textEl.textContent = `FEED STALLED (${Math.round(elapsed/1000)}s ago)`;
+        if (textEl) textEl.textContent = `FEED STALLED · ${src} · ${age}`;
+      } else if (textEl && !textEl.textContent.startsWith('LIVE')) {
+        if (badge) badge.className = 'feed-heartbeat-badge live';
+        textEl.textContent = `LIVE · ${src} · ${age}`;
       }
     }
     setInterval(checkFeedHeartbeat, 1000);
@@ -1780,7 +2019,7 @@
       if (currentGraphLayout === 'concentric') {
         layoutOpts = {
           name: 'concentric',
-          animate: true,
+          animate: cy.nodes().length <= 60,
           animationDuration: 400,
           fit: true,
           padding: 60,
@@ -1794,7 +2033,7 @@
       } else if (currentGraphLayout === 'breadthfirst') {
         layoutOpts = {
           name: 'breadthfirst',
-          animate: true,
+          animate: cy.nodes().length <= 60,
           animationDuration: 400,
           fit: true,
           padding: 60,
@@ -1806,18 +2045,24 @@
       } else if (currentGraphLayout === 'circle') {
         layoutOpts = {
           name: 'circle',
-          animate: true,
+          animate: cy.nodes().length <= 60,
           animationDuration: 400,
           fit: true,
           padding: 60,
           spacingFactor: 1.8
         };
       } else {
+        // cose is force-directed and its animation repaints every tick. At ~90 nodes
+        // that animation, plus the O(n^2) overlap pass on layoutstop, made the whole
+        // page crawl. Above a threshold: settle it silently and bound the iterations.
+        const big = cy.nodes().length > 60;
         layoutOpts = {
           name: 'cose',
-          animate: true,
+          animate: !big,
           animationDuration: 500,
+          numIter: big ? 250 : 1000,
           randomize: false,
+          nodeDimensionsIncludeLabels: true,
           fit: true,
           padding: 60,
           nodeRepulsion: 350000,
@@ -1829,7 +2074,150 @@
           componentSpacing: 120
         };
       }
-      cy.layout(layoutOpts).run();
+      const layout = cy.layout(layoutOpts);
+      // resolveNodeOverlaps is O(n^2) per pass. Its own note says "quadtree if
+      // hundreds"; until then, spend fewer passes on a big graph rather than freezing.
+      const passes = cy.nodes().length > 60 ? 2 : 8;
+      layout.one('layoutstop', () => { resolveNodeOverlaps(12, passes); cy.fit(undefined, 60); });
+      layout.run();
+    }
+
+    // Push apart overlapping non-compound nodes (labels included) with a few
+    // relaxation passes. ponytail: O(n^2) per pass — n is tens; quadtree if hundreds.
+    function resolveNodeOverlaps(pad = 12, iters = 8) {
+      if (!cy) return;
+      const nodes = cy.nodes();
+      const n = nodes.length;
+      for (let it = 0; it < iters; it++) {
+        // Measure ONCE per pass, then work on plain numbers.
+        //
+        // boundingBox({includeLabels:true}) used to be called inside the O(n^2) inner
+        // loop -- two calls per pair, so ~14,500 of them per pass at 121 nodes, each
+        // one invalidated by the positions this very loop was changing. Cytoscape
+        // recomputes style and geometry for that call, and the page froze outright:
+        // not slow, unresponsive. Hoisting it makes the expensive part O(n) and leaves
+        // only cheap arithmetic in the O(n^2) part.
+        const box = new Array(n);
+        const pos = new Array(n);
+        for (let i = 0; i < n; i++) {
+          box[i] = nodes[i].boundingBox({ includeLabels: true });
+          const q = nodes[i].position();
+          pos[i] = { x: q.x, y: q.y };
+        }
+        let moved = false;
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            const ba = box[i], bb = box[j];
+            const ox = Math.min(ba.x2, bb.x2) - Math.max(ba.x1, bb.x1) + pad;
+            const oy = Math.min(ba.y2, bb.y2) - Math.max(ba.y1, bb.y1) + pad;
+            if (ox <= 0 || oy <= 0) continue;
+            moved = true;
+            const pa = pos[i], pb = pos[j];
+            if (ox < oy) {           // push along the axis needing the smaller shift
+              const dir = pa.x <= pb.x ? 1 : -1;
+              pa.x -= dir * ox / 2; pb.x += dir * ox / 2;
+              ba.x1 -= dir * ox / 2; ba.x2 -= dir * ox / 2;
+              bb.x1 += dir * ox / 2; bb.x2 += dir * ox / 2;
+            } else {
+              const dir = pa.y <= pb.y ? 1 : -1;
+              pa.y -= dir * oy / 2; pb.y += dir * oy / 2;
+              ba.y1 -= dir * oy / 2; ba.y2 -= dir * oy / 2;
+              bb.y1 += dir * oy / 2; bb.y2 += dir * oy / 2;
+            }
+          }
+        }
+        if (!moved) break;
+        // One batched write per pass instead of two position() writes per overlap.
+        cy.batch(() => { for (let i = 0; i < n; i++) nodes[i].position(pos[i]); });
+      }
+    }
+
+    // Screen-constant-ish labels: base px at zoom>=1, up to 2.2x when zoomed out.
+    function applyZoomLabelScale() {
+      if (!cy) return;
+      const z = cy.zoom();
+      const k = z < 1 ? Math.min(2.2, 1 / Math.sqrt(z)) : 1;
+      cy.batch(() => {
+        cy.nodes().forEach(n => {
+          const base = n.data('type') === 'room' ? 12 : 10;
+          n.style('font-size', (base * k) + 'px');
+        });
+        cy.edges().style('font-size', (8 * Math.min(k, 1.8)) + 'px');
+      });
+    }
+
+    // Room membership as a border colour.
+    //
+    // Until room segmentation was switched on, every object was in room_0, so a single
+    // object colour said everything there was to say. With five rooms it says nothing:
+    // 119 objects in one cose hairball, all rgb(2,132,199), and no way to see what
+    // belongs where. Border rather than fill, so the crop thumbnails set as node
+    // backgrounds keep showing through.
+    //
+    // Below two rooms this does nothing at all, so a single-room run looks exactly as
+    // it does today.
+    const ROOM_PALETTE = ['#38bdf8', '#f59e0b', '#a78bfa', '#34d399',
+                          '#f472b6', '#facc15', '#fb7185', '#4ade80'];
+    let roomColourIndex = new Map();
+
+    function assignRoomColours(roomIds) {
+      // Sorted so a room keeps its colour between refreshes; a room appearing later
+      // must not recolour the ones already on screen.
+      const sorted = [...new Set(roomIds.filter(Boolean))].sort();
+      roomColourIndex = new Map(sorted.map((r, i) => [r, ROOM_PALETTE[i % ROOM_PALETTE.length]]));
+      return roomColourIndex;
+    }
+
+    function roomColourFor(roomId) {
+      return roomColourIndex.get(roomId) || null;
+    }
+
+    function applyRoomColours() {
+      if (!cy) return;
+      const ids = cy.nodes('[type="room"]').map(n => n.data('room') || n.id());
+      if (ids.length < 2) return;          // one room: leave the page exactly as it was
+      assignRoomColours(ids);
+      cy.batch(() => {
+        cy.nodes('[type="room"]').forEach(n => {
+          const c = roomColourFor(n.data('room') || n.id());
+          if (c) n.style({ 'border-color': c, 'border-width': 4 });
+        });
+        cy.nodes('[type="object"]').forEach(n => {
+          const c = roomColourFor(n.data('room'));
+          if (c) n.style({ 'border-color': c, 'border-width': 2.5 });
+        });
+      });
+    }
+
+    // Crop thumbnails as object-node backgrounds. Preload via Image() so a
+    // missing crop never hits cytoscape; 404s retried at most every 30s.
+    const cropBgCache = new Map(); // node id -> {ok: bool, t: ms}
+    function applyCropBackgrounds() {
+      if (!cy) return;
+      const now = Date.now();
+      cy.nodes('[type="object"]').forEach(n => {
+        const id = n.id();
+        const c = cropBgCache.get(id);
+        if (c && (c.ok || now - c.t < 30000)) return;
+        cropBgCache.set(id, { ok: false, t: now });
+        const url = n.data('crop_url') || ('/crop/' + encodeURIComponent(n.data('label')));
+        const img = new Image();
+        img.onload = () => {
+          cropBgCache.set(id, { ok: true, t: now });
+          const el = cy.getElementById(id);
+          if (el && el.length) {
+            el.style({
+              'background-image': 'url("' + url + '")',
+              'background-fit': 'cover',
+              'background-image-opacity': 1,
+              'width': 34,
+              'height': 34,
+              'border-width': 2
+            });
+          }
+        };
+        img.src = url;
+      });
     }
 
     // Init Cytoscape Graph
@@ -1856,26 +2244,6 @@
               'text-border-opacity': 0.5,
               'text-border-color': '#334155',
               'text-border-width': 1
-            }
-          },
-          {
-            selector: ':parent',
-            style: {
-              'background-color': '#070b14',
-              'background-opacity': 0.65,
-              'border-width': 2,
-              'border-color': '#0284c7',
-              'border-opacity': 0.85,
-              'shape': 'round-rectangle',
-              'corner-radius': 14,
-              'padding': 28,
-              'label': 'data(label)',
-              'font-size': '12px',
-              'font-weight': 'bold',
-              'color': '#38bdf8',
-              'text-valign': 'top',
-              'text-halign': 'center',
-              'text-margin-y': -8
             }
           },
           {
@@ -1907,6 +2275,31 @@
             }
           },
           {
+            selector: 'node[type="concept"]',
+            style: {
+              'background-color': '#312e81',
+              'border-width': 2,
+              'border-color': '#a78bfa',
+              'shape': 'diamond',
+              'width': 40,
+              'height': 40,
+              'color': '#c4b5fd',
+              'font-size': '11px',
+              'font-weight': 'bold'
+            }
+          },
+          {
+            // Dashed: an alignment is a scored claim, not a structural edge.
+            selector: 'edge[kind="alignment"]',
+            style: {
+              'line-color': '#a78bfa',
+              'target-arrow-color': '#a78bfa',
+              'color': '#c4b5fd',
+              'line-style': 'dashed',
+              'width': 1.5
+            }
+          },
+          {
             selector: 'node[status="temporary"]',
             style: {
               'background-color': '#d97706',
@@ -1924,6 +2317,7 @@
               'arrow-scale': 1.1,
               'label': 'data(label)',
               'font-size': '8px',
+              'min-zoomed-font-size': 6,
               'font-family': 'Inter, sans-serif',
               'font-weight': 'bold',
               'color': '#94a3b8',
@@ -1953,6 +2347,13 @@
           { selector: 'edge[label="isAbove"]', style: { 'line-color': '#a78bfa', 'target-arrow-color': '#a78bfa', 'color': '#a78bfa' } },
           { selector: 'edge[label="isUnder"]', style: { 'line-color': '#94a3b8', 'target-arrow-color': '#94a3b8', 'color': '#94a3b8' } },
           {
+            selector: '.faded',
+            style: {
+              'opacity': 0.15,
+              'text-opacity': 0.1
+            }
+          },
+          {
             selector: ':selected',
             style: {
               'background-color': '#22c55e',
@@ -1966,16 +2367,33 @@
         elements: []
       });
 
+      // Zoom-compensated labels: grow font when zoomed out so labels stay readable
+      let zoomRafPending = false;
+      cy.on('zoom', () => {
+        if (zoomRafPending) return;
+        zoomRafPending = true;
+        requestAnimationFrame(() => { zoomRafPending = false; applyZoomLabelScale(); });
+      });
+
+      // Neighborhood highlight: fade everything but the tapped element's hood
+      const highlightHood = (hood) => {
+        cy.elements().addClass('faded');
+        hood.removeClass('faded');
+      };
+
       cy.on('tap', 'node', function(evt) {
+        highlightHood(evt.target.closedNeighborhood());
         showNodeDetails(evt.target.data());
       });
 
       cy.on('tap', 'edge', function(evt) {
+        highlightHood(evt.target.union(evt.target.connectedNodes()));
         showEdgeDetails(evt.target.data());
       });
 
       cy.on('tap', function(evt) {
         if (evt.target === cy) {
+          cy.elements().removeClass('faded');
           closeDetailsOverlay();
         }
       });
@@ -2014,6 +2432,7 @@
     }
 
     function closeDetailsOverlay() {
+      openDetailNodeId = null;
       const overlay = document.getElementById('panelDetails');
       if (overlay) overlay.classList.remove('active');
       if (cy) cy.elements().unselect();
@@ -2046,34 +2465,24 @@
         <div style="display:flex; flex-wrap:wrap;">${tags.join('')}</div>`;
     }
 
-    const ONTOLOGY_TAXONOMY = {
-      shelf: { category: 'StorageFurniture', superclass: 'Furniture > Artifact', affordances: ['Support', 'Containment', 'Storable'], synset: 'shelf.n.01', priorRoom: 'Bedroom / Office' },
-      bed: { category: 'SleepingFurniture', superclass: 'Furniture > Artifact', affordances: ['Sleep', 'Lieable', 'Sittable'], synset: 'bed.n.01', priorRoom: 'Bedroom' },
-      chair: { category: 'SeatingFurniture', superclass: 'Furniture > Artifact', affordances: ['Sittable', 'Moveable'], synset: 'chair.n.01', priorRoom: 'Office / Dining' },
-      desk: { category: 'WorkSurface', superclass: 'Table > Furniture > Artifact', affordances: ['Workable', 'Support', 'Placeable'], synset: 'desk.n.01', priorRoom: 'Office / Study' },
-      table: { category: 'SurfaceFurniture', superclass: 'Furniture > Artifact', affordances: ['Support', 'Placeable'], synset: 'table.n.01', priorRoom: 'Dining / Living' },
-      trash_can: { category: 'WasteReceptacle', superclass: 'Container > Artifact', affordances: ['Disposal', 'Containment'], synset: 'ashcan.n.01', priorRoom: 'Any' },
-      door: { category: 'ArchitecturalPassage', superclass: 'Structure > Opening', affordances: ['Passable', 'Openable', 'Closable'], synset: 'door.n.01', priorRoom: 'Boundary' },
-      lamp: { category: 'LightingFixture', superclass: 'ElectricalDevice > Artifact', affordances: ['Illumination', 'Switchable'], synset: 'lamp.n.01', priorRoom: 'Bedroom / Living' },
-      curtain: { category: 'WindowCovering', superclass: 'Furnishing > Artifact', affordances: ['LightBlocking', 'Movable'], synset: 'curtain.n.01', priorRoom: 'Living / Bedroom' },
-      sink: { category: 'SanitaryFixture', superclass: 'PlumbingFixture > Artifact', affordances: ['Washing', 'WaterSupply'], synset: 'sink.n.01', priorRoom: 'Bathroom / Kitchen' },
-      cabinet: { category: 'StorageFurniture', superclass: 'Furniture > Artifact', affordances: ['Containment', 'Openable'], synset: 'cabinet.n.01', priorRoom: 'Kitchen / Bedroom' },
-      tv: { category: 'DisplayDevice', superclass: 'ElectronicEquipment > Artifact', affordances: ['VisualDisplay', 'Viewable'], synset: 'television.n.01', priorRoom: 'Living / Bedroom' },
-    };
+    // The frontend used to carry a hardcoded ONTOLOGY_TAXONOMY and, for any label
+    // not in it, fabricate a class: category 'PhysicalArtifact', synset
+    // '<label>.n.01', invented affordances. None of it came from FOUND, SOMA or
+    // envelopes.ttl, and it was rendered under captions calling them the aligned
+    // classes. Deleted. The only source of a class is now the aligner's own verdict,
+    // carried per node as `alignment` from hook_decisions.jsonl.
+    function getAlignment(nodeData) {
+      const a = nodeData && nodeData.alignment;
+      if (!a) return null;
+      // An object the aligner declined to align has no class. Return null rather
+      // than inventing one -- abstention is a real result and must read as one.
+      if (!a.entity) return { entity: null, iri: null, score: a.score, status: a.status || 'unaligned', evidence: a.evidence || '' };
+      // `iri` comes from the aligner; it is absent when the aligner recorded none.
+      return { entity: a.entity, iri: a.iri || null, score: a.score, status: a.status || 'aligned', evidence: a.evidence || '' };
+    }
 
-    function getOntologyForLabel(label) {
-      if (!label) return null;
-      const clean = String(label).toLowerCase().split('#')[0].replace(/[^a-z0-9_]/g, '_');
-      for (const k in ONTOLOGY_TAXONOMY) {
-        if (clean.includes(k) || k.includes(clean)) return ONTOLOGY_TAXONOMY[k];
-      }
-      return {
-        category: 'PhysicalArtifact',
-        superclass: 'Object > Entity',
-        affordances: ['Manipulable', 'SpatialAnchor'],
-        synset: `${clean}.n.01`,
-        priorRoom: 'General'
-      };
+    function alignmentScoreText(a) {
+      return (a && typeof a.score === 'number') ? a.score.toFixed(3) : '—';
     }
 
     let showOntologyConcepts = false;
@@ -2081,6 +2490,7 @@
 
     function toggleOntologyConcepts() {
       showOntologyConcepts = !showOntologyConcepts;
+      lastGraphVersion = null;   // overlay changed: force the next sync to rebuild
       const btn = document.getElementById('btnToggleConcepts');
       if (btn) btn.classList.toggle('active', showOntologyConcepts);
       refreshGraph();
@@ -2099,7 +2509,19 @@
       renderObjectsTable(lastAdmittedNodes);
     }
 
+    // Room-VLM reachability badge: distinguishes "no objects yet" from a dead VLM
+    function roomVlmBadge(data) {
+      const st = data.vlm_status || {};
+      if (st.ok === true) return { text: 'VLM ' + (st.model || 'OK'), style: 'background:rgba(16,185,129,0.15); color:#10b981; border:1px solid rgba(16,185,129,0.35);' };
+      if (st.ok === false) return { text: 'VLM UNREACHABLE', style: 'background:rgba(239,68,68,0.15); color:#ef4444; border:1px solid rgba(239,68,68,0.35);' };
+      return { text: 'PENDING', style: 'background:rgba(148,163,184,0.15); color:var(--muted); border:1px solid rgba(148,163,184,0.3);' };
+    }
+
+    // Which node the open panel is describing, so a graph sync can refresh it.
+    let openDetailNodeId = null;
+
     function showNodeDetails(data) {
+      openDetailNodeId = (data && data.id) || null;
       const overlay = document.getElementById('panelDetails');
       const titleEl = document.getElementById('aeroTitle');
       const badgeEl = document.getElementById('aeroTypeBadge');
@@ -2116,18 +2538,16 @@
       }
 
       if (content) {
-        const conf = typeof data.confidence === 'number' ? data.confidence : 1.0;
-        const confPct = (conf * 100).toFixed(0);
+        const conf = typeof data.confidence === 'number' ? data.confidence : null;
+        const confPct = conf === null ? null : (conf * 100).toFixed(0);
         const pos = data.position ? `(${data.position[0].toFixed(2)}, ${data.position[1].toFixed(2)}, ${data.position[2].toFixed(2)})` : '—';
         const bbox = data.bbox && data.bbox.x_max !== undefined ? `${((data.bbox.x_max||0)-(data.bbox.x_min||0)).toFixed(2)}m × ${((data.bbox.y_max||0)-(data.bbox.y_min||0)).toFixed(2)}m × ${((data.bbox.z_max||0)-(data.bbox.z_min||0)).toFixed(2)}m` : '—';
 
         const hasColor = data.color && data.color.toLowerCase() !== 'unknown' && data.color.trim() !== '';
         const hasMaterial = data.material && data.material.toLowerCase() !== 'unknown' && data.material.trim() !== '';
-        const onto = getOntologyForLabel(data.label);
+        const align = getAlignment(data);
 
-        const affordancePills = onto && onto.affordances ? onto.affordances.map(a =>
-          `<span style="display:inline-block; margin:2px 3px 2px 0; padding:1px 6px; font-size:0.62rem; font-weight:700; border-radius:6px; background:rgba(56,189,248,0.15); color:#38bdf8; border:1px solid rgba(56,189,248,0.3);">${a}</span>`
-        ).join('') : '';
+
 
         content.innerHTML = `
           <div style="display:flex; flex-direction:column; gap:8px;">
@@ -2140,17 +2560,35 @@
               <span style="font-size:0.75rem; font-weight:bold; color:#f8fafc;">${data.room || 'Unknown'}</span>
             </div>
 
-            <!-- Ontological Taxonomy & Classification -->
-            ${onto ? `
-            <div style="background:rgba(30,41,59,0.7); padding:8px 10px; border-radius:6px; border:1px solid rgba(167,139,250,0.3);">
-              <div style="display:flex; justify-content:space-between; font-size:0.65rem; color:#a78bfa; font-weight:800; text-transform:uppercase; margin-bottom:4px;">
-                <span>Ontological Entity</span>
-                <span style="font-family:monospace;">${onto.synset}</span>
+            <!-- Room classification (semantic_label from the room VLM) -->
+            ${data.type === 'room' ? `
+            <div style="background:rgba(30,41,59,0.7); padding:8px 10px; border-radius:6px; border:1px solid rgba(56,189,248,0.35);">
+              <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.65rem; color:#38bdf8; font-weight:800; text-transform:uppercase; margin-bottom:4px;">
+                <span>Room Type</span>
+                <span style="padding:1px 6px; border-radius:6px; font-size:0.58rem; ${roomVlmBadge(data).style}">${roomVlmBadge(data).text}</span>
               </div>
-              <div style="font-size:0.75rem; font-weight:bold; color:#f8fafc; margin-bottom:2px;">${onto.category}</div>
-              <div style="font-size:0.68rem; color:var(--muted); margin-bottom:6px;">Hypernym: <code>${onto.superclass}</code></div>
-              <div style="font-size:0.62rem; color:var(--muted); text-transform:uppercase; margin-bottom:2px;">Functional Affordances:</div>
-              <div style="display:flex; flex-wrap:wrap;">${affordancePills}</div>
+              <div style="font-size:0.78rem; font-weight:bold; color:#f8fafc; margin-bottom:3px;">${data.detected ? data.semantic_label : 'Unclassified'}</div>
+              ${data.description ? `<div style="font-size:0.68rem; color:var(--muted); line-height:1.35;">${data.description}</div>` : ''}
+              ${(data.objects && data.objects.length) ? `<div style="font-size:0.62rem; color:var(--muted); margin-top:5px;">Inventory: ${data.objects.join(', ')}</div>` : ''}
+            </div>
+            ` : ''}
+
+            <!-- Ontological alignment: the aligner's verdict, or its abstention -->
+            ${align && data.type !== 'room' ? `
+            <div style="background:rgba(30,41,59,0.7); padding:8px 10px; border-radius:6px; border:1px solid ${align.entity ? 'rgba(167,139,250,0.35)' : 'rgba(148,163,184,0.3)'};">
+              <div style="display:flex; justify-content:space-between; font-size:0.65rem; color:${align.entity ? '#a78bfa' : 'var(--muted)'}; font-weight:800; text-transform:uppercase; margin-bottom:4px;">
+                <span>Ontological Alignment</span>
+                <span style="font-family:monospace;">${align.status}</span>
+              </div>
+              ${align.entity ? `
+                <div style="font-size:0.75rem; font-weight:bold; color:#f8fafc;">${align.entity}</div>
+                ${align.iri ? `<div style="font-size:0.62rem; margin-top:2px; word-break:break-all;"><a href="${align.iri}" target="_blank" rel="noopener" style="color:#a78bfa;">${align.iri}</a></div>` : ''}
+                <div style="font-size:0.68rem; color:var(--muted); margin-top:2px;">Score: <b style="color:#a78bfa;">${alignmentScoreText(align)}</b></div>
+              ` : `
+                <div style="font-size:0.72rem; color:var(--muted); font-style:italic;">No class assigned — the aligner abstained.</div>
+                ${typeof align.score === 'number' ? `<div style="font-size:0.68rem; color:var(--muted); margin-top:2px;">Best score: ${alignmentScoreText(align)}</div>` : ''}
+              `}
+              ${align.evidence ? `<div style="font-size:0.62rem; color:var(--muted); margin-top:5px; line-height:1.35;">${align.evidence}</div>` : ''}
             </div>
             ` : ''}
 
@@ -2158,10 +2596,10 @@
             <div style="background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px;">
               <div style="display:flex; justify-content:space-between; font-size:0.7rem; color:var(--muted); text-transform:uppercase; margin-bottom:4px;">
                 <span>Detection Confidence</span>
-                <span style="color:#10b981; font-weight:bold;">${confPct}%</span>
+                <span style="color:${confPct === null ? 'var(--muted)' : '#10b981'}; font-weight:bold;">${confPct === null ? '— not reported' : confPct + '%'}</span>
               </div>
               <div style="height:5px; background:rgba(15,23,42,0.8); border-radius:3px; overflow:hidden;">
-                <div style="width:${confPct}%; height:100%; background:#10b981; border-radius:3px;"></div>
+                <div style="width:${confPct === null ? 0 : confPct}%; height:100%; background:#10b981; border-radius:3px;"></div>
               </div>
             </div>
             ` : ''}
@@ -2229,6 +2667,9 @@
       const tgtNode = cy ? cy.$('#' + edgeData.target) : null;
       const srcLabel = (srcNode && srcNode.length) ? srcNode.data('label') : edgeData.source;
       const tgtLabel = (tgtNode && tgtNode.length) ? tgtNode.data('label') : edgeData.target;
+      const cropImg = (node, label) => (node && node.length && node.data('type') === 'object')
+        ? `<img src="${node.data('crop_url') || ('/crop/' + encodeURIComponent(label))}" onerror="this.remove()" style="width:46px; height:34px; object-fit:cover; border-radius:4px; border:1px solid rgba(255,255,255,0.12);" />`
+        : '';
       const color = RELATION_COLORS[edgeData.label] || '#94a3b8';
 
       if (content) {
@@ -2239,11 +2680,11 @@
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px;">
               <span style="font-size:0.7rem; color:var(--muted); text-transform:uppercase;">Source</span>
-              <button onclick="selectGraphNodeById('${edgeData.source}')" class="viz-btn" style="padding:2px 8px; font-size:0.72rem; font-weight:bold;">${srcLabel}</button>
+              <span style="display:flex; align-items:center; gap:8px;">${cropImg(srcNode, srcLabel)}<button onclick="selectGraphNodeById('${edgeData.source}')" class="viz-btn" style="padding:2px 8px; font-size:0.72rem; font-weight:bold;">${srcLabel}</button></span>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px;">
               <span style="font-size:0.7rem; color:var(--muted); text-transform:uppercase;">Target</span>
-              <button onclick="selectGraphNodeById('${edgeData.target}')" class="viz-btn" style="padding:2px 8px; font-size:0.72rem; font-weight:bold;">${tgtLabel}</button>
+              <span style="display:flex; align-items:center; gap:8px;">${cropImg(tgtNode, tgtLabel)}<button onclick="selectGraphNodeById('${edgeData.target}')" class="viz-btn" style="padding:2px 8px; font-size:0.72rem; font-weight:bold;">${tgtLabel}</button></span>
             </div>
             <div style="font-size:0.72rem; color:var(--muted); line-height:1.4; padding:6px; background:rgba(15,23,42,0.6); border-radius:6px;">
               Assertion: <b>${srcLabel}</b> is related to <b>${tgtLabel}</b> via ontological predicate <code>${edgeData.label}</code>.
@@ -2270,7 +2711,14 @@
           lastGraphData = data;
           lastAdmissionSummary = data.admission_summary || null;
 
-          if (cy && data.elements && Array.isArray(data.elements.nodes)) {
+          // Skip an identical re-sync. The graph poll runs every 3 s but the world
+          // model changes at most once per ~1.3 s cycle and usually not at all, and
+          // a sync re-ran the overlap pass and re-requested every node's crop.
+          // A filter or overlay change must still re-render, so it clears the marker.
+          const unchanged = (data.version && data.version === lastGraphVersion);
+          lastGraphVersion = data.version || null;
+
+          if (!unchanged && cy && data.elements && Array.isArray(data.elements.nodes)) {
             try {
               const nodesList = [...data.elements.nodes];
               const edgesList = [...(data.elements.edges || [])];
@@ -2300,29 +2748,21 @@
                 }
               });
 
-              // Assign compound parent room to objects for hierarchical spatial grouping
-              nodesList.forEach(n => {
-                if (n.data && n.data.type !== 'room' && n.data.room) {
-                  const parentId = 'n_' + String(n.data.room).replace(/[^a-zA-Z0-9_]/g, '_');
-                  if (knownNodeIds.has(parentId)) {
-                    n.data.parent = parentId;
-                  }
-                }
-              });
-
               // Optional: Inject Concept Hierarchy Nodes
               if (showOntologyConcepts) {
                 const conceptNodesAdded = new Set();
                 const objNodes = nodesList.filter(n => n.data.type === 'object');
                 objNodes.forEach(o => {
-                  const onto = getOntologyForLabel(o.data.label);
-                  if (onto && onto.category) {
-                    const cId = 'concept_' + onto.category;
+                  const onto = getAlignment(o.data);
+                  // Only objects the aligner actually aligned get a class node.
+                  // An abstention contributes nothing rather than a placeholder.
+                  if (onto && onto.entity) {
+                    const cId = 'concept_' + String(onto.entity).replace(/[^A-Za-z0-9_]/g, '_');
                     if (!conceptNodesAdded.has(cId) && !knownNodeIds.has(cId)) {
                       nodesList.push({
                         data: {
                           id: cId,
-                          label: onto.category,
+                          label: onto.entity,
                           type: 'concept'
                         }
                       });
@@ -2331,16 +2771,22 @@
                     }
                     edgesList.push({
                       data: {
-                        id: `e_${o.data.id}_isA_${cId}`,
+                        id: `e_${o.data.id}_alignedTo_${cId}`,
                         source: o.data.id,
                         target: cId,
-                        label: 'isA'
+                        // Not isA: this is the aligner's scored alignment, not a
+                        // subsumption assertion, and the score travels with it.
+                        label: typeof onto.score === 'number'
+                          ? `alignedTo ${onto.score.toFixed(2)}` : 'alignedTo',
+                        kind: 'alignment',
+                        score: onto.score
                       }
                     });
                   }
                 });
               }
 
+              const validEdges = edgesList.filter(e => e.data && knownNodeIds.has(e.data.source) && knownNodeIds.has(e.data.target));
               let filteredNodesList = nodesList;
               let filteredEdgesList = validEdges;
 
@@ -2375,18 +2821,14 @@
                 const allowedIds = new Set(filteredNodesList.map(n => n.data.id));
                 filteredEdgesList = validEdges.filter(e => allowedIds.has(e.data.source) && allowedIds.has(e.data.target));
               } else if (activeGraphFilter.startsWith('cat:')) {
+                // Was a hardcoded keyword bucket map (Furniture/Fixtures/Storage/
+                // Electronics) matched against the label. Now matches the class the
+                // aligner actually assigned; unaligned objects match nothing.
                 const cat = activeGraphFilter.split(':', 2)[1];
-                const catMap = {
-                  Furniture: ['bed', 'chair', 'desk', 'table', 'sofa', 'couch'],
-                  Fixtures: ['door', 'lamp', 'curtain', 'sink', 'wall', 'window'],
-                  Storage: ['shelf', 'trash_can', 'trash can', 'cabinet', 'drawer'],
-                  Electronics: ['tv', 'television', 'laptop', 'monitor', 'microwave']
-                };
-                const targetKeywords = catMap[cat] || [];
                 filteredNodesList = nodesList.filter(n => {
                   if (n.data.type === 'room') return true;
-                  const l = (n.data.label || '').toLowerCase();
-                  return targetKeywords.some(k => l.includes(k));
+                  const a = getAlignment(n.data);
+                  return !!(a && a.entity && String(a.entity).toLowerCase() === String(cat).toLowerCase());
                 });
                 const allowedIds = new Set(filteredNodesList.map(n => n.data.id));
                 filteredEdgesList = validEdges.filter(e => allowedIds.has(e.data.source) && allowedIds.has(e.data.target));
@@ -2399,10 +2841,11 @@
               const incomingNodeIds = new Set(filteredNodesList.map(n => n.data.id));
               const incomingEdgeIds = new Set(filteredEdgesList.map(e => e.data.id));
 
-              // 1. Remove obsolete elements
-              const toRemove = [];
-              cy.nodes().forEach(n => { if (!incomingNodeIds.has(n.id())) toRemove.push(n); });
-              cy.edges().forEach(e => { if (!incomingEdgeIds.has(e.id())) toRemove.push(e); });
+              // 1. Remove obsolete elements. NB: cy.remove() needs a cytoscape
+              // COLLECTION — a plain Array throws (e.remove is not a function),
+              // which the catch below swallowed, skipping the whole sync.
+              const toRemove = cy.nodes().filter(n => !incomingNodeIds.has(n.id()))
+                .union(cy.edges().filter(e => !incomingEdgeIds.has(e.id())));
               if (toRemove.length > 0) cy.remove(toRemove);
 
               // 2. Update existing node data in-place (keeps coordinates untouched)
@@ -2426,9 +2869,9 @@
                 } else if (newNodes.length > 0) {
                   // Stable incremental placement: position new nodes without disturbing existing layout
                   newNodes.forEach((n, idx) => {
-                    const parentId = n.data.parent;
-                    const parentNode = parentId ? cy.getElementById(parentId) : null;
-                    const basePos = parentNode && parentNode.length ? parentNode.position() : { x: 0, y: 0 };
+                    const roomId = n.data.room ? 'n_' + String(n.data.room).replace(/[^a-zA-Z0-9_]/g, '_') : null;
+                    const roomNode = roomId ? cy.getElementById(roomId) : null;
+                    const basePos = roomNode && roomNode.length ? roomNode.position() : { x: 0, y: 0 };
                     const angle = (idx * 0.9) + Math.PI / 4;
                     const r = 160 + (idx % 4) * 35;
                     const el = cy.getElementById(n.data.id);
@@ -2439,6 +2882,24 @@
                       });
                     }
                   });
+                  resolveNodeOverlaps();
+                }
+                applyZoomLabelScale();
+              }
+              applyCropBackgrounds();
+              applyRoomColours();
+
+              // Item 3: the panel was rendered once on tap and never again, so it
+              // showed the values from whenever you clicked while looking live.
+              if (openDetailNodeId) {
+                const el = cy.getElementById(openDetailNodeId);
+                if (el && el.length) {
+                  showNodeDetails(el.data());
+                } else {
+                  // The node is gone from the world model — say so, do not keep
+                  // displaying an object that no longer exists.
+                  setStatusLine('Selected object no longer in the graph', 'warn');
+                  closeDetailsOverlay();
                 }
               }
             } catch (cyErr) {
@@ -2560,20 +3021,41 @@
         const id = n.id || '';
         const label = n.label || 'object';
         const room = n.room || '-';
-        const conf = typeof n.confidence === 'number' ? n.confidence : 1.0;
-        const onto = getOntologyForLabel(label);
-        const conceptName = onto ? onto.category : '-';
+        // Absent confidence renders as an em dash, never as a confident 100%.
+        const conf = typeof n.confidence === 'number' ? n.confidence : null;
+        const onto = getAlignment(n);
+        // The concept carries its IRI: the class is only meaningful as the thing the
+        // ontology actually identifies. An entity with no recorded IRI shows the bare
+        // name and says so on hover, rather than implying one it does not have.
+        const conceptName = (onto && onto.entity)
+          ? (onto.iri
+              ? `<a href="${onto.iri}" target="_blank" rel="noopener" title="${onto.iri}" style="color:#a78bfa; text-decoration:underline dotted;">${onto.entity}</a>`
+              : `<span title="no IRI recorded by the aligner">${onto.entity}</span>`)
+          : '—';
         html += `<tr onclick="selectGraphNodeById('${id}')">
           <td><b>${label}</b></td>
           <td>${room}</td>
           <td style="color:#a78bfa; font-size:0.68rem;">${conceptName}</td>
-          <td>${(conf * 100).toFixed(0)}%</td>
+          <td>${conf === null ? '—' : (conf * 100).toFixed(0) + '%'}</td>
         </tr>`;
       });
       html += '</tbody></table>';
       wrap.innerHTML = html;
     }
 
+    let activeGraphFilter = 'all';
+
+    function onGraphFilterChange(val) {
+      activeGraphFilter = val;
+      lastGraphVersion = null;   // filter changed: re-sync even if the data did not
+      // Clear the graph so refreshGraph() repopulates only the selected instance set
+      if (cy) {
+        cy.batch(() => { cy.elements().remove(); });
+      }
+      refreshGraph();
+    }
+
+    window.activeGraphFilter = activeGraphFilter;
     window.setAuditFilter = setAuditFilter;
     window.onGraphFilterChange = onGraphFilterChange;
     window.toggleOntologyConcepts = toggleOntologyConcepts;
@@ -2586,109 +3068,148 @@
     window.toggleLockGraph = toggleLockGraph;
     window.closeDetailsOverlay = closeDetailsOverlay;
 
+    window.toggleStrictVisibility = toggleStrictVisibility;
+    window.setMinVisiblePoints = setMinVisiblePoints;
+    window.togglePerceiveMoving = togglePerceiveMoving;
+
     function initResizers() {
-      // Horizontal resizer: colLeft vs colRight
-      const resizerMain = document.getElementById('resizerMain');
+      const RESIZER_STORAGE_KEY = 'graphapi_resizers_geom_v1';
       const colLeft = document.getElementById('colLeft');
       const colRight = document.getElementById('colRight');
-
-      if (resizerMain && colLeft && colRight) {
-        let isDragging = false;
-        resizerMain.addEventListener('mousedown', () => {
-          isDragging = true;
-          document.body.style.cursor = 'col-resize';
-          document.body.style.userSelect = 'none';
-        });
-        window.addEventListener('mousemove', (e) => {
-          if (!isDragging) return;
-          const containerWidth = document.querySelector('.hud-body').clientWidth;
-          const leftWidth = Math.max(280, Math.min(containerWidth - 280, e.clientX));
-          const leftPct = (leftWidth / containerWidth) * 100;
-          colLeft.style.width = `${leftPct}%`;
-          colRight.style.width = `${100 - leftPct}%`;
-          if (cy) cy.resize();
-        });
-        window.addEventListener('mouseup', () => {
-          if (isDragging) {
-            isDragging = false;
-            document.body.style.cursor = '';
-            document.body.style.userSelect = '';
-            if (cy) cy.resize();
-          }
-        });
-      }
-
-      // Vertical resizer: panelFeed vs panelBottomLeft
-      const resizerFeed = document.getElementById('resizerFeedGraph');
       const panelFeed = document.getElementById('panelFeed');
       const panelBottomLeft = document.getElementById('panelBottomLeft');
-
-      if (resizerFeed && panelFeed && panelBottomLeft) {
-        let isDragging = false;
-        resizerFeed.addEventListener('mousedown', () => {
-          isDragging = true;
-          document.body.style.cursor = 'row-resize';
-          document.body.style.userSelect = 'none';
-        });
-        window.addEventListener('mousemove', (e) => {
-          if (!isDragging) return;
-          const colLeftHeight = colLeft.clientHeight;
-          const topOffset = colLeft.getBoundingClientRect().top;
-          const feedHeight = Math.max(140, Math.min(colLeftHeight - 140, e.clientY - topOffset));
-          const feedPct = (feedHeight / colLeftHeight) * 100;
-          panelFeed.style.height = `${feedPct}%`;
-          panelBottomLeft.style.height = `${100 - feedPct}%`;
-          if (cy) cy.resize();
-        });
-        window.addEventListener('mouseup', () => {
-          if (isDragging) {
-            isDragging = false;
-            document.body.style.cursor = '';
-            document.body.style.userSelect = '';
-            if (cy) cy.resize();
-          }
-        });
-      }
-
-      // Vertical resizer: panelLogs vs panelWidgets
-      const resizerLogs = document.getElementById('resizerLogsWidgets');
       const panelLogs = document.getElementById('panelLogs');
       const panelWidgets = document.getElementById('panelWidgets');
 
-      if (resizerLogs && panelLogs && panelWidgets) {
-        let isDragging = false;
-        resizerLogs.addEventListener('mousedown', () => {
-          isDragging = true;
-          document.body.style.cursor = 'row-resize';
-          document.body.style.userSelect = 'none';
-        });
-        window.addEventListener('mousemove', (e) => {
-          if (!isDragging) return;
-          const colRightHeight = colRight.clientHeight;
-          const topOffset = colRight.getBoundingClientRect().top;
-          const logsHeight = Math.max(100, Math.min(colRightHeight - 140, e.clientY - topOffset));
-          const logsPct = (logsHeight / colRightHeight) * 100;
-          panelLogs.style.height = `${logsPct}%`;
-          panelWidgets.style.height = `${100 - logsPct}%`;
-        });
-        window.addEventListener('mouseup', () => {
-          if (isDragging) {
-            isDragging = false;
-            document.body.style.cursor = '';
-            document.body.style.userSelect = '';
-          }
-        });
+      function saveResizerGeometry() {
+        try {
+          const geom = {
+            colLeft: colLeft ? colLeft.style.width : null,
+            colRight: colRight ? colRight.style.width : null,
+            panelFeed: panelFeed ? panelFeed.style.height : null,
+            panelBottomLeft: panelBottomLeft ? panelBottomLeft.style.height : null,
+            panelLogs: panelLogs ? panelLogs.style.height : null,
+            panelWidgets: panelWidgets ? panelWidgets.style.height : null
+          };
+          localStorage.setItem(RESIZER_STORAGE_KEY, JSON.stringify(geom));
+        } catch (err) {
+          console.debug('[Resizer] Failed to persist geometry:', err);
+        }
       }
+
+      function restoreResizerGeometry() {
+        try {
+          const raw = localStorage.getItem(RESIZER_STORAGE_KEY);
+          if (!raw) return;
+          const geom = JSON.parse(raw);
+          if (geom.colLeft && geom.colRight && colLeft && colRight) {
+            colLeft.style.width = geom.colLeft;
+            colRight.style.width = geom.colRight;
+          }
+          if (geom.panelFeed && geom.panelBottomLeft && panelFeed && panelBottomLeft) {
+            panelFeed.style.height = geom.panelFeed;
+            panelBottomLeft.style.height = geom.panelBottomLeft;
+          }
+          if (geom.panelLogs && geom.panelWidgets && panelLogs && panelWidgets) {
+            panelLogs.style.height = geom.panelLogs;
+            panelWidgets.style.height = geom.panelWidgets;
+          }
+        } catch (err) {
+          console.debug('[Resizer] Failed to restore geometry:', err);
+        }
+      }
+
+      restoreResizerGeometry();
+
+      const setupSplitter = (resizerEl, onDrag, onEnd, isVertical) => {
+        if (!resizerEl) return;
+        let dragging = false;
+
+        const start = (e) => {
+          dragging = true;
+          document.body.classList.add(isVertical ? 'resizing-v' : 'resizing-h');
+          if (e.cancelable) e.preventDefault();
+          e.stopPropagation();
+        };
+
+        const move = (e) => {
+          if (!dragging) return;
+          if (e.cancelable) e.preventDefault();
+          const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+          const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+          onDrag(clientX, clientY);
+        };
+
+        const stop = () => {
+          if (dragging) {
+            dragging = false;
+            document.body.classList.remove('resizing-h', 'resizing-v');
+            saveResizerGeometry();
+            if (onEnd) onEnd();
+          }
+        };
+
+        resizerEl.addEventListener('mousedown', start, { passive: false });
+        resizerEl.addEventListener('touchstart', start, { passive: false });
+        window.addEventListener('mousemove', move, { passive: false });
+        window.addEventListener('touchmove', move, { passive: false });
+        window.addEventListener('mouseup', stop);
+        window.addEventListener('touchend', stop);
+        window.addEventListener('touchcancel', stop);
+      };
+
+      // 1. Horizontal Splitter: colLeft vs colRight
+      setupSplitter(document.getElementById('resizerMain'), (cx) => {
+        const bodyEl = document.querySelector('.hud-body');
+        if (!bodyEl || !colLeft || !colRight) return;
+        const containerWidth = bodyEl.clientWidth;
+        const leftWidth = Math.max(220, Math.min(containerWidth - 220, cx));
+        const leftPct = (leftWidth / containerWidth) * 100;
+        colLeft.style.width = `${leftPct}%`;
+        colRight.style.width = `${100 - leftPct}%`;
+        if (cy) cy.resize();
+      }, () => { if (cy) cy.resize(); }, false);
+
+      // 2. Vertical Splitter: panelFeed vs panelBottomLeft
+      setupSplitter(document.getElementById('resizerFeedGraph'), (cx, cyPos) => {
+        if (!colLeft || !panelFeed || !panelBottomLeft) return;
+        const colLeftHeight = colLeft.clientHeight;
+        const topOffset = colLeft.getBoundingClientRect().top;
+        const feedHeight = Math.max(100, Math.min(colLeftHeight - 100, cyPos - topOffset));
+        const feedPct = (feedHeight / colLeftHeight) * 100;
+        panelFeed.style.height = `${feedPct}%`;
+        panelBottomLeft.style.height = `${100 - feedPct}%`;
+        if (cy) cy.resize();
+      }, () => { if (cy) cy.resize(); }, true);
+
+      // 3. Vertical Splitter: panelLogs vs panelWidgets
+      setupSplitter(document.getElementById('resizerLogsWidgets'), (cx, cyPos) => {
+        if (!colRight || !panelLogs || !panelWidgets) return;
+        const colRightHeight = colRight.clientHeight;
+        const topOffset = colRight.getBoundingClientRect().top;
+        const logsHeight = Math.max(80, Math.min(colRightHeight - 100, cyPos - topOffset));
+        const logsPct = (logsHeight / colRightHeight) * 100;
+        panelLogs.style.height = `${logsPct}%`;
+        panelWidgets.style.height = `${100 - logsPct}%`;
+      }, null, true);
     }
 
     function startDashboard() {
-      initCy();
+      // ponytail: CDN-less fallback — graph pane shows offline, rest of dashboard lives
+      if (typeof cytoscape !== 'undefined') initCy();
+      else { const gs = document.getElementById('graphStatus'); if (gs) gs.textContent = 'GRAPH OFFLINE (cytoscape CDN unreachable)'; }
       initResizers();
       refreshGraph();
       setInterval(refreshGraph, 3000);
       initFeedInteraction();
       setupBEVInteractions('bevCanvasHUD');
       setupBEVInteractions('bevCanvasModal');
+
+      const feedImg = document.getElementById('habitatFeedImg');
+      if (feedImg) {
+        feedImg.addEventListener('load', onFeedFrameLoaded);
+        feedImg.addEventListener('error', onFeedError);
+      }
 
       const btnGraph = document.getElementById('refreshGraphBtn');
       const btnObj = document.getElementById('refreshObjectsBtn');

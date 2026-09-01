@@ -36,10 +36,24 @@ PY
 
 echo ">>> [4/5] import every node module from the installed tree"
 cd /ws/install/lost3dsg/lib/lost3dsg
-for m in config vlm_call nlp_utils world_model object_info map_database \
-         utils cv_utils detection_types detection_pipeline perception_utils \
-         input_output room_manager walls_rooms object_services object_manager_6 \
-         perception_2 models query_map; do
+
+# GA-84. DERIVED FROM THE TREE, not hand-maintained.
+#
+# This was a literal list, and it drifted: `walls_rooms` was deleted under an owner ruling and
+# the list kept importing it, so the smoke test exited 1 for a module that was correctly gone.
+# The lane that deleted it was right not to edit this file to cover its own deletion — the
+# defect is that an inventory of what exists was written by hand instead of read.
+#
+# Same class as CMakeLists installing two files nothing launched. A hand-kept list is correct
+# only until the tree moves, and it fails in the direction that looks like a real breakage.
+# Excluded BY RULE, not by name: test modules are not node modules, and `rosstub` exists to
+# stand in for ROS on a host that has none — importing it here would prove nothing about the
+# installed tree. Any other exclusion would be a hand-list creeping back in.
+_mods=$(find . -maxdepth 1 -name '*.py' -printf '%f\n' \
+        | sed 's/\.py$//' | grep -v '^test_' | grep -vx 'rosstub' | sort)
+[ -n "$_mods" ] || { echo "!! no modules found in $(pwd) — the install tree is empty"; exit 1; }
+echo "    $(echo "$_mods" | wc -l) modules found in the install tree"
+for m in $_mods; do
   python3 -c "import $m" && echo "    import $m OK" || { echo "!! import $m FAILED"; exit 1; }
 done
 

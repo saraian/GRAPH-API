@@ -101,12 +101,12 @@ class MapQuery:
             q = """SELECT timestamp, event_type, phase, step,
                           x_old, y_old, z_old, x_new, y_new, z_new, distance
                    FROM object_history WHERE object_id = ? ORDER BY timestamp DESC LIMIT 10"""
-            # Se il tuo schema non ha object_id ma usa label, cambia la query qui
-            try:
-                return [dict(r) for r in conn.execute(q, [obj_id]).fetchall()]
-            except sqlite3.OperationalError:
-                # Fallback se non c'è object_id nella history
-                return []
+            # Rule 14: this used to be wrapped in `except sqlite3.OperationalError:
+            # return []`, so a schema mismatch reported "no history" -- a result
+            # indistinguishable from an object that genuinely has none. The handler was
+            # dead while the schema was stable; GA-44's ALTER TABLE is exactly the kind
+            # of event that would have made it live and silent. Let it raise.
+            return [dict(r) for r in conn.execute(q, [obj_id]).fetchall()]
 
 
 # ── MOTORE DI RICERCA SEMANTICA ───────────────────────────────────────────────
@@ -208,10 +208,13 @@ def find_best_matches(query: str, objects: list, model, top_k=3, threshold=0.2, 
 # ── HELPERS STAMPA ────────────────────────────────────────────────────────────
 
 def pos(x, y, z):
-    try:
-        return f"({float(x):.2f}, {float(y):.2f}, {float(z):.2f})"
-    except:
+    # Rule 14: this was a bare `except:` returning "(null)". A NULL coordinate is a real
+    # case, so it is tested for; anything else -- a non-numeric value, a wrong column --
+    # is a defect and must not print as a missing position. The bare form also swallowed
+    # KeyboardInterrupt and SystemExit.
+    if x is None or y is None or z is None:
         return "(null)"
+    return f"({float(x):.2f}, {float(y):.2f}, {float(z):.2f})"
 
 # ── REPL PRINCIPALE ───────────────────────────────────────────────────────────
 

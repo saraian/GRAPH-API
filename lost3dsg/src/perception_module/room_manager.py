@@ -83,7 +83,14 @@ class RoomManager:
         self.current_room_id = None
         self.previous_room_id = None
         self.current_room_changed = False
-        self.current_room_walls = []
+        # GA-137 FOLLOW-ON (rule 15: the room fix ARMS this). Walls are keyed BY ROOM.
+        # `current_room_walls` was a single list initialised once and never cleared, so
+        # every wall segment ever received accumulated into it and `finalize_current_room`
+        # wrote the whole accumulation into EVERY room's record. That was invisible while
+        # the segmentation produced exactly one room -- the union of all walls and the walls
+        # of the only room are the same list. Switching gvd_method to `ridge` makes multiple
+        # rooms real, and would have given every one of them every wall in the building.
+        self._walls_by_room = {}
         self.current_room_wall_segments = []
         self.last_grid = None
         self.last_robot_xy = None
@@ -100,7 +107,14 @@ class RoomManager:
         self._latest_cloud_stamp = None
         self._last_cloud_warn_time = 0.0
 
+        from config import CFG  # local, as elsewhere in this file
         self._params = {
+            # GA-137. Read from CFG so the switch is REACHABLE. `_params` is otherwise a
+            # hardcoded dict and CFG["rooms"] is read nowhere in this file -- so adding the
+            # key to config.py alone would have created a setting that exists and cannot be
+            # reached, which is the defect class this review keeps finding. Checked before
+            # shipping it, not after.
+            'gvd_method': str(CFG.get('rooms', {}).get('gvd_method', 'label_diff')),
             # 2D map classification
             'free_threshold': 20,
             'occupied_threshold': 50,
@@ -530,6 +544,46 @@ class RoomManager:
         return support.reshape((height, width))
 
     @staticmethod
+    def _compute_gvd_ridge(free_topo, structural_occupied):
+        """Medial axis by RIDGE DETECTION on the distance transform.
+
+        GA-137. The label-difference method below cannot produce a skeleton on a normal
+        floorplan, and the reason is structural rather than a matter of tuning: it marks a
+        pixel only where two adjacent free pixels have DIFFERENT nearest-obstacle CONNECTED
+        COMPONENT ids. In any ordinary building the outer walls and the interior walls
+        touch, so there is exactly ONE obstacle component, every free pixel carries the same
+        label, and the skeleton is empty at every resolution with every threshold correct.
+
+        MEASURED on a synthetic two-room floorplan (outer walls + an interior wall with a
+        doorway):
+            connected walls   -> 1 obstacle component  -> skeleton_px = 0
+            interior wall detached from the outer wall -> 3 components -> skeleton_px = 432
+            two separate blobs -> 2 components -> skeleton_px = 120
+        The method only works when the obstacles are already disconnected, which is the one
+        case a floorplan is not.
+
+        The true GVD is the set of points equidistant from two nearest obstacle POINTS --
+        a ridge of the distance transform, which exists regardless of connectivity. On the
+        same connected-wall map this yields skeleton_px = 22278, and the doorway shows as a
+        clear clearance minimum (5.00 px against an open-room median of 16.00), which is
+        exactly the local minimum `_critical_points` cuts on.
+        """
+        occ = structural_occupied > 0
+        src = np.where(occ, 0, 255).astype(np.uint8)
+        dist = cv2.distanceTransform(src, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+        freeb = free_topo > 0
+        d = np.where(freeb, dist, -1.0)
+        ridge = np.zeros(d.shape, dtype=bool)
+        # On the axis if the clearance is a local maximum along ANY direction.
+        for dy, dx in ((0, 1), (1, 0), (1, 1), (1, -1)):
+            a = np.roll(np.roll(d, dy, 0), dx, 1)
+            b = np.roll(np.roll(d, -dy, 0), -dx, 1)
+            ridge |= (d >= a) & (d >= b) & (d > 0)
+        skeleton = np.zeros(d.shape, dtype=np.uint8)
+        skeleton[ridge & freeb] = 255
+        return skeleton, dist
+
+    @staticmethod
     def _compute_gvd(free_topo, structural_occupied):
         """Discrete brushfire/GVD on the *topological* free/obstacle
         masks: labels every topo-free pixel with the id of its nearest
@@ -791,7 +845,17 @@ class RoomManager:
 
         structural_occ = self._structural_obstacles(occupied, resolution, grid, cloud_support=cloud_support)
         free_topo = self._fill_nonstructural_obstacles(free, occupied, structural_occ, resolution)
-        skeleton_raw, dist_topo = self._compute_gvd(free_topo, structural_occ)
+        # GA-137: `label_diff` is today's behaviour and stays the default -- it is provably
+        # always-empty on a connected floorplan, but changing room segmentation changes
+        # EVERY room-scoped number, which is a run-design decision, not mine to take.
+        _method = str(self._params.get('gvd_method', 'label_diff'))
+        if _method == 'ridge':
+            skeleton_raw, dist_topo = self._compute_gvd_ridge(free_topo, structural_occ)
+        elif _method == 'label_diff':
+            skeleton_raw, dist_topo = self._compute_gvd(free_topo, structural_occ)
+        else:
+            raise ValueError(f"unknown rooms.gvd_method {_method!r}; "
+                             f"expected 'label_diff' or 'ridge'")
         skeleton = self._prune_skeleton(skeleton_raw, resolution)
         critical_points = self._critical_points(skeleton, dist_topo, resolution)
 
@@ -804,10 +868,20 @@ class RoomManager:
         min_pixels = self._params['min_region_pixels']
         markers = self._merge_small_labels(markers, min_pixels, dist_topo, resolution)
 
+        _skel_px = int(np.count_nonzero(skeleton))
+        # GA-137: an empty skeleton is a FAILURE, not a measurement, and this line has been
+        # printing the fact of its own failure at INFO since the beginning -- `regions=N`
+        # comes from the watershed and is non-zero whether or not anything was segmented,
+        # so the line reads like a result. skeleton_px=0 means no branches, nothing to cut,
+        # and exactly one region per floor: the room gate, the room prior and every
+        # room-scoped number downstream are then no-ops over a single room.
         self._log(
-            'info',
-            f'GVD segmentation: skeleton_px={int(np.count_nonzero(skeleton))} '
-            f'branches_cut={len(critical_points)} regions={int(markers.max())}')
+            'warn' if _skel_px == 0 else 'info',
+            f'GVD segmentation: skeleton_px={_skel_px} '
+            f'branches_cut={len(critical_points)} regions={int(markers.max())}'
+            + (' -- SKELETON EMPTY: no segmentation happened, every object will land in one'
+               ' room. regions= here is the watershed count, not evidence of a split.'
+               if _skel_px == 0 else ''))
 
         candidates = []
         for label in range(1, int(markers.max()) + 1):
@@ -1122,9 +1196,21 @@ class RoomManager:
         room["last_seen"] = time.time()
         self._save_rooms(force=True)
 
-    def assign_room_by_geometry(self, bbox):
+    def room_at_bbox(self, bbox):
+        """Which room this box is geometrically in, or None when geometry cannot say.
+
+        GA-28 / GA-25: `assign_room_by_geometry` answers `self.current_room_id` — the
+        ROBOT's room — when there is no bbox, no room polygon within tolerance, or no
+        room at all, and it returns it in the same type as a geometric answer. A caller
+        cannot tell "this object is in room 3" from "I do not know, and the robot is in
+        room 3". A same-room gate built on that reads two objects in different rooms as
+        the same room precisely when the map is least able to separate them.
+
+        This is the honest query. `assign_room_by_geometry` keeps its behaviour and is
+        now the one place that applies the fallback, so the two cannot drift.
+        """
         if not bbox:
-            return self.current_room_id
+            return None
         candidates = [
             ((bbox['x_min'] + bbox['x_max']) / 2.0, (bbox['y_min'] + bbox['y_max']) / 2.0),
             (bbox['x_min'], bbox['y_min']),
@@ -1149,7 +1235,55 @@ class RoomManager:
 
         if nearest is not None and nearest_dist <= max(tolerance, 0.45):
             return nearest
-        return self.current_room_id
+        return None
+
+    def reassign_objects_by_geometry(self, objects):
+        """Re-file objects whose geometric room no longer matches their stored `room_id`.
+
+        GA-28c: this had ONE call site (`object_manager_6.reassign_objects_to_rooms`, run
+        after a map resegmentation) and NO definition anywhere in the tree, so the whole
+        path raised AttributeError the first time a resegmentation happened.
+
+        Returns ``[(obj, old_room, new_room), ...]`` for the objects that moved, which is
+        the shape the caller already unpacks.
+
+        Geometry only. `room_at_bbox` returns None when it cannot say, and an object is
+        LEFT WHERE IT IS in that case -- a resegmentation that cannot place an object is
+        not evidence the object went anywhere. Using `assign_room_by_geometry` here would
+        re-file every unplaceable object into whichever room the robot happens to occupy,
+        which is exactly the fallback-as-fact defect GA-28b names.
+        """
+        changed = []
+        for obj in objects or []:
+            bbox = getattr(obj, "bbox", None)
+            if not bbox:
+                continue
+            new_room = self.room_at_bbox(bbox)
+            if new_room is None:
+                continue
+            old_room = getattr(obj, "room_id", None)
+            if old_room == new_room:
+                continue
+            obj.room_id = new_room
+            if old_room and old_room in self.scene_graph:
+                objs = self.scene_graph[old_room].get("objects", [])
+                if obj.label in objs:
+                    objs.remove(obj.label)
+            node = self.init_room_node(new_room)
+            if obj.label not in node.get("objects", []):
+                node.setdefault("objects", []).append(obj.label)
+            changed.append((obj, old_room, new_room))
+        return changed
+
+    def assign_room_by_geometry(self, bbox):
+        """The room to file this box under, falling back to the robot's room.
+
+        The fallback is deliberate for an assignment — an object must go somewhere —
+        and it is wrong for a comparison. Call `room_at_bbox` when the answer matters,
+        and treat None as "unknown", never as "same room".
+        """
+        room_id = self.room_at_bbox(bbox)
+        return room_id if room_id is not None else self.current_room_id
 
     def evaluate_scene(self, descriptions=None, persistent_objects=None):
         self.last_robot_xy = self._robot_pose()
@@ -1216,6 +1350,17 @@ class RoomManager:
     # ------------------------------------------------------------------
     # Visualization and persistence
     # ------------------------------------------------------------------
+
+    @property
+    def current_room_walls(self):
+        """Walls of the CURRENT room only. Kept as a property so both existing call sites --
+        the append in object_manager_6.walls_callback and the read in
+        finalize_current_room -- keep working unchanged while the storage becomes per-room.
+        """
+        return self._walls_by_room.setdefault(self.current_room_id, [])
+
+    def walls_of(self, room_id):
+        return list(self._walls_by_room.get(room_id, []))
 
     @staticmethod
     def _room_color(room_id):

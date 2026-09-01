@@ -28,6 +28,51 @@ import time
 # False, because a probe that could not run has asserted NOTHING and must never read as a pass.
 SKIPPED = None
 
+# Backends whose detect_and_segment returns an empty result rather than raising. a4 cannot
+# distinguish "answered instantly" from "did nothing" by timing, so it refuses them by name.
+STUB_BACKENDS = frozenset({"LocalPerceptionBackend"})
+
+# The per-stage keys detection_pipeline requires and refuses to invent.
+#
+# A COPY, and a test asserts it equals the pipeline's own list — see
+# test_a4s_timing_keys_match_the_pipelines. The two must not drift: a4 exists to catch this
+# failure before a run, and a4 asking for different names than the pipeline would make it
+# certify a run that then dies at its first detection.
+#
+# The names were `("owlv2", "sam")` here and in the vendored pipeline. The server actually
+# emits `['detector', 'sam2', 'total']` — measured from a live refusal, not inferred — and
+# /DATA/GRAPH-API's pipeline reads detector/sam2 with the reason at the site: "Modal reports
+# detector/sam2 (NMS runs inside the detector there)". So this was never a backend-contract
+# fault. It is a port that was never made, in one checkout.
+_PIPELINE_TIMING_FALLBACK = ("detector", "sam2")
+
+
+def pipeline_timing_keys():
+    """Whatever `detection_pipeline` demands — READ, not copied.
+
+    a4 exists to predict the pipeline's refusal before a run pays for it. A copy of the key
+    names can drift from the pipeline's, and then a4 either certifies a run that dies at its
+    first detection or refuses one that would have worked. Reading the pipeline's own list
+    makes a4 wrong exactly when the pipeline is wrong, which is the only correct behaviour for
+    a predictor.
+
+    The vendored tree asks for ("owlv2", "sam"); the server emits ['detector', 'sam2', 'total']
+    — measured from a live refusal — and /DATA/GRAPH-API's pipeline reads detector/sam2 with
+    the reason at the site. So a4 reading the vendored list will FAIL, correctly: that run does
+    die. The remedy is to port the two names, not to teach a4 different ones.
+    """
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in ("/ws/install/lost3dsg/lib/lost3dsg/detection_pipeline.py",
+                 os.path.join(here, "..", "src", "perception_module", "detection_pipeline.py")):
+        if os.path.exists(cand):
+            m = re.search(r"missing\s*=\s*\[k for k in \(([^)]*)\)", open(cand).read())
+            if m:
+                keys = tuple(x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip())
+                if keys:
+                    return keys, cand
+    return _PIPELINE_TIMING_FALLBACK, None
+
 # ext4 truncates mtime to whole seconds; see a5_bundle_clean.
 FS_MTIME_TOL = 2.0
 
@@ -48,7 +93,13 @@ NONSENSE_LABEL = "zzqx_not_a_real_object_kind"
 # it, and its presence decides whether the package builds. The principle for the exclusions
 # is "exclude what the system writes; keep what a person wrote, however dead" — build/,
 # install/, __pycache__/ and grafici_output/ are outputs; src/perception_module/old/ is not.
-DENY_DIRS = {"build", "install", "__pycache__", ".git", "grafici_output", ".ruff_cache"}
+# Excluded: everything the SYSTEM writes. `output/` is where the running stack writes —
+# hook_decisions.jsonl defaults to <package>/output/ — and `.mypy_cache` is written by anyone
+# running the type checker. With those inside the set the frozen root COULD NOT HOLD STILL BY
+# CONSTRUCTION: running the stack moved it, and a lane running mypy moved it. Three files, and
+# they are why a 137->139 change of source read as 140.
+DENY_DIRS = {"build", "install", "__pycache__", ".git", "grafici_output",
+             ".ruff_cache", ".mypy_cache", ".pytest_cache", "output"}
 DENY_EXTS = {".pyc", ".pyo", ".log", ".db"}
 
 
@@ -103,6 +154,80 @@ def merged_cfg_sha(cfg):
         json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
+_MISSING = object()
+
+
+def _aligned_name(res):
+    """Return `(name, source)` for an alignment result, or RAISE if its shape is unrecognised.
+
+    a1 read `res.name` for a whole day. `found.align.Alignment` has fields
+    `label, aligned, score, evidence` — **there is no `name`** — so `getattr(res, "name", None)`
+    returned None for every input the aligner could produce. The consequence is worse than a
+    wrong field:
+
+      * the positive case could never match "Sofa"  -> a1 could never PASS
+      * the negative control always saw None        -> it could never FAIL
+
+    **A check that cannot succeed, whose control cannot fail**, inside the gate built to stop
+    exactly that. The aligner was right the entire time: it computed `Sofa`, returned it in
+    `.aligned`, and wrote it into `.evidence`.
+
+    So this raises rather than defaulting. `getattr(x, "field", None)` cannot tell a renamed
+    field from a genuine null, and that difference is the whole content here — an unrecognised
+    result shape means the probe cannot assert anything, and the harness turns a raise into
+    SKIPPED, which is a failed verdict. Silence is what cost the day.
+    """
+    if res is None:
+        return None, "no result"
+    for attr in ("aligned",):                      # found.align.Alignment
+        val = getattr(res, attr, _MISSING)
+        if val is not _MISSING:
+            return val, f".{attr}"
+    if isinstance(res, dict):
+        for key in ("aligned", "name"):
+            if key in res:
+                return res[key], f"[{key!r}]"
+        raise AttributeError(
+            f"alignment result is a dict with none of the expected keys: {sorted(res)}")
+    raise AttributeError(
+        f"{type(res).__name__} exposes no recognised alignment field. Known: .aligned, or a "
+        f"dict with 'aligned'/'name'. Has: {sorted(a for a in dir(res) if not a.startswith('_'))}")
+
+
+def _discriminants(aligner, label, result):
+    """The values that DECIDE the verdict, not just the ones that describe it.
+
+    Recorded because a1 once produced `score 0.9032032489776611 -> aligned_to null` while the
+    same pair on the same host, same model and same ontology gave `top=0.9032 z=5.22 n=170 ->
+    ACCEPT`. The score agreed to the last digit; the CANDIDATE SET differed, and z is what the
+    rule compares. **The probe recorded the number that agreed and not the number that decided**,
+    so telling the two environments apart took an investigation instead of a subtraction.
+
+    Everything here is optional: the exemplar and lexical aligners have none of it, and a probe
+    that crashes collecting diagnostics is worse than one that reports fewer.
+    """
+    out = {}
+    for key, attr in (("n_candidates", "_n"), ("top_min", "_top_min"), ("z_min", "_z_min")):
+        val = getattr(aligner, attr, None)
+        if val is not None:
+            out[key] = val
+    # `evidence` carries the z the rule actually used, formatted by the aligner itself rather
+    # than recomputed here — a second implementation of the statistic could disagree with the
+    # one that decided, which is the failure this whole gate is about.
+    if result is not None and getattr(result, "evidence", None):
+        out["evidence"] = result.evidence
+    # The five nearest classes turn "it refused" into "it refused because these looked alike".
+    embedder = getattr(aligner, "_embedder", None)
+    if embedder is not None and hasattr(embedder, "rank"):
+        try:
+            ranked = embedder.rank(label.strip().lower(), k=5)
+            out["top5"] = [{"class": str(iri).rsplit("#", 1)[-1].rsplit("/", 1)[-1],
+                            "score": round(float(sc), 4)} for iri, sc in ranked]
+        except Exception as exc:      # noqa: BLE001 - diagnostics must never fail the probe
+            out["top5_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
 def a1_aligner_identity():
     """WHICH aligner answered — not that one exists.
 
@@ -141,29 +266,25 @@ def a1_aligner_identity():
     if got != expect_cls:
         return False, {"requested": want, "constructed": got, "expected": expect_cls}
 
-    def _name(res):
-        if not res:
-            return None
-        return getattr(res, "name", None) or (res.get("name") if isinstance(res, dict) else None)
-
     # POSITIVE: a label whose correct answer is on record from a live run on 26 Aug.
     # The name is compared; the score is recorded and NOT asserted at 0.903, because a gate
     # that demands an exact float is brittle, and a brittle gate gets switched off.
     golden = aligner.align(GOLDEN_LABEL)
-    got_name = _name(golden)
+    got_name, name_source = _aligned_name(golden)
 
     # NEGATIVE: a label that is in no ontology. This is the half the probe was missing —
     # without it an aligner that returns a non-empty name for EVERYTHING passes, which is
     # exactly the fallback behaviour the probe exists to detect.
     nonsense = aligner.align(NONSENSE_LABEL)
-    nonsense_name = _name(nonsense)
+    nonsense_name, _ = _aligned_name(nonsense)
 
     detail = {
         "requested": want, "constructed": got,
         "golden": {"label": GOLDEN_LABEL, "expected": GOLDEN_EXPECT,
-                   "aligned_to": got_name,
+                   "aligned_to": got_name, "read_from": name_source,
                    "score": getattr(golden, "score", None) if golden else None,
-                   "score_note": "recorded 0.903 live 26 Aug; recorded here, not asserted"},
+                   "score_note": "recorded 0.903 live 26 Aug; recorded here, not asserted",
+                   **_discriminants(aligner, GOLDEN_LABEL, golden)},
         "negative": {"label": NONSENSE_LABEL, "aligned_to": nonsense_name,
                      "expected": None},
     }
@@ -242,31 +363,137 @@ def a3_policy_reached_container(expect_policy):
     return (not mismatches), {"checked": seen, "mismatches": mismatches}
 
 
-def a4_perception_twice():
+def a4_perception_twice(frame=None):
     """Probe the backend TWICE. A one-shot liveness check passes a broken service.
 
     The CLIP-on-CPU fault returned success on the first request and 500 on every one after,
     because the text head was built on the first call and never reused. health() is not
     enough either — it need not exercise the path that broke. Two real inferences.
     """
-    import numpy as np
 
     sys.path.insert(0, "/ws/install/lost3dsg/lib/lost3dsg")
     import config as cfgmod
     from cloud.client import get_perception_backend
 
     backend = get_perception_backend(cfgmod.CFG)
-    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    name = type(backend).__name__
+
+    # GA-81. `LocalPerceptionBackend.detect_and_segment` is `return [], {}` — it does not
+    # raise, so three calls against it record three passes having run NOTHING. a4 exists to
+    # catch a backend that answers once and fails after; a backend that answers instantly and
+    # always is the same defect with the sign flipped, and a4 could not see it.
+    #
+    # So a4 asserts WHICH backend answered before asking it anything — the gate's first
+    # principle applied to a4 itself. It has never fired: both launcher configs set `modal`,
+    # and today's 36,521 ms first call proves Modal answered. Latent, not historical.
+    if name in STUB_BACKENDS:
+        return False, {
+            "backend": name,
+            "why": (f"{name}.detect_and_segment returns an empty result without raising, so "
+                    "this probe would record passes for calls that computed nothing. A run "
+                    "configured onto it produces no detections and no error. Check "
+                    "perception.backend in the config the container actually loaded — a2 "
+                    "records it as `perception_backend`."),
+        }
+
+    # A REAL habitat render at run resolution, shipped beside this file. See its .provenance.
+    #
+    # This was `np.zeros((64, 64, 3))`. The Modal service takes a different code path for a
+    # degenerate input — it returned timing keys ['total','yolo_world'] for the zero frame and
+    # ['detector','sam2','total'] for a real one, same endpoint, minutes apart. **So a4 was
+    # asserting a contract against an input no run ever sends**, and it refused run 16 for a
+    # reason that did not describe the run. A false PASS was equally available and nothing in
+    # the probe distinguished them.
+    #
+    # A missing frame SKIPS. It must never fall back to zeros: that would restore the defect
+    # silently, in the probe whose whole purpose is to refuse silent substitutes.
+    frame_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "probe_assets", "a4_probe_frame.jpg")
+    if frame is None:                       # `frame` is injected only by the host tests
+        if not os.path.exists(frame_path):
+            return SKIPPED, {"reason": f"a4's probe frame is missing at {frame_path}; refusing "
+                                       "to substitute a synthetic one — see its .provenance"}
+        import cv2  # container-only; the host tests inject instead
+        frame = cv2.imread(frame_path)
+        if frame is None:
+            return SKIPPED, {"reason": f"a4's probe frame at {frame_path} could not be decoded"}
     attempts = []
-    for i in (1, 2):
+    reported = []
+    for i in (1, 2, 3):
         t0 = time.time()
         try:
-            backend.detect_and_segment(frame, ["chair"])
+            result = backend.detect_and_segment(frame, ["chair"])
+            # The contract is (detections, timings). A backend that returns something else is
+            # reported as such rather than raised as a TypeError, which would land in the
+            # attempt's `error` and read as an unreachable service.
+            if isinstance(result, tuple) and len(result) == 2:
+                reported.append(sorted(result[1] or {}))
+            else:
+                reported.append(None)
             attempts.append({"attempt": i, "ok": True, "ms": round((time.time() - t0) * 1000)})
         except Exception as exc:
             attempts.append({"attempt": i, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
-    first, second = attempts[0]["ok"], attempts[1]["ok"]
-    detail = {"backend": type(backend).__name__, "attempts": attempts}
+    # GA-85. The pipeline REFUSES a response with no per-stage timing rather than estimating
+    # it from the wall clock — GA-14's remedy, and it is right: a value that is not a
+    # measurement must not live where measurements live. But the backend was never made to
+    # report what the refusal requires, so on 31 Aug the VLM answered in 16.1 s, well inside
+    # budget, and `detection_pipeline.py:93` raised on the FIRST successful detection. Every
+    # cloud-backend run dies there.
+    #
+    # a4 already received that dict on all three calls and threw it away. Asking for it costs
+    # nothing and moves the failure from "one cycle into a measured run" to "before the run".
+    seen = [r for r in reported if r is not None]
+    required, required_from = pipeline_timing_keys()
+    missing_all = [k for k in required if all(k not in r for r in seen)]
+    if seen and missing_all:
+        return False, {
+            "backend": name, "attempts": attempts, "reported_timing_keys": reported,
+            "probe_frame": os.path.basename(frame_path), "frame_shape": list(frame.shape),
+            "missing": missing_all, "required": list(required),
+            "required_read_from": required_from or "built-in fallback",
+            "why": (f"the backend reported no timing for {missing_all}, and "
+                    "detection_pipeline refuses to estimate a stage time from the wall clock. "
+                    "The VLM will answer and the pipeline will raise on the FIRST successful "
+                    "detection. Compare `reported_timing_keys` against what the pipeline asks "
+                    "for: a name mismatch is a port that was never made, not a backend fault, "
+                    "and the server may be reporting perfectly under other names. "
+                    "Do not 'fix' it by restoring an estimate."),
+        }
+
+    first, second, third = (a["ok"] for a in attempts)
+    # Recorded on EVERY path, not only on failure. A passing a4 previously said which backend
+    # answered and nothing about what it was asked or what came back — so the two facts that
+    # resolved the yolo_world scare, the frame and the reported keys, existed only when the
+    # probe failed. Same defect a1 had: the verdict recorded, the discriminant discarded.
+    detail = {"backend": type(backend).__name__, "attempts": attempts,
+              "pattern": "".join("P" if a["ok"] else "F" for a in attempts),
+              "probe_frame": os.path.basename(frame_path), "frame_shape": list(frame.shape),
+              "reported_timing_keys": reported,
+              "required": list(required), "required_read_from": required_from}
+
+    # THREE calls, not two, and the third is why a warm-up must not move into the launcher.
+    #
+    # A warm-up consumes the FIRST call — and the serve-once fault is DEFINED by the first
+    # call succeeding and every later one failing (the CLIP text head was built on request one
+    # and never reused). Warm the backend beforehand and that fault presents as F,F: the probe
+    # would report "unreachable" for a service that is answering, and it would report it
+    # forever, because nothing downstream contradicts a probe that fails for the wrong reason.
+    #
+    # Three calls separate all four states without a warm-up anywhere:
+    #   P P P  healthy
+    #   F P P  cold start — the run's own first frames would have absorbed it; PASS
+    #   P F F  serve-once, the fault this probe exists for
+    #   F F F  unreachable
+    if first and second and third:
+        return True, detail
+    if not first and second and third:
+        # The run absorbs a cold start regardless, so refusing it blocks runs that are fine.
+        # Passing is safe ONLY because calls two and three are counted: a backend that is
+        # merely cold answers them, and one that is broken does not.
+        detail["why"] = ("the first call timed out and the next two answered — a cold start. "
+                         "The run's own first frames would have absorbed it. Passing on the "
+                         "strength of calls two and three, not on the assumption it is warm.")
+        return True, detail
     if first and not second:
         # The fault this probe was built for: the CLIP text head was constructed on the first
         # call and never reused, so the service answered once and 500'd afterwards. A one-shot
@@ -274,7 +501,7 @@ def a4_perception_twice():
         detail["why"] = ("the backend answered once and then failed. This is the fault a4 "
                          "exists for — a one-shot liveness check would have passed it, and a "
                          "run would have produced detections from the first frame only.")
-    elif not first and second:
+    elif not first and second and not third:
         # The opposite direction, and it is NOT the same finding. Measured on the first gated
         # run: attempt 1 timed out, attempt 2 returned in 20.5 s against a remote Modal
         # backend. That reads as a cold start rather than a broken service.
@@ -285,9 +512,13 @@ def a4_perception_twice():
                          "one sample: a probe that passes on the second attempt is not a "
                          "backend that works, and any new timeout should come from a "
                          "measured distribution.")
-    elif not first and not second:
-        detail["why"] = "the backend answered neither call; it is unreachable, not cold."
-    return (first and second), detail
+    elif not any((first, second, third)):
+        detail["why"] = "the backend answered no call; it is unreachable, not cold."
+    else:
+        detail["why"] = (f"pattern {detail['pattern']} — the backend is answering "
+                         "intermittently. That is neither a cold start nor the serve-once "
+                         "fault, and a measured run cannot be built on it.")
+    return False, detail
 
 
 # Only these reach the bundle: live_run.sh copies *.json, *.jsonl and *.log out of the
@@ -390,10 +621,20 @@ def a6_camera_pose_offset(expect_height_m=1.5, tol=0.25):
 # whole run, so a comparison taken at container start asserts a property that cannot hold
 # even when it passes — an edit at T2, mid-run, still changes the code that executes.
 FROZEN_ROOTS = {"graph_api": "/graph_api/lost3dsg"}
+
+# The tree that ACTUALLY EXECUTES, and the source it was copied from. `cp -r` runs at
+# live_stack_container.sh:10 and colcon builds into /ws/install; the gate runs at :92, AFTER
+# both. So the mount above and the launcher's stamp are the SAME host directory read at two
+# moments — a7 was comparing the host tree against itself and never touched the copy.
+#
+# Nothing else in this project measures the copy either. A bundle attests the host tree at two
+# moments; it does not attest the code that ran. This closes that.
+EXECUTED_TREE = "/ws/install/lost3dsg/lib/lost3dsg"
+COPY_SOURCE = "/graph_api/lost3dsg/src/perception_module"
 LIVE_ROOTS = {"found": "/found/found", "kb": "/kb"}
 
 
-def a7_source_frozen(expect):
+def a7_source_frozen(expect, executed_tree=None, copy_source=None):
     """The copied tree must match what the launcher hashed. The live mounts are SAMPLED.
 
     Rule 9 made mechanical: the container copies its sources once at startup, so anything
@@ -415,12 +656,53 @@ def a7_source_frozen(expect):
         want = (expect or {}).get(name)
         if want and want != sha:
             mismatches[name] = {"launcher": want, "container": sha}
+    # Does what EXECUTES match what is mounted? Whole-tree digests cannot answer this — colcon
+    # rearranges the layout — so compare file by file for the names present in both. A
+    # difference means an edit landed between the copy and the gate, or the build produced
+    # something other than its source. Either way the run is not the code the bundle describes.
+    exec_tree = executed_tree or EXECUTED_TREE
+    src_tree = copy_source or COPY_SOURCE
+    executed = {"tree": exec_tree, "compared": 0, "differs": [], "only_in_mount": []}
+    if os.path.isdir(exec_tree) and os.path.isdir(src_tree):
+        for fn in sorted(os.listdir(src_tree)):
+            if not fn.endswith(".py"):
+                continue
+            src_f, run_f = os.path.join(src_tree, fn), os.path.join(exec_tree, fn)
+            if not os.path.isfile(run_f):
+                executed["only_in_mount"].append(fn)
+                continue
+            executed["compared"] += 1
+            if file_sha16(src_f) != file_sha16(run_f):
+                executed["differs"].append(fn)
+        # GA-157's new failure mode, and it only exists now that /ws is a NAMED VOLUME.
+        #
+        # colcon does not remove stale installs. A module DELETED from the source stays in a
+        # persistent /ws/install and keeps being importable — code nobody can find by reading the
+        # sources, which is worse than a stale interface because there is nothing to notice.
+        # While /ws died with `docker run --rm` this could not happen: the install tree could not
+        # outlive its source, so checking only mount-files-missing-from-install was symmetric
+        # enough. With a build cache it is not.
+        for fn in sorted(os.listdir(exec_tree)):
+            if fn.endswith(".py") and not os.path.isfile(os.path.join(src_tree, fn)):
+                executed.setdefault("only_in_install", []).append(fn)
+        if executed["differs"]:
+            mismatches["executed_vs_mount"] = executed["differs"]
+        if executed.get("only_in_install"):
+            mismatches["stale_in_install"] = executed["only_in_install"]
+    else:
+        executed["note"] = "install tree or mount absent; not running in the container"
+    detail_executed = executed
+
     for name, root in LIVE_ROOTS.items():
         if os.path.isdir(root):
             sha, n = tree_sha(root)
             live[name] = {"sha256_16": sha, "files": n,
                           "note": "live mount, not copied — sampled again at teardown"}
-    detail = {"frozen": frozen, "live_sampled": live, "mismatches": mismatches}
+    detail = {"frozen": frozen, "live_sampled": live, "mismatches": mismatches,
+              "executed": detail_executed,
+              "note": ("`frozen` compares the MOUNT against the launcher's stamp — the same host "
+                       "directory at two moments. `executed` compares what runs against that "
+                       "mount. Neither alone attests the code that produced the numbers.")}
     if mismatches:
         moved = ", ".join(mismatches)
         detail["why"] = (
@@ -429,8 +711,103 @@ def a7_source_frozen(expect):
             "fault in the code — it is the freeze rule. Restart the run: it costs minutes, and "
             "the alternative voided every number produced before 26 August.")
     if not frozen:
-        return SKIPPED, {"reason": "no frozen root present; not running in the container?"}
+        # SKIPPED, but carrying what WAS measured. A probe that cannot reach its verdict still
+        # observed something, and discarding it makes the skip less informative than it earned.
+        return SKIPPED, dict(detail,
+                             reason="no frozen root present; not running in the container?")
     return (not mismatches), detail
+
+
+# The modules the container starts as nodes. Every one has a `__main__` guard, so importing
+# them runs their top-level imports and nothing else — which is precisely the failure mode:
+# a node that cannot import dies seconds after a passing gate, and the gate says nothing.
+STACK_ENTRY_POINTS = ("perception_2", "object_manager_6", "graph_api_bridge",
+                      "habitat_feed_node")
+
+
+INSTALL_TREE = "/ws/install/lost3dsg/lib/lost3dsg"
+
+
+def a8_stack_imports(modules=None, install=None):
+    """Every node the run will start must be importable BEFORE the run starts.
+
+    GA-66. The gate passed 7/7 and the stack then died on `from models import OWLv2, VitSam`
+    at perception_2.py:61, because `efficientvit`'s subpackages are absent. Seven probes said
+    the wiring was sound and none of them asked the cheapest question there is: **does the code
+    the run is about to execute load at all?**
+
+    A passing gate followed by an immediate stack death is worse than a failing gate. It spends
+    the bringup, produces a bundle shell, and moves the operator's attention to the wrong layer.
+    """
+    import importlib
+
+    # Outside the container there is no install tree, so every import would fail for a reason
+    # that says nothing about the run. Asserted nothing -> SKIPPED, which is still a failed
+    # verdict and still stops a run; it just does not claim the nodes are broken.
+    install = install or INSTALL_TREE
+    if not os.path.isdir(install):
+        return SKIPPED, {"reason": f"{install} does not exist; not running in the container"}
+    sys.path.insert(0, install)
+    failed, ok = {}, []
+    for name in (modules or STACK_ENTRY_POINTS):
+        try:
+            importlib.import_module(name)
+            ok.append(name)
+        except BaseException as exc:      # noqa: BLE001 - a node dying on ANY error is the finding
+            failed[name] = f"{type(exc).__name__}: {exc}"
+    detail = {"importable": ok, "failed": failed}
+    if failed:
+        detail["why"] = (
+            "a node the run is about to start cannot be imported, so it will die within seconds "
+            "of this gate passing. The error above is the one the stack would have hit. This is "
+            "an INSTALLATION fault, not a wiring fault — the module is missing from the image or "
+            "from the mounted tree, and no configuration change fixes it.")
+    return (not failed), detail
+
+
+class Probe:
+    """Blueprint for a probe supplied by an extension, mirroring `hooks.py`'s Filter/Refiner/
+    Store. GRAPH-API ships the harness and the generic probes; anything that asserts about a
+    specific belief layer belongs to the package that implements it.
+
+    a1 is the case that forced this. It imports `found.dims` and `found.kg_align` and hardcodes
+    an ontology-specific golden pair, so **outside a FOUND deployment it cannot pass** — and a
+    probe that cannot pass makes the gate's verdict permanently `fail` for a reason the operator
+    cannot fix. Ontology knowledge lives in FOUND; GRAPH-API ships the seam.
+
+    Subclasses set `id` and `name` and implement `run()`, returning `(ok, detail)` with the same
+    contract as the built-ins: True, False, or SKIPPED — and SKIPPED is not a pass.
+    """
+
+    id = "x0"
+    name = "unnamed_probe"
+
+    def run(self, args):
+        return SKIPPED, {"reason": f"{type(self).__name__} does not implement run()"}
+
+
+def load_external_probes(cfg):
+    """Read `preflight.probes` from the merged config: a list of 'pkg.module:Class' specs.
+
+    Uses hooks.load_hook so there is ONE path resolution in the tree, not two — `search_paths`
+    falls back to `hooks.search_paths`, since a package supplying a probe is the same package
+    supplying the filter. A spec that will not load RAISES: a probe silently absent is the
+    defect this gate exists to catch, one level up.
+    """
+    pre = (cfg.get("preflight") or {})
+    specs = pre.get("probes") or []
+    if not specs:
+        return {}
+    sys.path.insert(0, "/ws/install/lost3dsg/lib/lost3dsg")
+    import hooks
+    paths = pre.get("search_paths") or (cfg.get("hooks") or {}).get("search_paths") or []
+    out = {}
+    for spec in specs:
+        probe = hooks.load_hook(spec, Probe, paths)
+        if probe.id in out:
+            raise ValueError(f"two probes claim id {probe.id!r}: {spec}")
+        out[probe.id] = (probe.name, probe.run, spec)
+    return out
 
 
 PROBES = {
@@ -441,6 +818,7 @@ PROBES = {
     "a5": ("bundle_clean", a5_bundle_clean),
     "a6": ("camera_pose_offset", a6_camera_pose_offset),
     "a7": ("source_frozen", a7_source_frozen),
+    "a8": ("stack_imports", a8_stack_imports),
 }
 
 
@@ -461,6 +839,8 @@ def main(argv=None):
     ap.add_argument("--expect-config-sha", help="sha of the config FILE, from the launcher")
     ap.add_argument("--expect-merged-sha", help="sha of the MERGED cfg, from the launcher")
     ap.add_argument("--expect-src-sha", help="K=V,K=V tree digests the launcher recorded")
+    ap.add_argument("--install-tree", default=INSTALL_TREE,
+                    help="where the container copied the node sources; a8 imports from it")
     ap.add_argument("--scratch-dir", default="/out",
                     help="the directory that is NOT cleared between runs")
     # The launcher calls these instead of restating the hashing in shell.
@@ -472,6 +852,19 @@ def main(argv=None):
     ap.add_argument("--run-dir", default="/ws/output")
     ap.add_argument("--run-start", type=float, default=0.0, help="epoch seconds")
     ap.add_argument("--camera-height", type=float, default=1.5)
+    # OBSERVE MODE. A probe named here still RUNS IN FULL and its verdict and detail are recorded
+    # exactly as always — only its authority to block the launch is withdrawn.
+    #
+    # This is not a skip and must never become one. A skipped probe asserted nothing, which is why
+    # SKIPPED fails the gate; an observed probe asserted everything it always does, and we read it.
+    # The distinction is the whole reason a4 exists: the exemplar baseline shipped as a KG result
+    # because an aligner that "could not run" was treated as an aligner that agreed.
+    #
+    # Used for MAPPING_ONLY runs, where a4 (perception called twice) and a8's perception imports
+    # guard a detector that a mapping run deliberately does not start. Scoping their authority to
+    # the runs whose purpose they guard is not the same as not looking.
+    ap.add_argument("--observe", default="",
+                    help="comma-separated probe ids that run and report but do not block")
     ap.add_argument("--allow-skip", action="store_true",
                     help="treat a probe that could not run as non-fatal (NOT for a measured run)")
     args = ap.parse_args(argv)
@@ -499,7 +892,20 @@ def main(argv=None):
         print(merged_cfg_sha(cfgmod.CFG))
         return 0
 
-    wanted = [p.strip() for p in args.only.split(",")] if args.only else list(PROBES)
+    # Extension probes, loaded from the merged config. Failures here are fatal by design: a
+    # probe named in config and silently absent is exactly the shape the gate exists to stop.
+    external = {}
+    try:
+        sys.path.insert(0, "/ws/install/lost3dsg/lib/lost3dsg")
+        import config as _cfgmod
+        external = load_external_probes(_cfgmod.CFG)
+    except ImportError:
+        pass          # not in the container; the built-ins still run
+
+    all_probes = dict(PROBES)
+    all_probes.update({pid: (name, fn) for pid, (name, fn, _spec) in external.items()})
+
+    wanted = [p.strip() for p in args.only.split(",")] if args.only else list(all_probes)
     bound = {
         "a1": a1_aligner_identity,
         "a2": lambda: a2_config_identity(args.expect_config_name, args.expect_config_sha,
@@ -509,25 +915,51 @@ def main(argv=None):
         "a5": lambda: a5_bundle_clean(args.run_dir, args.run_start, args.scratch_dir),
         "a6": lambda: a6_camera_pose_offset(args.camera_height),
         "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha)),
+        "a8": lambda: a8_stack_imports(install=args.install_tree),
     }
 
-    results, failed, skipped = [], [], []
+    bound.update({pid: fn for pid, (_n, fn, _s) in external.items()})
+
+    observe = {p.strip() for p in (args.observe or "").split(",") if p.strip()}
+    _unknown = observe - set(all_probes)
+    if _unknown:
+        # A typo here silently grants no exemption and looks like it did. Refuse instead.
+        print(f"!! --observe names probes that do not exist: {sorted(_unknown)}")
+        return 2
+    results, failed, skipped, observed_nonpass = [], [], [], []
     for pid in wanted:
-        name = PROBES[pid][0]
+        name = all_probes[pid][0]
         try:
             ok, detail = bound[pid]()
         except Exception as exc:
             ok, detail = SKIPPED, {"reason": f"probe raised: {type(exc).__name__}: {exc}"}
-        results.append({"id": pid, "name": name, "ok": ok, "detail": detail})
+        row = {"id": pid, "name": name, "ok": ok, "detail": detail}
+        if pid in external:
+            # WHICH implementation answered, recorded beside its verdict — the same question
+            # a1 asks about the aligner, asked about the probe itself.
+            row["supplied_by"] = external[pid][2]
+        results.append(row)
         mark = "PASS" if ok else ("SKIP" if ok is SKIPPED else "FAIL")
         print(f"  [{mark}] {pid} {name}: {json.dumps(detail, default=str)[:200]}")
-        if ok is False:
+        if pid in observe:
+            # Recorded on the row, so a mapping bundle's gate record cannot be read as a
+            # detection run's. A reader seeing verdict "pass" must be able to see which probes
+            # were not permitted to say otherwise.
+            row["observed"] = True
+            if ok is not True:
+                observed_nonpass.append(pid)
+        elif ok is False:
             failed.append(pid)
         elif ok is SKIPPED:
             skipped.append(pid)
 
     verdict = "pass" if not failed and (args.allow_skip or not skipped) else "fail"
-    report = {"verdict": verdict, "failed": failed, "skipped": skipped, "probes": results}
+    report = {"verdict": verdict, "failed": failed, "skipped": skipped,
+              "observed": sorted(observe), "observed_nonpass": observed_nonpass,
+              "observed_note": "these probes RAN IN FULL and their verdicts are recorded above; "
+                               "they were not permitted to block this launch. A non-empty "
+                               "observed list means this verdict is narrower than a normal one.",
+              "probes": results}
     try:
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
         with open(args.out, "w") as f:
@@ -545,4 +977,14 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # Register under the import name BEFORE running. As a script this module is `__main__`,
+    # so an extension that does `sys.modules["preflight_gate"]` finds nothing, falls through
+    # to loading the file, and gets a SECOND module object — whose `Probe` is a different
+    # class from this one. `hooks.load_hook`'s isinstance check then fails, the gate aborts
+    # on a correct probe, and the obvious reading is that the probe is broken. It is not:
+    # only module identity is wrong, and the next person edits the wrong file.
+    #
+    # A seam is tested from one end and used from the other, so it must not depend on every
+    # extension author getting module identity right. This is the gate's half of that.
+    sys.modules.setdefault("preflight_gate", sys.modules["__main__"])
     sys.exit(main())

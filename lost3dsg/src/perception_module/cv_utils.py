@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import urllib.parse
 import re
 import numpy as np
 from sensor_msgs.msg import CameraInfo
@@ -403,7 +404,8 @@ def _apply_transform(pts, transform):
     return pts.dot(R.T) + T
 
 
-def draw_boxes_3d(img, bboxes_3d, labels, camera_info, transform, depth=None):
+def draw_boxes_3d(img, bboxes_3d, labels, camera_info, transform, depth=None, min_visible_points=1,
+                  tol_abs=0.10, tol_rel=0.05):
     """Draw each 3D box (map frame) as a wireframe in the image it was measured from.
 
     `transform` is the map<-optical transform of this very frame (the one the points
@@ -421,8 +423,8 @@ def draw_boxes_3d(img, bboxes_3d, labels, camera_info, transform, depth=None):
         if not corners:
             continue
         cam = (np.asarray(corners + [np.mean(corners, axis=0)]) - T) @ R   # R^T (p - T): map -> optical
-        px, n_vis = project_visible(cam, depth, fx, fy, cx, cy, w, h)
-        if not n_vis:
+        px, n_vis = project_visible(cam, depth, fx, fy, cx, cy, w, h, tol_abs=tol_abs, tol_rel=tol_rel)
+        if n_vis < min_visible_points:
             continue
         colour = (0, 165, 255) if oriented else (255, 160, 0)
         thick = 2 if n_vis >= 5 else 1
@@ -686,6 +688,25 @@ def vlm_call(prompt, encoded_image):
 _client = None
 
 
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"})
+
+_KEY_SOURCES = ("config vlm.api_key", "$OPENAI_API_KEY", "$REGOLO_API_KEY",
+                "$OPENROUTER_API_KEY", "the legacy api.txt beside cv_utils.py")
+
+
+def _endpoint_is_local(base_url):
+    """A local server ignores the key entirely; a remote one does not.
+
+    Split out and named so the distinction is testable without constructing a client, and so
+    the reason the placeholder survives is written down rather than inferred from a string.
+    """
+    try:
+        host = urllib.parse.urlparse(str(base_url)).hostname
+    except Exception:
+        return False
+    return host in _LOCAL_HOSTS
+
+
 def _resolve_api_key():
     key = (
         CFG.get("vlm", {}).get("api_key")
@@ -697,7 +718,30 @@ def _resolve_api_key():
         legacy = os.path.join(os.path.dirname(__file__), "api.txt")
         if os.path.exists(legacy):
             key = open(legacy).read().strip()
-    return key or "ollama"
+    if key:
+        return key
+
+    # GA-136. This chain ended `return key or "ollama"`, so with no key anywhere the client
+    # was handed the literal string "ollama" as its credential.
+    #
+    # The placeholder is NOT arbitrary and is kept: the DEFAULT base_url is
+    # http://localhost:11434/v1 and config.py:18 documents the fallback -- "else 'ollama'
+    # (local server ignores it)". Deleting it outright would break the documented default.
+    #
+    # What it must not do is travel to a REMOTE endpoint. Every config that has actually run
+    # points at https://api.regolo.ai/v1, which authenticates: there, "ollama" produces a 401
+    # that reads as "the key you configured was rejected" when the truth is that no key was
+    # ever found. The misdirection is the defect, not the placeholder -- a wrong credential
+    # and an absent one are different faults and were indistinguishable at the call site.
+    base_url = CFG.get("vlm", {}).get("base_url", "")
+    if _endpoint_is_local(base_url):
+        return "ollama"
+    raise RuntimeError(
+        f"no VLM API key found for {base_url!r}, which is not a local endpoint. "
+        f"Searched, in order: {', '.join(_KEY_SOURCES)}. Refusing to send the literal "
+        f'string "ollama" as a credential: the 401 it produces reads as a rejected key '
+        f"rather than a missing one."
+    )
 
 
 def _vlm_client():

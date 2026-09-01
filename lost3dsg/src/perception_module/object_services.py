@@ -13,12 +13,15 @@ from visualization_msgs.msg import Marker, MarkerArray
 from room_manager import RoomManager
 from object_info import Object
 from world_model import wm
-from utils import *
-from nlp_utils import *
+# Explicit, not `import *`. Only the names this file does NOT define itself:
+# publish_persistent_bboxes is defined BELOW and also in cv_utils with a different body,
+# so importing it here would swap a 34-line implementation for a 5-line wrapper (GA-77).
+from utils import compute_iou_3d
+from nlp_utils import _known, get_embedding, lost_similarity_detailed, world2vec
 from datetime import datetime
-from cv_utils import *
+from cv_utils import publish_persistent_centroids, publish_pov_volume
 from map_database import MapDatabase
-from hooks import load_store
+from hooks import DecisionLog, load_store
 from config import CFG
 from tf2_ros import Buffer, TransformListener
 import hashlib
@@ -34,12 +37,45 @@ VOLUME_EXPANSION_RATIO = CFG["association"]["volume_expansion_ratio"]
 EXPLORATION_FRAME_LIMIT = CFG["association"]["exploration_frame_limit"]
 OBJECT_STABILITY_TIMEOUT = CFG["association"]["object_stability_timeout"]
 POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
+# GA-26: consecutive in-view misses before an object is deleted from the map. Was the bare
+# literal 5 at the one site that used it -- a destructive threshold that could not be
+# changed without editing source, in a file whose other six thresholds are config.
+MAX_MISSES_BEFORE_DELETE = CFG["association"].get("max_misses_before_delete", 5)
+
+# GA-06. Merge is the most destructive operation in the system -- it ends one object's
+# identity -- and it ran on the LOOSEST gate: two hardcoded literals, 0.8 m and 0.75,
+# against a match threshold of 0.85. So the association loop refused a pair at 0.80,
+# correctly keeping two identities, and merge fused them anyway on the next callback.
+#
+# Measured on the mp3d bundle: 283 merges against 334 admissions on a 51-object scene, an
+# 85% applied merge rate, with the similarity spread bottoming out at 0.754 -- just above
+# the 0.75 literal, which is where a too-loose gate shows.
+#
+# A fusion must demand MORE evidence than a match, not less. The default sits midway
+# between the match bar and certainty rather than at an invented constant: at
+# sim_threshold 0.85 that is 0.925. It is a knob, and it is the one to turn if the merge
+# rate is still high.
+MERGE_MAX_DISTANCE = CFG["association"].get("merge_max_distance_m", 0.8)
+# GA-101: how many of the three OPTIONAL terms (colour, material, description) must have
+# been comparable for a merge to be allowed. 0 restores the old behaviour, where a pair
+# with nothing measurable scored 1.0000 on label agreement alone and merged.
+MERGE_MIN_EVIDENCE = CFG["association"].get("merge_min_evidence", 1)
+MERGE_MIN_SIMILARITY = CFG["association"].get(
+    "merge_min_similarity", SIM_THRESHOLD + (1.0 - SIM_THRESHOLD) / 2.0)
+
+# Asserted at load, not trusted. Two config values that must stay ordered will not, and an
+# inversion is invisible: it looks exactly like the behaviour this fix removes.
+if MERGE_MIN_SIMILARITY <= SIM_THRESHOLD:
+    raise ValueError(
+        f"association.merge_min_similarity ({MERGE_MIN_SIMILARITY}) must be STRICTLY greater "
+        f"than association.sim_threshold ({SIM_THRESHOLD}): merging two objects destroys an "
+        f"identity and must demand more evidence than matching them, never less")
 
 file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
 PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir else os.path.abspath(os.path.join(current_dir, "../.."))
 
-# world2vec arrives via `from nlp_utils import *` — loaded once there.
+# world2vec is imported explicitly above -- loaded once in nlp_utils.
 OPERATIONS_LOG = CFG["paths"]["operations_log"]
 
 log_dir = os.path.join(PROJECT_ROOT, "output")
@@ -55,16 +91,24 @@ def synchronized_world_model(callback):
             return callback(*args, **kwargs)
     return wrapper
 
-def inside_area(o):
-    bbox = getattr(o, "bbox", None)
-    if not bbox or len(bbox) != 6:
-        return False
+def inside_area(o, bounds):
+    """Is this object's box wholly inside `bounds` = (xmin, xmax, ymin, ymax, zmin, zmax)?
 
-    oxmin, oxmax, oymin, oymax, ozmin, ozmax = bbox
+    GA-22. This was broken twice over and had never returned True. It read `xmin`..`zmax`
+    as module globals -- they are locals of the ONE caller and exist nowhere else -- and it
+    unpacked `bbox`, which is a dict, so the six names took the dict's KEYS and the first
+    comparison would have raised TypeError anyway. The caller's bare `except Exception`
+    turned both into an empty result identical to "no objects match", so the area filter
+    has never worked and nothing could have revealed it.
+    """
+    bbox = getattr(o, "bbox", None)
+    if not bbox:
+        return False
+    xmin, xmax, ymin, ymax, zmin, zmax = bounds
     return (
-        oxmin >= xmin and oxmax <= xmax and
-        oymin >= ymin and oymax <= ymax and
-        ozmin >= zmin and ozmax <= zmax
+        bbox["x_min"] >= xmin and bbox["x_max"] <= xmax and
+        bbox["y_min"] >= ymin and bbox["y_max"] <= ymax and
+        bbox["z_min"] >= zmin and bbox["z_max"] <= zmax
     )
 
 def create_object_key(label, material, color, description):
@@ -116,6 +160,41 @@ def bbox_is_suspicious(bbox, reference_bbox=None):
 
     return False
 
+def save_uncertain_objects(node):
+    """Write the uncertain-object pool to output/uncertain_objects.txt.
+
+    GA-22. This lived in `object_manager_6` and was called from BOTH modules, but
+    `object_services` never imports it -- and cannot, because `object_manager_6` imports
+    `object_services`, so a top-level import would be circular. Every call from here raised
+    NameError, the handler's broad `except Exception` returned `success=False`, and the
+    uncertain objects had already been removed two lines earlier: the caller saw a failure,
+    retried, and failed identically over an empty list.
+
+    Moved here because this is where `uncertain_objects` lives. `object_manager_6` already
+    imports from this module, so its own call site keeps working with no cycle.
+    """
+    output_dir = os.path.join(PROJECT_ROOT, "output")
+    os.makedirs(output_dir, exist_ok=True)
+    save_path = os.path.join(output_dir, "uncertain_objects.txt")
+
+    with open(save_path, "w") as f:
+        f.write("=" * 80 + "\n")
+        f.write(f"UNCERTAIN OBJECTS - Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("=" * 80 + "\n\n")
+
+        if not node.uncertain_objects:
+            f.write("No uncertain objects at the moment.\n")
+        else:
+            f.write(f"Total uncertain objects: {len(node.uncertain_objects)}\n\n")
+            for i, obj in enumerate(node.uncertain_objects, 1):
+                f.write(f"{i}. {obj.label}\n")
+                if obj.bbox:
+                    x_center = (obj.bbox['x_min'] + obj.bbox['x_max']) / 2.0
+                    y_center = (obj.bbox['y_min'] + obj.bbox['y_max']) / 2.0
+                    z_center = (obj.bbox['z_min'] + obj.bbox['z_max']) / 2.0
+                    f.write(f"   Center position: X={x_center:.3f}, Y={y_center:.3f}, Z={z_center:.3f}\n")
+
+
 def save_persistent_perceptions(node):
     output_dir = os.path.join(PROJECT_ROOT, "output")
     os.makedirs(output_dir, exist_ok=True)
@@ -152,6 +231,13 @@ def save_persistent_perceptions(node):
             "bbox": obj.bbox,
             "room_id": getattr(obj, "room_id", "unknown"),
             "relations": {k: sorted(list(v)) for k, v in obj.relations.items()},
+            # Added 2026-08-31. This was in-memory only, so GA-12's invariant -- every
+            # object carries an age, and a moved object keeps its predecessor's -- could not
+            # be checked from a bundle at all, and no analysis could ask how old an object
+            # was. `last_perception_timestamp` below records when it was LAST SEEN, which is
+            # a different question. Additive: a reader that does not look for this key
+            # cannot break on it.
+            "creation_time": getattr(obj, "creation_time", None),
             "last_perception_timestamp": getattr(obj, "last_perception_time", None),
             "last_perception_datetime": (
                 datetime.fromtimestamp(obj.last_perception_time, tz=timezone.utc).isoformat()
@@ -376,7 +462,17 @@ class ObjectServices(Node):
         self.uncertain_bboxes_pub = self.create_publisher(MarkerArray, '/uncertain_object', qos_latch)
         self.uncertain_centroids_pub = self.create_publisher(MarkerArray, '/uncertain_centroids', qos_latch)
         self.uncertain_objects = []
-        
+
+        # Merge, delete and update were recorded only as prose in operations.txt, with no
+        # object named and no reason given, so none of them could be joined to anything.
+        #
+        # The requirement this satisfies: the decision history of one object must be
+        # reconstructable. That means every record names the object it concerns, and a merge
+        # names BOTH sides -- otherwise the discarded object's history ends without a successor
+        # and the keeper's history begins without its inheritance.
+        self.decision_log = DecisionLog(
+            CFG["hooks"]["decisions_log"] or os.path.join(log_dir, "hook_decisions.jsonl"))
+
         with open(SYNTHETIC_LOG_FILE, "a") as f:
             f.write(f"\n{'='*50}\n")
             f.write(f"NUOVO AVVIO: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -467,8 +563,18 @@ class ObjectServices(Node):
                             obj.not_seen_in_pov_frames = 0
                         obj.not_seen_in_pov_frames += 1
 
-                        if obj.not_seen_in_pov_frames >= 5:
+                        if obj.not_seen_in_pov_frames >= MAX_MISSES_BEFORE_DELETE:
                             objects_to_remove.append(obj)
+                    else:
+                        # GA-26: leaving the field of view RESETS the counter, it does not
+                        # freeze it. The increment above is already correctly conditional on
+                        # being in view, but nothing cleared the tally on the way out -- so
+                        # three misses, an absence of any length, then two more added to five
+                        # and deleted an object that had been looked at twice.
+                        #
+                        # Consecutive means consecutive. An object out of view is not being
+                        # missed; it is not being looked at.
+                        obj.not_seen_in_pov_frames = 0
 
                 for obj in objects_to_remove:
                     print(f"🗑️ [CANCELLATO] L'oggetto '{obj.label}' non è più "
@@ -491,6 +597,16 @@ class ObjectServices(Node):
                         )
 
                     deleted_labels.append(obj.label)
+                    # A deletion ends an object's history. Record which object, and why, or the
+                    # history stops with no explanation. 341 deletions against 30 additions on
+                    # the 26 Aug run is a ratio nobody can examine without this.
+                    try:
+                        self.decision_log.write(
+                            "delete", getattr(obj, "object_id", obj.label),
+                            label=obj.label, reason="not seen in POV",
+                            step=self.tracking_step_counter)
+                    except Exception as e:
+                        self.get_logger().error(f"decision_log delete failed: {e}")
 
                 if deleted_labels:
                     save_persistent_perceptions(self)
@@ -549,14 +665,84 @@ class ObjectServices(Node):
         try:
             import json
 
-            MAX_DISTANCE   = request.max_distance   if request.max_distance   > 0.0 else 0.8
-            MIN_SIMILARITY = request.min_similarity if request.min_similarity > 0.0 else 0.75
+            # `<= 0` means "unset by the caller, use the configured value". Note this is
+            # the OPPOSITE of config.py's `0 = off` convention, which is load-bearing there
+            # (max_match_distance_m). Two conventions inside one config block; the reading
+            # is spelled out here because a caller sending 0 to disable the similarity
+            # requirement would otherwise get the loosest live gate in the system.
+            MAX_DISTANCE   = request.max_distance   if request.max_distance   > 0.0 else MERGE_MAX_DISTANCE
+            MIN_SIMILARITY = request.min_similarity if request.min_similarity > 0.0 else MERGE_MIN_SIMILARITY
             dry_run        = getattr(request, 'dry_run', False)
 
             objects = list(wm.persistent_perceptions)
             to_remove       = set()
+            # One dict per pair, not a tuple. It was a 3-tuple, then a 4-tuple when the
+            # similarity had to reach the decision record, and GA-80 needs the rooms there
+            # too -- each widening touching four unpack sites, any one of which could be
+            # missed for a ValueError inside a service callback that neither py_compile nor
+            # ruff can see. A dict ends that: adding a field never breaks a reader.
             to_remove_pairs = []
             merge_log       = []
+
+            def _pair_similarity(a, b, a_label, b_label):
+                """-> (score, evidence). Embeddings cache on the object, so once per object.
+
+                GA-101: the score alone cannot say whether four axes agreed or nothing was
+                comparable, and those two produce the SAME number when the labels match.
+                """
+                if not hasattr(a, 'embedding') or a.embedding is None:
+                    a.embedding = get_embedding(world2vec, a.description)
+                if not hasattr(b, 'embedding') or b.embedding is None:
+                    b.embedding = get_embedding(world2vec, b.description)
+                return lost_similarity_detailed(world2vec, a_label, b_label,
+                                                a.color, b.color,
+                                                a.material, b.material,
+                                                a.embedding, b.embedding)
+
+            def _refused(a, b, reason, similarity, **extra):
+                """A refusal is a decision and belongs beside the admissions.
+
+                Every refusal path here used to be print-then-continue, and only an APPLIED
+                merge reached hook_decisions.jsonl -- so from the bundle alone "the gate
+                refused twenty pairs" and "association produced no pairs" were THE SAME
+                OBSERVATION. Run 19's real numbers (20 pairs compared, 19 refused on
+                similarity, ceiling 0.797) were recoverable only because stdout happened to
+                be captured by how that run was launched, which is a property of the launch
+                and not of the bundle format.
+
+                Those numbers are what struck a claim already circulating as evidence:
+                "0/5 merges under 0.925 vs 87% under the old gate" reads as a threshold
+                effect and is not one -- the 0.85-0.925 band was EMPTY, so the old gate
+                would have refused them too. The run measured the scene, not the knob.
+
+                `similarity` is recorded on ALL THREE reasons, including room and distance.
+                Counters alone would not have carried that argument: a run that refuses
+                everything on locality must still show whether those pairs would have
+                passed on attributes, or the next reader repeats the same mistake.
+
+                `kind` is "merge_refused", never "merge" -- a reader counting merges must
+                separate these BY FIELD, not by inferring it from a payload key.
+                """
+                # The terms that EXISTED WHEN THE PAIR WAS COMPARED, per side.
+                # persistent_perception.json holds the final values of SURVIVING objects
+                # only, so a merge destroys its own diagnostic evidence -- 11 of run A's 14
+                # high-scoring pairs could not be resolved afterwards because they had been
+                # merged away, which makes every term-absence count computed from the
+                # bundle a LOWER BOUND. Recorded here, at the moment of comparison, it is
+                # exact and survives whatever happens to the objects afterwards.
+                try:
+                    self.decision_log.write(
+                        "merge_refused", getattr(a, "object_id", a.label),
+                        candidate=getattr(b, "object_id", b.label),
+                        reason=reason,
+                        a_label=a.label, b_label=b.label,
+                        a_has_color=_known(a.color), b_has_color=_known(b.color),
+                        a_has_material=_known(a.material), b_has_material=_known(b.material),
+                        a_has_description=_known(a.description),
+                        b_has_description=_known(b.description),
+                        similarity=similarity, dry_run=bool(dry_run), **extra)
+                except Exception as e:
+                    self.get_logger().error(f"decision_log merge_refused failed: {e}")
 
             print("══════════════════════════════════════════════")
             print(f"🔍 MERGE CHECK: {len(objects)} oggetti in memoria")
@@ -566,11 +752,74 @@ class ObjectServices(Node):
                 if objects[i] in to_remove:
                     continue
                 for j in range(i + 1, len(objects)):
+                    # GA-23: objects[i] is tested ONCE, before this loop. A pair resolving
+                    # with keeper = b condemns objects[i] while this loop still holds it as
+                    # `a`, and it could then be chosen keeper again -- so the apply block
+                    # would write keeper.bbox onto an object already removed from the world
+                    # model. Today's `else` branch masks it by keeping `a` in three cases of
+                    # four; the evidence-based keeper rule below makes keeper = b common, so
+                    # fixing GA-25 alone would ARM this (rule 15). Re-test and stop.
+                    if objects[i] in to_remove:
+                        break
                     if objects[j] in to_remove:
+                        # Also logged: a pair skipped because one side is already condemned
+                        # is a pair that was never judged on its own evidence, and the count
+                        # of those is how you tell "the gate refused it" from "the gate
+                        # never saw it".
+                        _refused(objects[i], objects[j], "already_condemned", None)
                         continue
 
                     a, b = objects[i], objects[j]
                     if a.bbox is None or b.bbox is None:
+                        # THE LAST UNLOGGED EXIT IN THE SELECTION PATH, and it matters more
+                        # than its two lines suggest. MEASURED in run 20260831_184822: a
+                        # single service call saw 118 objects and logged 121 pairs, where
+                        # all-pairs is 6903 -- so 98% of pairs left the loop before reaching
+                        # any gate, and every refusal reason IS logged (similarity 5996,
+                        # distance 285, room 9). The shortfall is therefore entirely in the
+                        # exits that record nothing, and this is one of the two.
+                        #
+                        # The consequence is not abstract: ALL EIGHT air-conditioner pairs
+                        # within 1.5 m of each other in that run were never offered to the
+                        # comparison at all -- including a 0.385 m pair whose volumes are
+                        # 0.0016 m3 and 0.2338 m3, a 146x ratio and the exact fragment/whole
+                        # shape the redesign exists to catch. Nobody could say why, because
+                        # the skip left no trace.
+                        #
+                        # A pair that is never compared is invisible in precisely the way
+                        # refusals were before they were logged. So it is logged now.
+                        _refused(a, b, "bbox_absent", None,
+                                 a_has_bbox=a.bbox is not None, b_has_bbox=b.bbox is not None)
+                        continue
+
+                    # GA-25: locality before attributes. Geometry, never the room-type
+                    # belief. `room_at_bbox` returns None when it cannot say, and None is
+                    # UNKNOWN -- never "same room". Refusing only on positive disagreement
+                    # keeps the gate strict without inventing separation the map cannot
+                    # support; the similarity and distance gates still apply beneath it.
+                    #
+                    # assign_room_by_geometry is NOT usable here: it falls back to the
+                    # robot's own room, in the same type as a real answer, so two objects in
+                    # different rooms would read as the same room exactly when the map is
+                    # least able to separate them (GA-28).
+                    a_label = a.label.split('#')[0] if '#' in a.label else a.label
+                    b_label = b.label.split('#')[0] if '#' in b.label else b.label
+
+                    room_a = self.room_manager.room_at_bbox(a.bbox)
+                    room_b = self.room_manager.room_at_bbox(b.bbox)
+                    if room_a is not None and room_b is not None and room_a != room_b:
+                        print(f"   ❌ STANZE DIVERSE ({room_a} != {room_b})")
+                        # The similarity is computed HERE, on the refusal path only, and
+                        # solely to be recorded. The gate ORDER is unchanged -- locality
+                        # still decides before attributes (GA-25) and no similarity can
+                        # rescue a pair in two different rooms. Paying for it only on the
+                        # pairs actually refused on room keeps the early gate's saving on
+                        # every pair that passes it, and those refused pairs are exactly
+                        # the population the log needs to be able to describe.
+                        _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
+                        _refused(a, b, "room", _room_sim,
+                                 evidence_count=_room_ev["optional_count"],
+                                 room_a=room_a, room_b=room_b)
                         continue
 
                     ax = (a.bbox['x_min'] + a.bbox['x_max']) / 2.0
@@ -580,25 +829,13 @@ class ObjectServices(Node):
                     by = (b.bbox['y_min'] + b.bbox['y_max']) / 2.0
                     bz = (b.bbox['z_min'] + b.bbox['z_max']) / 2.0
 
-                    a_label = a.label.split('#')[0] if '#' in a.label else a.label
-                    b_label = b.label.split('#')[0] if '#' in b.label else b.label
-
                     print(f"\n📐 CONFRONTO [{i}]{a_label} vs [{j}]{b_label}:")
                     print(f"   Pos A: ({ax:.2f}, {ay:.2f}, {az:.2f})")
                     print(f"   Pos B: ({bx:.2f}, {by:.2f}, {bz:.2f})")
 
-                    # Embedding lazy
-                    if not hasattr(a, 'embedding') or a.embedding is None:
-                        a.embedding = get_embedding(world2vec, a.description)
-                    if not hasattr(b, 'embedding') or b.embedding is None:
-                        b.embedding = get_embedding(world2vec, b.description)
-                    # missing description embeddings are absent evidence, not a
-                    # reason to skip the pair (lost_similarity renormalises)
-
-                    sim = lost_similarity(world2vec, a_label, b_label,
-                                        a.color, b.color,
-                                        a.material, b.material,
-                                        a.embedding, b.embedding)
+                    # Embedding lazy; missing description embeddings are absent evidence,
+                    # not a reason to skip the pair (lost_similarity renormalises)
+                    sim, ev = _pair_similarity(a, b, a_label, b_label)
 
                     print("   Sim semantiche:")
                     print(f"     Label: '{a_label}' vs '{b_label}'")
@@ -606,38 +843,88 @@ class ObjectServices(Node):
                     print(f"     Materiale: '{a.material}' vs '{b.material}'")
                     print(f"     Similarità: {sim:.3f} (soglia: {MIN_SIMILARITY})")
 
+                    # GA-21: the `forzo merge` bypass that stood here is deleted. It fired
+                    # ONLY when the evidence had already said do not merge, and overrode that
+                    # with label equality plus a hardcoded 0.5 overlap -- so a red hardback
+                    # and a blue notebook, both labelled "book" at the same spot, scored ~0.55,
+                    # were correctly refused, and were then fused anyway. Overlap is locality,
+                    # not similarity; the same confusion as GA-05, in the one operation that
+                    # destroys an identity.
                     if sim < MIN_SIMILARITY:
-                        if a_label == b_label:
-                            iou = compute_iou_3d(a.bbox, b.bbox)
-                            if iou >= 0.5:
-                                print(f"   ⚠️ Stessa label + IoU alto ({iou:.3f}), forzo merge")
-                                sim = 1.0
-                        if sim < MIN_SIMILARITY:
-                            print(f"   ❌ SIMILARITÀ BASSA ({sim:.2f} < {MIN_SIMILARITY})")
-                            continue
+                        print(f"   ❌ SIMILARITÀ BASSA ({sim:.2f} < {MIN_SIMILARITY})")
+                        _refused(a, b, "similarity", sim,
+                                 evidence_count=ev["optional_count"],
+                                 threshold=MIN_SIMILARITY, room_a=room_a, room_b=room_b)
+                        continue
+
+                    # GA-101: a score that passed the gate on NOTHING must not merge.
+                    # With colour, material and description all absent the divisor is the
+                    # label weight alone, so two identical label strings score exactly
+                    # 1.0000 -- above any threshold, from zero measured evidence. Raising
+                    # MIN_SIMILARITY cannot reach this: the pairs it is meant to catch sit
+                    # ABOVE the ones that actually agreed on something.
+                    #
+                    # Placed AFTER the similarity gate on purpose. Running it first would
+                    # relabel every genuine low-score refusal as "evidence_absent" and hide
+                    # a real signal -- a different-label pair with nothing else measured
+                    # scored 0.0000 because the labels WERE compared and disagreed. This
+                    # only refuses pairs that would otherwise have been merged.
+                    if ev["optional_count"] < MERGE_MIN_EVIDENCE:
+                        print(f"   ❌ NESSUNA EVIDENZA ({ev['optional_count']} termini "
+                              f"opzionali < {MERGE_MIN_EVIDENCE}; sim {sim:.3f} sulla sola label)")
+                        _refused(a, b, "evidence_absent", sim,
+                                 evidence_count=ev["optional_count"],
+                                 required=MERGE_MIN_EVIDENCE, room_a=room_a, room_b=room_b)
+                        continue
 
                     dist = np.sqrt((ax - bx)**2 + (ay - by)**2 + (az - bz)**2)
                     print(f"   Distanza: {dist:.3f}m (soglia: {MAX_DISTANCE}m)")
 
                     if dist > MAX_DISTANCE:
                         print(f"   ❌ TROPPO LONTANI ({dist:.2f}m > {MAX_DISTANCE}m)")
+                        _refused(a, b, "distance", sim,
+                                 evidence_count=ev["optional_count"],
+                                 distance=dist, threshold=MAX_DISTANCE,
+                                 room_a=room_a, room_b=room_b)
                         continue
 
-                    merged_bbox = {
-                        'x_min': (a.bbox['x_min'] + b.bbox['x_min']) / 2.0,
-                        'x_max': (a.bbox['x_max'] + b.bbox['x_max']) / 2.0,
-                        'y_min': (a.bbox['y_min'] + b.bbox['y_min']) / 2.0,
-                        'y_max': (a.bbox['y_max'] + b.bbox['y_max']) / 2.0,
-                        'z_min': (a.bbox['z_min'] + b.bbox['z_min']) / 2.0,
-                        'z_max': (a.bbox['z_max'] + b.bbox['z_max']) / 2.0,
-                    }
+                    # GA-25: which identity survives must follow the evidence, not list
+                    # order. Three of the four cases used to fall through to `a` -- i.e.
+                    # whichever was inserted into the world model first.
+                    #
+                    # A described object outranks an undescribed one; then the ESTABLISHED
+                    # identity outlives the newcomer (earlier creation_time), which is D14's
+                    # prefer-strict reading; then object_id, so two objects created in the
+                    # same tick still resolve deterministically.
+                    #
+                    # An ABSENT field is unknown, never zero -- it must not rank. Before
+                    # GA-12 a moved object carried no creation_time, so reading a missing
+                    # value as 0 would have made it always look oldest and always win.
+                    def _rank(o):
+                        described = 0 if str(o.description).strip().lower() == 'unknown' else -1
+                        ct = getattr(o, "creation_time", None)
+                        # A KNOWN age ranks ahead of an unknown one (0 before 1), so an
+                        # unstamped object cannot claim seniority it has no evidence for.
+                        # Encoding it the other way round reproduces the very defect GA-12
+                        # fixed: absent read as "oldest", and the newcomer always wins.
+                        return (described, 1 if ct is None else 0, ct if ct is not None else 0.0,
+                                str(getattr(o, "object_id", "") or o.label))
+                    keeper, discard = (a, b) if _rank(a) <= _rank(b) else (b, a)
 
-                    a_unknown = a.description.lower() == 'unknown'
-                    b_unknown = b.description.lower() == 'unknown'
-                    if a_unknown and not b_unknown:
-                        keeper, discard = b, a
-                    else:
-                        keeper, discard = a, b
+                    # GA-20: the surviving box is the keeper's OWN OBSERVATION, not a
+                    # synthesised one. It used to be six independent face-wise means, so two
+                    # 0.20 m cubes 0.60 m apart merged into a 0.20 m cube in the empty air
+                    # between them -- extents that measure nothing, written into the room
+                    # boundary, the regression baseline and every published figure. Not a
+                    # union either: a union is also a box nobody observed, and D14 prefers
+                    # strict.
+                    #
+                    # It also silently dropped the oriented box. `yaw`, `oriented_center` and
+                    # `oriented_extents` live INSIDE the bbox dict as optional keys and were
+                    # simply absent from the synthesised one, so every merge reverted a
+                    # measured orientation to the axis-aligned box the design says
+                    # under-measures anything diagonal. Keeping an observed box keeps them.
+                    merged_bbox = keeper.bbox
 
                     vol_a = ((a.bbox['x_max']-a.bbox['x_min']) *
                             (a.bbox['y_max']-a.bbox['y_min']) *
@@ -650,28 +937,49 @@ class ObjectServices(Node):
                             (merged_bbox['z_max']-merged_bbox['z_min']))
 
                     print("   ✅ MERGE!")
-                    print(f"     Volume A: {vol_a:.3f}m³ | Volume B: {vol_b:.3f}m³ → Media: {vol_m:.3f}m³")
+                    print(f"     Volume A: {vol_a:.3f}m³ | Volume B: {vol_b:.3f}m³ → Tenuto: {vol_m:.3f}m³")
                     print(f"     Tenuto: '{keeper.label}' | Rimosso: '{discard.label}'")
                     print(f"     Desc keeper: '{keeper.description[:40]}...'")
-                    print(f"     Bbox unito: x[{merged_bbox['x_min']:.2f},{merged_bbox['x_max']:.2f}] "
+                    print(f"     Bbox tenuto: x[{merged_bbox['x_min']:.2f},{merged_bbox['x_max']:.2f}] "
                         f"y[{merged_bbox['y_min']:.2f},{merged_bbox['y_max']:.2f}] "
                         f"z[{merged_bbox['z_min']:.2f},{merged_bbox['z_max']:.2f}]")
 
                     to_remove.add(discard)
-                    to_remove_pairs.append((keeper, discard, merged_bbox))
+                    to_remove_pairs.append({
+                        "keeper": keeper, "discard": discard, "bbox": merged_bbox,
+                        "similarity": sim,
+                        "keeper_room": room_a if keeper is a else room_b,
+                        "discard_room": room_b if keeper is a else room_a,
+                    })
                     merge_log.append({
                         "keeper":      keeper.label,
                         "discarded":   discard.label,
+                        # GA-25's room gate refuses a pair only when BOTH rooms are known
+                        # and differ. Recording both -- including None for "geometry cannot
+                        # say" -- is what makes that rule checkable from a bundle: without
+                        # it, a merge that should have been refused and one that was
+                        # correctly allowed are identical in the log.
+                        "keeper_room":    room_a if keeper is a else room_b,
+                        "discarded_room": room_b if keeper is a else room_a,
                         "distance":    round(dist, 3),
                         "similarity":  round(sim, 3),
                         "merged_bbox": merged_bbox,
+                        # GA-20: `merged_bbox` keeps its name -- it is still the box after the
+                        # merge -- but it is now an observation rather than a synthesis, so
+                        # record WHOSE. Added, not renamed: a reader that does not look for
+                        # this key cannot break on it.
+                        "bbox_source": "keeper",
+                        "bbox_from_object_id": getattr(keeper, "object_id", None) or keeper.label,
                     })
 
             if to_remove_pairs and not dry_run:
                 print(f"\n🗑️ RIMOZIONE: {len(to_remove_pairs)} oggetti duplicati:")
 
-                for keeper, discard, merged_bbox in to_remove_pairs:
-                    keeper.bbox = merged_bbox
+                for pair in to_remove_pairs:
+                    keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
+                    # GA-20: `keeper.bbox = merged_bbox` stood here. The kept box IS the
+                    # keeper's own, so the write-back is a self-assignment; removed rather
+                    # than left as a line that looks like it changes something.
 
                     if discard in wm.persistent_perceptions:
                         cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
@@ -697,10 +1005,34 @@ class ObjectServices(Node):
                 try:
                     with open(OPERATIONS_LOG, 'a') as f:
                         timestamp = datetime.now().strftime('%H:%M:%S')
-                        for keeper, discard, _ in to_remove_pairs:
+                        for pair in to_remove_pairs:
+                            keeper, discard = pair["keeper"], pair["discard"]
                             f.write(f"[{timestamp}] 🔗 MERGE: '{discard.label}' → '{keeper.label}'\n")
                 except Exception as e:
                     self.get_logger().error(f"Impossibile scrivere su operations.txt: {e}")
+
+                # A merge is the one decision that RE-ROUTES history: the discarded object stops
+                # existing and its past belongs to the keeper. Record both ids, so a reader
+                # reconstructing the keeper knows to follow the discarded one backwards, and a
+                # reader looking up the discarded id learns where it went instead of finding a
+                # history that simply stops.
+                for pair in to_remove_pairs:
+                    keeper, discard = pair["keeper"], pair["discard"]
+                    try:
+                        # GA-80: the rooms belong HERE, not only in merge_log. merge_log
+                        # becomes response.merge_log_json -- a service response field that
+                        # no bundle archives -- so the record this fix exists to produce
+                        # reached no artefact. The comment said what it was for, the code
+                        # did what the comment said, and the evidence never arrived. This
+                        # is the record C5 actually reads.
+                        self.decision_log.write(
+                            "merge", getattr(keeper, "object_id", keeper.label),
+                            merged_from=getattr(discard, "object_id", discard.label),
+                            keeper_label=keeper.label, discarded_label=discard.label,
+                            keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
+                            similarity=pair["similarity"], dry_run=bool(dry_run))
+                    except Exception as e:
+                        self.get_logger().error(f"decision_log merge failed: {e}")
 
             elif not to_remove_pairs:
                 print("\n✅ NESSUN duplicato trovato.")
@@ -983,21 +1315,37 @@ class ObjectServices(Node):
                         updated_obj = best_match
 
                     else:
-                        if best_match in wm.persistent_perceptions:
-                            wm.persistent_perceptions.remove(best_match)
-                            self.db.on_object_moved(
-                                best_match,
-                                old_bbox=best_match.bbox,
-                                new_bbox=bbox,
-                                distance=distance,
-                                iou=iou,
-                                step=self.tracking_step_counter
-                            )
-
-                        if distance > 0.8:
-                            if best_match not in self.uncertain_objects:
-                                self.uncertain_objects.append(best_match)
-                                self.db.on_uncertain_added(best_match, step=self.tracking_step_counter)
+                        # GA-24: the room is resolved and the replacement is built COMPLETELY
+                        # before the object leaves the world model, and the swap has nothing
+                        # fallible between the remove and the append.
+                        #
+                        # Before, the object was removed first and re-appended only after
+                        # `scene_graph[new_room]` -- a bare dict index on a key that can be
+                        # None, because the old fallback was `current_room_id`, which is itself
+                        # None when the robot stands outside every room polygon. The KeyError
+                        # was caught by the handler's broad except, which returned success=False
+                        # and left the object gone from the map and from disk permanently.
+                        #
+                        # A move that cannot resolve a room is now REFUSED, not completed: the
+                        # object stays where it is. Per GA-10 the caller offers the refused
+                        # detection to admission rather than dropping it, so the failure mode
+                        # is a visible duplicate instead of a silently lost object -- D14's
+                        # direction. A clean move needs room identity to be trustworthy, which
+                        # is GA-28.
+                        new_room = self.room_manager.assign_room_by_geometry(bbox)
+                        if not new_room or new_room not in self.room_manager.scene_graph:
+                            self.log_both(
+                                "warn",
+                                f"[SPOSTAMENTO RIFIUTATO] '{best_match.label}': nessuna stanza "
+                                f"risolvibile per la nuova posizione (room={new_room!r}); "
+                                f"l'oggetto resta dov'era")
+                            response.success = False
+                            response.message = f"move refused: no resolvable room for {obj_id}"
+                            response.object_id = getattr(best_match, "object_id", "") or ""
+                            response.distance = float(distance)
+                            response.iou = float(iou)
+                            response.replaced = False
+                            return response
 
                         updated_obj = Object(
                             best_match.label,
@@ -1016,18 +1364,61 @@ class ObjectServices(Node):
                             "isAbove": set(),
                             "isUnder": set(),
                         })
-
-                        new_room = self.room_manager.assign_room_by_geometry(bbox)
-                        if not new_room:
-                            new_room = self.room_manager.current_room_id
+                        # GA-12: creation_time is written at exactly ONE site in this module --
+                        # the add path -- and was NOT carried across here, so every object that
+                        # had ever moved read as ~1.8 billion seconds old. That made the
+                        # stability branch above unreachable for it (once moved, always
+                        # replaced), removed check_tracking_transition's stability protection,
+                        # and armed the uncertain-cleanup expiry. Absence of a timestamp is
+                        # unknown age, never maximal age.
+                        updated_obj.creation_time = getattr(best_match, "creation_time", None) or time.time()
                         updated_obj.room_id = new_room
-                        self.room_manager.update_room_geometry(new_room, bbox)
 
+                        # The swap itself: two list operations, nothing between them that can
+                        # raise. Every fallible call -- the two db events, the room geometry
+                        # update, the scene-graph append -- happens AFTER the world model is
+                        # whole again, so a failure in any of them leaves the object present
+                        # rather than deleted. That is the whole point of GA-24; leaving the
+                        # db calls inside the window would have reproduced it with a smaller
+                        # aperture.
+                        if best_match in wm.persistent_perceptions:
+                            wm.persistent_perceptions.remove(best_match)
+                            wm.persistent_perceptions.append(updated_obj)
+                            moved_from_map = True
+                        else:
+                            wm.persistent_perceptions.append(updated_obj)
+                            moved_from_map = False
+
+                        if moved_from_map:
+                            self.db.on_object_moved(
+                                best_match,
+                                old_bbox=best_match.bbox,
+                                new_bbox=bbox,
+                                distance=distance,
+                                iou=iou,
+                                step=self.tracking_step_counter
+                            )
+
+                        if distance > 0.8:
+                            if best_match not in self.uncertain_objects:
+                                self.uncertain_objects.append(best_match)
+                                self.db.on_uncertain_added(best_match, step=self.tracking_step_counter)
+
+                        self.room_manager.update_room_geometry(new_room, bbox)
                         if updated_obj.label not in self.room_manager.scene_graph[new_room]["objects"]:
                             self.room_manager.scene_graph[new_room]["objects"].append(updated_obj.label)
-
-                        wm.persistent_perceptions.append(updated_obj)
                         self.log_operation(f"[SPOSTAMENTO] '{best_match.label}' si è mosso di {distance:.2f}m")
+                        # The same event, joinable. The prose line above names a label, carries no
+                        # identifier and no date, and cannot be joined to anything; it stays for
+                        # a human reading the console.
+                        try:
+                            self.decision_log.write(
+                                "update", getattr(best_match, "object_id", best_match.label),
+                                label=best_match.label, change="moved",
+                                distance_m=round(float(distance), 3),
+                                step=self.tracking_step_counter)
+                        except Exception as e:
+                            self.get_logger().error(f"decision_log update failed: {e}")
 
             save_persistent_perceptions(self)
 
@@ -1078,8 +1469,8 @@ class ObjectServices(Node):
                         if request.label_filter.lower() in o.label.lower()]
 
             if len(request.area_filter) == 6:
-                xmin, xmax, ymin, ymax, zmin, zmax = request.area_filter
-                results = [o for o in results if inside_area(o)]
+                bounds = tuple(request.area_filter)
+                results = [o for o in results if inside_area(o, bounds)]
 
             response.object_ids = [getattr(o, "object_id", None) or o.label for o in results]
             response.serialized_json = json.dumps([{
@@ -1092,7 +1483,18 @@ class ObjectServices(Node):
                 "room_id":     getattr(o, 'room_id', 'unknown')
             } for o in results])
             response.success = True
-        except Exception:
+        except Exception as e:
+            # GA-22 remainder. The bare `except Exception:` here had no binding and no
+            # log, so a NameError or TypeError inside the area filter produced an empty
+            # result set with no diagnosis anywhere. `success` does separate it from a
+            # genuine no-match, but nothing recorded WHAT failed -- which is why the
+            # area filter could be broken twice over and never be noticed.
+            #
+            # NOT removed outright: this is a service callback, and QueryObjects.srv has
+            # no message field to carry the reason to the caller. Adding one is a .srv
+            # change and a rebuild. Binding and logging makes the failure loud and
+            # diagnosable now; the field is the better fix and is not tonight's.
+            self.get_logger().error(f"_cb_query_objects failed: {e!r}")
             response.success = False
             response.serialized_json = "[]"
         return response

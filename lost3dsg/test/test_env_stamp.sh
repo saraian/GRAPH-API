@@ -72,6 +72,8 @@ IMAGE_TAG=img IMAGE_DIGEST=sha256:dead ENC_E5=e5 ENC_MINILM=mini \
 GT_PATH=/gt/hm3d_00861.json GT_SHA=beef1234 GT_N=870 \
 FOUND_ENFORCE=1 FOUND_HOLD_BAND=0.05 FOUND_MIN_SUPPORT=30 FOUND_ROOM_ENFORCE=0 \
 FOUND_ALIGNER=kg FOUND_ONTOLOGY_EXT=default \
+FEED_WALK=6 FEED_DWELL=0 FEED_FPS=3 FEED_MAPPING_SECONDS=150 FEED_OVERLAY=1 FEED_SHOW=1 \
+MAPPING_ONLY=0 \
   bash -c "$(sed -n '/^cat <<EOF > "\$RUN_DIR\/run_metadata.json"/,/^EOF$/p' "$SRC" \
              | sed 's|> "\$RUN_DIR/run_metadata.json"||')" > "$TMP/meta.json"
 python3 -m json.tool "$TMP/meta.json" > /dev/null || { cat "$TMP/meta.json"; fail "run_metadata.json is not valid JSON"; }
@@ -92,10 +94,79 @@ grep -q '"n_objects": "870"'                    "$TMP/meta.json" || fail "ground
 grep -q '"sha256_16": "beef1234"'               "$TMP/meta.json" || fail "ground-truth hash not stamped"
 grep -q '"merged_sha256_16": "44c1d0aa9b3e2f57"' "$TMP/meta.json" || fail "merged-config sha not stamped; a file hash alone misses a _DEFAULTS change"
 
+# 6b. The policy block records the human LABEL "default"; the process receives the empty string,
+#     because found/kg_align.py reads FOUND_ONTOLOGY_EXT as a PATH when non-empty and raises if
+#     that path is absent. Exporting the label as the value made a1 fail every gated run with
+#     `FOUND_ONTOLOGY_EXT set to default, which does not exist`. The two must not be re-merged.
+FOUND_ONTOLOGY_EXT="" bash -c 'v="${FOUND_ONTOLOGY_EXT:-default}"; [ "$v" = "default" ]' \
+  || fail "an empty FOUND_ONTOLOGY_EXT must still record the label 'default' in the bundle"
+grep -q 'export FOUND_ONTOLOGY_EXT="\${FOUND_ONTOLOGY_EXT:-}"' "$SRC" \
+  || fail "FOUND_ONTOLOGY_EXT must default to EMPTY, not to the literal string 'default'"
+
 # 7. The two loaders are recorded separately. One field cannot describe two processes, and a
 #    single config_name is what let a run report a configuration only half of it used.
 grep -q '"config_resolved"'   "$TMP/meta.json" || fail "the feed host's resolved config is not recorded"
 grep -q '"provenance_intent"' "$TMP/meta.json" || fail "the pre-run stamp must be labelled as intent, not as confirmation"
 grep -q '"live_roots"'        "$TMP/meta.json" || fail "found and kb are live mounts and must be marked sampled, not frozen"
 
-echo "test_env_stamp.sh: OK (parse, cache layouts, ORDERING, JSON validity, keys kept, provenance)"
+# 8. How the agent moved is IN the bundle. Before 2026-08-31 only the seed was recorded, so a
+#    dwell=0 run and a dwell=60 run produced byte-identical metadata and the difference between
+#    two bundle FAMILIES lived only in whichever message announced it. 0 is a legal value and
+#    must survive as 0 — a `${VAR:-60}` anywhere on this path turns the new default back into
+#    the old one and stamps the lie in the artefact.
+grep -q '"dwell_frames": 0' "$TMP/meta.json" || fail "dwell_frames not stamped, or a :- default rewrote the 0"
+grep -q '"walk_frames": 6'  "$TMP/meta.json" || fail "walk_frames not stamped"
+grep -q '"mapping_seconds": 150' "$TMP/meta.json" || fail "mapping_seconds not stamped; the first 150s of every run ignore walk/dwell entirely"
+# A mapping run's bundle must say so. Without this a MAPPING_ONLY bundle with zero detections and
+# a detection run that found nothing are the same artefact -- the indistinguishability that cost
+# run 19 its merge question.
+grep -q '"mapping_only": false' "$TMP/meta.json" || fail "mapping_only not stamped for a normal run"
+grep -q 'export OUT_DIR=' "$SRC" || fail "GA-99: OUT_DIR must be EXPORTED or the feed host never sees it and writes its stats outside the bundle"
+grep -q 'export FEED_DWELL="\${FEED_DWELL:-0}"' "$SRC" \
+  || fail "FEED_DWELL must default to 0 (owner ruling 2026-08-31). A 60 here silently re-bases the family."
+grep -q 'FEED_DWELL=\${FEED_DWELL:-60}' "$SRC" \
+  && fail "a second FEED_DWELL default survives on the launch line; one name, one default"
+
+# 9. No comment sits between two continued lines. `A=1 \` followed by `# ...` does NOT comment
+#    the line — the # swallows the continuation and A is SILENTLY DROPPED, with `bash -n` clean.
+#    Measured on 2026-08-31: I wrote one above the feed-host invocation and it would have thrown
+#    away HABITAT_SCENE and HABITAT_DATASET while the bundle still stamped the requested scene.
+awk 'prev ~ /\\$/ && $0 ~ /^[[:space:]]*#/ { print FILENAME ":" NR ": comment after a line continuation"; bad=1 } { prev=$0 } END { exit bad }' \
+  "$SRC" || fail "a comment follows a line continuation; the preceding assignments are silently dropped"
+
+# 10. EVERY VARIABLE THE CONTAINER READS MUST REACH IT. GA-105, found by the testing lane before
+#     a launch rather than after: RTABMAP_LOCALIZE_DB was read at live_stack_container.sh:129 and
+#     absent from `docker run -e`, so GA-97's localization branch was correct and UNREACHABLE.
+#     Checking systematically rather than fixing the one instance found TWO more — MAPPING_ONLY
+#     and FEED_MAPPING_SECONDS — so tonight's mapping run would have silently started a detector,
+#     spent cloud money and published no map, while reporting itself a mapping run.
+#
+#     The failure shape is why this is a test and not a fix: an unset variable takes the default
+#     branch SILENTLY, so "the feature is off" and "the feature never arrived" are the same
+#     observation. Same class as the /tmp fallback that hid GA-99.
+_missing=""
+for _v in $(grep -o '\${[A-Z_][A-Z0-9_]*[:-]*[^}]*}' "$HERE/live_stack_container.sh" \
+            | sed 's/\${\([A-Z_][A-Z0-9_]*\).*/\1/' | sort -u); do
+  case "$_v" in _|RTABMAP_PID|OM6_PID|WALLS_PID|PERCEPTION_PID|LOG_DIR) continue;; esac
+  # set inside the container is fine; otherwise it must be on the docker run -e list
+  grep -qE "^ *(export )?${_v}=" "$HERE/live_stack_container.sh" && continue
+  grep -q -- "-e ${_v}\b" "$SRC" || _missing="$_missing $_v"
+done
+[ -z "$_missing" ] || fail "read inside the container but never passed by docker run -e:$_missing"
+
+# Stamped: a test result is true at a time, not simply true.
+# 8. The run's live output path. RESULTS/, never /tmp — owner ruling, relayed. The path needs
+#    RUN_TIMESTAMP and SCENE_ARG, both defined 99 lines below where OUT_DIR used to sit, so the
+#    assignment moved rather than the value changing. Evaluated here rather than eyeballed.
+_out=$(RUN_TIMESTAMP=20260831_140000 SCENE_ARG=hm3d_00861 bash -c \
+       'eval "$(sed -n "/^export OUT_DIR=\${OUT_DIR:-\/DATA\/FOUND\/results/p" '"$SRC"')"; echo "$OUT_DIR"')
+[ "$_out" = "/DATA/FOUND/results/20260831_140000_hm3d_00861" ] \
+  || fail "OUT_DIR default is '$_out', expected /DATA/FOUND/results/<timestamp>_<scene>"
+
+#    and an explicit OUT_DIR must still win, because the scratch-rename guard exists for the
+#    operator who reuses one. The default got safer; the hazard did not go away.
+_ovr=$(RUN_TIMESTAMP=t SCENE_ARG=s OUT_DIR=/tmp/explicit bash -c \
+       'eval "$(sed -n "/^export OUT_DIR=\${OUT_DIR:-\/DATA\/FOUND\/results/p" '"$SRC"')"; echo "$OUT_DIR"')
+[ "$_ovr" = "/tmp/explicit" ] || fail "an explicit OUT_DIR must override the default, got '$_ovr'"
+
+echo "test_env_stamp.sh: OK (parse, cache layouts, ORDERING, JSON validity, keys kept, provenance) | $(date -Iseconds)"

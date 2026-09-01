@@ -1,5 +1,7 @@
 """Unit tests validating Delegate 1 (detect-while-moving) and Delegate 2 (vlm-parallel-cache)."""
 
+import pathlib
+
 import numpy as np
 import time
 from config import CFG
@@ -68,7 +70,11 @@ def test_vlm_client_mock_concurrency():
 
     client = VlmClient(vlm_call_fn=mock_vlm_call, image_encoder_fn=mock_encode)
     fake_crop = np.zeros((64, 64, 3), dtype=np.uint8)
-    prompt_path = "/DATA/GRAPH-API/lost3dsg/src/perception_module/prompts/visual_prompt.txt"
+    # TS-05: this hardcoded /DATA/GRAPH-API/..., which since Phase 0 is a READ-ONLY
+    # reference tree. The test therefore exercised a file that can no longer change
+    # while claiming to test the tree that runs. Resolved from this file instead.
+    prompt_path = str(pathlib.Path(__file__).resolve().parent.parent
+                      / "prompts" / "visual_prompt.txt")
 
     # First call: cache miss, calls VLM
     res1 = client.call_crop_full(prompt_path, "chair", fake_crop, yaw=0.0, distance=1.0, image_id="frame_1")
@@ -85,6 +91,12 @@ def test_vlm_client_mock_concurrency():
     # Third call (different viewpoint angle): cache miss, calls VLM
     res3 = client.call_crop_full(prompt_path, "chair", fake_crop, yaw=2.0, distance=1.0, image_id="frame_3")
     assert call_counts == 2
+    # `res3` was computed and nothing was asserted on it: a test that runs code and checks
+    # nothing, which is the probe-that-cannot-fail shape wearing a test's clothes. The
+    # call_counts assertion above proves the VLM was called; these prove the RESULT of
+    # that call came back and is marked as a cache miss rather than a replay of res1.
+    assert res3["color"] == "red"
+    assert res3["provenance"]["cached"] is False
     print("test_vlm_client_mock_concurrency: PASSED ✅")
 
 

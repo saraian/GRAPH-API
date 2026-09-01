@@ -9,6 +9,7 @@ Room changes are handled by the Room Manager using detected wall segments and
 its normal scene-evaluation logic.
 """
 import rclpy, json, os, time, threading, subprocess, sys
+import logging
 import urllib.parse
 from collections import deque
 from rclpy.node import Node
@@ -23,6 +24,7 @@ from lost3dsg.srv import (
 from object_services import (
     ObjectServices,
     save_persistent_perceptions,
+    save_uncertain_objects,
     ensure_relations,
     infer_spatial_relations,
     synchronized_world_model,
@@ -30,11 +32,17 @@ from object_services import (
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Bool
 from world_model import wm
-from utils import *
+# Explicit, not `import *`. Only the names this file does NOT define itself:
+# publish_persistent_centroids, publish_pov_volume and publish_uncertain_* are defined
+# BELOW and also in cv_utils with different bodies, so importing them here would swap a
+# local implementation for a five-line wrapper (GA-77). While the star imports stood,
+# ruff's F family was blind on this file -- which is why GA-22's two crashes read as
+# `F405 may be undefined` instead of `F821 undefined name`.
+from utils import compute_iou_3d
 from room_manager import RoomManager
-from nlp_utils import *
+from nlp_utils import get_embedding, lost_similarity, world2vec
 from datetime import datetime
-from cv_utils import *
+from cv_utils import publish_persistent_bboxes
 from config import CFG
 from hooks import DecisionLog, load_hooks
 from std_msgs.msg import String
@@ -55,7 +63,24 @@ OBJECT_STABILITY_TIMEOUT = CFG["association"]["object_stability_timeout"]
 POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
 MAX_VOLUME_THRESHOLD = CFG["association"]["max_volume_threshold"]
 BBOX_REDUCTION_RATIO = CFG["association"]["bbox_reduction_ratio"]
-MAX_MATCH_DISTANCE = CFG["association"].get("max_match_distance_m", 0.0)
+# GA-48: the re-evaluation radius was ALWAYS this literal. `MAX_MATCH_DISTANCE or 2.0`
+# evaluated to 2.0 for every shipped run, because max_match_distance_m has always been
+# 0.0 -- so the key that appeared to govern the neighbour radius never did. It is its own
+# value and now has its own key, default 2.0 to reproduce that behaviour exactly.
+REEVALUATION_RADIUS = CFG["association"].get("reevaluation_radius_m", 2.0)
+
+
+def locality_ok(bbox, obj, threshold):
+    """GA-04: 3D overlap gate, applied BEFORE any attribute comparison.
+
+    Contract G1 invariant 3: locality is evaluated before attribute similarity, and an
+    object failing the gate is never compared on attributes. Absent geometry is not
+    locality evidence, so a candidate without a box does not pass -- the exploration
+    branch already excluded those, and D14 prefers strict.
+    """
+    if bbox is None or getattr(obj, "bbox", None) is None:
+        return False
+    return compute_iou_3d(bbox, obj.bbox) >= threshold
 
 
 def bbox_center_distance(a, b):
@@ -69,13 +94,27 @@ file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
 PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir else os.path.abspath(os.path.join(current_dir, "../.."))
 
-# world2vec arrives via `from nlp_utils import *` — loaded once there.
+# world2vec is imported explicitly above -- loaded once in nlp_utils.
 
 # Setup path per il file sintetico di operazioni
 log_dir = os.path.join(PROJECT_ROOT, "output")
 os.makedirs(log_dir, exist_ok=True)
 SYNTHETIC_LOG_FILE = os.path.join(log_dir, "operations.txt")
 AGENT_POSES_LOG_FILE = os.path.join(log_dir, "agent_poses.json")
+AGENT_POSES_SERIES_FILE = os.path.join(log_dir, "agent_poses.jsonl")
+# How often the two O(n) views of the pose series may be rebuilt. Both are derived
+# from agent_poses.jsonl, so a lag here loses nothing.
+AGENT_POSES_SNAPSHOT_PERIOD = 5.0   # agent_poses.json whole-array rewrite
+AGENT_PATH_PUBLISH_PERIOD = 1.0     # /agent_path nav_msgs/Path for RViz
+# GA-83: how long /bbox_3d may be silent before the node says so. Long enough not to fire
+# between ordinary detection cycles, short enough that a dead producer is in the log within
+# a minute rather than in a process table an hour later.
+INPUT_SILENCE_TIMEOUT = CFG["association"].get("input_silence_timeout_s", 60.0)
+# GA-94: how many CONSECUTIVE silent checks before this node ends the run. GA-83 stated
+# the fact and left the conclusion to a reader; run A proved there is no reader -- om6
+# announced "the producer may have stopped" at 17:53:35 and then idled 36 more minutes
+# while the run was already dead.
+INPUT_SILENCE_MAX_STRIKES = CFG["association"].get("input_silence_max_strikes", 3)
 # must match the bridge's own default (BRIDGE_PORT=8081); :8080 is the FOUND dashboard server
 GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL", "http://127.0.0.1:8081")
 GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
@@ -250,38 +289,40 @@ def expand_bbox_for_search(bbox, expansion_ratio=VOLUME_EXPANSION_RATIO):
         "z_max": bbox["z_max"] + z_expansion
     }
 
-def save_uncertain_objects(node):
-    """Save uncertain_objects to a text file."""
-    output_dir = os.path.join(PROJECT_ROOT, "output")
-    os.makedirs(output_dir, exist_ok=True)
-    save_path = os.path.join(output_dir, "uncertain_objects.txt")
+# save_uncertain_objects moved to object_services, which owns `uncertain_objects`.
+# It was defined here and called from BOTH modules, and object_services cannot import this
+# one (this module imports it), so every call from there raised NameError -- GA-22.
 
-    with open(save_path, "w") as f:
-        f.write("=" * 80 + "\n")
-        f.write(f"UNCERTAIN OBJECTS - Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write("=" * 80 + "\n\n")
-
-        if not node.uncertain_objects:
-            f.write("No uncertain objects at the moment.\n")
-        else:
-            f.write(f"Total uncertain objects: {len(node.uncertain_objects)}\n\n")
-
-            for i, obj in enumerate(node.uncertain_objects, 1):
-                f.write(f"{i}. {obj.label}\n")
-                if obj.bbox:
-                    x_center = (obj.bbox['x_min'] + obj.bbox['x_max']) / 2.0
-                    y_center = (obj.bbox['y_min'] + obj.bbox['y_max']) / 2.0
-                    z_center = (obj.bbox['z_min'] + obj.bbox['z_max']) / 2.0
-                    f.write(f"   Center position: X={x_center:.3f}, Y={y_center:.3f}, Z={z_center:.3f}\n")
-                    
 
 def save_agent_poses(agent_poses):
-    """Save the accumulated agent poses (with timestamp) to a JSON file."""
+    """Save the accumulated agent poses (with timestamp) to a JSON file.
+
+    Rewrites the whole array, so it costs O(n) per pose: fine at the current ~10 poses
+    per run, but quadratic the moment poses are logged per rendered frame (~2,160 a run
+    would be ~2.3M entry-writes, on the callback thread). append_agent_pose below is the
+    append-only path that has to carry that rate; this file stays as the compatible
+    whole-array view for anything already reading it.
+    """
     try:
         with open(AGENT_POSES_LOG_FILE, "w") as f:
             json.dump(agent_poses, f, indent=2)
     except Exception as e:
         print(f"[WARN] Errore salvataggio agent_poses.json: {e}")
+
+
+def append_agent_pose(entry):
+    """Append one pose to the JSONL series — O(1) per pose, one line each.
+
+    The analysis series: `agent_poses.jsonl` keeps every pose ever received, in order,
+    and is never rewritten. Paper-side denominators (which GT objects entered the
+    frustum) need every viewpoint, not the handful the perception cycle happens to
+    publish at.
+    """
+    try:
+        with open(AGENT_POSES_SERIES_FILE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        print(f"[WARN] Errore append agent_poses.jsonl: {e}")
 
 
 def _stamp_from_seconds(timestamp_sec):
@@ -446,12 +487,41 @@ class ObjectManagerService(Node):
             f.write(f"{'='*50}\n")
 
         self.exploration_mode = True
+        # Never initialised: `self.tracking_step_counter += 1` at the top of
+        # object_tracking_callback is reachable only once exploration_mode is False, and the
+        # transition that clears it sets the counter to 1 -- so the attribute exists by
+        # ORDERING, guarded by an invariant nobody states. Any future path that leaves
+        # exploration without going through that branch is an AttributeError on the first
+        # tracking frame. One line removes the dependence on the invariant.
+        self.tracking_step_counter = 0
         self.seen_again = False
         self.latest_bboxes = {}
         self.latest_fov_volume = None
         self.uncertain_objects = []
         self.exploration_frame_counter = 0
         self.robot_has_moved = False
+        # When the current motion began, as a perception stamp (sec + nanosec/1e9), or None
+        # while stationary. A buffered pair is judged by WHEN IT WAS OBSERVED, not by what
+        # the robot is doing when it arrives -- see _try_process.
+        self._moving_since = None
+        self._dropped_moving_pairs = 0
+        # Arrival counters. The two callbacks used to buffer unconditionally with a single
+        # silent `stamp is None` exit, so "every message arrived unusable" and "no message
+        # arrived" produced identical evidence -- which is the pair of possibilities three
+        # lanes could not separate on runs 7 and 8. These make the next run state which.
+        self._n_desc_msgs = 0
+        self._n_bbox_msgs = 0
+        self._n_desc_no_stamp = 0
+        self._n_bbox_no_stamp = 0
+        self._last_nopair_state = None
+        # GA-83: when a bbox last arrived, and whether the silence has been reported. The
+        # detector died four cycles in and the stack ran 55 more minutes at 322% CPU with
+        # nothing to process -- visible only in the container's process table, because
+        # nothing in the log or the bundle said the producer was gone. A node with no input
+        # cannot know why, but it can say that it has none.
+        self._last_bbox_at = None
+        self._input_silence_reported = False
+        self._input_silence_strikes = 0
 
         self.latest_descriptions = None
         self.latest_bboxes_msg = None
@@ -459,6 +529,8 @@ class ObjectManagerService(Node):
         self.agent_poses = []
         self.agent_pose_history = deque(maxlen=2000)
         self.latest_agent_pose = None
+        self._last_pose_snapshot = 0.0
+        self._last_path_publish = 0.0
         self._pending_descriptions = {}
         self._pending_bboxes = {}
         
@@ -539,6 +611,7 @@ class ObjectManagerService(Node):
         self.get_logger().info(f"Node name={self.get_name()} ns={self.get_namespace()}")
 
         self._bbox_timer = self.create_timer(2.0, self.periodic_bbox_publisher)
+        self._input_watchdog = self.create_timer(INPUT_SILENCE_TIMEOUT, self._check_input_silence)
         #self._uncertain_cleanup_timer = self.create_timer(5.0, self._cleanup_uncertain_by_time)
 
     @synchronized_world_model
@@ -562,14 +635,30 @@ class ObjectManagerService(Node):
 
     def movement_callback(self, msg):
         # Sincronizza lo stato reale: True se si muove, False se è fermo
+        was_moving = self.robot_has_moved
         self.robot_has_moved = msg.data
         if msg.data:
-            self._pending_descriptions.clear()
-            self._pending_bboxes.clear()
+            if not was_moving:
+                now = self.get_clock().now().to_msg()
+                self._moving_since = now.sec + now.nanosec * 1e-9
+            # The pending buffers are NOT cleared here any more.
+            #
+            # A perception cycle is triggered while the robot is stationary, but its VLM
+            # round-trip takes 1.6-2.3 s, so the descriptions and boxes for a STATIONARY
+            # observation arrive well after it was taken. Wiping on the arrival of a
+            # movement message therefore discarded observations that were correctly made
+            # while stopped, purely because the robot had set off again in the meantime --
+            # and on a driving run that is nearly all of them.
+            #
+            # `latest_bboxes` is still cleared: it is the live view of what is in front of
+            # the robot right now, and that really is invalidated by motion.
             self.latest_bboxes.clear()
             self.object_services.log_both('warn', "[MOVEMENT] Robot is moving -> Blocco stanze attivato")
         else:
+            self._moving_since = None
             self.object_services.log_both('info', "[MOVEMENT] Robot has stopped -> Creazione stanze permessa")
+            # Motion has ended: anything buffered from before it began is still valid.
+            self._try_process()
 
     def _agent_pose_callback(self, msg):
         stamp = msg.header.stamp
@@ -590,8 +679,20 @@ class ObjectManagerService(Node):
         self.agent_pose_history.append(entry)
         self.latest_agent_pose = entry
 
-        save_agent_poses(self.agent_poses)
-        publish_agent_path(self, self.agent_poses, self.agent_path_pub)
+        # Lossless and O(1): this is the record the paper's frustum denominator reads.
+        append_agent_pose(entry)
+
+        # The other two touch the WHOLE array on every pose — save_agent_poses rewrites
+        # the file, publish_agent_path rebuilds every PoseStamped — so at per-frame pose
+        # rate they turn this callback quadratic. Neither needs per-pose freshness: the
+        # JSONL above is the lossless series, and RViz is happy with a 1 Hz path.
+        now = time.monotonic()
+        if now - self._last_pose_snapshot >= AGENT_POSES_SNAPSHOT_PERIOD:
+            self._last_pose_snapshot = now
+            save_agent_poses(self.agent_poses)
+        if now - self._last_path_publish >= AGENT_PATH_PUBLISH_PERIOD:
+            self._last_path_publish = now
+            publish_agent_path(self, self.agent_poses, self.agent_path_pub)
 
     def _closest_agent_pose(self, timestamp_sec):
         if timestamp_sec is None:
@@ -756,6 +857,14 @@ class ObjectManagerService(Node):
                 "y_min": y_min, "y_max": y_max,
                 "z_min": z_min, "z_max": z_max
             }
+            # GA-100: carry the oriented box through, and ONLY when the publisher says it
+            # measured one. Reading yaw unconditionally would put a fabricated 0.0 into
+            # every bbox dict and make an unoriented object indistinguishable from one
+            # measured as axis-aligned -- box_view and the merge keeper both read these keys.
+            if getattr(box, "has_orientation", False):
+                bbox_data["yaw"] = float(box.yaw)
+                bbox_data["oriented_center"] = [float(v) for v in box.oriented_center]
+                bbox_data["oriented_extents"] = [float(v) for v in box.oriented_extents]
             temp_key = create_object_key(box.label, "", "", "")
             self.latest_bboxes[temp_key] = {
                 "bbox": bbox_data, "label": box.label,
@@ -824,19 +933,30 @@ class ObjectManagerService(Node):
                     update_response = self.modify_existing_object(obj, bbox, description_embedding)
                     if update_response.success:
                         matching_obj = next(
-                            (o for o in wm.persistent_perceptions
+                            (o for o in wm.snapshot()
                              if getattr(o, "object_id", None) == update_response.object_id),
                             obj,
                         )
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
                         self._note_update(update_response.object_id)
+                        # GA-10: only a SUCCESSFUL update means the detection was absorbed.
+                        # This was set unconditionally, so a failed update dropped the
+                        # detection silently -- it never reached filter_hook.judge and no
+                        # decision row was written. A refused move (GA-24) arrives here, so
+                        # the failure is now a visible proposal rather than a lost object.
+                        already_seen = True
                     else:
                         self.object_services.log_both('warn', f"Update fallito per {obj.label}: {update_response.message}")
-                    already_seen = True
                     continue
 
-                for obj in wm.persistent_perceptions:
+                for obj in wm.snapshot():
+                    # GA-04: locality first. Previously the overlap test was conjoined with the
+                    # similarity test below, so attributes were compared against every object in
+                    # the map before geometry could rule any of them out.
+                    if not locality_ok(bbox, obj, EXPLORATION_IOU_THRESHOLD):
+                        continue
+
                     obj_label_base = obj.label.split('#')[0] if '#' in obj.label else obj.label
                     if not hasattr(obj, "embedding"):
                         obj.embedding = get_embedding(world2vec, obj.description)
@@ -850,42 +970,68 @@ class ObjectManagerService(Node):
                         material, obj.material, description_embedding, obj.embedding
                     )
 
-                    if obj.bbox is not None:
-                        iou = compute_iou_3d(bbox, obj.bbox)
-
-                        current_is_unknown = (description_text.lower() == "unknown")
-                        stored_is_unknown = (obj.description.lower() == "unknown")
-
-                        if (current_is_unknown or stored_is_unknown) and iou >= EXPLORATION_IOU_THRESHOLD:
-                            already_seen = True
-                            current_perception_objects.append(obj)
-                            obj.bbox = bbox
-                            if stored_is_unknown and not current_is_unknown:
-                                obj.description = description_text
-                                obj.color = color
-                                obj.material = material
-                                obj.embedding = description_embedding
-                            objects_modified = True
-                            break
-
-                        if similarity > SIM_THRESHOLD and iou >= EXPLORATION_IOU_THRESHOLD:
-                            already_seen = True
-                            current_perception_objects.append(obj)
-                            # Guard: moving-pass detections must not mutate established boxes under confirm_stationary
-                            confirm_stationary = CFG.get("association", {}).get("confirm_stationary", True)
-                            is_moving = getattr(self.object_services, "is_moving", False)
-                            if not confirm_stationary or not is_moving:
-                                obj.bbox = bbox
-                                objects_modified = True
-                            else:
-                                self.object_services.log_both('debug', f"[MOVING PASS] Matched '{obj.label}' — keeping established bbox (confirm_stationary)")
-                            break
+                    # GA-04: `obj.bbox is not None` and the overlap recomputation that stood
+                    # here are gone -- locality_ok above guarantees both for every candidate
+                    # that reaches this point, so the acceptance test is now attributes only.
+                    #
+                    # GA-05: the unknown-description shortcut that stood here is deleted.
+                    # It accepted the first candidate overlapping by 10% whenever EITHER
+                    # side's description was "unknown", discarding the similarity computed
+                    # three lines above -- so a chair standing at an undescribed table was
+                    # declared to BE the table. lost_similarity already handles the unknown
+                    # case correctly, by dropping unevidenced terms and renormalising; that
+                    # is what the FIX comment above describes. Overlap is LOCALITY evidence
+                    # and is used as the gate below, never as the score.
+                    #
+                    # Deleted with it, deliberately: that branch also back-filled an
+                    # undescribed stored object's description, colour, material and
+                    # embedding from the detection. Nothing else back-fills, so an object
+                    # described once keeps that description and a genuinely unknown one
+                    # stays unknown until it is re-detected as new. The loss is accepted
+                    # (owner's ruling, 30 Aug): the back-fill was triggered by the very
+                    # condition that made the match unsafe -- copying attributes across a
+                    # match established on the ABSENCE of evidence. If back-filling is
+                    # wanted it belongs on a match established ON evidence, which is the
+                    # re-evaluation path (D15), not the association loop.
+                    if similarity > SIM_THRESHOLD:
+                        already_seen = True
+                        current_perception_objects.append(obj)
+                        # GA-07: the confirm_stationary guard that stood here is DELETED,
+                        # with its twin below and the config key. It read
+                        # `self.object_services.is_moving`, which is defined NOWHERE in the
+                        # tree, so the getattr default False was taken on every arrival and
+                        # `not confirm_stationary or not is_moving` was always True. This
+                        # deletion therefore changes NO runtime behaviour -- the else branch
+                        # has never executed once.
+                        #
+                        # It was inert in the PERMISSIVE direction, which is worse than
+                        # absent: the config advertised that established boxes are protected
+                        # during motion, and they never were. Reading the real
+                        # `robot_has_moved` here cannot fix it either -- this code sits after
+                        # an early return that fires when it is true, so it is provably False
+                        # at this point. Real protection belongs ABOVE that early return and
+                        # is a different change from this one.
+                        obj.bbox = bbox
+                        objects_modified = True
+                        break
 
             else:
                 best_match = None
                 best_score = 0
 
-                for obj in wm.persistent_perceptions:
+                for obj in wm.snapshot():
+                    # GA-04: in TRACKING mode there was NO locality gate at all --
+                    # TRACKING_IOU_THRESHOLD's only use raised the score to 1.0, and the
+                    # centre-distance guard below was disabled by its own shipped config. So
+                    # acceptance was similarity alone, against every object in the map at any
+                    # distance: two chairs in different rooms matched on the label term.
+                    #
+                    # A candidate with no bbox no longer matches here. It did before, on
+                    # similarity alone; the exploration branch always excluded it, and D14
+                    # prefers strict. Deliberate behaviour change, owner-approved 30 Aug.
+                    if not locality_ok(bbox, obj, TRACKING_IOU_THRESHOLD):
+                        continue
+
                     if not hasattr(obj, "embedding"):
                         obj.embedding = get_embedding(world2vec, obj.description)
                     # FIX: a missing description embedding is not a reason to
@@ -899,40 +1045,44 @@ class ObjectManagerService(Node):
                         material, obj.material, description_embedding, obj.embedding
                     )
 
-                    if description_text.lower() == "unknown" or obj.description.lower() == "unknown":
-                        if obj.bbox is not None:
-                            iou = compute_iou_3d(bbox, obj.bbox)
-                            if iou >= TRACKING_IOU_THRESHOLD:
-                                similarity = 1.0
-
-                    # Spatial gate (config association.max_match_distance_m, 0 = off):
-                    # with label-only evidence two same-label objects across the
-                    # map would otherwise merge; attribute similarity is not position.
-                    if MAX_MATCH_DISTANCE > 0 and obj.bbox is not None and bbox is not None:
-                        if bbox_center_distance(bbox, obj.bbox) > MAX_MATCH_DISTANCE:
-                            continue
-
+                    # GA-05: the unknown-description override that stood here is deleted. It
+                    # set similarity to 1.0 -- a PERFECT attribute score -- whenever either
+                    # side's description was "unknown" and the boxes overlapped, so a lamp
+                    # standing on an undescribed sofa took the sofa's node, and no later
+                    # candidate could beat 1.0. Same defect as the exploration branch, by a
+                    # different route. TRACKING_IOU_THRESHOLD has no use site in this file
+                    # after this deletion; GA-04 gives it its single correct one, as the
+                    # locality gate at the top of this loop.
+                    #
+                    # The centre-distance guard that stood here is gone with
+                    # association.max_match_distance_m. D14 already settled that the distance
+                    # cutoff is REPLACED by a locality test, so removing it executes a decision
+                    # rather than making one -- and leaving a second, disabled locality
+                    # mechanism beside a live one is a config key that reads as if it does
+                    # something. The gate at the top of this loop is the locality test now.
                     if similarity > SIM_THRESHOLD and similarity > best_score:
                         best_score = similarity
                         best_match = obj
 
                 if best_match:
-                    already_seen = True
-                    confirm_stationary = CFG.get("association", {}).get("confirm_stationary", True)
-                    is_moving = getattr(self.object_services, "is_moving", False)
-                    target_bbox = best_match.bbox if (confirm_stationary and is_moving and best_match.bbox is not None) else bbox
-                    if confirm_stationary and is_moving and best_match.bbox is not None:
-                        self.object_services.log_both('debug', f"[MOVING PASS] Tracking update for '{best_match.label}' preserving established bbox (confirm_stationary)")
-                    update_response = self.modify_existing_object(best_match, target_bbox, description_embedding)
+                    # GA-10: `already_seen = True` stood here, before the update was even
+                    # attempted, so a failure still suppressed the admission block below.
+                    # It now follows the update's success, as in the transition branch.
+                    # GA-07, second of the two dead guards -- see the exploration branch
+                    # above. `target_bbox` resolved to `bbox` on every arrival because
+                    # is_moving was always False, so passing `bbox` directly is behaviour-
+                    # identical and removes a name that suggested a choice was being made.
+                    update_response = self.modify_existing_object(best_match, bbox, description_embedding)
                     if update_response.success:
                         matching_obj = next(
-                            (o for o in wm.persistent_perceptions
+                            (o for o in wm.snapshot()
                              if getattr(o, "object_id", None) == update_response.object_id),
                             best_match,
                         )
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
                         self._note_update(update_response.object_id)
+                        already_seen = True
                     else:
                         self.object_services.log_both('warn', f"Update fallito per {best_match.label}: {update_response.message}")
 
@@ -955,6 +1105,24 @@ class ObjectManagerService(Node):
                     description_embedding, in_exploration, proposal["room_id"]
                 )
                 if new_obj is not None:
+                    # Join the decision to the object it produced. The admission line above is
+                    # written BEFORE the object exists -- add_new_object only learns object_id
+                    # from the Graph API's POST response -- and refused proposals never get one,
+                    # so the link cannot live on that line and must be a second, later record.
+                    #
+                    # Without it the only key shared by the decision log and the world model is
+                    # the label, which joined 9 of 11 objects on the 26 Aug run. That gap is why
+                    # the analysis falls back to label + centroid on a 0.1 m grid for "distinct
+                    # object", making a published denominator a function of a rounding constant
+                    # (54 at 0.1 m, 33 at 1.0 m, same run).
+                    #
+                    # decision_id is an opaque string the hook put in its own annotation dict:
+                    # generic seam data, nothing imported from any particular filter.
+                    decision_id = (decision.annotation or {}).get("decision_id")
+                    linked_id = getattr(new_obj, "object_id", None)
+                    if decision_id and linked_id:
+                        self.decision_log.write("link", linked_id,
+                                                decision_id=decision_id, label=label)
                     current_perception_objects.append(new_obj)
                     objects_modified = True
 
@@ -1123,8 +1291,13 @@ class ObjectManagerService(Node):
 
     def merge_duplicate_objects(self):
         payload = {
-            "max_distance": 0.8,
-            "min_similarity": 0.75,
+            # GA-06: from config, and strictly stricter than the match gate. These were
+            # 0.8 and 0.75 against a sim_threshold of 0.85, so merge fused pairs the
+            # association loop had just refused. object_services asserts the ordering at
+            # load; these are read from the same block.
+            "max_distance": CFG["association"].get("merge_max_distance_m", 0.8),
+            "min_similarity": CFG["association"].get(
+                "merge_min_similarity", SIM_THRESHOLD + (1.0 - SIM_THRESHOLD) / 2.0),
             "dry_run": False,
         }
 
@@ -1182,17 +1355,91 @@ class ObjectManagerService(Node):
                 self.object_services.log_both('info', f"[UNCERTAIN CLEANUP] Rimosso '{obj.label}' (tempo scaduto)")
     
     def _descriptions_callback(self, msg):
+        self._n_desc_msgs += 1
         stamp = getattr(getattr(msg, "header", None), "stamp", None)
         if stamp is None:
+            self._n_desc_no_stamp += 1
+            self.object_services.log_both(
+                'warn', f"[SYNC] /object_descriptions message with no usable stamp "
+                        f"({self._n_desc_no_stamp} of {self._n_desc_msgs})")
             return
         self._pending_descriptions[_stamp_key(stamp)] = msg
         while len(self._pending_descriptions) > SYNC_BUFFER_LIMIT:
             self._pending_descriptions.pop(next(iter(self._pending_descriptions)))
         self._try_process()
 
+    def _check_input_silence(self):
+        """No detections for a while: say so once, then END THE RUN if it persists.
+
+        GA-83 shipped the first half of this and deliberately stopped there, on the
+        reasoning that "this node cannot tell a dead producer from a robot standing
+        still, and guessing would be the fallback-as-fact shape". GA-94 retires that
+        reasoning on evidence, in two steps.
+
+        FIRST, THE PREMISE WAS FALSE. `perception_2._publish_bbox_array` ends in an
+        UNCONDITIONAL `self.bbox_pub.publish(msg)` -- a cycle that detects nothing still
+        publishes an empty Bbox3dArray. So a stationary robot staring at a blank wall
+        still feeds this topic every cycle. Silence on /bbox_3d does NOT mean "nothing to
+        see"; it means the producer stopped. The distinction GA-83 refused to guess at is
+        one the code already makes.
+
+        SECOND, THE SILENCE WAS NOT READ BY ANYONE. In run A this node printed exactly
+        the line GA-83 designed, at 17:53:35, and then idled for 36 more minutes on a run
+        whose rtabmap had already been killed. A fact stated to a log nobody is reading
+        is not a safeguard; it is a record of how long the waste went on.
+
+        So: report once as before, then exit non-zero after INPUT_SILENCE_MAX_STRIKES
+        consecutive silent checks, with the announcement as the last line.
+        """
+        if self._last_bbox_at is None:
+            return
+        silent_for = time.time() - self._last_bbox_at
+        if silent_for < INPUT_SILENCE_TIMEOUT:
+            self._input_silence_reported = False
+            self._input_silence_strikes = 0
+            return
+        self._input_silence_strikes += 1
+        if not self._input_silence_reported:
+            self._input_silence_reported = True
+            self.object_services.log_both(
+                'warn',
+                f"[INPUT] no /bbox_3d for {silent_for:.0f}s "
+                f"({self._n_bbox_msgs} received in total, {len(wm.persistent_perceptions)} objects "
+                f"in the map). The producer may have stopped; this node has nothing to process.")
+        if self._input_silence_strikes >= INPUT_SILENCE_MAX_STRIKES:
+            self.object_services.log_both(
+                'error',
+                f"[INPUT] ENDING THE RUN: no /bbox_3d for {silent_for:.0f}s across "
+                f"{self._input_silence_strikes} consecutive checks "
+                f"({self._n_bbox_msgs} received in total, {len(wm.persistent_perceptions)} objects "
+                f"in the map). The producer is gone and this node cannot make progress.")
+            try:
+                if hasattr(self, "room_manager"):
+                    self.room_manager.finalize_current_room(wm.persistent_perceptions)
+            except Exception as exc:
+                self.object_services.log_both('error', f"[INPUT] room finalize failed on exit: {exc}")
+            for h in list(logging.getLogger().handlers):
+                try:
+                    h.flush()
+                except Exception:
+                    pass
+            sys.stdout.flush()
+            sys.stderr.flush()
+            # os._exit, not sys.exit: this runs on a MultiThreadedExecutor WORKER thread,
+            # where SystemExit unwinds that thread only and leaves the process spinning --
+            # which is the exact failure being fixed. The log is flushed above first.
+            os._exit(1)
+
     def _bboxes_callback(self, msg):
+        self._n_bbox_msgs += 1
+        self._last_bbox_at = time.time()
+        self._input_silence_reported = False
         stamp = getattr(getattr(msg, "header", None), "stamp", None)
         if stamp is None:
+            self._n_bbox_no_stamp += 1
+            self.object_services.log_both(
+                'warn', f"[SYNC] /bbox_3d message with no usable stamp "
+                        f"({self._n_bbox_no_stamp} of {self._n_bbox_msgs})")
             return
         self._pending_bboxes[_stamp_key(stamp)] = msg
         while len(self._pending_bboxes) > SYNC_BUFFER_LIMIT:
@@ -1200,16 +1447,50 @@ class ObjectManagerService(Node):
         self._try_process()
 
     def _try_process(self):
-        if self.robot_has_moved:
-            self._pending_descriptions.clear()
-            self._pending_bboxes.clear()
-            return
-
+        # A pair is judged by WHEN IT WAS OBSERVED, not by what the robot is doing when it
+        # arrives. This used to return early and clear BOTH buffers whenever the robot was
+        # in motion -- which, given the 1.6-2.3 s perception round-trip, discarded stationary
+        # observations because the robot had set off again before they came back.
+        #
+        # The guard's real intent is preserved: an observation whose own stamp falls inside
+        # the current motion was taken while moving and is still refused.
         common_keys = sorted(set(self._pending_descriptions) & set(self._pending_bboxes))
         if not common_keys:
+            # Say WHY there is no pair: one side empty, or two non-empty sides that do not
+            # intersect. Those are different faults and silence conflates them.
+            #
+            # Once per change of state, not once per callback. Logging every arrival is
+            # what produced a 1.7 GB om6.log -- a diagnostic nobody can open is not a
+            # diagnostic, and the counters below carry the same information in one line.
+            state = (len(self._pending_descriptions), len(self._pending_bboxes))
+            if state != self._last_nopair_state:
+                self._last_nopair_state = state
+                self.object_services.log_both(
+                    'warn',
+                    f"[SYNC] no pair: desc={sorted(self._pending_descriptions)[-3:]} "
+                    f"({state[0]} buffered, {self._n_desc_msgs} received) "
+                    f"bbox={sorted(self._pending_bboxes)[-3:]} "
+                    f"({state[1]} buffered, {self._n_bbox_msgs} received)")
             return
+        self._last_nopair_state = None
 
         for stamp_key in common_keys:
+            bboxes_msg = self._pending_bboxes[stamp_key]
+            if self._moving_since is not None:
+                observed_at = stamp_key[0] + stamp_key[1] * 1e-9
+                if observed_at >= self._moving_since:
+                    # Taken during this motion, so it can never become valid -- the stamp
+                    # does not change when the robot stops. Drop it once, here, rather than
+                    # leaving it to be re-examined and re-logged on every later call.
+                    self._pending_descriptions.pop(stamp_key, None)
+                    self._pending_bboxes.pop(stamp_key, None)
+                    self._dropped_moving_pairs += 1
+                    self.object_services.log_both(
+                        'warn',
+                        f"[SYNC] pair {_stamp_key_str(bboxes_msg.header.stamp)} observed during "
+                        f"motion -- discarded (total {self._dropped_moving_pairs})")
+                    continue
+
             descriptions = self._pending_descriptions.pop(stamp_key, None)
             bboxes = self._pending_bboxes.pop(stamp_key, None)
             if descriptions is None or bboxes is None:
@@ -1228,15 +1509,21 @@ class ObjectManagerService(Node):
             self.object_tracking_callback(request, response)
 
     def walls_callback(self, msg):
-        try:
-            new_walls = json.loads(msg.data)
-            self.room_manager.init_room_node(self.room_manager.current_room_id)
-            for w in new_walls:
-                start_x, start_y = w["start"]["x"], w["start"]["y"]
-                end_x, end_y = w["end"]["x"], w["end"]["y"]
-                self.room_manager.current_room_walls.append([start_x, start_y, end_x, end_y])
-        except Exception as e:
-            print(f"[ERROR] Errore nel salvataggio muri: {e}")
+        # The `except Exception` that stood here printed to stdout and continued, so a
+        # malformed or renamed wall message left current_room_walls silently empty and
+        # the run looked clean. wall_detector was rewritten for depth and this is its
+        # FIRST live flight: a swallowed exception here is precisely what would make a
+        # broken first flight indistinguishable from a room with no walls in it.
+        #
+        # No handler. json.loads and the "start"/"end"/"x"/"y" lookups now raise, and a
+        # raise in a subscription callback is visible in the node's log with a traceback
+        # naming the field that was wrong. Rule 14: a missing component crashes.
+        new_walls = json.loads(msg.data)
+        self.room_manager.init_room_node(self.room_manager.current_room_id)
+        for w in new_walls:
+            start_x, start_y = w["start"]["x"], w["start"]["y"]
+            end_x, end_y = w["end"]["x"], w["end"]["y"]
+            self.room_manager.current_room_walls.append([start_x, start_y, end_x, end_y])
 
     # --- re-evaluation seam (hooks.Reevaluation / hooks.Refiner) ---
     @staticmethod
@@ -1246,11 +1533,11 @@ class ObjectManagerService(Node):
                 "bbox": obj.bbox, "room_id": getattr(obj, "room_id", None)}
 
     def _find_node(self, object_id):
-        return next((o for o in wm.persistent_perceptions
+        return next((o for o in wm.snapshot()
                      if (getattr(o, "object_id", None) or o.label) == object_id), None)
 
     def _neighbours(self, node, radius):
-        return [o for o in wm.persistent_perceptions
+        return [o for o in wm.snapshot()
                 if o is not node and o.bbox is not None and node.bbox is not None
                 and bbox_center_distance(node.bbox, o.bbox) <= radius]
 
@@ -1261,7 +1548,18 @@ class ObjectManagerService(Node):
         node = self._find_node(object_id)
         if node is None:
             return
-        radius = MAX_MATCH_DISTANCE or 2.0
+        radius = REEVALUATION_RADIUS
+        # GA-11: queue the node that CHANGED, not only its neighbours. `on_update` adds
+        # the neighbour ids and never the subject -- hooks.py's own self-test pins that
+        # exactly: after `on_update("a", ["b","c"])` the queue holds b and c, never a.
+        # So every update re-examined the neighbourhood of a node and never the node
+        # itself, which is the one thing known to have new evidence.
+        #
+        # Fixed HERE and deliberately NOT in hooks.py. hooks.py ships the generic
+        # blueprint that FOUND extends; widening on_update's contract would change it
+        # for every subclass and break the blueprint's self-test. WHICH nodes deserve a
+        # second look is the caller's trigger policy, which is what this method is.
+        self.reeval.mark(object_id, "updated")
         self.reeval.on_update(object_id, [self._node_dict(o)["object_id"] for o in self._neighbours(node, radius)])
 
     def _drain_reevaluations(self):
@@ -1272,7 +1570,7 @@ class ObjectManagerService(Node):
             node = self._find_node(object_id)
             if node is None:
                 continue
-            neighbours = [self._node_dict(o) for o in self._neighbours(node, MAX_MATCH_DISTANCE or 2.0)]
+            neighbours = [self._node_dict(o) for o in self._neighbours(node, REEVALUATION_RADIUS)]
             try:
                 revision = self.refiner_hook.refine(self._node_dict(node), neighbours)
             except Exception as exc:

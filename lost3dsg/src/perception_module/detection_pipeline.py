@@ -66,6 +66,9 @@ class DetectionPipelineMixin:
         if not labels:
             return []
 
+        # None on the local path, and None is the honest value there: a local backend makes
+        # no request, so there is no wire time to report. 0.0 would read as "measured zero".
+        client_timings = None
         backend = getattr(self, "perception_backend", None)
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
         if backend and backend_type != "local":
@@ -77,12 +80,77 @@ class DetectionPipelineMixin:
                 nms_threshold=CFG.get("perception", {}).get("nms_threshold", 0.50),
             )
             t_cloud = time.time() - t0
-            t_owlv2 = cloud_timings.get("owlv2", t_cloud * 0.4 * 1000.0) / 1000.0
-            t_nms = cloud_timings.get("nms", 10.0) / 1000.0
-            t_sam = cloud_timings.get("sam", t_cloud * 0.5 * 1000.0) / 1000.0
+            client_timings = cloud_timings.get("client")
+            # GA-14: these defaulted to 40% of the wall clock, a constant 10 ms, and 50%
+            # of the wall clock — three invented numbers written into the same record as
+            # real measurements, where the fractions even sum to 0.9. A missing stage
+            # timing is a broken contract with the perception service, not a value to
+            # guess, and a measurement path is where a silent estimate does most damage.
+            #
+            # SETTLED by the raise below, run 15, first cycle: the server emits
+            # `detector`, `sam2` and `total`. The two checkouts disagreed on these names
+            # and nothing on disk said which was right, so this read THIS tree's names
+            # and put `sorted(cloud_timings)` in the error. The first mismatch then named
+            # the truth on its first occurrence rather than being papered over by an
+            # estimate — which is what the message is for, and it is the only reason the
+            # question is now answered instead of guessed.
+            # This return used to sit AFTER the stage-timing check below, and that order
+            # killed run 19 on its fourth cycle. When the detector finds nothing the server
+            # returns early and SAM never runs, so there IS no `sam2` stage to report — the
+            # check demanded a measurement of work that was not done. Zero detections is a
+            # result, not a contract violation, and the run must not die on one.
+            #
+            # The reported keys go in the log line because they are the discriminant. Run 19
+            # reported ['total', 'yolo_world'] here while its three earlier cycles reported
+            # detector/sam2 on the non-empty path — the deployed Modal build names the empty
+            # path's detector timing `yolo_world`, which `modal_perception.py:188` renames to
+            # `detector` ("same key as the non-empty path") in a build that is not deployed.
+            # Reading no key on this path makes the client correct under BOTH builds, so no
+            # redeploy is needed; without the log line the next skew is invisible again.
+            #
+            # NO stage timing is recorded for this cycle. GA-14's rule is unchanged: a value
+            # that is not a measurement must not sit where measurements live, and that holds
+            # for a cycle with nothing to measure as much as for one with a missing number.
             if len(detections) == 0:
-                self.log_both("info", "Cloud perception backend found no objects")
+                self.log_both("info", "Cloud perception backend found no objects "
+                                      f"(reported timing keys: {sorted(cloud_timings)})")
                 return []
+            # Detections WITHOUT stage timings is the genuine contract violation and still
+            # raises: the server did the work and did not say what it cost.
+            missing = [k for k in ("detector", "sam2") if k not in cloud_timings]
+            if missing:
+                raise RuntimeError(
+                    f"perception backend returned no timing for {missing}; refusing to "
+                    f"estimate it from the wall clock "
+                    f"(reported keys: {sorted(cloud_timings)})"
+                )
+            t_owlv2 = cloud_timings["detector"] / 1000.0   # output field stays owlv2_ms
+            # NMS does NOT raise: on this backend it runs inside the detector and is never
+            # reported separately, so 0.0 is the correct value. But 0.0 alone means BOTH
+            # "measured as zero" and "not reported", and a reader cannot tell them apart —
+            # so which one it is is recorded as its own key. Additive, because three
+            # consumers read this record by key.
+            nms_reported = "nms" in cloud_timings
+            t_nms = cloud_timings.get("nms", 0.0) / 1000.0
+            t_sam = cloud_timings["sam2"] / 1000.0         # output field stays sam_ms
+            # The unattributed majority of a cloud cycle lives here, and it was invisible
+            # while the three stage timings above were invented: those are the SERVER's
+            # numbers, t_cloud is the wall clock, and nobody recorded the difference. On
+            # the 26 Aug run the stages summed to 328 ms of a 1,288 ms median cycle; the
+            # missing 857 ms was never a slow function, it was this subtraction. Keep
+            # both — the server times say what compute cost, the remainder says what the
+            # round trip cost, and only the second responds to moving the backend.
+            t_backend_overhead = max(0.0, t_cloud - (t_owlv2 + t_nms + t_sam))
+            # The server also reports `total`, which splits that remainder in two: what
+            # the server spent outside the three stages, and what the wire cost. Ours
+            # minus theirs is network and serialisation; only that half responds to
+            # moving the backend. Recorded as None rather than 0.0 when the server does
+            # not report `total`, with a flag beside it, because a 0.0 there would mean
+            # both "no wire time" and "not reported" — the ambiguity this file just
+            # removed from nms_ms.
+            server_total = cloud_timings.get("total")
+            server_total_reported = server_total is not None
+            t_wire = max(0.0, t_cloud - server_total / 1000.0) if server_total_reported else None
         else:
             t0 = time.time()
             bboxs, labels, scores = self._run_open_vocab_detector(camera_data["rgb"], labels)
@@ -94,6 +162,10 @@ class DetectionPipelineMixin:
             t0 = time.time()
             bboxs, labels, scores = self._apply_detection_nms(bboxs, labels, scores)
             t_nms = time.time() - t0
+            nms_reported = True        # measured directly on this path
+            t_backend_overhead = 0.0   # no round trip on the local path: measured, not assumed
+            t_wire = 0.0               # likewise: no wire
+            server_total_reported = False
             if len(bboxs) == 0:
                 self.log_both("info", "OWLv2 found no objects after NMS")
                 return []
@@ -121,6 +193,23 @@ class DetectionPipelineMixin:
             "vlm_ms": round(t_vlm * 1000.0, 1),
             "owlv2_ms": round(t_owlv2 * 1000.0, 1),
             "nms_ms": round(t_nms * 1000.0, 1),
+            # GA-14: 0.0 in nms_ms means BOTH "measured as zero" and "not reported
+            # separately by the backend". This says which, so a reader can tell them
+            # apart. A field that distinguishes two cases is worth nothing until a
+            # reader distinguishes them — so any consumer quoting nms_ms must read this.
+            "nms_reported": nms_reported,
+            "backend_overhead_ms": round(t_backend_overhead * 1000.0, 1),
+            "wire_ms": round(t_wire * 1000.0, 1) if t_wire is not None else None,
+            "server_total_reported": server_total_reported,
+            # The CLIENT's own decomposition of what `wire_ms` lumps together, forwarded
+            # from cloud/client.py. Item 13 turns on being able to split it:
+            #     total_ms - client.request_ms  our encode and mask decode
+            #     client.request_ms - server total   connection, queueing, COLD START
+            # Nested under its own key because everything above it is the SERVER's number
+            # and these are ours; run 19 put 42,256 ms of 42,275 into `wire` and nothing
+            # could say which half it was. `payload_bytes` is here because it is MEASURED:
+            # a 36.6 KiB body cannot take 42 s, and that was an inference until now.
+            "client": client_timings,
             "sam_ms": round(t_sam * 1000.0, 1),
             "projection_ms": round(t_proj * 1000.0, 1),
             "total_ms": round(t_total * 1000.0, 1),
@@ -180,19 +269,20 @@ class DetectionPipelineMixin:
                 "room_belief": getattr(self.vlm, "last_room_belief", None),
             }
         except Exception as exc:
-            # Config seam: with vlm.fallback_labels set, an unreachable VLM
-            # degrades to a static open-vocab list (loudly) instead of killing
-            # the detection cycle. Empty list (default) = raise as before.
-            fallback = CFG["vlm"].get("fallback_labels") or []
+            # GA-53: a config seam stood here. With `vlm.fallback_labels` set, an
+            # unreachable VLM was replaced by a static open-vocabulary list and the
+            # cycle continued — so every downstream detection, association and verdict
+            # came from labels no model produced, and the bundle recorded a completed
+            # run. `smoke_config.yaml` arms it with 69 labels, and per GA-50 that is
+            # the file the container loads. Working rule 14: a missing component must
+            # stop the run. The status is still recorded, and then it always raises —
+            # a handler that re-raises is not a mute; one that substitutes is.
             self._vlm_status = {
-                "status": "degraded_fallback" if fallback else "unreachable",
+                "status": "unreachable",
                 "model": CFG.get("vlm", {}).get("model", "unknown"),
                 "error": str(exc),
             }
-            if not fallback:
-                raise
-            self.log_both("warn", f"VLM labels unavailable ({exc}); using {len(fallback)} fallback labels")
-            labels = list(fallback)
+            raise
         self.log_both("info", f"[PROFILE] VLM labels: {time.time() - t0:.3f}s")
         self.log_both("info", f"[PROFILE] Labels: {labels}")
 

@@ -108,6 +108,41 @@ class SyncedCameraData:
             # Per le bbox 3D preferiamo una posa esatta al timestamp del frame RGB:
             # se non è disponibile, invalidiamo la cache così il frame viene scartato.
             self.cached_transform = None
+
+            # GA-95. The TF-at-image-stamp principle above is CORRECT and stays: a box is
+            # back-projected with the pose the camera actually had when the shutter opened.
+            # What was missing is the exit. Only `cached_transform` was cleared, never
+            # `cached_rgb`, so the SAME frame was re-looked-up on every tick -- and once its
+            # stamp falls out of the TF buffer the lookup is unrecoverable BY DEFINITION,
+            # because the data it needs has been evicted. In run A that produced 2271
+            # retries of one dead frame over 38 minutes, each one logging at INFO from the
+            # caller, while the first (and only) warn here had already been suppressed by
+            # _transform_error_logged.
+            #
+            # A frame older than the buffer's cache window can never be transformed again.
+            # Say so ONCE with the numbers, then DROP IT so the next frame gets a turn.
+            try:
+                stamp_s = Time.from_msg(self.cached_rgb.header.stamp).nanoseconds / 1e9
+                now_s = self.node.get_clock().now().nanoseconds / 1e9
+                age = now_s - stamp_s
+            except Exception:
+                age = None
+
+            cache_s = float(config.CFG["tf"].get("buffer_cache_s", 30.0))
+            if age is not None and age > cache_s:
+                self.node.get_logger().warn(
+                    f"Dropping frame: its stamp is {age:.1f}s old and the TF buffer holds "
+                    f"only {cache_s:.0f}s, so this lookup can never succeed. "
+                    f"Discarding it so the next frame is tried. ({e})")
+                self.cached_rgb = None
+                self.cached_depth = None
+                self.all_ready = False
+                # Re-arm the one-shot warn: the NEXT frame's failure is a new fact, and
+                # suppressing it was half of why this went unnoticed for 38 minutes.
+                if hasattr(self, '_transform_error_logged'):
+                    del self._transform_error_logged
+                return
+
             if not hasattr(self, '_transform_error_logged'):
                 self.node.get_logger().warn(f"Transform not available: {e}")
                 self._transform_error_logged = True

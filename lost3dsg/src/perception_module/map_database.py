@@ -36,9 +36,6 @@ class MapDatabase(Store):
     def _init_database(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript("""
-                DROP TABLE IF EXISTS object_history;
-                DROP TABLE IF EXISTS objects;
-
                 CREATE TABLE IF NOT EXISTS objects (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     object_uuid  TEXT,
@@ -60,7 +57,14 @@ class MapDatabase(Store):
 
                 CREATE TABLE IF NOT EXISTS object_history (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    -- object_id is the objects.id ROW NUMBER, not the object's
+                    -- identity. It is kept because history() and query_map.storia()
+                    -- are called with it (tests/test_store.py, hooks.py). GA-44 adds
+                    -- the durable identity beside it rather than repointing it,
+                    -- because changing a value readers already use breaks them
+                    -- without an error.
                     object_id   INTEGER NOT NULL,
+                    object_uuid TEXT,
                     label       TEXT NOT NULL DEFAULT '',
                     color       TEXT NOT NULL DEFAULT '',
                     timestamp   TEXT NOT NULL,
@@ -83,6 +87,31 @@ class MapDatabase(Store):
                 CREATE INDEX IF NOT EXISTS idx_hist_time  ON object_history(timestamp);
                 CREATE INDEX IF NOT EXISTS idx_hist_event ON object_history(event_type);
             """)
+
+            # GA-43 removed the DROP TABLE pair that used to precede the CREATEs, so
+            # this file now SURVIVES across constructions -- which is what the module
+            # docstring promised all along. The drops were also the only thing keeping
+            # the schema current: CREATE TABLE IF NOT EXISTS does nothing to a table
+            # that already exists, so a database written before GA-44 would keep the
+            # old object_history and the next insert would fail with
+            # "no such column: object_uuid". Migrate it forward instead.
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(object_history)")}
+            if cols and "object_uuid" not in cols:
+                conn.execute("ALTER TABLE object_history ADD COLUMN object_uuid TEXT")
+                # Backfill from the row number while it still resolves. After this the
+                # history keeps a durable identity even if the rowids are ever reused.
+                conn.execute("""UPDATE object_history
+                                   SET object_uuid = (SELECT o.object_uuid FROM objects o
+                                                      WHERE o.id = object_history.object_id)
+                                 WHERE object_uuid IS NULL""")
+                print("[MapDB] migrated object_history: added object_uuid and backfilled")
+
+            # AFTER the migration, never inside the CREATE script above: on a
+            # pre-GA-44 database the table exists without the column, and indexing a
+            # column that is not there yet raises before the migration can run.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hist_uuid ON object_history(object_uuid)"
+            )
 
     # ------------------------------------------------------------------ #
     #  HELPERS                                                             #
@@ -142,10 +171,10 @@ class MapDatabase(Store):
 
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,
                     x_new,y_new,z_new,bbox_new,room_id)
-                   VALUES (?,?,?,?,'detected',?,?,?,?,?,?,?)""",
-                (obj_id, obj.label, obj.color or "", now, phase, step,
+                   VALUES (?,?,?,?,?,'detected',?,?,?,?,?,?,?)""",
+                (obj_id, getattr(obj, 'object_id', None), obj.label, obj.color or "", now, phase, step,
                  x, y, z, bbox_json, room)
             )
 
@@ -174,11 +203,11 @@ class MapDatabase(Store):
             )
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,
                     x_old,y_old,z_old,x_new,y_new,z_new,
                     distance,iou,bbox_old,bbox_new,room_id)
-                   VALUES (?,?,?,?,'moved',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (obj_id, obj.label, obj.color or "", now, phase, step,
+                   VALUES (?,?,?,?,?,'moved',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (obj_id, row["object_uuid"], obj.label, obj.color or "", now, phase, step,
                  x_old, y_old, z_old, x_new, y_new, z_new,
                  distance, iou, json.dumps(old_bbox), json.dumps(new_bbox), room)
             )
@@ -198,9 +227,9 @@ class MapDatabase(Store):
             )
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,notes,room_id)
-                   VALUES (?,?,?,?,'room_reassigned','tracking',?,?,?)""",
-                (row['id'], obj.label, obj.color or "", now,
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,notes,room_id)
+                   VALUES (?,?,?,?,?,'room_reassigned','tracking',?,?,?)""",
+                (row['id'], row['object_uuid'], obj.label, obj.color or "", now,
                  step, f"{old_room} -> {new_room}", new_room)
             )
 
@@ -225,10 +254,10 @@ class MapDatabase(Store):
             )
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,
                     x_old,y_old,z_old,bbox_old,notes,room_id)
-                   VALUES (?,?,?,?,'disappeared',?,?,?,?,?,?,?,?)""",
-                (obj_id, obj.label, obj.color or "", now, phase, step,
+                   VALUES (?,?,?,?,?,'disappeared',?,?,?,?,?,?,?,?)""",
+                (obj_id, row["object_uuid"], obj.label, obj.color or "", now, phase, step,
                  x, y, z, json.dumps(obj.bbox), reason, room)
             )
 
@@ -274,8 +303,8 @@ class MapDatabase(Store):
             )
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,notes,room_id)
-                   VALUES (?,?,?,?,'uncertain_added','tracking',?,'large displacement',?)""",
-                (obj_id, obj.label, obj.color or "", now, step, room)
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,notes,room_id)
+                   VALUES (?,?,?,?,?,'uncertain_added','tracking',?,'large displacement',?)""",
+                (obj_id, row["object_uuid"], obj.label, obj.color or "", now, step, room)
             )
         print(f"[MapDB] ⚠️  UNCERTAIN '{obj.label}'")

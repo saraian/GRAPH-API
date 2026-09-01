@@ -50,7 +50,6 @@ install(PROGRAMS
   src/perception_module/habitat_camera_node.py
   src/perception_module/habitat_feed_node.py
   src/perception_module/graph_api_bridge.py
-  src/perception_module/walls_rooms.py
   src/perception_module/vlm_call.py
   # sibling modules the nodes import at runtime — without these the installed
   # copies die with ImportError under `ros2 run`
@@ -65,6 +64,13 @@ install(PROGRAMS
   src/perception_module/query_map.py
   src/perception_module/graph_api_bridge.py
   src/perception_module/wall_detector.py
+  # GA-128. These four are imported by perception_2 / each other and MUST be installed, or
+  # the node dies at startup with ModuleNotFoundError after a gate that passed -- this list
+  # is a hand-maintained inventory and nothing checks it against the imports.
+  src/perception_module/detection_archive.py
+  src/perception_module/crop_context.py
+  src/perception_module/visual_reid.py
+  src/perception_module/association.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

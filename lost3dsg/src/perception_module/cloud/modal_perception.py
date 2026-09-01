@@ -5,6 +5,35 @@ Deploy with:
 
 Runs OWLv2 open-vocabulary detection + SAM instance segmentation + CLIP feature extraction
 on an NVIDIA L4 GPU in the cloud with per-second billing and scale-to-zero.
+
+THIS FILE IS NOT WHAT IS DEPLOYED, AND THE THING THAT IS DEPLOYED HAS NO COMMIT.
+Established 2026-09-01; recorded here so it is not re-derived from timing keys a third time.
+
+  what runs        YOLO-World-L (v2) + SAM 2.1 Hiera-Small. Not inferred — the health record
+                   in every run bundle says so verbatim:
+                   perception_latencies.json .components.perception_backend.details.models
+  where it lives   /DATA/GRAPH-API working tree ONLY, as an UNCOMMITTED edit to this same
+                   path. `git show HEAD:` in BOTH repositories returns THIS OWLv2 file;
+                   neither HEAD contains the string `YOLOWorld`.
+  what a clone     the OWLv2 server below. A fresh checkout of either repository, deployed,
+  would deploy     REPLACES the running detector.
+
+Two consequences, and they point opposite ways:
+
+1. DO NOT redeploy this file to make GA-17's fix live. It would swap the detector mid-
+   experiment, and the fix it would carry protects a field (`clip_embedding`) that nothing
+   reads: measured over the whole tree, clip_embedding reaches only detection_types.py,
+   client.py:221 and perception_2.py, which stores it and dumps output/clip_embeddings.json.
+   No association, no merge, no map, no viewer.
+
+2. DO NOT discard GA-17's fix either. This file is what both repositories hold COMMITTED, so
+   it is what any fresh clone deploys — the defect is in the version with the widest reach,
+   not a dead branch.
+
+The provenance hole is the finding, and it is worse than a stale build. A stale build has a
+commit that describes it. THE RUNNING SERVICE HAS NONE: it was deployed from an uncommitted
+working tree, so if that tree is lost the running service cannot be reproduced from either
+repository. GA-85 named a deploy skew between builds; this is a deploy from nothing.
 """
 
 import base64
@@ -50,6 +79,31 @@ class PerceptionRequest(BaseModel):
     labels: List[str] = Field(..., description="Candidate open-vocabulary labels from VLM")
     score_threshold: float = Field(default=0.15, description="Confidence threshold for detections")
     nms_threshold: float = Field(default=0.50, description="IoU threshold for non-maximum suppression")
+
+
+MIN_CROP_PX = 4
+"""Below this, in EITHER dimension, a crop carries no usable appearance."""
+
+
+def crop_regions(boxes, rgb_np, w, h, min_px=MIN_CROP_PX):
+    """-> [(box_index, crop_array)] for the boxes whose crop is at least `min_px` a side.
+
+    The BOX INDEX travels with the crop. The embeddings are computed in one batch, so
+    dropping a crop shifts every later position in that batch while the assembly step still
+    indexes `crop_embeddings` by box; carrying the index is what keeps the two from drifting.
+    Split out of the endpoint so this can be tested without a GPU, weights, or Modal — the
+    misalignment it prevents is silent, and would attach one object's appearance to another.
+    """
+    out = []
+    for i, b in enumerate(boxes):
+        x1, y1, x2, y2 = map(int, b)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        crop = rgb_np[y1:y2, x1:x2]
+        if crop.shape[0] < min_px or crop.shape[1] < min_px:
+            continue
+        out.append((i, crop))
+    return out
 
 
 def rle_encode(mask_binary: np.ndarray) -> Dict[str, Any]:
@@ -235,17 +289,25 @@ class PerceptionService:
 
         # 4. Crop CLIP Feature Extraction (using OWLv2 image features)
         t0 = time.time()
-        crop_embeddings = []
-        crops = []
-        for b in boxes:
-            x1, y1, x2, y2 = map(int, b)
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
-            crop = rgb_np[y1:y2, x1:x2]
-            if crop.shape[0] < 4 or crop.shape[1] < 4:
-                crop = np.zeros((64, 64, 3), dtype=np.uint8)
-            crops.append(Image.fromarray(crop))
+        # GA-17. A crop under MIN_CROP_PX in either dimension was replaced by
+        # `np.zeros((64, 64, 3))` and embedded like a real crop. Every sliver in a frame
+        # therefore received the SAME embedding — the encoding of a black square — so any
+        # two slivers scored 1.0 against each other whatever the threshold was set to. A
+        # substitute that is indistinguishable downstream from a measurement is the same
+        # fault as an estimated stage timing (GA-14), in the same service.
+        #
+        # The remedy is `clip_embedding: null` for that detection: the box, label, score and
+        # mask are all still real and are still returned. `detection_types.Detection` already
+        # declares the field Optional and the assembly at :271 already emits None, so the
+        # absence travels without a consumer change.
+        #
+        # `crop_index` exists because the embeddings are batched: skipping a crop shifts
+        # every later index, and the assembly reads crop_embeddings[i] against the BOX index.
+        # The list is pre-filled to len(boxes) so the two indexings cannot drift apart.
+        regions = crop_regions(boxes, rgb_np, w, h)
+        crops = [Image.fromarray(c) for _, c in regions]
 
+        crop_embeddings = [None] * len(boxes)
         if crops:
             crop_inputs = self.processor(images=crops, return_tensors="pt")
             crop_inputs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in crop_inputs.items()}
@@ -256,7 +318,8 @@ class PerceptionService:
                 if not torch.is_tensor(feats):
                     feats = feats.pooler_output
                 feats = torch.nn.functional.normalize(feats, dim=-1).cpu().numpy()
-                crop_embeddings = [[round(float(v), 5) for v in feats[i]] for i in range(len(crops))]
+                for k, (box_i, _) in enumerate(regions):
+                    crop_embeddings[box_i] = [round(float(v), 5) for v in feats[k]]
         t_clip = time.time() - t0
 
         # Assemble Detections
