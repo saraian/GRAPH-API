@@ -72,7 +72,7 @@ RUN . /opt/ros/humble/setup.sh && \
         --packages-select libfranka \
         --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF && \
     colcon build --symlink-install \
-        --packages-skip libfranka \
+        --packages-skip libfranka franka_gazebo_hardware franka_gazebo_bringup franka_bringup franka_fr3_moveit_config franka_ros2 \
         --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 
 # Source everything in bashrc
