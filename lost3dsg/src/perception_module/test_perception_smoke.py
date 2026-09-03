@@ -146,6 +146,7 @@ def scan_summary():
     import json as _json
     import os as _os
     import tempfile
+
     from object_manager_6 import ObjectManagerService, _bbox_centre, _centre_distance
 
     def box(x, y, z, s=0.2):
