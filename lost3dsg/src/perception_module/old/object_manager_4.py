@@ -723,9 +723,9 @@ class ObjectManagerService(Node):
             self._topic_descriptions = None
             self._topic_bboxes = None
             self.latest_bboxes.clear()
-            self.log_both('warn', "[MOVEMENT] Robot is moving -> Blocco stanze attivato")
+            self.log_both('warn', "[MOVEMENT] Robot is moving -> room creation blocked")
         else:
-            self.log_both('info', "[MOVEMENT] Robot has stopped -> Creazione stanze permessa")
+            self.log_both('info', "[MOVEMENT] Robot has stopped -> room creation allowed")
 
     def check_tracking_transition(self, label_base, color, material, description_embedding, bbox):
         best_match = None
@@ -751,7 +751,7 @@ class ObjectManagerService(Node):
                 best_match = obj
 
         if best_match:
-            print(f"🔍 [BEST MATCH FOUND] Rilevato: '{label_base}' -> Best Memoria: '{best_match.label}' (Score: {highest_similarity:.3f})")
+            print(f"🔍 [BEST MATCH FOUND] Detected: '{label_base}' -> Best in memory: '{best_match.label}' (Score: {highest_similarity:.3f})")
             
             if best_match.bbox is None:
                 return False, None, 0.0
@@ -778,7 +778,7 @@ class ObjectManagerService(Node):
             self.tracking_step_counter += 1
 
         if self.robot_has_moved:
-            self.log_both('warn', "Robot in movimento — dati scartati da object_tracking_callback")
+            self.log_both('warn', "Robot is moving — data discarded by object_tracking_callback")
             response.status = "moving"
             response.num_objects = len(wm.persistent_perceptions)
             response.tracking_mode_activated = False
@@ -840,7 +840,7 @@ class ObjectManagerService(Node):
                     room_msg = String()
                     room_msg.data = self.room_manager.current_room_id
                     self.room_pub.publish(room_msg)
-                    self.log_both('info', f"🚪 Cambio stanza rilevato! Inviato segnale a Perception per: {self.room_manager.current_room_id}")
+                    self.log_both('info', f"🚪 Room change detected! Signalled Perception for: {self.room_manager.current_room_id}")
                 
             self.last_room_check_time = current_time
         # -------------------------------------------------------------------
@@ -1062,7 +1062,7 @@ class ObjectManagerService(Node):
                 cz = (bbox["z_min"] + bbox["z_max"]) / 2.0
                 f.write(f"[{timestamp}] 🟢 AGGIUNTO: {label} in {room_id} a pos({cx:.2f}, {cy:.2f}, {cz:.2f})\n")
         except Exception as e:
-            self.get_logger().error(f"Impossibile scrivere su operations.txt: {e}")
+            self.get_logger().error(f"Could not write to operations.txt: {e}")
 
         return new_obj
 
@@ -1123,14 +1123,14 @@ class ObjectManagerService(Node):
     def delete_undetected_objects(self, pov_volume, current_perception_objects, description_received):
         # 1. CONTROLLO VOLUME CON ALLARME
         if not pov_volume:
-            print("❌ ERRORE CRITICO TF: pov_volume è vuoto! Il robot non sa dove sta guardando (Controlla il frame in lookup_transform). Cancellazione annullata.")
+            print("❌ CRITICAL TF ERROR: pov_volume is empty! Il robot non sa dove sta guardando (Controlla il frame in lookup_transform). Cancellazione annullata.")
             return False
 
         # Se arriva qui, il volume funziona! Lo pubblichiamo per visualizzarlo su RViz
         try:
             publish_pov_volume(self, pov_volume, self.considered_volume_pub)
         except Exception as e:
-            print(f"⚠️ Impossibile pubblicare il volume visivo: {e}")
+            print(f"⚠️ Could not publish the view volume: {e}")
 
         objects_to_remove = []
 
@@ -1157,7 +1157,7 @@ class ObjectManagerService(Node):
         # 3. RIMOZIONE FISICA
         if objects_to_remove:
             for obj in objects_to_remove:
-                print(f"🗑️ [CANCELLATO] L'oggetto '{obj.label}' non è più presente nel volume osservato! RIMOSSO.")
+                print(f"🗑️ [DELETED] Object '{obj.label}' is no longer presente nel volume osservato! RIMOSSO.")
                 
                 if obj in wm.persistent_perceptions:
                     wm.persistent_perceptions.remove(obj)
@@ -1192,7 +1192,7 @@ class ObjectManagerService(Node):
         if to_remove:
             for obj in to_remove:
                 self.uncertain_objects.remove(obj)
-                self.log_both('info', f"🧹 [UNCERTAIN CLEANUP] Rimosso '{obj.label}' (tempo scaduto)")
+                self.log_both('info', f"🧹 [UNCERTAIN CLEANUP] Removed '{obj.label}' (expired)")
     
     def _descriptions_callback(self, msg):
         self._topic_descriptions = msg
@@ -1507,7 +1507,7 @@ class ObjectManagerService(Node):
         to_remove = set()
 
         print("══════════════════════════════════════════════")
-        print(f"🔍 MERGE CHECK: {len(objects)} oggetti in memoria")
+        print(f"🔍 MERGE CHECK: {len(objects)} objects in memory")
         print("══════════════════════════════════════════════")
 
         for i in range(len(objects)):
@@ -1554,7 +1554,7 @@ class ObjectManagerService(Node):
                 print(f"     Label: '{a_label}' vs '{b_label}'")
                 print(f"     Colore: '{a.color}' vs '{b.color}'")
                 print(f"     Materiale: '{a.material}' vs '{b.material}'")
-                print(f"     Similarità: {sim:.3f} (soglia: {MIN_SIMILARITY})")
+                print(f"     Similarity: {sim:.3f} (threshold: {MIN_SIMILARITY})")
 
                 if sim < MIN_SIMILARITY:
                 # Fallback: se stessa label e alto overlap spaziale, fonde comunque
@@ -1564,15 +1564,15 @@ class ObjectManagerService(Node):
                             print(f"   ⚠️ Stessa label + IoU alto ({iou:.3f}), forzo merge")
                             sim = 1.0
                     if sim < MIN_SIMILARITY:
-                        print(f"   ❌ SIMILARITÀ BASSA ({sim:.2f} < {MIN_SIMILARITY})")
+                        print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {MIN_SIMILARITY})")
                         continue
 
                 # Distance check (second)
                 dist = np.sqrt((ax - bx)**2 + (ay - by)**2 + (az - bz)**2)
-                print(f"   Distanza: {dist:.3f}m (soglia: {MAX_DISTANCE}m)")
+                print(f"   Distance: {dist:.3f}m (threshold: {MAX_DISTANCE}m)")
 
                 if dist > MAX_DISTANCE:
-                    print(f"   ❌ TROPPO LONTANI ({dist:.2f}m > {MAX_DISTANCE}m)")
+                    print(f"   ❌ TOO FAR APART ({dist:.2f}m > {MAX_DISTANCE}m)")
                     continue
 
                 # Merge bboxes: media
@@ -1610,8 +1610,8 @@ class ObjectManagerService(Node):
 
                 print(f"   ✅ MERGE!")
                 print(f"     Volume A: {vol_a:.3f}m³ | Volume B: {vol_b:.3f}m³ → Media: {vol_m:.3f}m³")
-                print(f"     Tenuto: '{keeper.label}' | Rimosso: '{discard.label}'")
-                print(f"     Desc keeper: '{keeper.description[:40]}...'")
+                print(f"     Kept: '{keeper.label}' | Removed: '{discard.label}'")
+                print(f"     Keeper desc: '{keeper.description[:40]}...'")
                 print(f"     Bbox unito: x[{merged_bbox['x_min']:.2f},{merged_bbox['x_max']:.2f}] "
                     f"y[{merged_bbox['y_min']:.2f},{merged_bbox['y_max']:.2f}] "
                     f"z[{merged_bbox['z_min']:.2f},{merged_bbox['z_max']:.2f}]")
@@ -1628,7 +1628,7 @@ class ObjectManagerService(Node):
             publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
             merged_any = True
         else:
-            print(f"\n✅ NESSUN duplicato trovato.")
+            print(f"\n✅ NO duplicates found.")
 
         print("══════════════════════════════════════════════\n")
         return merged_any
@@ -1641,7 +1641,7 @@ def main(args=None):
     except KeyboardInterrupt:
         from datetime import datetime
         print(f"\nOBJECT MANAGER SERVICE chiuso ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
-        print("Salvataggio dell'ultima stanza in corso...")
+        print("Saving the last room...")
         
         # Salva i dati della stanza corrente usando i persistent_perceptions globali
         if hasattr(service_node, 'room_manager'):

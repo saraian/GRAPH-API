@@ -2,10 +2,10 @@
 
 import os
 import math
-import random
 import numpy as np
 import magnum as mn
 import rclpy
+from config import CFG
 
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -17,17 +17,9 @@ from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 import habitat_sim
 from habitat_sim.utils import common as utils
 
-TEST_SCENE = (
-    "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00802-wcojb4TFT35/wcojb4TFT35.basis.glb"
-)
-
-SCENE_DATASET = (
-    "/root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json"
-)
-
-OPTIONAL_NAVMESH = (
-    "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00802-wcojb4TFT35/wcojb4TFT35.basis.navmesh"
-)
+TEST_SCENE = CFG["habitat"]["nav_scene"]
+SCENE_DATASET = CFG["habitat"]["nav_scene_dataset"]
+OPTIONAL_NAVMESH = CFG["habitat"]["nav_navmesh"]
 
 IMG_WIDTH = 640
 IMG_HEIGHT = 480

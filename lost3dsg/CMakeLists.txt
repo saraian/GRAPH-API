@@ -48,16 +48,51 @@ install(PROGRAMS
   src/perception_module/object_services.py
   src/perception_module/room_manager.py
   src/perception_module/habitat_camera_node.py
-  src/perception_module/walls_rooms.py
+  src/perception_module/habitat_feed_node.py
+  src/perception_module/graph_api_bridge.py
   src/perception_module/vlm_call.py
+  # sibling modules the nodes import at runtime — without these the installed
+  # copies die with ImportError under `ros2 run`
+  src/perception_module/config.py
+  src/perception_module/box_view.py
+  src/perception_module/hooks.py
+  src/perception_module/nlp_utils.py
+  src/perception_module/world_model.py
+  src/perception_module/object_info.py
+  src/perception_module/map_database.py
+  src/perception_module/models.py
+  src/perception_module/query_map.py
+  src/perception_module/graph_api_bridge.py
+  src/perception_module/wall_detector.py
+  # GA-128. These four are imported by perception_2 / each other and MUST be installed, or
+  # the node dies at startup with ModuleNotFoundError after a gate that passed -- this list
+  # is a hand-maintained inventory and nothing checks it against the imports.
+  src/perception_module/detection_archive.py
+  src/perception_module/crop_context.py
+  src/perception_module/visual_reid.py
+  src/perception_module/association.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-
-# Install data files (text prompts)
+# Install data files (text prompts, runtime config, web viewer)
 install(FILES
-  src/perception_module/object_identification_prompt.txt
-  src/perception_module/visual_prompt.txt
+  src/perception_module/config.yaml
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(FILES
+  src/perception_module/prompts/object_identification_prompt.txt
+  src/perception_module/prompts/visual_prompt.txt
+  DESTINATION lib/${PROJECT_NAME}/prompts
+)
+install(DIRECTORY src/perception_module/viewer
+  DESTINATION lib/${PROJECT_NAME}
+)
+# `cloud` perception backend package imported by perception_2.py
+install(DIRECTORY src/perception_module/cloud
+  DESTINATION lib/${PROJECT_NAME}
+)
+# vendored library imported by models.py (VitSam preprocessing)
+install(DIRECTORY src/perception_module/efficientvit
   DESTINATION lib/${PROJECT_NAME}
 )
 

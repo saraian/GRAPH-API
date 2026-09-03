@@ -748,7 +748,7 @@ class ObjectManagerService(Node):
                 best_match = obj
 
         if best_match:
-            print(f"🔍 [BEST MATCH FOUND] Rilevato: '{label_base}' -> Best Memoria: '{best_match.label}' (Score: {highest_similarity:.3f})")
+            print(f"🔍 [BEST MATCH FOUND] Detected: '{label_base}' -> Best in memory: '{best_match.label}' (Score: {highest_similarity:.3f})")
             
             if best_match.bbox is None:
                 return False, None, 0.0
@@ -1206,7 +1206,7 @@ def main(args=None):
         # QUESTO È IL PEZZO NUOVO: Scatta quando premi Ctrl+C
         from datetime import datetime
         print(f"\nOBJECT MANAGER SERVICE chiuso ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
-        print("Salvataggio dell'ultima stanza in corso...")
+        print("Saving the last room...")
         
         # Usa il room_manager per salvare l'ultima stanza visitata!
         if hasattr(service_node, 'room_manager') and hasattr(service_node.room_manager, 'last_known_objects'):

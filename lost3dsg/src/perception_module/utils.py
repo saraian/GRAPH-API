@@ -1,6 +1,5 @@
 from object_info import Object
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from rclpy.time import Time as ROS2Time
 from rclpy.duration import Duration as ROS2Duration
 import numpy as np
 from cv_bridge import CvBridge
@@ -14,8 +13,8 @@ from rclpy.time import Time
 bridge = CvBridge()
 
 file_path = os.path.abspath(__file__)
-ENCODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path),"utils", "l2_encoder.onnx")
-DECODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path),"utils", "l2_decoder.onnx")
+ENCODER_VITSAM_PATH = config.CFG["paths"]["vitsam_encoder"] or os.path.join(os.path.dirname(file_path), "utils", "l2_encoder.onnx")
+DECODER_VITSAM_PATH = config.CFG["paths"]["vitsam_decoder"] or os.path.join(os.path.dirname(file_path), "utils", "l2_decoder.onnx")
 
 
 class SyncedCameraData:
@@ -42,8 +41,21 @@ class SyncedCameraData:
         self.all_ready = False
 
         # QoS for real robot sensor topics
+        # GA-164. depth=1, not 10, and the callback comment three screens down says why:
+        # "ALWAYS updates with the most recent RGB". A depth of 10 defeats that -- the node
+        # drains a QUEUE of ten frames in arrival order, each one immediately superseded by
+        # the next, so `cached_rgb` lags the sensor by up to the queue depth.
+        #
+        # MEASURED, run 20260901_035141 at 1280x960: frames reached get_synced_data a MEDIAN
+        # 7.14 s stale (p90 10.90 s, max 34.05 s) against its 1.0 s freshness limit, so ALL
+        # 1650 were rejected and `publish_objects` ran ZERO times in 17 minutes. At 640x480
+        # the same check rejected 292 and 17 in the two previous runs and 428 and 29 cycles
+        # still ran -- so this is a backlog that 4x the pixels turned from a tax into a wall.
+        #
+        # depth=1 means the middleware keeps only the newest sample and the node reads the
+        # present rather than catching up on the past.
         qos_sensor = QoSProfile(
-            depth=10,
+            depth=1,
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST
         )
@@ -98,7 +110,7 @@ class SyncedCameraData:
                 target_frame,
                 camera_frame,
                 lookup_time,
-                timeout=ROS2Duration(seconds=0.1)
+                timeout=ROS2Duration(seconds=config.CFG["tf"]["lookup_timeout"])
             )
             first_time = self.cached_transform is None
             self.cached_transform = transform
@@ -109,6 +121,41 @@ class SyncedCameraData:
             # Per le bbox 3D preferiamo una posa esatta al timestamp del frame RGB:
             # se non è disponibile, invalidiamo la cache così il frame viene scartato.
             self.cached_transform = None
+
+            # GA-95. The TF-at-image-stamp principle above is CORRECT and stays: a box is
+            # back-projected with the pose the camera actually had when the shutter opened.
+            # What was missing is the exit. Only `cached_transform` was cleared, never
+            # `cached_rgb`, so the SAME frame was re-looked-up on every tick -- and once its
+            # stamp falls out of the TF buffer the lookup is unrecoverable BY DEFINITION,
+            # because the data it needs has been evicted. In run A that produced 2271
+            # retries of one dead frame over 38 minutes, each one logging at INFO from the
+            # caller, while the first (and only) warn here had already been suppressed by
+            # _transform_error_logged.
+            #
+            # A frame older than the buffer's cache window can never be transformed again.
+            # Say so ONCE with the numbers, then DROP IT so the next frame gets a turn.
+            try:
+                stamp_s = Time.from_msg(self.cached_rgb.header.stamp).nanoseconds / 1e9
+                now_s = self.node.get_clock().now().nanoseconds / 1e9
+                age = now_s - stamp_s
+            except Exception:
+                age = None
+
+            cache_s = float(config.CFG["tf"].get("buffer_cache_s", 30.0))
+            if age is not None and age > cache_s:
+                self.node.get_logger().warn(
+                    f"Dropping frame: its stamp is {age:.1f}s old and the TF buffer holds "
+                    f"only {cache_s:.0f}s, so this lookup can never succeed. "
+                    f"Discarding it so the next frame is tried. ({e})")
+                self.cached_rgb = None
+                self.cached_depth = None
+                self.all_ready = False
+                # Re-arm the one-shot warn: the NEXT frame's failure is a new fact, and
+                # suppressing it was half of why this went unnoticed for 38 minutes.
+                if hasattr(self, '_transform_error_logged'):
+                    del self._transform_error_logged
+                return
+
             if not hasattr(self, '_transform_error_logged'):
                 self.node.get_logger().warn(f"Transform not available: {e}")
                 self._transform_error_logged = True
@@ -123,7 +170,15 @@ class SyncedCameraData:
                 self.node.get_logger().info("OK - All data ready!")
                 self.all_ready = True
 
-    def get_synced_data(self, max_age=1.0):
+    def get_synced_data(self, max_age=None):
+        # GA-164: reachable, not hardcoded. 1.0 s was a literal default that no config could
+        # reach -- the same class as the three unreachable settings found tonight -- and it
+        # is the exact threshold that rejected every frame of run 035141. Raising it is a
+        # real trade and should be made deliberately: TF-at-image-stamp keeps an old frame
+        # GEOMETRICALLY correct, but a frame seconds old describes a scene the robot may
+        # have left, and the TF buffer only holds 30 s.
+        if max_age is None:
+            max_age = float(config.CFG["perception"].get("max_frame_age_s", 1.0))
         if self.cached_transform is None:
             self._try_get_transform()
 
@@ -145,7 +200,7 @@ class SyncedCameraData:
         rgb_stamp = Time.from_msg(self.cached_rgb.header.stamp)
         age = (now - rgb_stamp).nanoseconds / 1e9
         if age > max_age:
-            self.node.get_logger().warn(f"Cached frame troppo vecchio ({age:.2f}s), scarto")
+            self.node.get_logger().warn(f"Cached frame too old ({age:.2f}s), discarding")
             return None
 
         depth_stamp = None
@@ -154,7 +209,7 @@ class SyncedCameraData:
             stamp_delta = abs((rgb_stamp - depth_stamp).nanoseconds) / 1e9
             if stamp_delta > self.sync_tolerance_sec:
                 self.node.get_logger().warn(
-                    f"RGB/depth non sincronizzati ({stamp_delta:.3f}s), scarto il frame"
+                    f"RGB/depth not synchronised ({stamp_delta:.3f}s), discarding the frame"
                 )
                 return None
 

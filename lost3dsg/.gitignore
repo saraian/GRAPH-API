@@ -9,6 +9,9 @@ output/
 *.db3
 *.rviz
 *.yaml
+# the runtime config and the test config are part of the package
+!src/perception_module/config.yaml
+!test/smoke_config.yaml
 *.rviz
 docker
 dockerfiles

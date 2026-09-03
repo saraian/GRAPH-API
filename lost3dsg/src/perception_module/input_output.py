@@ -4,10 +4,11 @@ import re
 from datetime import datetime
 
 import cv2
-from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Header
 from lost3dsg.msg import Bbox3dArray, ObjectDescriptionArray
 
+from config import CFG
+from crop_context import build_context_crop
 from perception_utils import compute_fov_volume_from_depth
 from utils import draw_detections
 
@@ -45,7 +46,9 @@ class PerceptionIOMixin:
 
     def publish_empty_state(self, depth, camera_info, cycle_stamp=None):
         stamp = cycle_stamp if cycle_stamp is not None else self.get_clock().now().to_msg()
-        self.pcl_objects_pub.publish(PointCloud2(header=Header(stamp=stamp, frame_id="map"), height=1, width=0))
+        # The object cloud (/pcl_objects, latched) is deliberately NOT wiped here: an
+        # empty cycle used to overwrite the last detection's cloud with a zero-point
+        # message, so rviz showed object clouds only for the instant between two cycles.
         self.pub_object_descriptions.publish(self.make_header_msg(ObjectDescriptionArray, stamp=stamp, frame_id="map"))
 
         empty_bboxes = self.make_header_msg(Bbox3dArray, stamp=stamp, frame_id="map")
@@ -86,9 +89,23 @@ class PerceptionIOMixin:
             x1 = max(x0 + 1, x1)
             y1 = max(y0 + 1, y1)
 
-            crop = image_raw[y0:y1, x0:x1].copy()
-            if crop.size == 0:
-                self.get_logger().warn(f"Invalid crop for {det.instance_label}")
+            # GA-108: ONE construction, selected by config, handed to BOTH consumers.
+            # `tight` is the default and is byte-identical to the slice that used to be
+            # written here -- asserted in crop_context's self-check, not assumed. The other
+            # arms widen the window and outline the referent; the arm is a setting, never a
+            # second implementation, so any difference between arms is the arm and not the
+            # code path.
+            crop, crop_meta = build_context_crop(
+                image_raw, getattr(det, "mask", None),
+                detector_box=(x0, y0, x1, y1),
+                size=int(CFG["crop"]["describer_size"]),
+                construction=str(CFG["crop"]["construction"]))
+            if crop is None or crop.size == 0:
+                # UNANSWERABLE, and recorded as such by crop_meta -- an image we could not
+                # build is not the describer refusing (GA-108 decision 6).
+                self.get_logger().warn(
+                    f"No usable crop for {det.instance_label}: "
+                    f"{crop_meta.get('status')} ({crop_meta.get('reason', '-')})")
                 crops.append(None)
                 continue
 
@@ -97,7 +114,8 @@ class PerceptionIOMixin:
             safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", det.instance_label)
             crop_path = os.path.join(crops_dir, f"crop_{safe_label}_{timestamp}_{idx}.jpg")
             self._io_executor.submit(self.save_crop_file, crop_path, bordered.copy())
-            crops.append({"cropped": crop, "label": det.instance_label, "idx": idx})
+            crops.append({"cropped": crop, "label": det.instance_label, "idx": idx,
+                          "crop_meta": crop_meta})
         return crops
 
     def publish_crops(self, crops_data):

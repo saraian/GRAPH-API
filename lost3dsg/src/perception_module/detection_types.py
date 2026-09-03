@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 import numpy as np
 
 
@@ -10,3 +10,5 @@ class Detection:
     score: float
     mask: np.ndarray
     instance_label: Optional[str] = field(default=None)
+    is_confirmed: bool = field(default=True)
+    clip_embedding: Optional[List[float]] = field(default=None)

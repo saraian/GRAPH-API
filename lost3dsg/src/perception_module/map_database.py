@@ -11,8 +11,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from hooks import Store
 
-class MapDatabase:
+
+class MapDatabase(Store):
+    """Default `hooks.Store`: the SQLite temporal map. Another backend (config
+    `hooks.store`) subclasses Store and receives the same four events."""
+    name = "sqlite"
 
     def __init__(self, db_path: str):
         """
@@ -31,9 +36,6 @@ class MapDatabase:
     def _init_database(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript("""
-                DROP TABLE IF EXISTS object_history;
-                DROP TABLE IF EXISTS objects;
-
                 CREATE TABLE IF NOT EXISTS objects (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     object_uuid  TEXT,
@@ -55,7 +57,14 @@ class MapDatabase:
 
                 CREATE TABLE IF NOT EXISTS object_history (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    -- object_id is the objects.id ROW NUMBER, not the object's
+                    -- identity. It is kept because history() and query_map.storia()
+                    -- are called with it (tests/test_store.py, hooks.py). GA-44 adds
+                    -- the durable identity beside it rather than repointing it,
+                    -- because changing a value readers already use breaks them
+                    -- without an error.
                     object_id   INTEGER NOT NULL,
+                    object_uuid TEXT,
                     label       TEXT NOT NULL DEFAULT '',
                     color       TEXT NOT NULL DEFAULT '',
                     timestamp   TEXT NOT NULL,
@@ -78,6 +87,31 @@ class MapDatabase:
                 CREATE INDEX IF NOT EXISTS idx_hist_time  ON object_history(timestamp);
                 CREATE INDEX IF NOT EXISTS idx_hist_event ON object_history(event_type);
             """)
+
+            # GA-43 removed the DROP TABLE pair that used to precede the CREATEs, so
+            # this file now SURVIVES across constructions -- which is what the module
+            # docstring promised all along. The drops were also the only thing keeping
+            # the schema current: CREATE TABLE IF NOT EXISTS does nothing to a table
+            # that already exists, so a database written before GA-44 would keep the
+            # old object_history and the next insert would fail with
+            # "no such column: object_uuid". Migrate it forward instead.
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(object_history)")}
+            if cols and "object_uuid" not in cols:
+                conn.execute("ALTER TABLE object_history ADD COLUMN object_uuid TEXT")
+                # Backfill from the row number while it still resolves. After this the
+                # history keeps a durable identity even if the rowids are ever reused.
+                conn.execute("""UPDATE object_history
+                                   SET object_uuid = (SELECT o.object_uuid FROM objects o
+                                                      WHERE o.id = object_history.object_id)
+                                 WHERE object_uuid IS NULL""")
+                print("[MapDB] migrated object_history: added object_uuid and backfilled")
+
+            # AFTER the migration, never inside the CREATE script above: on a
+            # pre-GA-44 database the table exists without the column, and indexing a
+            # column that is not there yet raises before the migration can run.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hist_uuid ON object_history(object_uuid)"
+            )
 
     # ------------------------------------------------------------------ #
     #  HELPERS                                                             #
@@ -137,10 +171,10 @@ class MapDatabase:
 
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,
                     x_new,y_new,z_new,bbox_new,room_id)
-                   VALUES (?,?,?,?,'detected',?,?,?,?,?,?,?)""",
-                (obj_id, obj.label, obj.color or "", now, phase, step,
+                   VALUES (?,?,?,?,?,'detected',?,?,?,?,?,?,?)""",
+                (obj_id, getattr(obj, 'object_id', None), obj.label, obj.color or "", now, phase, step,
                  x, y, z, bbox_json, room)
             )
 
@@ -158,7 +192,7 @@ class MapDatabase:
         with sqlite3.connect(self.db_path) as conn:
             row = self._find_active(conn, obj)
             if not row:
-                print(f"[MapDB] ⚠️  on_object_moved: '{obj.label}' non trovato nel DB, salto.")
+                print(f"[MapDB] ⚠️  on_object_moved: '{obj.label}' not found in the DB, skipping.")
                 return
             obj_id = row["id"]
             conn.execute(
@@ -169,11 +203,11 @@ class MapDatabase:
             )
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,
                     x_old,y_old,z_old,x_new,y_new,z_new,
                     distance,iou,bbox_old,bbox_new,room_id)
-                   VALUES (?,?,?,?,'moved',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (obj_id, obj.label, obj.color or "", now, phase, step,
+                   VALUES (?,?,?,?,?,'moved',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (obj_id, row["object_uuid"], obj.label, obj.color or "", now, phase, step,
                  x_old, y_old, z_old, x_new, y_new, z_new,
                  distance, iou, json.dumps(old_bbox), json.dumps(new_bbox), room)
             )
@@ -193,9 +227,9 @@ class MapDatabase:
             )
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,notes,room_id)
-                   VALUES (?,?,?,?,'room_reassigned','tracking',?,?,?)""",
-                (row['id'], obj.label, obj.color or "", now,
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,notes,room_id)
+                   VALUES (?,?,?,?,?,'room_reassigned','tracking',?,?,?)""",
+                (row['id'], row['object_uuid'], obj.label, obj.color or "", now,
                  step, f"{old_room} -> {new_room}", new_room)
             )
 
@@ -209,7 +243,7 @@ class MapDatabase:
         with sqlite3.connect(self.db_path) as conn:
             row = self._find_active(conn, obj)
             if not row:
-                print(f"[MapDB] ⚠️  on_object_deleted: '{obj.label}' non trovato nel DB, salto.")
+                print(f"[MapDB] ⚠️  on_object_deleted: '{obj.label}' not found in the DB, skipping.")
                 return
             obj_id = row["id"]
             conn.execute(
@@ -220,14 +254,37 @@ class MapDatabase:
             )
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,
                     x_old,y_old,z_old,bbox_old,notes,room_id)
-                   VALUES (?,?,?,?,'disappeared',?,?,?,?,?,?,?,?)""",
-                (obj_id, obj.label, obj.color or "", now, phase, step,
+                   VALUES (?,?,?,?,?,'disappeared',?,?,?,?,?,?,?,?)""",
+                (obj_id, row["object_uuid"], obj.label, obj.color or "", now, phase, step,
                  x, y, z, json.dumps(obj.bbox), reason, room)
             )
 
         print(f"[MapDB] ❌ DELETED '{obj.label}' ({reason})")
+
+    # ------------------------------------------------------------------ #
+    #  READS (the Store contract; same rows query_map.py reads offline)    #
+    # ------------------------------------------------------------------ #
+
+    def objects(self, only_active: bool = True):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM objects" + (" WHERE is_active=1" if only_active else "")).fetchall()
+        return [{"id": r["id"], "label": r["label"], "color": r["color"], "material": r["material"],
+                 "description": r["description"], "bbox": json.loads(r["bbox_json"]) if r["bbox_json"] else None,
+                 "room_id": r["room_id"], "is_active": bool(r["is_active"]), "is_uncertain": bool(r["is_uncertain"]),
+                 "first_seen": r["first_seen"], "last_seen": r["last_seen"], "last_event": r["last_event"]}
+                for r in rows]
+
+    def history(self, object_id):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM object_history WHERE object_id=? ORDER BY timestamp", (object_id,)).fetchall()
+        return [{"timestamp": r["timestamp"], "event_type": r["event_type"], "phase": r["phase"], "step": r["step"],
+                 "bbox_old": json.loads(r["bbox_old"]) if r["bbox_old"] else None,
+                 "bbox_new": json.loads(r["bbox_new"]) if r["bbox_new"] else None,
+                 "distance": r["distance"], "iou": r["iou"], "notes": r["notes"]} for r in rows]
 
     def on_uncertain_added(self, obj, step: int = 0):
         """Chiama quando aggiungi a uncertain_objects in modify_existing_object()."""
@@ -237,7 +294,7 @@ class MapDatabase:
         with sqlite3.connect(self.db_path) as conn:
             row = self._find_active(conn, obj)
             if not row:
-                print(f"[MapDB] ⚠️  on_uncertain_added: '{obj.label}' non trovato nel DB, salto.")
+                print(f"[MapDB] ⚠️  on_uncertain_added: '{obj.label}' not found in the DB, skipping.")
                 return
             obj_id = row["id"]
             conn.execute(
@@ -246,8 +303,8 @@ class MapDatabase:
             )
             conn.execute(
                 """INSERT INTO object_history
-                   (object_id,label,color,timestamp,event_type,phase,step,notes,room_id)
-                   VALUES (?,?,?,?,'uncertain_added','tracking',?,'large displacement',?)""",
-                (obj_id, obj.label, obj.color or "", now, step, room)
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,notes,room_id)
+                   VALUES (?,?,?,?,?,'uncertain_added','tracking',?,'large displacement',?)""",
+                (obj_id, row["object_uuid"], obj.label, obj.color or "", now, step, room)
             )
         print(f"[MapDB] ⚠️  UNCERTAIN '{obj.label}'")

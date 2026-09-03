@@ -479,9 +479,9 @@ class ObjectManagerService(Node):
             self._topic_descriptions = None
             self._topic_bboxes = None
             self.latest_bboxes.clear()
-            self.object_services.log_both('warn', "[MOVEMENT] Robot is moving -> Blocco stanze attivato")
+            self.object_services.log_both('warn', "[MOVEMENT] Robot is moving -> room creation blocked")
         else:
-            self.object_services.log_both('info', "[MOVEMENT] Robot has stopped -> Creazione stanze permessa")
+            self.object_services.log_both('info', "[MOVEMENT] Robot has stopped -> room creation allowed")
 
     def check_tracking_transition(self, label_base, color, material, description_embedding, bbox):
         best_match = None
@@ -507,7 +507,7 @@ class ObjectManagerService(Node):
                 best_match = obj
 
         if best_match:
-            print(f"ðŸ” [BEST MATCH FOUND] Rilevato: '{label_base}' -> Best Memoria: '{best_match.label}' (Score: {highest_similarity:.3f})")
+            print(f"ðŸ” [BEST MATCH FOUND] Detected: '{label_base}' -> Best in memory: '{best_match.label}' (Score: {highest_similarity:.3f})")
             
             if best_match.bbox is None:
                 return False, None, 0.0
@@ -534,7 +534,7 @@ class ObjectManagerService(Node):
             self.tracking_step_counter += 1
 
         if self.robot_has_moved:
-            self.object_services.log_both('warn', "Robot in movimento — dati scartati da object_tracking_callback")
+            self.object_services.log_both('warn', "Robot is moving — data discarded by object_tracking_callback")
             response.status = "moving"
             response.num_objects = len(wm.persistent_perceptions)
             response.tracking_mode_activated = False
@@ -593,7 +593,7 @@ class ObjectManagerService(Node):
                     room_msg = String()
                     room_msg.data = self.room_manager.current_room_id
                     self.room_pub.publish(room_msg)
-                    self.object_services.log_both('info', f"🚪 Cambio stanza rilevato! Inviato segnale a Perception per: {self.room_manager.current_room_id}")
+                    self.object_services.log_both('info', f"🚪 Room change detected! Signalled Perception for: {self.room_manager.current_room_id}")
 
             self.last_room_check_time = current_time
 
@@ -886,7 +886,7 @@ class ObjectManagerService(Node):
         if to_remove:
             for obj in to_remove:
                 self.uncertain_objects.remove(obj)
-                self.object_services.log_both('info', f"ðŸ§¹ [UNCERTAIN CLEANUP] Rimosso '{obj.label}' (tempo scaduto)")
+                self.object_services.log_both('info', f"ðŸ§¹ [UNCERTAIN CLEANUP] Removed '{obj.label}' (expired)")
     
     def _descriptions_callback(self, msg):
         self._topic_descriptions = msg
@@ -1201,7 +1201,7 @@ def main(args=None):
     except KeyboardInterrupt:
         from datetime import datetime
         print(f"\nOBJECT MANAGER chiuso ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
-        print("Salvataggio dell'ultima stanza in corso...")
+        print("Saving the last room...")
         
         # Salva i dati della stanza corrente usando i persistent_perceptions globali
         if hasattr(service_node, 'room_manager'):

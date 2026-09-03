@@ -1,0 +1,890 @@
+#!/usr/bin/env python3
+"""Runnable check for preflight_gate.py. Host-runnable: no ROS, no container, no network.
+
+    python3 test_preflight_gate.py
+
+Covers the harness and the three probes that need neither ROS nor a backend (a2, a3, a5).
+a1/a2/a6/a7 need the container and are NOT exercised here — see the note at the bottom, which
+is deliberate: claiming a probe is verified when it has never run is the failure this whole
+gate exists to catch. a4's branch logic IS exercised, against stubs; its two real inferences
+are not.
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import types
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import preflight_gate as g  # noqa: E402
+
+
+def check(cond, msg):
+    if not cond:
+        raise AssertionError(msg)
+
+
+
+# --- a3: the policy comparison must compare, not echo -------------------------------------
+def test_a3_compares_rather_than_echoes():
+    os.environ["FOUND_ENFORCE"] = "1"
+    os.environ.pop("FOUND_HOLD_BAND", None)
+
+    ok, d = g.a3_policy_reached_container({"FOUND_ENFORCE": "1"})
+    check(ok is True, f"matching policy should pass: {d}")
+
+    ok, d = g.a3_policy_reached_container({"FOUND_ENFORCE": "0"})
+    check(ok is False, "a value that differs from the intended one must FAIL")
+    check(d["mismatches"]["FOUND_ENFORCE"] == {"intended": "0", "in_container": "1"}, d)
+
+    # The defect this probe exists for: the var never reached the container at all. Absent must
+    # fail, not pass — an echo-style check would have reported the host's value and looked fine.
+    ok, d = g.a3_policy_reached_container({"FOUND_HOLD_BAND": "0.05"})
+    check(ok is False, "a var absent from the container must FAIL, not pass")
+    check(d["mismatches"]["FOUND_HOLD_BAND"]["in_container"] is None, d)
+
+    ok, d = g.a3_policy_reached_container({})
+    check(ok is g.SKIPPED, "no intended values means nothing was asserted -> SKIPPED, not pass")
+
+
+# --- a5: stale artefacts ------------------------------------------------------------------
+def test_a5_fails_on_an_artefact_older_than_the_run():
+    with tempfile.TemporaryDirectory() as td:
+        start = time.time()
+        fresh = os.path.join(td, "fresh.json")
+        open(fresh, "w").close()
+        ok, d = g.a5_bundle_clean(td, start)
+        check(ok is True, f"a bundle written after run start is clean: {d}")
+
+        stale = os.path.join(td, "logs", "old.log")
+        os.makedirs(os.path.dirname(stale), exist_ok=True)
+        open(stale, "w").close()
+        os.utime(stale, (start - 3600, start - 3600))
+        ok, d = g.a5_bundle_clean(td, start)
+        check(ok is False, "an artefact predating run start must FAIL")
+        check(d["stale"][0]["path"] == os.path.join("logs", "old.log"), d)
+        check(d["stale_count"] == 1, d)
+
+        ok, d = g.a5_bundle_clean(td, 0.0)
+        check(ok is g.SKIPPED, "no run-start means nothing was asserted -> SKIPPED")
+
+
+# --- harness: a SKIPPED probe must not read as a pass -------------------------------------
+def test_a_skipped_probe_is_not_a_pass():
+    # The aligner that "could not run" is exactly how the exemplar baseline shipped as the KG
+    # result. Skipped is not pass, and the exit code has to say so.
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "preflight.json")
+        rc = g.main(["--only", "a3", "--out", out])          # a3 with no --expect-policy -> SKIP
+        check(rc == 1, "a skipped probe must abort the gate by default")
+        rep = json.load(open(out))
+        check(rep["verdict"] == "fail" and rep["skipped"] == ["a3"], rep)
+
+        rc = g.main(["--only", "a3", "--out", out, "--allow-skip"])
+        check(rc == 0, "--allow-skip must downgrade a skip")
+        check(json.load(open(out))["verdict"] == "pass", "--allow-skip verdict should be pass")
+
+        rc = g.main(["--only", "a3", "--out", out, "--expect-policy", "FOUND_ENFORCE=0"])
+        check(rc == 1, "a real mismatch must abort")
+        rep = json.load(open(out))
+        check(rep["failed"] == ["a3"] and rep["verdict"] == "fail", rep)
+
+
+# --- harness: a probe that raises is SKIPPED, never a pass --------------------------------
+def test_a_probe_that_raises_is_skipped_not_passed():
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "p.json")
+        rc = g.main(["--only", "a1", "--out", out])   # `found` is not importable on the host
+        check(rc == 1, "a probe that raises must abort, not pass")
+        rep = json.load(open(out))
+        check(rep["probes"][0]["ok"] is None, rep)
+        check("probe raised" in rep["probes"][0]["detail"]["reason"], rep)
+
+
+# --- tree_sha: names are in the digest, and an empty root RAISES ---------------------------
+def test_tree_sha_names_are_in_the_digest_and_an_empty_root_raises():
+    # The old _hash_py did `find | xargs cat | sha256sum`, so a rename was invisible and a root
+    # matching nothing yielded e3b0c44298fc1c14 — a plausible provenance stamp for zero files.
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            g.tree_sha(td)
+            raise AssertionError("an empty root must RAISE, not return the sha256 of nothing")
+        except ValueError:
+            pass
+
+        open(os.path.join(td, "a.py"), "w").write("x = 1\n")
+        sha_a, n = g.tree_sha(td)
+        check(n == 1, n)
+        check(sha_a != "e3b0c44298fc1c14", "empty-tree hash must never be produced from content")
+
+        os.rename(os.path.join(td, "a.py"), os.path.join(td, "b.py"))
+        sha_b, _ = g.tree_sha(td)
+        check(sha_a != sha_b, "a RENAME must move the digest — filenames are in it")
+
+        # THE FROZEN ROOT MUST BE ABLE TO HOLD STILL. `output/` is where the running stack
+        # writes and `.mypy_cache` is written by anyone running the type checker -- with those
+        # in the set, running the stack moved the digest and so did a lane running a linter.
+        # "Frozen" was not achievable by construction, and three such files made a 137-file
+        # source read as 140.
+        for d in ("output", ".mypy_cache", ".pytest_cache", "__pycache__", ".ruff_cache"):
+            os.makedirs(os.path.join(td, d), exist_ok=True)
+            open(os.path.join(td, d, "written_by_the_system.txt"), "w").write("x")
+        check(g.tree_sha(td)[0] == sha_b,
+              "nothing the system writes may move the digest, or the root cannot hold still")
+
+        # what the system writes is excluded; what a person wrote is kept
+        os.makedirs(os.path.join(td, "grafici_output"))
+        open(os.path.join(td, "grafici_output", "albero_mondo.html"), "w").write("<html>")
+        check(g.tree_sha(td)[0] == sha_b, "generated output must not move the digest")
+        os.makedirs(os.path.join(td, "old"))
+        open(os.path.join(td, "old", "object_manager_1.py"), "w").write("legacy\n")
+        check(g.tree_sha(td)[0] != sha_b, "old/ is a person's source and must be hashed")
+
+        # COLCON_IGNORE has no extension: an allow-list cannot catch it by construction
+        sha_c = g.tree_sha(td)[0]
+        open(os.path.join(td, "COLCON_IGNORE"), "w").close()
+        check(g.tree_sha(td)[0] != sha_c, "COLCON_IGNORE decides whether the package builds")
+
+
+# --- a5: the SCRATCH directory is the one that is never cleared ----------------------------
+def test_a5_checks_the_scratch_directory_not_only_the_bundle():
+    with tempfile.TemporaryDirectory() as run, tempfile.TemporaryDirectory() as scratch:
+        start = time.time()
+        old_json = os.path.join(scratch, "outcome_analysis.json")
+        open(old_json, "w").close()
+        os.utime(old_json, (start - 3600, start - 3600))
+
+        # Pointed only at the fresh bundle it cannot fire — three reasons, and this was one.
+        ok, d = g.a5_bundle_clean(run, start)
+        check(ok is True, f"the bundle alone is clean by construction: {d}")
+
+        ok, d = g.a5_bundle_clean(run, start, scratch)
+        check(ok is False, "a stale ARCHIVED artefact in the scratch dir must FAIL")
+        check(d["stale"][0]["path"] == "outcome_analysis.json", d)
+
+        # a PNG is never copied into the bundle, so failing on it would only teach operators
+        # to reach for PREFLIGHT_SKIP=1
+        png = os.path.join(scratch, "detection_0001.png")
+        open(png, "w").close()
+        os.utime(png, (start - 3600, start - 3600))
+        os.remove(old_json)
+        ok, d = g.a5_bundle_clean(run, start, scratch)
+        check(ok is True, f"a stale file that is never archived must NOT fail the gate: {d}")
+
+
+# --- a1: the probe must record what DECIDED, not only what described ------------------------
+# a1 once reported `score 0.9032032489776611 -> aligned_to null` while the same pair, same model
+# and same ontology gave `top=0.9032 z=5.22 n=170 -> ACCEPT` elsewhere. The score agreed to the
+# last digit; the candidate SET differed, and z is what the rule compares. Recording the number
+# that agreed and not the number that decided turned a subtraction into an investigation.
+def test_a1_records_the_discriminants_not_only_the_score():
+    class Emb:
+        def rank(self, key, k):
+            return [("http://x#Sofa", 0.9032), ("http://x#Chair", 0.61)][:k]
+
+    class KG:
+        _n, _top_min, _z_min, _embedder = 170, 0.87, 3.0, Emb()
+
+    class Res:
+        evidence = "kgaligner 0.90 (z=5.2) -> Sofa (http://x#Sofa)"
+
+    d = g._discriminants(KG(), "couch", Res())
+    check(d["n_candidates"] == 170, d)      # the size of the set that ranked it
+    check(d["top_min"] == 0.87, d)          # both thresholds are env-overridable
+    check(d["z_min"] == 3.0, d)
+    check("z=5.2" in d["evidence"], d)      # the z the ALIGNER used, not one recomputed here
+    check(d["top5"][0]["class"] == "Sofa", d)
+    check(len(d["top5"]) == 2, d)
+
+    # An aligner with none of it must yield nothing rather than raise: exemplar and lexical
+    # have no candidate set, and a probe that crashes collecting diagnostics is worse than one
+    # that reports fewer.
+    class Plain:
+        pass
+
+    check(g._discriminants(Plain(), "couch", None) == {}, "no discriminants, no crash")
+
+    # A ranking that raises is recorded, not propagated.
+    class Broken:
+        _n = 5
+
+        class _embedder:
+            @staticmethod
+            def rank(key, k):
+                raise RuntimeError("index closed")
+
+    d = g._discriminants(Broken(), "couch", None)
+    check(d["n_candidates"] == 5, d)
+    check("RuntimeError" in d["top5_error"], d)
+
+
+# --- a1: the field it reads, and a control that can actually fail --------------------------
+# a1 read `res.name` for a day. found.align.Alignment has label/aligned/score/evidence and NO
+# `name`, so getattr(res, "name", None) returned None for every input the aligner could produce:
+# the positive could never match "Sofa" and the negative control could never fail. A check that
+# cannot succeed, whose control cannot fail, inside the gate built to stop exactly that.
+def test_a1_reads_the_field_the_aligner_actually_sets():
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Alignment:            # the real shape, verified against found/align.py
+        label: str
+        aligned: str | None
+        score: float
+        evidence: str
+
+    name, src = g._aligned_name(Alignment("couch", "Sofa", 0.9032, "kgaligner 0.90 -> Sofa"))
+    check(name == "Sofa", f"the aligner sets .aligned, not .name: got {name!r}")
+    check(src == ".aligned", src)
+
+    name, src = g._aligned_name(Alignment("zzqx", None, 0.1, "gap"))
+    check(name is None and src == ".aligned",
+          "a genuine null must be distinguishable from a missing field")
+
+    check(g._aligned_name(None) == (None, "no result"), "no result is its own case")
+    check(g._aligned_name({"aligned": "Bed"})[0] == "Bed", "dict shape still works")
+
+
+def test_a1_raises_rather_than_returning_none_for_an_unknown_shape():
+    """getattr(x, 'field', None) cannot tell a RENAMED field from a genuine null, and that
+    difference was the whole content of the defect. An unrecognised shape means the probe
+    cannot assert, so it raises -- and the harness turns a raise into SKIPPED, a failed
+    verdict. Defaulting to None is how this went unnoticed for a day."""
+    class Renamed:
+        def __init__(self):
+            self.matched_class = "Sofa"      # the field moved
+
+    try:
+        g._aligned_name(Renamed())
+        raise AssertionError("a renamed field must RAISE, not silently read as None")
+    except AttributeError as exc:
+        check("matched_class" in str(exc), f"the error must name what it did find: {exc}")
+
+    try:
+        g._aligned_name({"score": 0.9})
+        raise AssertionError("a dict without a known key must RAISE")
+    except AttributeError:
+        pass
+
+
+def test_a1s_negative_control_can_actually_fail():
+    """The control asserts that a nonsense label aligns to NOTHING. While _aligned_name always
+    returned None it passed vacuously -- it passed for the same reason the positive failed, and
+    a control that cannot fail is not a control. This hands it an aligner that names everything
+    and requires the control to catch it."""
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Alignment:
+        label: str
+        aligned: str | None
+        score: float
+        evidence: str
+
+    class NamesEverything:
+        """The fallback shape a1 exists to detect: a non-empty answer for any input."""
+
+        def align(self, label):
+            return Alignment(label, "Sofa", 0.99, "always Sofa")
+
+    a = NamesEverything()
+    good, _ = g._aligned_name(a.align(g.GOLDEN_LABEL))
+    bad, _ = g._aligned_name(a.align(g.NONSENSE_LABEL))
+    check(good == g.GOLDEN_EXPECT, "such an aligner passes the positive case")
+    check(bad is not None,
+          "and the negative control MUST see a name -- that is what makes it a control")
+
+
+# --- a8: the cheapest question, and nobody was asking it ------------------------------------
+# GA-66. The gate passed 7/7 and the stack died seconds later on `from models import OWLv2,
+# VitSam` at perception_2.py:61. Seven probes said the wiring was sound and none asked whether
+# the code about to run loads at all. A passing gate followed by an immediate stack death is
+# worse than a failing gate: it spends the bringup and points the operator at the wrong layer.
+def test_a8_skips_outside_the_container_and_reports_which_node_failed():
+    ok, d = g.a8_stack_imports()
+    check(ok is g.SKIPPED, "no install tree means nothing was asserted -> SKIPPED, not FAIL")
+    check("not running in the container" in d["reason"], d)
+
+
+def test_a8_names_the_module_and_the_error_the_stack_would_have_hit():
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        install = os.path.join(td, "ws", "install", "lost3dsg", "lib", "lost3dsg")
+        os.makedirs(install)
+        open(os.path.join(install, "good_node.py"), "w").write("x = 1\n")
+        open(os.path.join(install, "bad_node.py"), "w").write(
+            "import a_module_that_is_not_installed\n")
+        try:
+            ok, d = g.a8_stack_imports(modules=("good_node", "bad_node"), install=install)
+        finally:
+            for m in ("good_node", "bad_node"):
+                sys.modules.pop(m, None)
+    check(ok is False, "a node that cannot import must FAIL")
+    check(d["importable"] == ["good_node"], d)
+    check("a_module_that_is_not_installed" in d["failed"]["bad_node"], d)
+    check("INSTALLATION fault" in d["why"], "the remedy is an image rebuild, not a config change")
+
+
+def test_a7_compares_what_executes_against_the_mount():
+    """a7 hashed the MOUNT and the launcher hashed the SAME host directory, so it was
+    comparing the host tree against itself and never touched the copy that runs. `cp -r`
+    happens at live_stack_container.sh:10 and the gate at :92 — the copy was unmeasured by
+    a7, by the launcher, and by every stamp any lane took."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "mount")
+        run = os.path.join(td, "install")
+        os.makedirs(src)
+        os.makedirs(run)
+        open(os.path.join(src, "node.py"), "w").write("x = 1\n")
+        open(os.path.join(run, "node.py"), "w").write("x = 1\n")
+        open(os.path.join(src, "notes.txt"), "w").write("not python\n")
+
+        ok, d = g.a7_source_frozen({"graph_api": "irrelevant"}, executed_tree=run,
+                                   copy_source=src)
+        check(d["executed"]["compared"] == 1, f"only .py is compared: {d['executed']}")
+        check(d["executed"]["differs"] == [], d["executed"])
+
+        # the case nothing measured until now: what runs differs from what is mounted
+        open(os.path.join(run, "node.py"), "w").write("x = 2\n")
+        ok, d = g.a7_source_frozen({"graph_api": "irrelevant"}, executed_tree=run,
+                                   copy_source=src)
+        check("executed_vs_mount" in d["mismatches"],
+              f"a differing executed file must be a MISMATCH: {d}")
+        check(d["mismatches"]["executed_vs_mount"] == ["node.py"], d["mismatches"])
+
+        # a file the copy never received is recorded, not silently ignored
+        open(os.path.join(src, "extra.py"), "w").write("y = 1\n")
+        _, d = g.a7_source_frozen({"graph_api": "x"}, executed_tree=run, copy_source=src)
+        check(d["executed"]["only_in_mount"] == ["extra.py"], d["executed"])
+
+
+def test_a4_catches_the_missing_stage_timings_before_the_run_does():
+    """GA-85. `detection_pipeline.py:93` REFUSES a response with no per-stage timing rather
+    than estimating it from the wall clock — GA-14's remedy, and correct. But the backend was
+    never made to report what the refusal requires, so on 31 Aug the VLM answered in 16.1 s,
+    well inside budget, and the pipeline raised on the FIRST successful detection.
+
+    a4 already received that dict on all three calls and discarded it. Asking for it moves the
+    failure from one cycle into a measured run, to before the run starts."""
+    import types
+
+    def run_with_timings(t):
+        class B:
+            def detect_and_segment(self, frame, labels):
+                return [], t
+
+        fake_cfg = types.ModuleType("config")
+        fake_cfg.CFG = {}
+        fake_client = types.ModuleType("cloud.client")
+        fake_client.get_perception_backend = lambda cfg: B()
+        fake_cloud = types.ModuleType("cloud")
+        fake_cloud.client = fake_client
+        saved = {k: sys.modules.get(k) for k in ("config", "cloud", "cloud.client")}
+        sys.modules.update({"config": fake_cfg, "cloud": fake_cloud,
+                            "cloud.client": fake_client})
+        try:
+            return g.a4_perception_twice(frame=_fake_frame())
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    req, _ = g.pipeline_timing_keys()
+    ok, d = run_with_timings({k: 1.0 for k in req})
+    check(ok is True, f"a backend meeting the contract passes: {d}")
+    # a PASSING probe must still say what it asked and what came back. The two facts that
+    # resolved the yolo_world scare — the frame and the reported keys — existed only on the
+    # failure path, so a passing bundle recorded neither.
+    check(d["probe_frame"] == "a4_probe_frame.jpg", d)
+    check(d["frame_shape"] == [480, 640, 3], d)
+    check(d["reported_timing_keys"] == [sorted(req)] * 3, d)
+    check(d["required_read_from"] is not None, "a pass must name which contract it applied")
+
+    # the live failure: the call SUCCEEDS and the pipeline then refuses the response
+    ok, d = run_with_timings({})
+    check(ok is False, "no per-stage timing must FAIL before the run, not during it")
+    check(d["missing"] == list(req), d)
+    check("first successful detection" in d["why"].lower()
+          or "FIRST successful detection" in d["why"], d)
+    check("Do not 'fix' it by restoring an estimate" in d["why"],
+          "the message must forbid the tempting repair")
+
+    # The names the vendored pipeline USED to ask for. The server has never sent them —
+    # measured from a live refusal: reported keys ['detector', 'sam2', 'total']. A probe
+    # asking for these would fail a healthy backend and send someone to add a field it
+    # already sends.
+    other = ("detector", "sam2") if req[0] == "owlv2" else ("owlv2", "sam")
+    ok, d = run_with_timings({k: 1.0 for k in other})
+    check(ok is False, "keys the pipeline does not ask for must not satisfy the contract")
+    check(d["reported_timing_keys"][0] == sorted(other),
+          "a4 must report what it actually got — the server may be reporting perfectly "
+          "under other names, and only the received keys can show that")
+
+
+def test_a4_reads_the_pipelines_required_keys_rather_than_copying_them():
+    """a4 predicts the pipeline's refusal before a run pays for it. A COPY of the key names can
+    drift, and then a4 either certifies a run that dies at its first detection or refuses one
+    that would have worked. Reading the pipeline's own list makes a4 wrong exactly when the
+    pipeline is wrong — the only correct behaviour for a predictor.
+
+    Live case: the vendored pipeline asks for ("owlv2", "sam"); the server emits
+    ['detector', 'sam2', 'total']. a4 must therefore FAIL that backend, because the run does.
+    """
+    import re
+    keys, src = g.pipeline_timing_keys()
+    check(src is not None, "a4 must find the pipeline rather than fall back silently")
+    body = open(src).read()
+    m = re.search(r"missing\s*=\s*\[k for k in \(([^)]*)\)", body)
+    check(m is not None, "the pipeline's required-timing list moved; a4's reader must follow")
+    expect = tuple(x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip())
+    check(tuple(keys) == expect, f"a4 read {keys}, pipeline demands {expect}")
+
+    # and the detail records WHERE it read them, so a bundle says which contract was applied
+    check(isinstance(g._PIPELINE_TIMING_FALLBACK, tuple), "a fallback must exist")
+
+
+def test_a4_refuses_a_backend_that_cannot_answer():
+    """GA-81. `LocalPerceptionBackend.detect_and_segment` is `return [], {}` — it does not
+    raise, so three calls record three passes having computed nothing. a4 was built to catch a
+    backend that answers once and fails after; **a backend that answers instantly and always is
+    the same defect with the sign flipped**, and timing cannot tell them apart."""
+    import types
+
+    class LocalPerceptionBackend:
+        def detect_and_segment(self, frame, labels):
+            return [], {}
+
+    fake_cfg = types.ModuleType("config")
+    fake_cfg.CFG = {}
+    fake_client = types.ModuleType("cloud.client")
+    fake_client.get_perception_backend = lambda cfg: LocalPerceptionBackend()
+    fake_cloud = types.ModuleType("cloud")
+    fake_cloud.client = fake_client
+    saved = {k: sys.modules.get(k) for k in ("config", "cloud", "cloud.client")}
+    sys.modules.update({"config": fake_cfg, "cloud": fake_cloud, "cloud.client": fake_client})
+    try:
+        ok, d = g.a4_perception_twice()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    check(ok is False, f"a stub backend must FAIL, not record three passes: {d}")
+    check(d["backend"] == "LocalPerceptionBackend", d)
+    check("computed nothing" in d["why"], d)
+    check("attempts" not in d, "it must refuse BEFORE calling, not after timing three no-ops")
+    check("LocalPerceptionBackend" in g.STUB_BACKENDS, "the refusal list must name it")
+
+
+def test_run_output_lives_outside_every_hashed_root():
+    """Run output goes to $FOUND_ROOT/results/<timestamp>_<scene>, and it must move no digest.
+
+    This is the property my own deny-list broke: `output/` was inside the hashed set, so running
+    the stack moved the frozen root and "frozen" was unachievable while being reported achieved.
+    A path ruling that quietly put run artefacts back inside a root would restore that, so it is
+    asserted rather than assumed."""
+    roots = ("/DATA/FOUND/vendor/graph-api/lost3dsg", "/DATA/FOUND/found",
+             "/DATA/ASPIRE/knowledge_bridge")
+    # $FOUND_ROOT, not /DATA/FOUND. The launcher derives its root from its own location so a
+    # clone anywhere can run; this assertion used to encode the one machine the code was written
+    # on, and it failed the moment the hardcoding it was guarding against was removed.
+    out = "$FOUND_ROOT/results"
+    for r in roots:
+        check(not out.startswith(r.rstrip("/") + "/") and out != r,
+              f"run output at {out} is inside hashed root {r} — the frozen root cannot hold still")
+
+    # and the launcher must actually default there
+    body = open(os.path.join(HERE, "live_run.sh")).read()
+    check("OUT_DIR=${OUT_DIR:-$FOUND_ROOT/results/" in body,
+          "live_run.sh must default OUT_DIR under $FOUND_ROOT/results/, never /tmp")
+    check("FOUND_ROOT=${FOUND_ROOT:-$(cd \"$REPO/../..\" && pwd)}" in body,
+          "FOUND_ROOT must be DERIVED from the script's location, not hardcoded — a clone "
+          "anywhere else cannot run if it is")
+
+
+# --- the extension seam: GRAPH-API ships the harness, FOUND ships what asserts about FOUND ---
+def test_the_probe_blueprint_skips_rather_than_passing():
+    """A blueprint that did nothing and returned True would make every deployment that has not
+    supplied a probe report a pass for a check nobody wrote."""
+    ok, d = g.Probe().run(None)
+    check(ok is g.SKIPPED, "the blueprint asserts nothing, so it SKIPS")
+    check("does not implement" in d["reason"], d)
+
+
+def test_external_probes_load_from_config_and_a_bad_spec_raises():
+    """`preflight.probes` is read from the merged config through hooks.load_hook, so there is
+    one path resolution in the tree rather than two. A spec that will not load RAISES: a probe
+    named in config and silently absent is this gate's own defect, one level up."""
+    import types
+
+    class Mine(g.Probe):
+        id, name = "x1", "mine"
+
+        def run(self, args):
+            return True, {"ran": True}
+
+    mod = types.ModuleType("extprobes")
+    mod.Mine = Mine
+    sys.modules["extprobes"] = mod
+
+    fake_hooks = types.ModuleType("hooks")
+
+    def load_hook(spec, base, search_paths=()):
+        module, _, cls = spec.replace(":", ".").rpartition(".")
+        obj = getattr(sys.modules[module], cls)()
+        assert isinstance(obj, base), f"{spec} is not a {base.__name__}"
+        return obj
+
+    fake_hooks.load_hook = load_hook
+    sys.modules["hooks"] = fake_hooks
+    try:
+        loaded = g.load_external_probes({"preflight": {"probes": ["extprobes:Mine"]}})
+        check(list(loaded) == ["x1"], loaded)
+        name, fn, spec = loaded["x1"]
+        check(name == "mine" and fn(None)[0] is True, loaded)
+        check(spec == "extprobes:Mine", "the spec is kept so the bundle records WHO answered")
+
+        check(g.load_external_probes({}) == {}, "no config, no probes, no error")
+
+        # two probes claiming one id would silently shadow each other
+        mod.Other = type("Other", (g.Probe,), {"id": "x1", "name": "other"})
+        try:
+            g.load_external_probes(
+                {"preflight": {"probes": ["extprobes:Mine", "extprobes:Other"]}})
+            raise AssertionError("a duplicate probe id must raise")
+        except ValueError as exc:
+            check("two probes claim id" in str(exc), str(exc))
+    finally:
+        del sys.modules["extprobes"], sys.modules["hooks"]
+
+
+def test_the_gate_is_importable_under_its_own_name_when_run_as_a_script():
+    """A seam is tested from one end and used from the other.
+
+    An extension subclasses the gate's `Probe`. To find it, it looks for a module named
+    `preflight_gate` — but as `python3 preflight_gate.py` this module is `__main__`, so the
+    lookup misses, the extension loads the FILE, and gets a second module object whose `Probe`
+    is a different class. `hooks.load_hook`'s isinstance check then fails on a CORRECT probe,
+    and the obvious reading is that the probe is broken. It is not: the next person edits the
+    wrong file.
+
+    Neither side's tests could see it. The extension's tests load the gate themselves, so their
+    base class is consistent by construction; the gate's tests only exercise built-ins. The
+    mismatch exists solely when the gate imports the extension.
+    """
+    import subprocess
+    prog = (
+        "import sys, runpy;"
+        f"sys.argv=['preflight_gate.py','--print-tree-sha',{HERE!r}];"
+        "sys.modules.pop('preflight_gate', None);"
+        "runpy.run_path(sys.argv[0], run_name='__main__')"
+    )
+    # Running it as __main__ must leave it findable under its import name. SystemExit from
+    # --print-tree-sha is expected; what matters is that the name resolved before exiting.
+    check_prog = (
+        "import sys, importlib.util;"
+        f"spec=importlib.util.spec_from_file_location('preflight_gate', {os.path.join(HERE, 'preflight_gate.py')!r});"
+        "m=importlib.util.module_from_spec(spec); sys.modules['preflight_gate']=m;"
+        "spec.loader.exec_module(m);"
+        "sub=type('P',(m.Probe,),{'id':'x9','name':'n'});"
+        "assert isinstance(sub(), sys.modules['preflight_gate'].Probe), 'identity broken';"
+        "print('ok')"
+    )
+    r = subprocess.run([sys.executable, "-c", check_prog], capture_output=True, text=True)
+    check(r.returncode == 0 and "ok" in r.stdout,
+          f"a subclass of the imported gate's Probe must satisfy isinstance: {r.stderr[-300:]}")
+
+    # And the script path must register the name, so an extension importing it finds THIS
+    # module rather than re-executing the file into a second one.
+    src = open(os.path.join(HERE, "preflight_gate.py")).read()
+    check('sys.modules.setdefault("preflight_gate", sys.modules["__main__"])' in src,
+          "the __main__ block must register the module under its import name")
+    check(prog, "")   # keep the constructed argv referenced; the assertion above is the check
+
+
+def test_a1_actually_returns_False_on_each_way_it_can_be_wrong():
+    """GA-73. a1's suite tested `_aligned_name` and the control's INPUTS, and never called the
+    probe and asserted `ok is False`. **The probe built because a fallback answered for weeks,
+    which then spent a day unable to pass, still could not be shown refusing.**
+
+    Three ways it must refuse, exercised against stubs so no container is needed."""
+    import dataclasses
+    import types
+
+    @dataclasses.dataclass
+    class Alignment:
+        label: str
+        aligned: str | None
+        score: float
+        evidence: str
+
+    def run_with(aligner_cls, cfg_hooks=("/found",)):
+        fake_cfg = types.ModuleType("config")
+        fake_cfg.CFG = {"hooks": {"search_paths": list(cfg_hooks)}}
+        fake_dims = types.ModuleType("found.dims")
+        fake_dims.DimensionDB = lambda: types.SimpleNamespace(types=lambda: [])
+        fake_kg = types.ModuleType("found.kg_align")
+        fake_kg.make_aligner = lambda vocab: aligner_cls()
+        fake_found = types.ModuleType("found")
+        saved = {k: sys.modules.get(k) for k in
+                 ("config", "found", "found.dims", "found.kg_align")}
+        sys.modules.update({"config": fake_cfg, "found": fake_found,
+                            "found.dims": fake_dims, "found.kg_align": fake_kg})
+        try:
+            return g.a1_aligner_identity()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    class Healthy:
+        def align(self, label):
+            return (Alignment(label, "Sofa", 0.9032, "kg 0.90 (z=5.2) -> Sofa")
+                    if label == g.GOLDEN_LABEL else Alignment(label, None, 0.1, "gap"))
+
+    class WrongClass:
+        def align(self, label):
+            return Alignment(label, "Chair", 0.88, "kg 0.88 -> Chair")
+
+    class NamesEverything:
+        def align(self, label):
+            return Alignment(label, "Sofa", 0.99, "always Sofa")
+
+    # the constructed class is checked first: a stub is not KGAlignerAdapter, so with the
+    # default FOUND_ALIGNER=kg every case below refuses on identity before reaching the golden.
+    os.environ["FOUND_ALIGNER"] = "exemplar"      # expects a plain `Aligner`
+    try:
+        for cls, why in ((Healthy, "constructed class"), (WrongClass, "constructed class"),
+                         (NamesEverything, "constructed class")):
+            ok, d = run_with(cls)
+            check(ok is False, f"a stub is not an Aligner -> must FAIL on {why}: {d}")
+            check(d["constructed"] == cls.__name__, d)
+
+        # now let the class check pass, so the GOLDEN and the CONTROL are what decide
+        for cls in (Healthy, WrongClass, NamesEverything):
+            cls.__name__ = "Aligner"
+        ok, d = run_with(Healthy)
+        check(ok is True, f"the golden aligns and the control refuses -> PASS: {d}")
+
+        ok, d = run_with(WrongClass)
+        check(ok is False, "the golden aligning to the WRONG class must FAIL")
+        check("expected 'Sofa'" in d["why"], d)
+
+        ok, d = run_with(NamesEverything)
+        check(ok is False, "an aligner that names EVERYTHING must fail the control")
+        check("answers everything" in d["why"], d)
+    finally:
+        os.environ.pop("FOUND_ALIGNER", None)
+
+
+def _fake_frame():
+    """A stand-in for the shipped probe frame. The REAL frame is a 640x480 habitat render read
+    with cv2, which is container-only — so the host tests inject an array and exercise the
+    branch logic, and the frame's own effect is exercised in the container per rule 24."""
+    import numpy as np
+    return np.zeros((480, 640, 3), dtype=np.uint8)
+
+
+# --- a4: the two failure directions are not the same finding -------------------------------
+# Measured on the first gated run: attempt 1 timed out, attempt 2 returned in 20.5 s against a
+# remote backend. That is a cold start. The fault a4 was built for is the OPPOSITE order — the
+# CLIP text head built on the first call and never reused, so the service answered once and
+# 500'd after. Both fail the run; conflating them sends the operator to widen a timeout when
+# the finding was a broken service, or to restart a service when it only needed warming.
+def test_a4_tells_a_cold_start_apart_from_the_serve_once_fault():
+    """Runs the real probe with the two container-only imports stubbed, so the branch logic
+    is exercised rather than described."""
+    fake_cfg = types.ModuleType("config")
+    fake_cfg.CFG = {}
+    fake_client = types.ModuleType("cloud.client")
+    fake_cloud = types.ModuleType("cloud")
+    fake_cloud.client = fake_client
+
+    def with_pattern(results):
+        """results[i] False -> that attempt raises."""
+        seq = iter(results)
+
+        class Stub:
+            def detect_and_segment(self, frame, labels):
+                if not next(seq):
+                    raise TimeoutError("The read operation timed out")
+                # the contract: (detections, per-stage timings). GA-85 asserts the second half.
+                return [], {k: 1.0 for k in g.pipeline_timing_keys()[0]}
+
+        fake_client.get_perception_backend = lambda cfg: Stub()
+        saved = {k: sys.modules.get(k) for k in ("config", "cloud", "cloud.client")}
+        sys.modules.update({"config": fake_cfg, "cloud": fake_cloud,
+                            "cloud.client": fake_client})
+        try:
+            return g.a4_perception_twice(frame=_fake_frame())
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    ok, d = with_pattern([True, True, True])
+    check(ok is True, f"three good calls pass: {d}")
+
+    # The fault a4 was built for: answers once, fails after.
+    ok, d = with_pattern([True, False, False])
+    check(ok is False, "serve-once must fail")
+    check("exists for" in d["why"], d)
+
+    # THE REASON THERE ARE THREE CALLS. A warm-up in the launcher would consume the first
+    # call, and serve-once is defined by the first call succeeding — so it would present as
+    # F,F and be reported as "unreachable" for a backend that is answering. Three counted
+    # calls separate the states without a warm-up anywhere.
+    ok, d = with_pattern([False, True, True])
+    check(ok is True, f"a cold start passes on calls two and three: {d}")
+    check("cold start" in d["why"], d)
+    check(d["pattern"] == "FPP", d)
+
+    # The opposite order, measured on the first gated run: attempt 1 timed out, attempt 2
+    # returned in 20.5 s from a remote backend. Still refused -- a run whose first frames time
+    # out is not a run -- but the remedy is to warm it, not to restart a broken service.
+    # answers once mid-sequence and not after: intermittent, and neither named fault
+    ok, d = with_pattern([False, True, False])
+    check(ok is False, "an intermittent backend must refuse the run")
+    check("WARM THE BACKEND" in d["why"], d)
+    check("Do not widen the timeout" in d["why"],
+          "one sample must not become a timeout change")
+
+    ok, d = with_pattern([False, False, False])
+    check(ok is False, "no call answered")
+    check("unreachable, not cold" in d["why"], d)
+    check(d["pattern"] == "FFF", d)
+
+
+# --- a7: an expectation that never arrived asserts nothing ---------------------------------
+def test_a7_skips_when_no_expectation_reached_the_container():
+    # Three of the four PREFLIGHT_EXPECT_* variables were built by the launcher and NOT added to
+    # the docker -e list. The gate then ran with empty expectations and would have reported PASS
+    # for a comparison it never made — the same shape as the a2 tautology, one level up.
+    ok, d = g.a7_source_frozen({})
+    check(ok is g.SKIPPED, "no expectation delivered -> SKIPPED, never pass")
+    check("did not reach the container" in d["reason"], d)
+
+    ok, d = g.a7_source_frozen({"graph_api": "deadbeefdeadbeef"})
+    check(ok is g.SKIPPED, "outside the container there is no frozen root -> SKIPPED, not pass")
+
+
+# --- the file is runnable as a script ------------------------------------------------------
+def test_the_gate_is_runnable_as_a_script():
+    r = subprocess.run([sys.executable, os.path.join(HERE, "preflight_gate.py"), "--help"],
+                       capture_output=True, text=True)
+    check(r.returncode == 0, r.stderr)
+
+
+
+
+def test_observe_withdraws_blocking_authority_and_never_hides_the_verdict():
+    """A probe named in --observe RUNS and REPORTS; it does not block. It is NOT a skip.
+
+    The orchestrator's assertion, 2026-08-31: MAPPING_ONLY=1 + a4 fail must give verdict pass
+    with a4 in the observed list; MAPPING_ONLY=0 + a4 fail must give verdict fail.
+
+    A mapping run starts no detector, so a4 and a8's perception imports guard something that is
+    deliberately absent. Withdrawing their authority over THOSE runs is not the same as not
+    looking, and the difference has to be legible in the artefact: an observed probe's verdict
+    and detail are recorded exactly as always, and the report names which probes were not
+    permitted to speak. A reader seeing "pass" must be able to see that the pass is narrower
+    than a normal one.
+    """
+    import json
+    import subprocess
+    import tempfile
+
+    def run(observe):
+        out = tempfile.NamedTemporaryFile(suffix=".json", delete=False).name
+        argv = [sys.executable, os.path.join(HERE, "preflight_gate.py"),
+                "--out", out, "--only", "a4"]
+        if observe:
+            argv += ["--observe", observe]
+        # a4 cannot pass outside the container: no probe frame, no backend. What it returns is
+        # not the point — whether it can BLOCK is.
+        rc = subprocess.run(argv, capture_output=True, text=True).returncode
+        with open(out) as f:
+            return rc, json.load(f)
+
+    rc_block, rep_block = run(None)
+    rc_obs, rep_obs = run("a4")
+
+    assert rep_block["verdict"] == "fail", \
+        f"a4 must block a normal run; got {rep_block['verdict']}"
+    assert rc_block != 0, "a blocking failure must be a non-zero exit"
+
+    assert rep_obs["verdict"] == "pass", \
+        f"an observed a4 must not block; got {rep_obs['verdict']} failed={rep_obs['failed']}"
+    assert rc_obs == 0, "an observed-only failure must exit 0"
+    assert rep_obs["observed"] == ["a4"], \
+        "the report must NAME which probes were observed, or a narrowed pass reads as a full one"
+    assert "a4" in rep_obs["observed_nonpass"], \
+        "a4 did not pass and the report must say so even though it did not block"
+
+    # The probe still RAN and its verdict is still on the row. This is the line between
+    # observe and skip, and it is the whole reason SKIPPED fails the gate.
+    row = next(r for r in rep_obs["probes"] if r["id"] == "a4")
+    assert row.get("observed") is True, "the row itself must be marked observed"
+    assert row["ok"] is not True, "the probe's real verdict must survive, not be rewritten to pass"
+    assert row["detail"], "an observed probe must still record WHY, or it is a skip with extra words"
+
+
+def test_observe_refuses_a_probe_id_that_does_not_exist():
+    """A typo in --observe grants no exemption and looks like it did. Refuse instead.
+
+    `--observe a44` would silently leave a4 blocking while the operator believed it was observed.
+    Same class as a config key nobody reads: the failure is invisible and the belief is wrong.
+    """
+    import subprocess
+    r = subprocess.run([sys.executable, os.path.join(HERE, "preflight_gate.py"),
+                        "--out", "/dev/null", "--only", "a5", "--observe", "a44"],
+                       capture_output=True, text=True)
+    assert r.returncode == 2, f"an unknown probe id must be refused, got rc={r.returncode}"
+    assert "do not exist" in r.stdout + r.stderr
+
+if __name__ == "__main__":
+    # Mirrors src/perception_module/test_config.py: every function is a pytest test AND
+    # this file still runs as a script. It collected ZERO tests under pytest before, because
+    # every assertion sat at module level -- a runner reporting success over an empty
+    # collection is a gate that cannot fail, which is the shape this gate exists to catch.
+    tests = [(n, f) for n, f in sorted(globals().items())
+             if n.startswith("test_") and callable(f)]
+    failures = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"  ok    {name}")
+        except Exception as exc:
+            failures += 1
+            print(f"  FAIL  {name}: {exc}")
+    # The count is printed because this runner reads globals() at the moment it runs: a
+    # test appended BELOW this block is defined too late and is silently skipped.
+    # The time is printed WITH the result, because a test result is true at a time and not
+    # simply true. Two correct measurements of one file can disagree because someone fixed it
+    # in between, and neither reader is wrong — that cost two sessions an exchange tonight.
+    # The frozen-root digests have always carried a stamp; test results carried none.
+    print(f"preflight gate tests: {len(tests)} run,",
+          "all passed" if not failures else f"{failures} failed",
+          f"| {__import__('datetime').datetime.now().astimezone().isoformat(timespec='seconds')}")
+    # Kept accurate deliberately. This said a4 was not exercised after a stubbed test for its
+    # branch logic had landed -- a statement about the tests that the tests contradicted, which
+    # is the family this gate exists for. It under-claimed, so it failed safe; it was still
+    # wrong, and a summary nobody maintains is how "verified" drifts from what ran.
+    print("a4's BRANCH LOGIC is exercised here against stubs; its two real inferences are not.")
+    print("NOT exercised here (need the container): a1 aligner identity, a2 config identity,")
+    print("a6 camera pose offset, a7 against a real frozen root.")
+    print("a6 and a7 passed live on 2026-08-30; a1, a2 and a4 have not yet run to completion.")
+    sys.exit(1 if failures else 0)

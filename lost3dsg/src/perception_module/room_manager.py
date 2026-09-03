@@ -32,15 +32,16 @@ from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, QoSProfile
-from sensor_msgs_py import point_cloud2
 from sensor_msgs.msg import PointCloud2
+from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
-PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir else os.path.abspath(os.path.join(current_dir, "../.."))
+PROJECT_ROOT = (current_dir.split('/install/')[0] if '/install/' in current_dir
+                else os.path.abspath(os.path.join(current_dir, "../..")))
 
 
 @dataclass
@@ -83,7 +84,14 @@ class RoomManager:
         self.current_room_id = None
         self.previous_room_id = None
         self.current_room_changed = False
-        self.current_room_walls = []
+        # GA-137 FOLLOW-ON (rule 15: the room fix ARMS this). Walls are keyed BY ROOM.
+        # `current_room_walls` was a single list initialised once and never cleared, so
+        # every wall segment ever received accumulated into it and `finalize_current_room`
+        # wrote the whole accumulation into EVERY room's record. That was invisible while
+        # the segmentation produced exactly one room -- the union of all walls and the walls
+        # of the only room are the same list. Switching gvd_method to `ridge` makes multiple
+        # rooms real, and would have given every one of them every wall in the building.
+        self._walls_by_room = {}
         self.current_room_wall_segments = []
         self.last_grid = None
         self.last_robot_xy = None
@@ -100,7 +108,14 @@ class RoomManager:
         self._latest_cloud_stamp = None
         self._last_cloud_warn_time = 0.0
 
+        from config import CFG  # local, as elsewhere in this file
         self._params = {
+            # GA-137. Read from CFG so the switch is REACHABLE. `_params` is otherwise a
+            # hardcoded dict and CFG["rooms"] is read nowhere in this file -- so adding the
+            # key to config.py alone would have created a setting that exists and cannot be
+            # reached, which is the defect class this review keeps finding. Checked before
+            # shipping it, not after.
+            'gvd_method': str(CFG.get('rooms', {}).get('gvd_method', 'label_diff')),
             # 2D map classification
             'free_threshold': 20,
             'occupied_threshold': 50,
@@ -229,9 +244,11 @@ class RoomManager:
             return
 
         try:
-            points = np.asarray(
-                list(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True)),
-                dtype=np.float64)
+            raw_pts = list(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True))
+            if raw_pts:
+                points = np.array([[float(p[0]), float(p[1]), float(p[2])] for p in raw_pts], dtype=np.float64)
+            else:
+                points = np.empty((0, 3), dtype=np.float64)
         except Exception as exc:
             self._log('warn', f'Failed to parse 3D cloud: {exc}')
             return
@@ -528,6 +545,46 @@ class RoomManager:
         return support.reshape((height, width))
 
     @staticmethod
+    def _compute_gvd_ridge(free_topo, structural_occupied):
+        """Medial axis by RIDGE DETECTION on the distance transform.
+
+        GA-137. The label-difference method below cannot produce a skeleton on a normal
+        floorplan, and the reason is structural rather than a matter of tuning: it marks a
+        pixel only where two adjacent free pixels have DIFFERENT nearest-obstacle CONNECTED
+        COMPONENT ids. In any ordinary building the outer walls and the interior walls
+        touch, so there is exactly ONE obstacle component, every free pixel carries the same
+        label, and the skeleton is empty at every resolution with every threshold correct.
+
+        MEASURED on a synthetic two-room floorplan (outer walls + an interior wall with a
+        doorway):
+            connected walls   -> 1 obstacle component  -> skeleton_px = 0
+            interior wall detached from the outer wall -> 3 components -> skeleton_px = 432
+            two separate blobs -> 2 components -> skeleton_px = 120
+        The method only works when the obstacles are already disconnected, which is the one
+        case a floorplan is not.
+
+        The true GVD is the set of points equidistant from two nearest obstacle POINTS --
+        a ridge of the distance transform, which exists regardless of connectivity. On the
+        same connected-wall map this yields skeleton_px = 22278, and the doorway shows as a
+        clear clearance minimum (5.00 px against an open-room median of 16.00), which is
+        exactly the local minimum `_critical_points` cuts on.
+        """
+        occ = structural_occupied > 0
+        src = np.where(occ, 0, 255).astype(np.uint8)
+        dist = cv2.distanceTransform(src, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+        freeb = free_topo > 0
+        d = np.where(freeb, dist, -1.0)
+        ridge = np.zeros(d.shape, dtype=bool)
+        # On the axis if the clearance is a local maximum along ANY direction.
+        for dy, dx in ((0, 1), (1, 0), (1, 1), (1, -1)):
+            a = np.roll(np.roll(d, dy, 0), dx, 1)
+            b = np.roll(np.roll(d, -dy, 0), -dx, 1)
+            ridge |= (d >= a) & (d >= b) & (d > 0)
+        skeleton = np.zeros(d.shape, dtype=np.uint8)
+        skeleton[ridge & freeb] = 255
+        return skeleton, dist
+
+    @staticmethod
     def _compute_gvd(free_topo, structural_occupied):
         """Discrete brushfire/GVD on the *topological* free/obstacle
         masks: labels every topo-free pixel with the id of its nearest
@@ -654,29 +711,63 @@ class RoomManager:
         """
         skel_bool = skeleton > 0
         if not np.any(skel_bool):
+            self._last_critical_stats = {"branches": 0, "reason": "empty skeleton"}
             return []
         door_radius_px = (self._params['gvd_door_max_m'] / 2.0) / max(resolution, 1e-6)
         branches = self._trace_branches(skel_bool)
         points = set()
 
+        # GA-196. WHY a branch was rejected, counted. `branches_cut=0` was the only signal
+        # this stage produced, and it is the same shape as every unlogged exit this review
+        # has found: it says a thing did not happen and nothing about which test refused it.
+        # Measured over two runs, 87% of sweeps cut nothing while the skeleton was ~18,600
+        # px and NEVER empty -- so the failure is here, among these four filters, and no
+        # bundle could say which. Counters only; no behaviour changes.
+        rej = {"too_short_px": 0, "too_short_m": 0, "wider_than_door": 0,
+               "no_end_clearance": 0, "not_a_bottleneck": 0, "accepted": 0}
+        min_branch_px = max(4, int(round(
+            self._params['gvd_prune_min_branch_m'] / max(resolution, 1e-6))))
+        narrowest = None
+
         for path in branches:
             if len(path) < 2:
+                rej["too_short_px"] += 1
                 continue
-            if len(path) < max(4, int(round(self._params['gvd_prune_min_branch_m'] / max(resolution, 1e-6)))):
+            if len(path) < min_branch_px:
+                rej["too_short_m"] += 1
                 continue
             vals = [float(dist[y, x]) for y, x in path]
             min_idx = int(np.argmin(vals))
             min_val = vals[min_idx]
             end_clearance = max(vals[0], vals[-1])
+            # The narrowest clearance any branch offered, in METRES of free width, so the
+            # log says how far from a doorway the map actually was rather than only that
+            # nothing qualified. A run where this sits just above gvd_door_max_m is a
+            # threshold question; one where it sits far above is a map question.
+            width_m = 2.0 * min_val * resolution
+            if narrowest is None or width_m < narrowest:
+                narrowest = width_m
 
             if min_val > door_radius_px:
+                rej["wider_than_door"] += 1
                 continue
             if end_clearance <= 1e-6:
+                rej["no_end_clearance"] += 1
                 continue
             if min_val > float(self._params['gvd_bottleneck_ratio']) * end_clearance:
+                rej["not_a_bottleneck"] += 1
                 continue
             y, x = path[min_idx]
             points.add((int(y), int(x), float(self._branch_direction(path, min_idx)), float(min_val)))
+            rej["accepted"] += 1
+
+        self._last_critical_stats = {
+            "branches": len(branches),
+            "min_branch_px": min_branch_px,
+            "door_max_m": float(self._params['gvd_door_max_m']),
+            "narrowest_branch_m": (None if narrowest is None else round(narrowest, 3)),
+            **rej,
+        }
         return list(points)
 
     def _cut_free_space(self, free, dist_real, critical_points):
@@ -688,10 +779,11 @@ class RoomManager:
         margin_px = max(1, int(self._params['gvd_cut_margin_px']))
         for point in critical_points:
             if len(point) >= 4:
-                y, x, theta, _ = point
+                y, x, theta, _ = point  # theta unused below; kept only by the unpacking
             else:
                 y, x = point[:2]
-                theta = 0.0
+                # unused — nothing below reads theta
+                # theta = 0.0
             radius = int(round(float(dist_real[y, x]))) + margin_px
             radius = max(1, radius)
             cv2.circle(cut, (int(x), int(y)), radius, 0, -1)
@@ -788,7 +880,17 @@ class RoomManager:
 
         structural_occ = self._structural_obstacles(occupied, resolution, grid, cloud_support=cloud_support)
         free_topo = self._fill_nonstructural_obstacles(free, occupied, structural_occ, resolution)
-        skeleton_raw, dist_topo = self._compute_gvd(free_topo, structural_occ)
+        # GA-137: `label_diff` is today's behaviour and stays the default -- it is provably
+        # always-empty on a connected floorplan, but changing room segmentation changes
+        # EVERY room-scoped number, which is a run-design decision, not mine to take.
+        _method = str(self._params.get('gvd_method', 'label_diff'))
+        if _method == 'ridge':
+            skeleton_raw, dist_topo = self._compute_gvd_ridge(free_topo, structural_occ)
+        elif _method == 'label_diff':
+            skeleton_raw, dist_topo = self._compute_gvd(free_topo, structural_occ)
+        else:
+            raise ValueError(f"unknown rooms.gvd_method {_method!r}; "
+                             f"expected 'label_diff' or 'ridge'")
         skeleton = self._prune_skeleton(skeleton_raw, resolution)
         critical_points = self._critical_points(skeleton, dist_topo, resolution)
 
@@ -801,10 +903,28 @@ class RoomManager:
         min_pixels = self._params['min_region_pixels']
         markers = self._merge_small_labels(markers, min_pixels, dist_topo, resolution)
 
+        _skel_px = int(np.count_nonzero(skeleton))
+        # GA-137: an empty skeleton is a FAILURE, not a measurement, and this line has been
+        # printing the fact of its own failure at INFO since the beginning -- `regions=N`
+        # comes from the watershed and is non-zero whether or not anything was segmented,
+        # so the line reads like a result. skeleton_px=0 means no branches, nothing to cut,
+        # and exactly one region per floor: the room gate, the room prior and every
+        # room-scoped number downstream are then no-ops over a single room.
+        # GA-196: the rejection breakdown travels with the line that reports the cut count,
+        # so a bundle can say WHICH test refused every branch instead of only that none
+        # survived. Rendered as key=value pairs; an exact-field reader parses it, and a
+        # substring grep over `N regions` does not (rule 50 -- that grep is how the branch
+        # count was misread as a region count in the first place).
+        _cstats = getattr(self, '_last_critical_stats', {}) or {}
+        _cdesc = ' '.join(f'{k}={v}' for k, v in _cstats.items())
         self._log(
-            'info',
-            f'GVD segmentation: skeleton_px={int(np.count_nonzero(skeleton))} '
-            f'branches_cut={len(critical_points)} regions={int(markers.max())}')
+            'warn' if _skel_px == 0 else 'info',
+            f'GVD segmentation: skeleton_px={_skel_px} '
+            f'branches_cut={len(critical_points)} regions={int(markers.max())}'
+            + (f' | critical_points: {_cdesc}' if _cdesc else '')
+            + (' -- SKELETON EMPTY: no segmentation happened, every object will land in one'
+               ' room. regions= here is the watershed count, not evidence of a split.'
+               if _skel_px == 0 else ''))
 
         candidates = []
         for label in range(1, int(markers.max()) + 1):
@@ -879,6 +999,10 @@ class RoomManager:
                 'objects': [], 'polygon': [], 'area_m2': 0.0,
                 'centroid': [], 'walls': [], 'wall_segments': [],
                 'confirmed': False, 'boundaries': {}, 'last_seen': time.time(),
+                # GA-185: whether the region backing this room is currently detected. A
+                # retired room stays in the registry and stays referenceable; it is simply
+                # not the robot's current room any more.
+                'active': True, 'retired_at': None,
             }
         return self.scene_graph[room_id]
 
@@ -893,7 +1017,9 @@ class RoomManager:
         old = list(self.regions.values())
         used = set()
         for polygon, area, centroid, _ in candidates:
-            best = None; best_score = -1.0; best_index = None
+            best = None
+            best_score = -1.0
+            best_index = None
             for i, previous in enumerate(old):
                 if i in used:
                     continue
@@ -904,7 +1030,8 @@ class RoomManager:
                 if score >= self._params['region_match_iou_min'] and score > best_score:
                     best, best_score, best_index = previous, score, i
             if best is None:
-                region_id = f'region_{self.region_counter}'; self.region_counter += 1
+                region_id = f'region_{self.region_counter}'
+                self.region_counter += 1
                 best = Region(region_id, polygon, area, centroid)
                 best.room_id = self._new_room_id()
                 self.init_room_node(best.room_id)
@@ -935,10 +1062,29 @@ class RoomManager:
         stale_s = self._params['room_stale_prune_s']
         for room_id in list(self.scene_graph.keys()):
             if room_id in active_room_ids:
+                self.scene_graph[room_id]['active'] = True
                 continue
             last_seen = self.scene_graph[room_id].get('last_seen', 0)
             if now2 - last_seen > stale_s:
-                del self.scene_graph[room_id]
+                # GA-185: RETIRED, NOT DELETED. This used to `del` the room, and
+                # `room_stale_prune_s` is 10 SECONDS while a room's `last_seen` is refreshed
+                # only while the robot is IN it -- so every room the tour left for more than
+                # ten seconds was erased from the registry within one sweep.
+                #
+                # MEASURED in run 20260901_055513: room.json listed ONE room while the
+                # objects carried two, `room_0` holding 41 of the 186. The objects outlived
+                # the room they point at, and the published room count became "how many
+                # rooms were visible in the last ten seconds" rather than "how many rooms
+                # were mapped" -- which is also why run 044225 reported 4 and this one 1.
+                #
+                # A mapped room is part of the building whether or not it is in view. The
+                # pruning intent -- stop treating it as CURRENT -- is kept by the flag; the
+                # record is kept because objects still reference it and a dangling reference
+                # is worse than a stale one.
+                room = self.scene_graph[room_id]
+                if room.get('active', True):
+                    room['retired_at'] = now2
+                room['active'] = False
                 if self.current_room_id == room_id:
                     self.current_room_id = None
 
@@ -955,8 +1101,11 @@ class RoomManager:
         return min(matches, key=lambda r: r.area_m2).room_id if matches else None
 
     def _nearest_room(self, xy):
+        # FIX: the guard used to return bare None while every other path
+        # returns a (room_id, distance) tuple — callers unpack the result, so
+        # the first query before any room existed crashed the node.
         if xy is None or not self.regions:
-            return None
+            return None, float('inf')
         best_room = None
         best_distance = float('inf')
         for region in self.regions.values():
@@ -995,7 +1144,8 @@ class RoomManager:
                 label = getattr(obj, 'label', 'unknown')
             if room_id == self.current_room_id:
                 label = str(label).strip()
-                if label and all(self._object_label_key(label) != self._object_label_key(existing) for existing in labels):
+                if label and all(self._object_label_key(label) != self._object_label_key(existing)
+                                 for existing in labels):
                     labels.append(label)
         room['objects'] = sorted(labels)
         room['last_seen'] = time.time()
@@ -1013,7 +1163,8 @@ class RoomManager:
         by_room = {}
         for obj in persistent_objects or []:
             if isinstance(obj, dict):
-                room_id = obj.get('room_id'); label = obj.get('label', 'unknown')
+                room_id = obj.get('room_id')
+                label = obj.get('label', 'unknown')
             else:
                 room_id = getattr(obj, 'room_id', None)
                 label = getattr(obj, 'label', 'unknown')
@@ -1063,12 +1214,12 @@ class RoomManager:
         labels_str = ", ".join(set(room_objects_labels))
 
         try:
+            from config import CFG
             from openai import OpenAI
-
-            model_name = os.environ.get("ROOM_VLM_MODEL", "gemma4:e2b")
+            model_name = os.environ.get("ROOM_VLM_MODEL", CFG["vlm"]["model"])
             client = OpenAI(
-                base_url="http://localhost:11434/v1",
-                api_key="ollama",
+                base_url=CFG["vlm"]["base_url"],
+                api_key=CFG["vlm"]["api_key"] or os.environ.get("OPENAI_API_KEY", "ollama"),
             )
 
             text_prompt = (
@@ -1091,7 +1242,7 @@ class RoomManager:
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": content}],
-                timeout=15.0
+                timeout=CFG["vlm"]["timeout"]
             )
 
             raw_content = (response.choices[0].message.content or "").strip()
@@ -1115,9 +1266,21 @@ class RoomManager:
         room["last_seen"] = time.time()
         self._save_rooms(force=True)
 
-    def assign_room_by_geometry(self, bbox):
+    def room_at_bbox(self, bbox):
+        """Which room this box is geometrically in, or None when geometry cannot say.
+
+        GA-28 / GA-25: `assign_room_by_geometry` answers `self.current_room_id` — the
+        ROBOT's room — when there is no bbox, no room polygon within tolerance, or no
+        room at all, and it returns it in the same type as a geometric answer. A caller
+        cannot tell "this object is in room 3" from "I do not know, and the robot is in
+        room 3". A same-room gate built on that reads two objects in different rooms as
+        the same room precisely when the map is least able to separate them.
+
+        This is the honest query. `assign_room_by_geometry` keeps its behaviour and is
+        now the one place that applies the fallback, so the two cannot drift.
+        """
         if not bbox:
-            return self.current_room_id
+            return None
         candidates = [
             ((bbox['x_min'] + bbox['x_max']) / 2.0, (bbox['y_min'] + bbox['y_max']) / 2.0),
             (bbox['x_min'], bbox['y_min']),
@@ -1142,7 +1305,55 @@ class RoomManager:
 
         if nearest is not None and nearest_dist <= max(tolerance, 0.45):
             return nearest
-        return self.current_room_id
+        return None
+
+    def reassign_objects_by_geometry(self, objects):
+        """Re-file objects whose geometric room no longer matches their stored `room_id`.
+
+        GA-28c: this had ONE call site (`object_manager_6.reassign_objects_to_rooms`, run
+        after a map resegmentation) and NO definition anywhere in the tree, so the whole
+        path raised AttributeError the first time a resegmentation happened.
+
+        Returns ``[(obj, old_room, new_room), ...]`` for the objects that moved, which is
+        the shape the caller already unpacks.
+
+        Geometry only. `room_at_bbox` returns None when it cannot say, and an object is
+        LEFT WHERE IT IS in that case -- a resegmentation that cannot place an object is
+        not evidence the object went anywhere. Using `assign_room_by_geometry` here would
+        re-file every unplaceable object into whichever room the robot happens to occupy,
+        which is exactly the fallback-as-fact defect GA-28b names.
+        """
+        changed = []
+        for obj in objects or []:
+            bbox = getattr(obj, "bbox", None)
+            if not bbox:
+                continue
+            new_room = self.room_at_bbox(bbox)
+            if new_room is None:
+                continue
+            old_room = getattr(obj, "room_id", None)
+            if old_room == new_room:
+                continue
+            obj.room_id = new_room
+            if old_room and old_room in self.scene_graph:
+                objs = self.scene_graph[old_room].get("objects", [])
+                if obj.label in objs:
+                    objs.remove(obj.label)
+            node = self.init_room_node(new_room)
+            if obj.label not in node.get("objects", []):
+                node.setdefault("objects", []).append(obj.label)
+            changed.append((obj, old_room, new_room))
+        return changed
+
+    def assign_room_by_geometry(self, bbox):
+        """The room to file this box under, falling back to the robot's room.
+
+        The fallback is deliberate for an assignment — an object must go somewhere —
+        and it is wrong for a comparison. Call `room_at_bbox` when the answer matters,
+        and treat None as "unknown", never as "same room".
+        """
+        room_id = self.room_at_bbox(bbox)
+        return room_id if room_id is not None else self.current_room_id
 
     def evaluate_scene(self, descriptions=None, persistent_objects=None):
         self.last_robot_xy = self._robot_pose()
@@ -1160,7 +1371,8 @@ class RoomManager:
         room_labels = []
         for label in room_node.get("objects", []) or []:
             label = str(label).strip()
-            if label and all(self._object_label_key(label) != self._object_label_key(existing) for existing in room_labels):
+            if label and all(self._object_label_key(label) != self._object_label_key(existing)
+                             for existing in room_labels):
                 room_labels.append(label)
 
         for o in persistent_objects or []:
@@ -1172,7 +1384,8 @@ class RoomManager:
                 obj_label = getattr(o, 'label', '')
             if obj_room_id == room_id:
                 cleaned = str(obj_label or '').strip()
-                if cleaned and all(self._object_label_key(cleaned) != self._object_label_key(existing) for existing in room_labels):
+                if cleaned and all(self._object_label_key(cleaned) != self._object_label_key(existing)
+                                   for existing in room_labels):
                     room_labels.append(cleaned)
 
         room_labels_vlm = [self._vlm_room_label(label) for label in room_labels if str(label).strip()]
@@ -1210,6 +1423,17 @@ class RoomManager:
     # Visualization and persistence
     # ------------------------------------------------------------------
 
+    @property
+    def current_room_walls(self):
+        """Walls of the CURRENT room only. Kept as a property so both existing call sites --
+        the append in object_manager_6.walls_callback and the read in
+        finalize_current_room -- keep working unchanged while the storage becomes per-room.
+        """
+        return self._walls_by_room.setdefault(self.current_room_id, [])
+
+    def walls_of(self, room_id):
+        return list(self._walls_by_room.get(room_id, []))
+
     @staticmethod
     def _room_color(room_id):
         try:
@@ -1233,7 +1457,8 @@ class RoomManager:
     def _publish_geometry(self, grid):
         if self._marker_pub is None:
             return
-        output = MarkerArray(); current = set()
+        output = MarkerArray()
+        current = set()
         for room_id, room in self.scene_graph.items():
             polygon = room.get('polygon', [])
             if len(polygon) < 3:
@@ -1245,34 +1470,50 @@ class RoomManager:
             current.add(marker_id)
             color_r, color_g, color_b = self._room_color(room_id)
 
-            fill = Marker(); fill.header = grid.header
-            fill.ns = 'room_fill'; fill.id = marker_id
-            fill.type = Marker.TRIANGLE_LIST; fill.action = Marker.ADD
+            fill = Marker()
+            fill.header = grid.header
+            fill.ns = 'room_fill'
+            fill.id = marker_id
+            fill.type = Marker.TRIANGLE_LIST
+            fill.action = Marker.ADD
             fill.pose.orientation.w = 1.0
             fill.scale.x = fill.scale.y = fill.scale.z = 1.0
             fill.color.r, fill.color.g, fill.color.b = color_r, color_g, color_b
             fill.color.a = 0.28
             for x, y in self._ear_clip_triangulate(polygon):
-                point = Point(); point.x = float(x); point.y = float(y); point.z = 0.02
+                point = Point()
+                point.x = float(x)
+                point.y = float(y)
+                point.z = 0.02
                 fill.points.append(point)
             output.markers.append(fill)
 
-            marker = Marker(); marker.header = grid.header
-            marker.ns = 'rooms'; marker.id = marker_id
-            marker.type = Marker.LINE_STRIP; marker.action = Marker.ADD
-            marker.pose.orientation.w = 1.0; marker.scale.x = 0.10
+            marker = Marker()
+            marker.header = grid.header
+            marker.ns = 'rooms'
+            marker.id = marker_id
+            marker.type = Marker.LINE_STRIP
+            marker.action = Marker.ADD
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 0.10
             marker.color.r, marker.color.g, marker.color.b = color_r, color_g, color_b
             marker.color.a = 1.0
             for x, y in polygon + [polygon[0]]:
-                point = Point(); point.x = float(x); point.y = float(y); point.z = 0.05
+                point = Point()
+                point.x = float(x)
+                point.y = float(y)
+                point.z = 0.05
                 marker.points.append(point)
             output.markers.append(marker)
 
             centroid = room.get('centroid') or self._centroid(polygon)
             area = float(room.get('area_m2', 0.0))
-            text_marker = Marker(); text_marker.header = grid.header
-            text_marker.ns = 'room_labels'; text_marker.id = marker_id
-            text_marker.type = Marker.TEXT_VIEW_FACING; text_marker.action = Marker.ADD
+            text_marker = Marker()
+            text_marker.header = grid.header
+            text_marker.ns = 'room_labels'
+            text_marker.id = marker_id
+            text_marker.type = Marker.TEXT_VIEW_FACING
+            text_marker.action = Marker.ADD
             text_marker.pose.position.x = float(centroid[0])
             text_marker.pose.position.y = float(centroid[1])
             text_marker.pose.position.z = 0.6
@@ -1289,8 +1530,11 @@ class RoomManager:
 
         for marker_id in self._last_marker_ids - current:
             for ns in ('rooms', 'room_labels', 'room_fill'):
-                marker = Marker(); marker.header = grid.header
-                marker.ns = ns; marker.id = marker_id; marker.action = Marker.DELETE
+                marker = Marker()
+                marker.header = grid.header
+                marker.ns = ns
+                marker.id = marker_id
+                marker.action = Marker.DELETE
                 output.markers.append(marker)
         self._last_marker_ids = current
         self._marker_pub.publish(output)
@@ -1298,15 +1542,20 @@ class RoomManager:
         if self._room_areas_pub is not None:
             areas = {rid: round(float(r.get('area_m2', 0.0)), 2) for rid, r in self.scene_graph.items()}
             payload = {'current_room_id': self.current_room_id, 'areas_m2': areas}
-            msg = String(); msg.data = json.dumps(payload, ensure_ascii=False)
+            msg = String()
+            msg.data = json.dumps(payload, ensure_ascii=False)
             self._room_areas_pub.publish(msg)
 
     @staticmethod
     def _json_safe(value):
-        if isinstance(value, dict): return {k: RoomManager._json_safe(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)): return [RoomManager._json_safe(v) for v in value]
-        if isinstance(value, np.generic): return RoomManager._json_safe(value.item())
-        if isinstance(value, float) and not math.isfinite(value): return None
+        if isinstance(value, dict):
+            return {k: RoomManager._json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [RoomManager._json_safe(v) for v in value]
+        if isinstance(value, np.generic):
+            return RoomManager._json_safe(value.item())
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
         return value
 
     def _save_rooms(self, force=False):

@@ -6,11 +6,6 @@ import torchvision.transforms as transforms
 from efficientvit.export_encoder import SamResize
 from efficientvit.inference import SamDecoder, SamEncoder
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
-import cv2
-from PIL import Image
-import torch
-import cv2
-import numpy as np
 from PIL import Image
 from transformers import Owlv2Processor, Owlv2ForObjectDetection
 
@@ -156,9 +151,20 @@ class DINO():
 class VitSam():
 
     def __init__(self, encoder_model, decoder_model):
-        # Select device and pass it to the ONNX-based encoder/decoder so they
-        # use the CUDAExecutionProvider when available.
-        self.device = "cpu" if torch.cuda.is_available() else "cpu"
+        # GA-15: both arms of this selector read "cpu", directly under a comment saying
+        # the device is chosen so the ONNX encoder/decoder use CUDA when available. So
+        # every published sam_ms was a CPU ONNX number presented as the system's
+        # segmentation cost -- an honest measurement of what the code did, which is why
+        # it was invisible in the number alone, and not comparable with the cloud
+        # backend's GPU SAM.
+        #
+        # torch.cuda.is_available() is not sufficient on its own: SamEncoder/SamDecoder
+        # pass the choice straight to onnxruntime as providers=["CUDAExecutionProvider"],
+        # and torch can see a GPU in a container whose onnxruntime build has no CUDA
+        # provider at all. Ask onnxruntime what it actually has.
+        import onnxruntime as ort
+        _cuda = torch.cuda.is_available() and "CUDAExecutionProvider" in ort.get_available_providers()
+        self.device = "cuda" if _cuda else "cpu"
         print("VitSam device:", self.device)
 
         self.decoder = SamDecoder(decoder_model, device=self.device)

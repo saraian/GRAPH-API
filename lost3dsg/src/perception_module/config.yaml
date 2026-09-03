@@ -1,0 +1,82 @@
+# Perception module configuration.
+# Every value here reproduces the previous hardcoded behaviour; edit freely.
+# Missing keys fall back to the same defaults (see config.py). Override the
+# file location with GRAPH_API_CONFIG=/path/to/config.yaml.
+
+vlm:
+  base_url: "http://localhost:11434/v1"
+  model: "gemma4:e2b"
+  api_key: ""          # empty -> OPENAI_API_KEY env, else legacy api.txt, else "ollama"
+  timeout: 30.0        # seconds per request
+  retries: 2           # extra attempts on timeout/malformed response, then raise
+  fallback_labels: []  # non-empty -> use this static label list (with a warning)
+                       # when the VLM is unreachable, instead of failing the cycle
+
+embedding:
+  word2vec_path: "/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz"
+  word2vec_limit: 200000   # vocabulary cap; keeps RAM bounded
+
+similarity:            # lost_similarity weights, must sum to 1.0
+  label: 0.05
+  color: 0.30
+  material: 0.15
+  description: 0.50
+
+association:
+  exploration_iou_threshold: 0.10
+  sim_threshold: 0.85
+  tracking_iou_threshold: 0.3
+  volume_expansion_ratio: 0.01
+  exploration_frame_limit: 10    # frames in exploration before tracking may start
+  object_stability_timeout: 3.0  # min seconds of life before an object can be 'MOVED'
+  pov_scale_factor: 1.0
+  max_volume_threshold: 0.5
+  bbox_reduction_ratio: 0.30
+  reevaluation_radius_m: 2.0   # GA-49: radius (m) within which a changed object re-evaluates its neighbours
+                               # (replaced max_match_distance_m, which no code has read since GA-04)
+
+frames:
+  # OPTICAL frame (x right, y down, z forward) the perception back-projects
+  # into. If you point this at a BODY frame (x forward, z up), depth lands in
+  # the height axis and every object position is silently wrong.
+  camera: "habitat_camera_optical"
+
+paths:
+  operations_log: "/root/exchange/output/operations.txt"
+  vitsam_encoder: ""   # empty -> <package>/utils/l2_encoder.onnx
+  vitsam_decoder: ""   # empty -> <package>/utils/l2_decoder.onnx
+  identification_prompt: ""  # empty -> <package>/prompts/object_identification_prompt.txt
+  visual_prompt: ""          # empty -> <package>/prompts/visual_prompt.txt
+
+tf:
+  lookup_timeout: 0.1  # seconds to wait for a transform before dropping the frame
+rooms:
+  default_room_id: ""   # empty = strict: no room known -> object rejected (needs SLAM rooms)
+
+habitat:
+  # keep the simulated agent on the floor it starts on: the 2D grid cannot separate
+  # storeys and HM3D navmeshes join them through the stairs (goal filter on height)
+  single_floor: true
+  floor_tolerance_m: 0.5
+  mapping_seconds: 150.0   # initial continuous mapping coverage duration (seconds)
+  walk_frames: 6          # frames moving per burst
+  dwell_frames: 60        # frames stationary / dwelling for 3D perception
+  fps: 3.0                # simulator framerate
+
+hooks:
+  # extension seam (hooks.py): admission Filter / node Refiner loaded from another
+  # package by dotted path; empty = the pass-through blueprints (today's behaviour)
+  search_paths: []        # prepended to sys.path, e.g. ["/path/to/that/package"]
+  filter: ""              # "pkg.module:ClassName", subclass of hooks.Filter
+  refiner: ""             # "pkg.module:ClassName", subclass of hooks.Refiner
+  store: ""               # "pkg.module:ClassName", subclass of hooks.Store; empty = SQLite map
+  decisions_log: ""       # JSONL of decisions/revisions; empty -> output/hook_decisions.jsonl
+
+perception:
+  backend: "local"        # "modal" | "managed" | "local"
+  modal_endpoint: "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
+  score_threshold: 0.15
+  nms_threshold: 0.50
+  # seconds; a remote perception call. 25.0 was hardcoded and sat below all
+  # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
+  cloud_timeout_s: 60.0
