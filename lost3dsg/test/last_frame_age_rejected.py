@@ -47,6 +47,8 @@ def worst_rejected_age(runs_dir):
         log = os.path.join(runs_dir, d, "logs", "perception.log")
         if not os.path.isfile(log):
             continue                    # no perception log: this run says nothing either way
+        if _bridge_never_bound(runs_dir, d):
+            continue                    # see the docstring below: not a sample of a working loop
         worst = 0.0
         try:
             with open(log, errors="replace") as fh:
@@ -61,6 +63,32 @@ def worst_rejected_age(runs_dir):
             continue
         return f"{worst:.2f}" if worst > 0 else ""
     return ""
+
+
+def _bridge_never_bound(runs_dir, bundle):
+    """True when this run's bridge never got its port. Such a run is NOT a sample.
+
+    GA-292. Run 20260903_223859 collided with an unrelated process on 8081, so the bridge
+    never bound and every object_manager POST failed. It rejected 4 frames, worst 18.22 s,
+    and a10 then refused the next launch against a 15.0 s guard.
+
+    THE GUARD IS NOT THE THING THAT WAS WRONG. Four runs on 2026-09-03 (110622, 123748,
+    135823, 144312) rejected ZERO frames under that same 15.0 s guard, and every rejection in
+    223859 came AFTER the first failed POST (unreachable from epoch 1788468265; the first
+    rejection over 15 s at 1788468306). Association, not proof of mechanism -- but a run whose
+    storage path was dead is not evidence about frame ages when it is alive, and raising the
+    guard to clear it would tune the safety limit to fit a fault that is already fixed.
+
+    This is the SAME rule the search already applies to a newer clean run: do not refuse a run
+    for a solved fault. Narrow on purpose -- one condition, read from the bundle's own
+    bridge.log, and it skips ONLY a bundle that recorded the bind failure.
+    """
+    blog = os.path.join(runs_dir, bundle, "logs", "bridge.log")
+    try:
+        with open(blog, errors="replace") as fh:
+            return any("address already in use" in ln for ln in fh)
+    except OSError:
+        return False
 
 
 def _selfcheck():
@@ -83,6 +111,17 @@ def _selfcheck():
                                 "Cached frame too old (5.57s), discarding\n")
     assert worst_rejected_age(root) == "8.52", worst_rejected_age(root)
 
+    # A BUNDLE WHOSE BRIDGE NEVER BOUND IS SKIPPED, and the search continues past it.
+    b = bundle("20260303_000000_x", "Cached frame too old (18.22s), discarding\n")
+    with open(os.path.join(b, "bridge.log"), "w") as fh:
+        fh.write("ERROR: [Errno 98] error while attempting to bind on address "
+                 "('0.0.0.0', 8081): address already in use\n")
+    assert worst_rejected_age(root) == "8.52", worst_rejected_age(root)
+    os.remove(os.path.join(b, "bridge.log"))
+    assert worst_rejected_age(root) == "18.22", worst_rejected_age(root)
+    import shutil
+    shutil.rmtree(os.path.join(root, "20260303_000000_x"))
+
     # THE NEWEST RUN WINS EVEN WHEN IT REJECTED NOTHING. A newer clean run means the problem
     # is fixed; reaching past it to an older bad run would refuse a run for a solved fault.
     bundle("20260202_000000_x", "everything fine here\n")
@@ -102,7 +141,7 @@ def _selfcheck():
     os.symlink(os.path.join(root, "20260404_000000_x"), os.path.join(root, "latest"))
     assert worst_rejected_age(root) == "", "`latest` is a name, not a sample"
     print("  last_frame_age_rejected selfcheck OK (empty/missing dir, worst-of-many, newest "
-          "clean run wins, no-log skipped, malformed age ignored, `latest` ignored)")
+          "clean run wins, dead-bridge bundle skipped, no-log skipped, malformed age ignored, `latest` ignored)")
     return 0
 
 

@@ -2,6 +2,9 @@
 # Runs INSIDE the container: build, then start the full stack against the host
 # habitat feed. Started by live_run.sh — not meant to be run directly.
 set -e
+# Console into the bundle: the "!! <node> exited" verdicts went to the terminal only, so three of
+# the 3 Sep runs have no recorded cause. /tmp/*.log is copied to $LOG_DIR at exit.
+exec > >(tee -a /tmp/stack.log) 2>&1
 source /opt/ros/humble/setup.bash
 
 # GA-157. /ws IS A NAMED VOLUME NOW, so the build tree survives `docker run --rm`.
@@ -332,17 +335,25 @@ if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
     echo "   to it, but nothing is enforcing that. Mount the map read-only (-v <host>:<path>:ro)"
     echo "   so the canonical map cannot be modified by a run that is only reading it."
   fi
-  _RT_DB_ARGS="--Mem/IncrementalMemory false"
+  # GA-290. --RGBD/MaxOdomCacheSize 0: runs 20260903_110622 and _144312 died of SIGABRT at
+  # Rtabmap.cpp:4090 (_optimizedPoses) in localization mode, both after "Rejecting localization
+  # ... wrong loop closure detected after graph optimization" on the odom-cache path. Owner-approved
+  # 3 Sep ~22:37 in session c6a7359d as a hypothesis test, NOT a proven fix: one run decides. Not part of the params-sha
+  # (that hashes grid args only), so the published map stays valid.
+  _RT_DB_ARGS="--Mem/IncrementalMemory false --RGBD/MaxOdomCacheSize 0"
   echo ">>> LOCALIZATION MODE against a copy of $RTABMAP_LOCALIZE_DB (params-sha $_have)"
   echo "    mapping is OFF; the driver must also set FEED_MAPPING_SECONDS=0"
 fi
 
 # same rtabmap arguments as launch/habitat_launch.py (odometry from /odom, no TF publish)
+# The args are the first line of rtabmap.log so the bundle records them; before this they were
+# visible only in ros2 launch's death message, i.e. only when the node died.
+echo "rtabmap_args: $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS" > /tmp/rtabmap.log
 ros2 launch rtabmap_launch rtabmap.launch.py visual_odometry:=false odom_topic:=/odom \
   rgb_topic:=/camera/rgb depth_topic:=/camera/depth camera_info_topic:=/camera/camera_info \
   approx_sync:=true rtabmap_viz:=false publish_tf:=false database_path:="$_RT_DB_PATH" \
   rtabmap_args:="$_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS" \
-  > /tmp/rtabmap.log 2>&1 &
+  >> /tmp/rtabmap.log 2>&1 &
 RTABMAP_PID=$!
 ros2 run lost3dsg object_manager_6.py > /tmp/om6.log 2>&1 &
 OM6_PID=$!
