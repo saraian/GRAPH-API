@@ -18,3 +18,9 @@ lost3dsg/word2vec-google-news-300/
 .handoff/
 *.pdf
 .pytest_cache/
+
+# Local working files
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+PRE_PR.md

@@ -132,7 +132,7 @@ def _transform_point_xyz(pt_xyz, source_frame, target_frame, stamp=None, timeout
                                             timeout=ROS2Duration(seconds=timeout))
     except tf2_ros.ExtrapolationException as e:
         # Dato ormai troppo vecchio (o troppo nel futuro oltre il buffer): non aspettare, fallisci subito
-        raise RuntimeError(f"TF non disponibile (extrapolation) per {source_frame}->{target_frame} "
+        raise RuntimeError(f"TF unavailable (extrapolation) for {source_frame}->{target_frame} "
                             f"al tempo {lookup_time}: {e}")
     except Exception as e:
         raise RuntimeError(f"TF lookup fallito per {source_frame}->{target_frame} al tempo {lookup_time}: {e}")
@@ -404,6 +404,63 @@ def _apply_transform(pts, transform):
     return pts.dot(R.T) + T
 
 
+def draw_cloud(img, points_map, camera_info, transform, max_points=6000, radius=1):
+    """Project map-frame points into this frame and dot them in. GA-218.
+
+    THE SAME PROJECTION `draw_boxes_3d` USES, on a point set instead of eight corners: the
+    map<-optical transform of THIS frame, then the pinhole. Reusing it is the point -- a
+    second implementation of the projection would drift from the first, and a cloud drawn
+    with a stale or mismatched transform looks plausible while being wrong, which is the
+    failure mode a debugging view must not have.
+
+    Coloured by HEIGHT, not by a flat tint: a uniform overlay hides whether the cloud is
+    lying on the floor or floating, and floating geometry is exactly what a bad localisation
+    produces. Points BEHIND the camera are dropped rather than wrapped -- a negative z
+    through a pinhole projects to a plausible pixel on the wrong side of the image.
+    """
+    if points_map is None or len(points_map) == 0 or transform is None:
+        return img
+    pts = np.asarray(points_map, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] < 3:
+        return img
+    pts = pts[:, :3]
+    if len(pts) > max_points:
+        # Deterministic stride, not a random draw: the same cloud should dot the same way on
+        # consecutive frames, or the overlay shimmers and looks like motion that is not there.
+        pts = pts[:: max(1, len(pts) // max_points)][:max_points]
+
+    # _get_R_and_T is what draw_boxes_3d itself uses, and `(p - T) @ R` is its exact
+    # expression for map -> optical. Written by hand the first time as a `transform_to_matrix`
+    # that DOES NOT EXIST -- checked before applying rather than discovered at runtime.
+    R, T = _get_R_and_T(transform)
+    cam = (pts - T) @ R
+    front = cam[:, 2] > 0.05
+    cam = cam[front]
+    if not len(cam):
+        return img
+    k = camera_info.k
+    fx, fy, cx, cy = float(k[0]), float(k[4]), float(k[2]), float(k[5])
+    u = (fx * cam[:, 0] / cam[:, 2] + cx).astype(np.int32)
+    v = (fy * cam[:, 1] / cam[:, 2] + cy).astype(np.int32)
+    h, w = img.shape[:2]
+    inside = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    u, v, z = u[inside], v[inside], pts[front][inside][:, 2]
+    if not len(u):
+        return img
+    lo, hi = float(z.min()), float(z.max())
+    span = max(hi - lo, 1e-6)
+    shade = ((z - lo) / span * 255).astype(np.uint8)
+    for uu, vv, ss in zip(u, v, shade):
+        img[max(0, vv - radius):vv + radius + 1, max(0, uu - radius):uu + radius + 1] = (
+            int(255 - ss), int(ss), 90)
+    return img
+
+
+# How strongly a 3D box's faces are tinted. Deliberately low: the point is a depth cue,
+# not a highlight, and the camera image underneath has to stay readable through it.
+BOX_FACE_ALPHA = 0.13
+
+
 def draw_boxes_3d(img, bboxes_3d, labels, camera_info, transform, depth=None, min_visible_points=1,
                   tol_abs=0.10, tol_rel=0.05):
     """Draw each 3D box (map frame) as a wireframe in the image it was measured from.
@@ -428,6 +485,31 @@ def draw_boxes_3d(img, bboxes_3d, labels, camera_info, transform, depth=None, mi
             continue
         colour = (0, 165, 255) if oriented else (255, 160, 0)
         thick = 2 if n_vis >= 5 else 1
+
+        # Faces, lightly shaded, UNDER the wireframe.
+        #
+        # A wireframe alone reads as a flat tangle once a few boxes overlap: there is no
+        # cue for which face is toward the camera, so two boxes at different depths look
+        # like one lattice. A low-alpha fill gives the solid back without hiding the
+        # image behind it -- the edges are still drawn on top at full strength, so
+        # nothing that was legible before becomes less so.
+        #
+        # Corner order comes from box_corners_map's nested comprehension,
+        # `for sx in (-ex, ex) for sy in (-ey, ey) for sz in (-ez, ez)`, so the index is
+        # 4*ix + 2*iy + iz. Each quad below is therefore a genuine face in cyclic order;
+        # listing them in the wrong order would fill bow-ties rather than faces.
+        if n_vis >= min_visible_points:
+            quads = np.array([[px[0], px[1], px[3], px[2]],    # x-
+                              [px[4], px[5], px[7], px[6]],    # x+
+                              [px[0], px[1], px[5], px[4]],    # y-
+                              [px[2], px[3], px[7], px[6]],    # y+
+                              [px[0], px[2], px[6], px[4]],    # z-
+                              [px[1], px[3], px[7], px[5]]],   # z+
+                             dtype=np.int32)
+            overlay = img.copy()
+            cv2.fillPoly(overlay, quads, colour, cv2.LINE_AA)
+            cv2.addWeighted(overlay, BOX_FACE_ALPHA, img, 1.0 - BOX_FACE_ALPHA, 0, dst=img)
+
         for i, j in BOX_EDGES:
             cv2.line(img, px[i], px[j], colour, thick, cv2.LINE_AA)
         top = min(px, key=lambda p: p[1])
@@ -674,7 +756,7 @@ groq_client = Groq(api_key=groq_api_key)
 def vlm_call(prompt, encoded_image):
     resp = groq_client.chat.completions.create(
         # Ho cambiato il modello qui sotto. 
-        # Puoi usare anche "llama-3.2-90b-vision-preview" se hai abbastanza quota
+        # "llama-3.2-90b-vision-preview" also works if the quota allows
         model="llama-3.2-11b-vision-preview", 
         messages=[{"role": "user", "content": [
             {"type": "text",      "text": prompt},
@@ -763,7 +845,14 @@ def vlm_call(prompt, encoded_image):
     A well-formed response is returned as-is (may be empty: a semantic outcome
     the callers already handle)."""
     last_err = None
-    for _ in range(CFG["vlm"]["retries"] + 1):
+    for attempt in range(CFG["vlm"]["retries"] + 1):
+        # GA-288. BACKOFF, because there was none. Run 20260903_135823 died at 18 cycles on
+        # a DNS blip ("Temporary failure in name resolution") that lasted under a second:
+        # three attempts fired back-to-back inside that second, all failed, and the raise
+        # below propagated through the timer callback into executor.spin(). 1 s / 2 s / 4 s
+        # lets a transient fault pass; a real outage still exhausts the attempts and raises.
+        if attempt:
+            time.sleep(min(2 ** (attempt - 1), 8))
         try:
             agent = _vlm_client().chat.completions.create(
                 model=CFG["vlm"]["model"],

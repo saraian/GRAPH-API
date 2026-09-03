@@ -66,7 +66,7 @@ class MapQuery:
     def __init__(self, db_path: str):
         self.db_path = str(Path(db_path).expanduser().resolve())
         if not Path(self.db_path).exists():
-            print(f"[ERRORE] File DB non trovato: {self.db_path}")
+            print(f"[ERROR] DB file not found: {self.db_path}")
             sys.exit(1)
 
     def _conn(self):

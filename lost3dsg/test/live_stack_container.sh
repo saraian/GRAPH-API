@@ -26,9 +26,22 @@ cd /ws
 # package.xml. A pure-Python change leaves it unchanged and colcon reinstalls the modules
 # incrementally; an interface change forces a CLEAN rebuild, because a regenerated header against
 # a stale build directory is the one failure that must be impossible.
-BUILD_KEY=$(cat /ws/src/lost3dsg/msg/*.msg /ws/src/lost3dsg/srv/*.srv \
-                /ws/src/lost3dsg/CMakeLists.txt /ws/src/lost3dsg/package.xml 2>/dev/null \
-            | sha256sum | cut -c1-16)
+# GA-199. LC_ALL=C and a SORTED FILE LIST, because the previous form hashed a glob whose
+# ORDER is locale-dependent: under C `Bbox3d.msg` precedes `Bbox3dArray.msg`, under en_US.UTF-8
+# it does not, and the same tree produced e173fff37f0b0617 or b9f7eda717059968 depending on
+# which shell asked. Identical bytes, different order, different hash. The failure was in the
+# safe direction -- a spurious clean rebuild, never a stale-header build -- which is why it
+# survived, but it made the key non-comparable across machines and any hand-computed value
+# untrustworthy.
+#
+# `sha256sum` PER FILE rather than `cat` of the contents, so a RENAME also changes the key.
+# Concatenated bytes cannot see a rename: swapping two interface filenames would leave the key
+# unchanged while the generated code differs, which is the one mismatch this cache must never
+# permit.
+BUILD_KEY=$( { find /ws/src/lost3dsg/msg /ws/src/lost3dsg/srv -type f \( -name '*.msg' -o -name '*.srv' \) 2>/dev/null; \
+               ls /ws/src/lost3dsg/CMakeLists.txt /ws/src/lost3dsg/package.xml 2>/dev/null; } \
+             | LC_ALL=C sort | xargs -r sha256sum | LC_ALL=C sort \
+             | sha256sum | cut -c1-16)
 BUILD_MODE=incremental
 if [ ! -f /ws/.build_key ] || [ "$(cat /ws/.build_key)" != "$BUILD_KEY" ]; then
   BUILD_MODE=clean
@@ -82,6 +95,14 @@ export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/${CFG_NAME}
 # the loop, and a bundle that looks complete. Fail here instead.
 [ -f "$GRAPH_API_CONFIG" ] || { echo "!! GRAPH_API_CONFIG=$GRAPH_API_CONFIG does not exist — refusing to run on defaults"; exit 1; }
 export GRAPH_API_OUTPUT_DIR=/ws/output
+
+# GA-264. A real triple store, installed from the vendored wheel so this needs no network.
+# found/store.py falls back to the in-memory rdflib graph if the import fails, and SAYS so --
+# a silent fallback would report a performance fix as landed when it is not.
+if ! python3 -c "import pyoxigraph" 2>/dev/null; then
+  pip install --quiet --no-index --find-links=/found/vendor/wheels pyoxigraph 2>&1 | tail -1 ||     echo "!! pyoxigraph install failed; the triple store will use the slow in-memory path"
+fi
+python3 -c "import pyoxigraph as _o; print('    triple store: pyoxigraph', _o.__version__)" 2>/dev/null ||   echo "    triple store: rdflib in-memory (pyoxigraph unavailable)"
 LOG_DIR=/ws/output/logs
 mkdir -p "$LOG_DIR" /ws/output/crops /ws/output/snapshots /out
 
@@ -249,6 +270,7 @@ else
       --expect-merged-sha "${PREFLIGHT_EXPECT_MERGED_SHA:-}" \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
       --expect-policy "${PREFLIGHT_EXPECT_POLICY:-}" \
+      --expect-cycle-s "${PREFLIGHT_EXPECT_CYCLE_S:-}" \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg \
       ${PREFLIGHT_OBSERVE:-} \
     || { echo "!! PRE-FLIGHT FAILED — no measured run produced. See /ws/output/preflight.json"; exit 1; }
@@ -457,11 +479,38 @@ while [ -z "$_dead_node" ]; do
     _dead_rc=$(sed -n 's/.*process has died.*exit code \(-\?[0-9]*\).*/\1/p' /tmp/rtabmap.log | head -1)
     _dead_rc=${_dead_rc:-1}
   fi
+  # GA-283. THE NODE'S CODE BEATS THE LAUNCHER'S, and the block above only ran when the
+  # launcher SURVIVED. On run 20260903_110622 the launcher did NOT survive: rtabmap the node
+  # aborted (SIGABRT, exit code -6) and `ros2 launch` then exited 0, so the pid watch above
+  # fired first, recorded 0, and printed "!! RTABMAP exited with status 0 -- ending the run."
+  # A SIGABRT REPORTED AS A CLEAN EXIT is why that crash read as benign to two people for an
+  # hour. `ros2 launch` returning 0 after its child aborts is not information about the child.
+  if [ "$_dead_node" = "RTABMAP" ] && grep -q "process has died" /tmp/rtabmap.log 2>/dev/null; then
+    _node_rc=$(sed -n 's/.*process has died.*exit code \(-\?[0-9]*\).*/\1/p' /tmp/rtabmap.log | head -1)
+    if [ -n "$_node_rc" ]; then
+      _dead_node="RTABMAP(node, launcher exited ${_dead_rc})"
+      _dead_rc="$_node_rc"
+    fi
+  fi
+  # And say what it was, since a negative code is a SIGNAL and reads as an error code.
+  case "$_dead_rc" in
+    -6)  _dead_why=" (SIGABRT — an assertion or uncaught exception; see rtabmap.log for the FATAL)" ;;
+    -9)  _dead_why=" (SIGKILL — killed from outside, commonly OOM; check the kernel log)" ;;
+    -11) _dead_why=" (SIGSEGV)" ;;
+    *)   _dead_why="" ;;
+  esac
   [ -z "$_dead_node" ] && sleep 2
 done
 kill "$TAIL_PID" 2>/dev/null || true
-echo "!! $_dead_node exited with status $_dead_rc — ending the run."
+echo "!! $_dead_node exited with status ${_dead_rc}${_dead_why:-} — ending the run."
 echo "   The stack is not left running: a run missing any of these nodes measures nothing further."
 tail -5 /tmp/perception.log
 
-exit "$_perception_rc"
+# An EMPTY variable here is "exit: : numeric argument required", which is what run
+# 20260903_110622 printed instead of an exit status. Default it, and prefer the code of the
+# node that actually died when perception was not the one that died.
+_rc="${_perception_rc:-}"
+[ -z "$_rc" ] && _rc="${_dead_rc:-1}"
+case "$_rc" in ''|*[!0-9-]*) _rc=1 ;; esac
+[ "$_rc" -lt 0 ] 2>/dev/null && _rc=$(( 128 - _rc ))   # a signal, as a shell exit status
+exit "$_rc"

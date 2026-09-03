@@ -134,6 +134,98 @@ def merge_path():
     object_services.ObjectServices._cb_merge_objects(svc, req, resp)
 
 
+def scan_summary():
+    """GA-190: the tracking scan emits ONE summary row per cycle, and resets.
+
+    The merge path logs what candidate selection excluded, which is why 87% pruning could be
+    measured there; this path logged nothing, so its cost was a code reading rather than a
+    finding. One row per CYCLE, never one per comparison -- hook_decisions.jsonl already
+    reached 1.8 GB at 99.98% merge_refused.
+    """
+    import importlib.util
+    import json as _json
+    import os as _os
+    import tempfile
+    from object_manager_6 import ObjectManagerService, _bbox_centre, _centre_distance
+
+    def box(x, y, z, s=0.2):
+        return {"x_min": x - s / 2, "x_max": x + s / 2, "y_min": y - s / 2,
+                "y_max": y + s / 2, "z_min": z - s / 2, "z_max": z + s / 2}
+
+    assert _bbox_centre(box(1, 2, 3)) == (1, 2, 3)
+    assert _bbox_centre(None) is None and _bbox_centre({"x_min": 0}) is None
+    assert abs(_centre_distance((0, 0, 0), box(3, 4, 0)) - 5.0) < 1e-9
+    assert _centre_distance(None, box(1, 1, 1)) is None
+
+    spec = importlib.util.spec_from_file_location("h_gа190", str(HERE / "hooks.py"))
+    h = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(h)
+    path = tempfile.mktemp(suffix=".jsonl")
+    n = object.__new__(ObjectManagerService)
+    n.decision_log = h.DecisionLog(path)
+    n._scan_stats = None
+    for _ in range(2):
+        st = ObjectManagerService._scan_acc(n)
+        st["visited"] += 3
+        st["skipped_unstable"] += 1
+        st["distances"] += [0.3, 2.4]
+        st["scored"] += 2
+        st["winner_distance"] = 0.3
+        st["winners"] += 1
+    ObjectManagerService.flush_scan_summary(n, frame_id="f1")
+    rows = [_json.loads(x) for x in open(path)]
+    assert len(rows) == 1 and rows[0]["kind"] == "tracking_scan_summary"
+    assert rows[0]["detections"] == 2 and rows[0]["comparisons_scored"] == 4
+    assert rows[0]["would_prune"]["1.0m"] == 2 and rows[0]["would_prune"]["3.0m"] == 0
+    assert n._scan_stats is None, "the accumulator must reset after a flush"
+    ObjectManagerService.flush_scan_summary(n, frame_id="f2")
+    assert len(list(open(path))) == 1, "an empty cycle must emit NO row"
+    _os.remove(path)
+
+
+def tracking_gate():
+    """GA-289: on the tracking path, locality before similarity and evidence before a win.
+
+    A same-label object 9 m away must not be scored at all; one 0.3 m away must win; and a
+    1.000 on the label alone (nothing else comparable) must not win even when near.
+    """
+    from object_manager_6 import ObjectManagerService, tracking_reach_m
+
+    def box(x, y, z, s=0.4):
+        return {"x_min": x - s / 2, "x_max": x + s / 2, "y_min": y - s / 2,
+                "y_max": y + s / 2, "z_min": z - s / 2, "z_max": z + s / 2}
+
+    def obj(label, b):
+        o = object_info.Object(label, None, b, description="unknown", color="silver",
+                               material="metal")
+        o.creation_time = 0.0            # long past OBJECT_STABILITY_TIMEOUT
+        return o
+
+    near, far = obj("faucet#1", box(0.3, 0, 0)), obj("faucet#2", box(9.0, 0, 0))
+    reach, basis = tracking_reach_m(far)
+    assert "fallback" in basis and reach < 8.0, (reach, basis)
+
+    n = object.__new__(ObjectManagerService)
+    n.object_services = rosstub.Any()
+
+    def scan(color, material, *objs):
+        n._scan_stats = None
+        wm.persistent_perceptions.clear()
+        wm.persistent_perceptions.extend(objs)
+        ObjectManagerService.check_tracking_transition(n, "faucet", color, material, None,
+                                                       box(0, 0, 0))
+        return n._scan_stats
+
+    st = scan("silver", "metal", far)
+    assert st["pruned_locality"] == 1 and st["scored"] == 0 and st["winners"] == 0, st
+    st = scan("silver", "metal", far, near)
+    assert st["winners"] == 1 and st["pruned_locality"] == 1, st
+    assert abs(st["winner_distance"] - 0.3) < 1e-6, st
+    st = scan("unknown", "unknown", near)          # label-only 1.000: near, but no evidence
+    assert st["winners"] == 0 and st["refused_evidence"] == 1 and st["scored"] == 1, st
+    wm.persistent_perceptions.clear()
+
+
 def empty_embedding():
     """GA-171: an EMPTY embedding must read as absent evidence, never crash the merge.
 
@@ -182,6 +274,8 @@ def install_list():
 for name, fn in [("description chain (build -> publish -> world model)", description_chain),
                  ("install list covers every import (GA-128)", install_list),
                  ("empty embedding is absent, not a crash (GA-171)", empty_embedding),
+                 ("tracking scan summary: one row per cycle (GA-190)", scan_summary),
+                 ("tracking gate: locality, then evidence (GA-289)", tracking_gate),
                  ("inside_area", inside_area),
                  ("save_uncertain_objects", save_uncertain),
                  ("reassign_objects_by_geometry", reassign_rooms),

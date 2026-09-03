@@ -44,10 +44,30 @@ class Decision:
     outcome: str                       # ADMIT | REJECT | ABSTAIN
     reason: str = ""
     annotation: dict = field(default_factory=dict)   # what a dashboard shows next to the node
+    # GA-240. PROVISIONAL: the object enters the map, but no ontological reasoning may use it
+    # until something else resolves it.
+    #
+    # WHY A THIRD STATE AND NOT A CHANGE TO `admitted`. Two outcomes were being made to carry
+    # three meanings. FOUND maps hold and no-grounds onto ABSTAIN in order to keep them OUT of
+    # the map (found/filter.py:8-13, "nothing enters the map except an admit"), while this
+    # seam defines ABSTAIN as admissible on purpose -- a blueprint filter that abstains must
+    # not empty the map. Both are right for their own side, and the collision put 296 objects
+    # into the map unadmitted on run 20260901_174810_hm3d_00861.
+    #
+    # The owner's ruling is neither of the obvious repairs: a DECLINE stays out of the map, a
+    # HOLD or an ungrounded proposal ENTERS but is unusable by the ontological layer until the
+    # association/core level resolves it. That is a third state, so it gets a third field
+    # rather than an overloaded second one. `admitted` keeps its meaning and its regression.
+    provisional: bool = False
 
     @property
     def admitted(self) -> bool:
         return self.outcome != REJECT   # abstaining is not refusing
+
+    @property
+    def ontologically_usable(self) -> bool:
+        """False for a provisional admission. The ontology channel must abstain on it."""
+        return self.admitted and not self.provisional
 
 
 class Filter:
@@ -168,6 +188,11 @@ if __name__ == "__main__":
     f, r, q = load_hooks({})
     assert f.judge({"label": "anything"}).admitted and r.refine({}, []) is None
     assert Decision(ABSTAIN).admitted and not Decision(REJECT).admitted
+    # GA-240: provisional is a THIRD state, not a synonym for either of the other two.
+    assert Decision(ABSTAIN, provisional=True).admitted, "provisional still enters the map"
+    assert not Decision(ABSTAIN, provisional=True).ontologically_usable, "but is not usable"
+    assert Decision(ADMIT).ontologically_usable, "a plain admit is usable"
+    assert not Decision(REJECT).ontologically_usable, "a refusal is neither"
     q.on_update("a", ["b", "c"]); q.on_update("d", ["b"]); q.mark("e", "manual")  # noqa: E702
     assert len(q) == 3 and dict(q.drain())["b"] == "neighbour a updated" and len(q) == 0
     s = load_store({}, lambda: Store())

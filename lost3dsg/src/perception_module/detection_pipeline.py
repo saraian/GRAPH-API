@@ -1,4 +1,6 @@
+import logging
 import os
+import sys
 import time
 
 import numpy as np
@@ -273,16 +275,50 @@ class DetectionPipelineMixin:
             # unreachable VLM was replaced by a static open-vocabulary list and the
             # cycle continued — so every downstream detection, association and verdict
             # came from labels no model produced, and the bundle recorded a completed
-            # run. `smoke_config.yaml` arms it with 69 labels, and per GA-50 that is
-            # the file the container loads. Working rule 14: a missing component must
-            # stop the run. The status is still recorded, and then it always raises —
-            # a handler that re-raises is not a mute; one that substitutes is.
+            # run. Working rule 14: a handler that SUBSTITUTES is a mute. That fix made
+            # this branch re-raise unconditionally.
+            #
+            # GA-288 (owner ruling 2026-09-03): re-raising unconditionally was the OTHER
+            # extreme. Run 20260903_135823 died at 18 cycles on a sub-second DNS blip --
+            # the exception propagated through the timer callback into executor.spin()
+            # and the node exited 1. A transient fault ended a 55-minute run.
+            #
+            # So this now mirrors object_manager_6's input-silence watchdog, which the
+            # owner approved for the same shape: a failed cycle is SKIPPED, LOUDLY --
+            # logged at ERROR, counted, and recorded in the bundle's vlm status -- and
+            # the next cycle retries. `perception.vlm_strikes_max` consecutive failures
+            # end the run the same way om6 does. Nothing substitutes for the VLM and
+            # nothing is muted; what changed is that one failure is no longer fatal.
+            self._vlm_strikes = getattr(self, "_vlm_strikes", 0) + 1
+            strikes_max = int(CFG.get("perception", {}).get("vlm_strikes_max", 3))
             self._vlm_status = {
                 "status": "unreachable",
                 "model": CFG.get("vlm", {}).get("model", "unknown"),
-                "error": str(exc),
+                "error": str(exc)[:300],
+                "consecutive_failures": self._vlm_strikes,
+                "strikes_max": strikes_max,
             }
-            raise
+            self.log_both("error", f"[VLM] label call FAILED ({type(exc).__name__}: "
+                                   f"{str(exc)[:160]}); cycle skipped; strike "
+                                   f"{self._vlm_strikes}/{strikes_max}")
+            if strikes_max > 0 and self._vlm_strikes >= strikes_max:
+                self.log_both("error", f"[VLM] ENDING THE RUN: the VLM label call failed on "
+                                       f"{self._vlm_strikes} consecutive cycles. The VLM is "
+                                       f"gone, not blinking, and this node cannot make "
+                                       f"progress without it.")
+                for h in list(logging.getLogger().handlers):
+                    try:
+                        h.flush()
+                    except Exception:
+                        pass
+                sys.stdout.flush(); sys.stderr.flush()
+                # os._exit, as in om6: this runs on an executor thread, where SystemExit
+                # unwinds that thread only and leaves the process spinning.
+                os._exit(1)
+            if strikes_max <= 0:
+                raise          # the guard is disabled: crash-on-first-failure, as before
+            return []
+        self._vlm_strikes = 0
         self.log_both("info", f"[PROFILE] VLM labels: {time.time() - t0:.3f}s")
         self.log_both("info", f"[PROFILE] Labels: {labels}")
 

@@ -253,13 +253,13 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             force_realistic=False,
         ):
             self._ros_node.get_logger().warn(
-                "Nessun RigidObject creato automaticamente: "
+                "No RigidObject created automatically: "
                 "controlla HABITAT_EXAMPLE_OBJECTS_DIR e i template disponibili."
             )
 
         self._ros_node.get_logger().info(
             "Habitat ROS viewer ready. Premi 'm' per GRAB, 'o' per aggiungere "
-            "un altro oggetto e 'u' per rimuovere l'ultimo."
+            "another object, and 'u' to remove the last."
         )
 
     def _make_camera_info_msg(self, frame_id: str = "habitat_camera_optical") -> CameraInfo:
@@ -318,7 +318,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             after_handles = set(self._object_template_mgr.get_file_template_handles())
             self._example_template_handles = sorted(after_handles - before_handles)
             self._ros_node.get_logger().info(
-                f"Caricati {len(loaded)} template oggetto da {example_dir}"
+                f"Loaded {len(loaded)} object templates from {example_dir}"
             )
         except Exception as exc:
             self._ros_node.get_logger().warn(
@@ -339,7 +339,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             )
         else:
             self._ros_node.get_logger().warn(
-                "Nessun template oggetto disponibile in example_objects."
+                "No object template available in example_objects."
             )
 
     def _pick_template_handle(
@@ -409,7 +409,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                 )
             else:
                 self._ros_node.get_logger().warn(
-                    "Nessun template oggetto disponibile per lo spawn."
+                    "No object template available to spawn."
                 )
             return False
 
@@ -430,7 +430,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
         if obj is None:
             self._ros_node.get_logger().warn(
                 "Nessun template spawnabile ha funzionato"
-                + (f" (ultimo errore: {last_error})" if last_error else "")
+                + (f" (last error: {last_error})" if last_error else "")
             )
             return False
 
@@ -533,7 +533,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             obj.awake = True
         except Exception as exc:
             self._ros_node.get_logger().debug(
-                f"Snap superficie non applicato all'oggetto {object_id}: {exc}"
+                f"Surface snap not applied to object {object_id}: {exc}"
             )
 
     def _publish_static_tfs(self):

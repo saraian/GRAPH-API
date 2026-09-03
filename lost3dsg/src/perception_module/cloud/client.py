@@ -145,9 +145,23 @@ class ModalPerceptionBackend(PerceptionBackend):
         labels: List[str],
         score_threshold: float = 0.15,
         nms_threshold: float = 0.50,
+        containment_threshold: float = None,
     ) -> Tuple[List[Detection], Dict[str, float]]:
         if not labels:
             return [], {}
+
+        # GA-286. Defaulted from config rather than in the signature, so the LOCAL path
+        # (utils.apply_nms) and the CLOUD path read the same number from the same place. Two
+        # NMS implementations disagreeing about what counts as a duplicate is a defect
+        # waiting to happen, and this one already happened once in the other direction: the
+        # containment fix went into the local path only and was inert for every cloud run.
+        if containment_threshold is None:
+            try:
+                from config import CFG
+                containment_threshold = float(
+                    (CFG.get("perception", {}) or {}).get("containment_threshold", 0.85))
+            except Exception:
+                containment_threshold = 0.85
 
         t_encode = time.time()
         # 1. Encode image to JPEG base64
@@ -158,6 +172,34 @@ class ModalPerceptionBackend(PerceptionBackend):
         # image. The parameter is named `rgb_image` and the dict key is "rgb"; neither
         # is. The names are what misled the author, and renaming them is a separate
         # change across three files.
+        # GA-278. DOWNSCALE BEFORE THE WIRE. Measured 2026-09-02 against this endpoint:
+        # the request is BANDWIDTH-bound, not latency-bound, up to a floor around 1.76 s --
+        # 1280x960 (180 KB) took 2820 ms, 960x720 (87 KB) took 1793 ms, and 640x480 (46 KB)
+        # took 1759 ms. So 0.75x captures the whole saving and going smaller buys 34 ms.
+        #
+        # THE QUALITY COST, MEASURED RATHER THAN ASSUMED. One frame showed 6 detections at
+        # full and 4 at 0.75x, which looked like a third of them lost. Across SIX frames it
+        # is 45 vs 43 (-4%) for -21% request time, and two frames GAINED detections at the
+        # smaller size (6->8, 3->5). The per-frame variance is larger than the difference,
+        # so this is noise, not a systematic loss -- but n=6, and it is a trade, not a
+        # free win. `cloud.send_scale: 1.0` restores the previous behaviour exactly.
+        #
+        # The backend resizes to its models' native inputs anyway (OWLv2 960x960, SAM
+        # 1024x1024), so the pixels dropped here were being discarded server-side.
+        try:
+            from config import CFG
+            _scale = float((CFG.get("cloud", {}) or {}).get("send_scale", 0.75))
+        except Exception:
+            _scale = 0.75
+        _orig_h, _orig_w = rgb_image.shape[:2]
+        _sent_scale = 1.0
+        if 0.1 < _scale < 0.999:
+            rgb_image = cv2.resize(rgb_image, (int(_orig_w * _scale), int(_orig_h * _scale)),
+                                   interpolation=cv2.INTER_AREA)
+            # The ACTUAL scale, recomputed from the integer size the resize produced. Using
+            # the requested float instead would drift by up to a pixel per axis, and that
+            # error lands straight in the 3D projection.
+            _sent_scale = rgb_image.shape[1] / float(_orig_w)
         success, buffer = cv2.imencode(".jpg", rgb_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not success:
             raise ValueError("Failed to encode RGB frame to JPEG")
@@ -168,6 +210,18 @@ class ModalPerceptionBackend(PerceptionBackend):
             "labels": labels,
             "score_threshold": score_threshold,
             "nms_threshold": nms_threshold,
+            # GA-286. SENT EXPLICITLY. Without this the server's own default governs, and the
+            # bundle's config would record a containment threshold the run did not use -- the
+            # same shape as the corpus_order field that recorded an order no run applied.
+            #
+            # INERT UNTIL MODAL IS REDEPLOYED, and that is measured, not assumed: the deployed
+            # PerceptionRequest does not declare this field, so pydantic IGNORES it. Verified
+            # 2026-09-03 against the live endpoint -- requests with and without it both
+            # succeed and return the same detections. So sending it is SAFE now and takes
+            # effect only when modal_perception.py is redeployed. Until then the cloud path
+            # runs plain IoU NMS and nested duplicates survive; the LOCAL path (utils.apply_nms)
+            # already suppresses them.
+            "containment_threshold": containment_threshold,
         }
 
         # 2. Call Modal predict endpoint
@@ -213,10 +267,25 @@ class ModalPerceptionBackend(PerceptionBackend):
             raise enriched from exc
 
         detections = []
+        # BACK TO THE ORIGINAL FRAME. The backend answered in the coordinates of the image
+        # it was SENT. Everything downstream -- crop construction, the segmentation overlay,
+        # and the 3D projection through the full-resolution camera intrinsics -- works in
+        # the ORIGINAL frame. Returning a 0.75x box unscaled would shrink every object by a
+        # third and shift its centroid, silently, in a way no gate could detect: the boxes
+        # would still be plausible boxes, just of the wrong things in the wrong places.
+        _inv = 1.0 / _sent_scale if _sent_scale else 1.0
         for item in result.get("detections", []):
             mask_np = rle_decode(item["mask_rle"])
+            if _sent_scale != 1.0:
+                bx = [float(v) * _inv for v in item["bbox"]]
+                # INTER_NEAREST: a mask is a label field, not an image. Interpolating it
+                # would invent fractional membership at every boundary pixel.
+                mask_np = cv2.resize(mask_np.astype("uint8"), (_orig_w, _orig_h),
+                                     interpolation=cv2.INTER_NEAREST)
+            else:
+                bx = [float(v) for v in item["bbox"]]
             det = Detection(
-                bbox=tuple(item["bbox"]),
+                bbox=tuple(bx),
                 label=item["label"],
                 score=float(item["score"]),
                 mask=mask_np[..., None],

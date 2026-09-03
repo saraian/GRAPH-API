@@ -51,6 +51,7 @@ install(PROGRAMS
   src/perception_module/habitat_feed_node.py
   src/perception_module/graph_api_bridge.py
   src/perception_module/vlm_call.py
+  src/perception_module/label_norm.py
   # sibling modules the nodes import at runtime — without these the installed
   # copies die with ImportError under `ros2 run`
   src/perception_module/config.py
@@ -71,6 +72,9 @@ install(PROGRAMS
   src/perception_module/crop_context.py
   src/perception_module/visual_reid.py
   src/perception_module/association.py
+  # GA-209's grid describer, imported by perception_2 and missing from this list — caught by
+  # check_install_list.py in the smoke suite, which is what that check exists for.
+  src/perception_module/crop_grid.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

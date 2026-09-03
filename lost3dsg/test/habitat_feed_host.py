@@ -64,7 +64,56 @@ FPS = float(os.environ.get("FEED_FPS", hab_cfg.get("fps", 3.0)))
 SEED = int(os.environ.get("FEED_SEED", "7"))
 SHOW = os.environ.get("FEED_SHOW", "0") == "1"
 OVERLAY = os.environ.get("FEED_OVERLAY", "0") == "1"
-BRIDGE = os.environ.get("FEED_BRIDGE", "http://127.0.0.1:8081")
+
+# GA-265. WHAT THE HABITAT WINDOW DRAWS, toggleable from the window itself AND from the
+# dashboard, with one shared state so the two can never disagree.
+#
+# The window is the only view of the simulator that exists while a run is walking, and until
+# now it drew every belief box unconditionally -- which at 269 objects is the same unreadable
+# pile the dashboard had. Keys toggle layers in the window; the control server exposes the
+# same dict at /layers so the dashboard can read it and set it. Neither side owns it.
+LAYERS = {
+    "boxes": True,        # b  belief boxes projected into the camera
+    "labels": True,       # l  the label beside each box
+    "admitted": True,     # 1  grade filters -- an object carries its verdict
+    "held": True,         # 2
+    "declined": False,    # 3  off by default: a decline is not in the map
+    "nogrounds": True,    # 4
+    "walls": False,       # w  detected wall segments, per-frame from depth (opt-in node)
+    "hud": True,          # h  the frame counter and phase text
+}
+LAYER_KEYS = {ord("b"): "boxes", ord("l"): "labels", ord("1"): "admitted",
+              ord("2"): "held", ord("3"): "declined", ord("4"): "nogrounds",
+              ord("w"): "walls", ord("h"): "hud"}
+
+
+def _publish_layers():
+    """Write the layer state where the dashboard can read it. Same channel as
+    merge_pending.json, and atomic for the same reason (GA-257)."""
+    d = os.environ.get("RUN_DIR") or os.environ.get("GRAPH_API_OUTPUT_DIR") or ""
+    if not d:
+        return
+    try:
+        path = os.path.join(d, "feed_layers.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"t": time.time(), "layers": LAYERS,
+                       "keys": {chr(k): v for k, v in LAYER_KEYS.items()}}, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+# GA-267. BRIDGE_PORT, honoured. This was a fixed 8081 while the bridge is moved to 8091
+# whenever 8081 is taken -- which it is on this machine, by another project. The belief
+# poller therefore reached nothing for a whole run, so the Habitat window drew no boxes
+# while the dashboard (which the bridge itself serves) showed them. Two symptoms, one cause,
+# and neither log said so because the poller swallows its errors by design.
+# GA-270. From config, with the env override kept for a single run. See config.py
+# "services": a hardcoded address here left the belief poller talking to a dead port for an
+# entire run, and the window looked healthy the whole time.
+_SVC = (CFG.get("services", {}) or {}) if isinstance(CFG, dict) else {}
+BRIDGE = os.environ.get("FEED_BRIDGE") or (
+    f"http://{_SVC.get('bridge_host', '127.0.0.1')}:"
+    f"{os.environ.get('BRIDGE_PORT') or _SVC.get('bridge_port', 8081)}")
 MAPPING_SECONDS = float(os.environ.get("FEED_MAPPING_SECONDS", hab_cfg.get("mapping_seconds", 0.0)))
 SEND_TIMEOUT = float(os.environ.get("FEED_SEND_TIMEOUT", "10"))
 # GA-120. WHICH FLOOR THIS RUN MAPS. Unset = whatever habitat drops the agent on, which is what
@@ -272,6 +321,49 @@ def visible_points(corners, depth, Rt, cam, fx):
     return project_visible(cam_xyz, depth, fx, fx, W / 2.0, H / 2.0, W, H)
 
 
+def draw_walls(bgr, walls, cam_pos, cam_quat):
+    """Draw detected wall segments as vertical quads. GA-271.
+
+    A segment from wall_detector is (p0, p1, z_min, z_max, n_inliers, rms) in the MAP frame:
+    a top-down line with the height band it was observed over. So each one is a quad -- the
+    line swept through its own height -- which is what distinguishes it from room_manager's
+    polygon edges, where an edge only means "observed free space stopped here" and carries no
+    height at all.
+    
+    NO MAP IS REQUIRED. These come from the current depth frame, so they are available on a
+    run with no accumulated geometry, which is the case this has to work in.
+
+    The same projection as draw_belief -- map (z-up) -> habitat (y-up) -> pixels -- reused
+    rather than reimplemented: a second copy would drift from the first, and a wall drawn
+    with a slightly different transform looks like a detection error rather than a bug.
+    """
+    import cv2
+    fx = (W / 2.0) / math.tan(math.radians(HFOV) / 2.0)
+    Rt = _quat_to_rot(cam_quat).T
+    cam = np.asarray(cam_pos, dtype=np.float64)
+    for seg in walls:
+        try:
+            p0, p1 = seg[0], seg[1]
+            z0, z1 = float(seg[2]), float(seg[3])
+        except (IndexError, TypeError, ValueError):
+            continue
+        corners = [[float(p0[0]), float(p0[1]), z0], [float(p1[0]), float(p1[1]), z0],
+                   [float(p1[0]), float(p1[1]), z1], [float(p0[0]), float(p0[1]), z1]]
+        pts, n_vis = visible_points(corners, None, Rt, cam, fx)
+        # visible_points APPENDS the centroid, so 4 corners come back as 5 points. Taking
+        # them all would put the centre of the quad in its outline and draw a bow-tie.
+        quad = pts[:4] if pts is not None else None
+        if not n_vis or quad is None or len(quad) < 4 or any(q is None for q in quad):
+            continue
+        poly = np.array([[int(q[0]), int(q[1])] for q in quad], dtype=np.int32)
+        # Outline plus a wash, so a wall reads as a surface without hiding what is in front
+        # of it. Walls are context; the objects are the subject.
+        overlay = bgr.copy()
+        cv2.fillPoly(overlay, [poly], (90, 70, 40))
+        cv2.addWeighted(overlay, 0.28, bgr, 0.72, 0, bgr)
+        cv2.polylines(bgr, [poly], True, (200, 160, 90), 1, cv2.LINE_AA)
+
+
 def draw_belief(bgr, belief, cam_pos, cam_quat, depth=None):
     """Draw the belief boxes that are in view: skipped when no test point is visible
     (occluded or outside the frame), thin when fewer than 5 of 9 are, full otherwise."""
@@ -301,6 +393,7 @@ class BeliefPoller(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
         self.objects = []
+        self.walls, self.walls_available = [], False
 
     def run(self):
         while True:
@@ -308,6 +401,15 @@ class BeliefPoller(threading.Thread):
                 with urllib.request.urlopen(f"{BRIDGE}/persistent_perception", timeout=2) as r:
                     data = json.loads(r.read().decode())
                 self.objects = data if isinstance(data, list) else data.get("data", [])
+            except Exception:
+                pass
+            try:
+                # GA-271. Walls come from the same hub as the belief, so the window and the
+                # dashboard draw the same segments rather than two independent fits.
+                with urllib.request.urlopen(f"{BRIDGE}/walls", timeout=2) as r:
+                    w = json.loads(r.read().decode())
+                self.walls = w.get("walls") or []
+                self.walls_available = bool(w.get("available"))
             except Exception:
                 pass
             time.sleep(1.0)
@@ -388,6 +490,29 @@ class CtrlHandler(BaseHTTPRequestHandler):
         elif path == "/set_config":
             CTRL.config.update(q)
             self._json({"success": True, "config": CTRL.config})
+        elif path == "/layers":
+            # GET returns the state; ?set=name:0|1 (repeatable) changes it. The dashboard and
+            # the window write the SAME dict, so a toggle in either place is visible in both.
+            changed = []
+            # COMMA-SEPARATED, not a repeated parameter: `_route` receives only the flattened
+            # `q`, which keeps the first value of each key, so `?set=a:0&set=b:0` would
+            # silently apply just the first. Widening the signature to pass the raw query
+            # would touch every route for one caller's convenience.
+            #   /layers?set=boxes:0,labels:0
+            for item in (q.get("set") or "").split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                name, _, val = item.partition(":")
+                if name in LAYERS:
+                    LAYERS[name] = val.lower() not in ("0", "false", "off", "")
+                    changed.append(name)
+            if changed:
+                _publish_layers()
+                print(f"[feed] layers set from the dashboard: "
+                      f"{ {k: LAYERS[k] for k in changed} }", flush=True)
+            self._json({"layers": LAYERS, "changed": changed,
+                        "keys": {chr(k): v for k, v in LAYER_KEYS.items()}})
         elif path == "/get_config":
             self._json({"success": True, "config": CTRL.config})
         else:
@@ -423,6 +548,90 @@ TEST_RADIUS_M = float(os.environ.get("FEED_TEST_RADIUS", "4.0"))
 # The value for hm3d_00861's ground floor is recorded in the run config; the search PRINTS
 # the point it chose in this same format, so a good spot found once can be pinned.
 TEST_SPAWN = os.environ.get("FEED_TEST_SPAWN", "").strip()
+
+# GA-219. A BOUNDED LOCAL WALK, in metres from the spawn. 0 = turn in place.
+#
+# Turning in place and walking freely BOTH fail to produce a publishable map, for opposite
+# reasons, and both were measured today:
+#   free walk   -> the agent climbed the stairs; node z spread 3.071 m over 368 nodes, and
+#                  the map was REJECTED for straddling three storeys (owner ruling 25).
+#   turn only   -> node z spread 0.000 m, single_floor True -- and 37 nodes at ONE distinct
+#                  pose, footprint [0.0, 0.0] m, REJECTED against a 30-distinct-pose floor.
+# A map needs DISTINCT POSITIONS for a footprint and a SINGLE STOREY to be usable, and those
+# two demands pull opposite ways the moment the confinement is only a tolerance.
+#
+# This makes the confinement GEOMETRIC instead: goals are sampled inside a radius of the
+# spawn, so the stairs are not merely discouraged but out of reach. It does not fix the
+# floor_confinement defect -- teleport mode failed to hold on the free walk and that is still
+# open -- it sidesteps it for a mapping run whose only job is one room.
+TEST_WALK_RADIUS = float(os.environ.get("FEED_TEST_WALK_RADIUS", "0"))
+
+# GA-256. A ROOM TOUR: visit N well-separated places on the traversed storey.
+#
+# WHY. Run 20260901_174810_hm3d_00861 recorded total_distance_m = 0.0 over 1,566 steps. Test
+# mode turns in place (radius 0) or wanders a disc around the spawn (radius > 0), and neither
+# leaves the room it started in. Three things the paper needs die on that: coverage, room
+# segmentation (the ridge pass finds no critical points because there is only one room to
+# segment), and the held-pool resolution rate -- a proposal set aside for a better view can
+# only be resolved BY a better view, and 53 holds resolved none because the agent never moved.
+#
+# The waypoints are chosen by FARTHEST-POINT SAMPLING over navigable points on the storey, so
+# they spread across the floor plan instead of clustering wherever the sampler happened to
+# land. Seeded, so two runs of the same scene tour the same places and are comparable.
+# Config first, environment second: the yaml states the intended setting and travels with
+# the bundle, while the env var flips ONE run without editing a file everyone shares. Same
+# precedence the rest of this host already uses.
+TEST_TOUR = int(os.environ.get("FEED_TEST_TOUR", hab_cfg.get("tour_waypoints", 0)))
+# Frames spent turning on arrival. A waypoint the agent walks through teaches the detector
+# almost nothing: the objects that matter are the ones it stops and looks at.
+TEST_TOUR_SCAN = int(os.environ.get("FEED_TEST_TOUR_SCAN", hab_cfg.get("tour_scan_frames", 12)))
+
+# GA-258. DYNAMIC DWELL: stay while merges are still waiting to be confirmed.
+#
+# A merge commits only after `merge_min_consecutive` consecutive sweeps over the evidence
+# threshold. MEASURED on 20260901_174810_hm3d_00861: of 265,944 held pairs the fused log-odds
+# reached p90 7.77 against a threshold of 3.0 -- more than a tenth had ENOUGH evidence and
+# were held anyway, because the agent turned away before a second consecutive sweep could see
+# the pair. That is why 269 world-model entries carry only 117 labels.
+#
+# A fixed dwell is wrong in both directions: it wastes frames when nothing is pending, and
+# leaves too early when something is. So the object manager publishes what is pending and the
+# agent stays while that number is above zero -- bounded, because a pair that never resolves
+# must not hold the run forever.
+TOUR_DWELL_DYNAMIC = os.environ.get(
+    "FEED_TEST_DWELL_DYNAMIC",
+    "1" if hab_cfg.get("dwell_dynamic", True) else "0").lower() in ("1", "true", "yes", "on")
+TOUR_DWELL_MIN = int(os.environ.get("FEED_TEST_DWELL_MIN", hab_cfg.get("dwell_min_frames", 8)))
+TOUR_DWELL_MAX = int(os.environ.get("FEED_TEST_DWELL_MAX", hab_cfg.get("dwell_max_frames", 90)))
+# RUN_DIR first: that is the bundle, and the container's /ws/output is bind-mounted onto it.
+# GRAPH_API_OUTPUT_DIR is exported INSIDE the container only, so on the host it is empty and
+# os.path.join("", "merge_pending.json") yields a bare relative name that never opens --
+# measured on 20260902_125130, where every dwell reported "sweep None" and capped out.
+_MERGE_PENDING_DIR = (os.environ.get("RUN_DIR")
+                      or os.environ.get("GRAPH_API_OUTPUT_DIR")
+                      or "")
+_MERGE_PENDING_PATH = os.path.join(_MERGE_PENDING_DIR, "merge_pending.json")
+if not _MERGE_PENDING_DIR:
+    print("[feed] WARNING: neither RUN_DIR nor GRAPH_API_OUTPUT_DIR is set; the dynamic dwell "
+          "cannot read pending merges and will run to FEED_TEST_DWELL_MAX at every waypoint",
+          flush=True)
+else:
+    print(f"[feed] dynamic dwell reads {_MERGE_PENDING_PATH}", flush=True)
+
+
+def _pending_merges():
+    """-> (pending, sweep) from the object manager's sidecar, or (None, None).
+
+    None means UNKNOWN, and the caller must not read it as zero: "nothing is pending" and
+    "the file is not there yet" are different states, and treating the second as the first
+    would cut every dwell short in exactly the runs where the manager is slow to start.
+    """
+    try:
+        with open(_MERGE_PENDING_PATH) as fh:
+            d = json.load(fh)
+        return int(d.get("pending", 0)), int(d.get("sweep", -1))
+    except (OSError, ValueError, TypeError):
+        return None, None
 
 
 def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
@@ -674,6 +883,7 @@ class Tour:
         self.todo = self._sample(n_points)
         self.goal = None
         self.scan_left = 0
+        self.origin = None      # GA-219: set on the first step, the centre of the walk disc
 
     def _sample(self, n, max_tries=50):
         pts = []
@@ -685,11 +895,141 @@ class Tour:
                     break
         return pts
 
+    def _tour_waypoints(self, n):
+        """-> n navigable points spread over the storey, farthest-point sampled.
+
+        Deterministic given the pathfinder seed. Starts from the agent's own position so the
+        first leg is a real journey rather than a step to somewhere it already stands.
+        """
+        pool = []
+        for _ in range(3000):
+            p = np.array(self.sim.pathfinder.get_random_navigable_point())
+            if SINGLE_FLOOR and abs(p[1] - self.floor_y) >= FLOOR_TOL:
+                continue
+            pool.append(p)
+            if len(pool) >= 600:
+                break
+        if not pool:
+            return []
+        chosen = []
+        # Farthest-point sampling: each new waypoint is the pool point furthest from every
+        # point already chosen. Uniform random sampling clusters, and a tour of five points
+        # that all sit in one corner is the failure this exists to avoid.
+        ref = [np.array(self.origin if self.origin is not None else pool[0])]
+        while len(chosen) < n and pool:
+            best, bestd = None, -1.0
+            for q in pool:
+                d = min(float(np.linalg.norm(q[[0, 2]] - r[[0, 2]])) for r in ref)
+                if d > bestd:
+                    bestd, best = d, q
+            if best is None:
+                break
+            chosen.append(best)
+            ref.append(best)
+            pool = [q for q in pool if not np.allclose(q, best)]
+        return chosen
+
     def step(self, agent):
-        if TEST_MODE:
+        if TEST_MODE and TEST_TOUR > 0:
+            # GA-256. Tour mode takes precedence over the radius disc: a bounded walk and a
+            # tour are different intentions, and silently blending them would produce a run
+            # that is neither.
+            if self.origin is None:
+                self.origin = np.array(agent.get_state().position)
+            if not hasattr(self, "_tour") or self._tour is None:
+                self._tour = self._tour_waypoints(TEST_TOUR)
+                self._tour_i = 0
+                self._tour_scan = 0
+                self._dwelling = False
+                self._dwell_frames = 0
+                print(f"[feed] TEST TOUR: {len(self._tour)} waypoints, "
+                      f"scan {TEST_TOUR_SCAN} frames on arrival", flush=True)
+                for k, w in enumerate(self._tour):
+                    print(f"[feed]   waypoint {k}: "
+                          f"({w[0]:.2f}, {w[1]:.2f}, {w[2]:.2f})", flush=True)
+            if self._tour_scan > 0:
+                self._tour_scan -= 1
+                agent.act("turn_left")
+                return
+            if self._dwelling:
+                # GA-258. Past the minimum, keep turning while merges are pending.
+                self._dwell_frames += 1
+                pend, sweep = _pending_merges()
+                if self._dwell_frames >= TOUR_DWELL_MAX:
+                    print(f"[feed] waypoint {self._tour_i}: dwell capped at "
+                          f"{self._dwell_frames} frames with {pend} still pending", flush=True)
+                elif pend is None or pend > 0:
+                    # Unknown counts as "keep looking": the cap bounds it either way, and
+                    # leaving early on a missing file is the failure that costs the merge.
+                    if self._dwell_frames % 10 == 0:
+                        print(f"[feed] waypoint {self._tour_i}: dwelling, "
+                              f"{pend if pend is not None else '?'} merges pending "
+                              f"(sweep {sweep}, frame {self._dwell_frames})", flush=True)
+                    agent.act("turn_left")
+                    return
+                else:
+                    print(f"[feed] waypoint {self._tour_i}: nothing pending after "
+                          f"{self._dwell_frames} frames — moving on", flush=True)
+                self._dwelling = False
+                self._dwell_frames = 0
+                self._tour_i += 1
+                return
+            if self._tour_i >= len(self._tour):
+                # Tour complete. Keep turning rather than stopping: a still camera is
+                # indistinguishable from a crashed feed downstream.
+                agent.act("turn_left")
+                return
+            goal = self._tour[self._tour_i]
+            try:
+                action = self.follower.next_action_along(goal)
+            except Exception:
+                action = None
+            if action is None:
+                print(f"[feed] TEST TOUR: reached waypoint {self._tour_i}", flush=True)
+                self._tour_scan = max(TEST_TOUR_SCAN, TOUR_DWELL_MIN) if TOUR_DWELL_DYNAMIC \
+                    else TEST_TOUR_SCAN
+                # The minimum runs first as a plain countdown; the dynamic part takes over
+                # after it, so there is always at least one full look before asking whether
+                # anything is pending -- the answer is meaningless before the sweep that
+                # follows the first look.
+                self._dwelling = bool(TOUR_DWELL_DYNAMIC)
+                self._dwell_frames = 0
+                return
+            self.sim.step(action)
+            return
+        if TEST_MODE and TEST_WALK_RADIUS <= 0:
             # GA-212: turn, and only turn. No goal, no follower, no path that can fail --
             # the point of test mode is that a stalled run cannot be blamed on navigation.
             agent.act("turn_left")
+            return
+        if TEST_MODE:
+            # GA-219: walk, but never further than TEST_WALK_RADIUS from where we started.
+            # Goals are re-sampled until one lands inside the disc, so the agent explores a
+            # room without the tour's freedom to find a staircase.
+            if self.origin is None:
+                self.origin = np.array(agent.get_state().position)
+            if self.goal is None:
+                for _ in range(200):
+                    p = np.array(self.sim.pathfinder.get_random_navigable_point())
+                    if SINGLE_FLOOR and abs(p[1] - self.floor_y) >= FLOOR_TOL:
+                        continue
+                    if np.linalg.norm(p[[0, 2]] - self.origin[[0, 2]]) <= TEST_WALK_RADIUS:
+                        self.goal = p
+                        break
+                else:
+                    # No reachable goal inside the disc: turn rather than widen it. Widening
+                    # silently would defeat the guarantee this mode exists to give.
+                    agent.act("turn_left")
+                    return
+            try:
+                action = self.follower.next_action_along(self.goal)
+            except Exception:
+                action = None
+            if action is None:
+                self.goal = None
+                agent.act("turn_left")   # look around from the new spot, then pick another
+                return
+            self.sim.step(action)
             return
         if self.scan_left > 0:
             agent.act("turn_left")
@@ -1189,13 +1529,76 @@ def main():
             try:
                 import cv2
                 bgr = cv2.cvtColor(frame["rgb"], cv2.COLOR_RGB2BGR)
-                if poller is not None and poller.objects:
+                if LAYERS["walls"] and poller is not None and poller.walls:
+                    # Under the boxes: a wall is context for the objects, not a peer of them.
+                    draw_walls(bgr, poller.walls, frame["cam_pos"], cam_quat)
+                if LAYERS["boxes"] and poller is not None and poller.objects:
                     draw_belief(bgr, poller.objects, frame["cam_pos"], cam_quat, frame["depth"])
-                cv2.putText(bgr, label, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                if LAYERS["hud"]:
+                    cv2.putText(bgr, label, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                                (0, 255, 0), 2)
+                    # GA-265. The key map ON the window. A keyboard interface nobody can see
+                    # is a keyboard interface nobody uses, and "press ? for help" still
+                    # requires knowing that ? does anything. Each line shows the key, the
+                    # layer, and whether it is currently ON -- so the HUD doubles as the
+                    # state readout and there is nothing else to consult.
+                    y = 74
+                    cv2.putText(bgr, "KEYS", (10, y - 12), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.42, (150, 150, 150), 1)
+                    # GA-267. The COUNT beside each layer, so the HUD says what the toggle
+                    # would show. A layer reading ON with nothing behind it is exactly the
+                    # state this run was in for an hour, and the HUD looked healthy.
+                    _objs = (poller.objects if poller is not None else []) or []
+                    _n_total = len(_objs)
+                    for key, name in sorted(LAYER_KEYS.items(), key=lambda kv: kv[1]):
+                        on = LAYERS[name]
+                        col = (120, 255, 140) if on else (110, 110, 130)
+                        if name in ("boxes", "labels"):
+                            cnt = str(_n_total)
+                        elif name == "walls":
+                            cnt = (str(len(poller.walls)) if poller is not None
+                                   and getattr(poller, "walls_available", False) else "off")
+                        elif name == "hud":
+                            cnt = ""
+                        else:
+                            # The belief the bridge serves carries no per-object verdict, so
+                            # the grade filters have nothing to count. "n/a" rather than 0:
+                            # zero would claim there are none of that grade, which is a
+                            # different statement from having no data.
+                            cnt = "n/a"
+                        cv2.putText(bgr,
+                                    f"{chr(key)}  {name:<10s} {'ON' if on else 'off':<3s} {cnt}",
+                                    (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.44, col, 1,
+                                    cv2.LINE_AA)
+                        y += 18
+                    if _n_total == 0:
+                        cv2.putText(bgr, f"belief empty - polling {BRIDGE}", (12, y),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (110, 180, 255), 1,
+                                    cv2.LINE_AA)
+                        y += 18
+                    cv2.putText(bgr, "h  hide this HUD", (12, y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.44, (110, 110, 130), 1, cv2.LINE_AA)
+                    cv2.putText(bgr, "q  close window", (12, y + 18),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.44, (110, 110, 130), 1, cv2.LINE_AA)
+                    cv2.putText(bgr, "synced with the dashboard", (12, y + 40),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 200, 255), 1, cv2.LINE_AA)
                 cv2.imshow("habitat feed (agent camera)", bgr)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                # GA-265. Keys toggle the SAME dict the dashboard writes, so the window and
+                # the browser cannot drift apart. Every toggle republishes, which is how the
+                # dashboard learns about a keypress it did not make.
+                _k = cv2.waitKey(1) & 0xFF
+                if _k == ord("q"):
                     cv2.destroyAllWindows()
                     SHOW = False
+                elif _k in LAYER_KEYS:
+                    name = LAYER_KEYS[_k]
+                    LAYERS[name] = not LAYERS[name]
+                    _publish_layers()
+                    print(f"[feed] layer {name} -> {LAYERS[name]} (from the window)", flush=True)
+                elif _k == ord("?"):
+                    print("[feed] layer keys: " + ", ".join(
+                        f"{chr(k)}={v}" for k, v in sorted(LAYER_KEYS.items())) +
+                        ", q=close window", flush=True)
             except Exception as exc:
                 print(f"[feed] cv2 display error (disabling GUI window): {exc}\n{traceback.format_exc()}")
                 SHOW = False

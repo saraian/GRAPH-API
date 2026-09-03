@@ -106,7 +106,11 @@ MERGE_KNN_K = None if _knn_k in (None, 0, "", "none") else int(_knn_k)
 # error has to survive being re-measured before it can destroy an identity -- which is the
 # design's answer to "one lucky frame must not commit a merge", and it is enforced by
 # persistence rather than by inflating a score through repetition.
-MERGE_MIN_CONSECUTIVE = int(CFG["association"].get("merge_min_consecutive", 2))
+# Env overrides config, so an ablation changes ONE variable per run instead of editing a
+# shared file between two runs that must otherwise be identical. Recorded into
+# run_metadata by live_run.sh, so a bundle states which arm produced it.
+MERGE_MIN_CONSECUTIVE = int(os.environ.get(
+    "MERGE_MIN_CONSECUTIVE", CFG["association"].get("merge_min_consecutive", 2)))
 
 file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
@@ -547,7 +551,7 @@ class ObjectServices(Node):
 
         with open(SYNTHETIC_LOG_FILE, "a") as f:
             f.write(f"\n{'='*50}\n")
-            f.write(f"NUOVO AVVIO: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"NEW RUN: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"{'='*50}\n")
         
         # --- INIT ROOM MANAGER ---
@@ -733,6 +737,65 @@ class ObjectServices(Node):
         return response
     
     @synchronized_world_model
+    def _publish_merge_pending(self):
+        """Write the pending-merge state where the FEED HOST can read it. GA-258.
+
+        WHY THIS EXISTS. A hypothesis commits only after `merge_min_consecutive` consecutive
+        sweeps over the threshold. MEASURED on 20260901_174810_hm3d_00861: of 265,944 held
+        pairs the fused log-odds reached p90 7.77 against a commit threshold of 3.0 -- more
+        than a tenth of them had ENOUGH evidence and were held anyway, because the agent kept
+        turning and the pair left view before a second consecutive sweep could confirm it.
+        A fixed dwell either wastes time when nothing is pending or leaves too early when
+        something is; the agent should look for exactly as long as there is something to
+        confirm.
+
+        The feed host runs on the HOST and this runs in the container, so a file is the
+        channel: `/ws/output` is bind-mounted to the run directory, and this needs no port,
+        no service and no ordering between two processes that start independently.
+
+        Written atomically -- GA-257 was a 0-byte knowledge_graph.ttl caused by a
+        non-atomic serialise being interrupted, and a reader polling this file mid-write
+        would see a truncated one for the same reason.
+        """
+        out = os.environ.get("GRAPH_API_OUTPUT_DIR")
+        if not out:
+            return
+        try:
+            thr = assoc.commit_threshold(MERGE_COST_RATIO)
+            pending = []
+            for key, h in self._hypotheses.items():
+                if h.committed or h.vetoed_by:
+                    continue
+                streak = getattr(h, "_streak", 0)
+                total = h.total
+                # PENDING means "over the bar, short of the streak" -- the population that
+                # more looking would convert. A pair below threshold is not pending; waiting
+                # for it is waiting for evidence that is not accumulating.
+                if total >= thr and streak < MERGE_MIN_CONSECUTIVE:
+                    pending.append({"a": key[0], "b": key[1],
+                                    "log_odds": round(float(total), 3),
+                                    "streak": int(streak),
+                                    "needs": MERGE_MIN_CONSECUTIVE})
+            pending.sort(key=lambda d: -d["log_odds"])
+            blob = {
+                "t": time.time(),
+                "sweep": self._merge_sweep,
+                "threshold": round(float(thr), 3),
+                "min_consecutive": MERGE_MIN_CONSECUTIVE,
+                "live_hypotheses": len(self._hypotheses),
+                "pending": len(pending),
+                # Capped: the feed host only needs the COUNT, and the list is for the viewer.
+                # An unbounded list would rewrite megabytes every sweep.
+                "pairs": pending[:40],
+            }
+            path = os.path.join(out, "merge_pending.json")
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(blob, fh)
+            os.replace(tmp, path)
+        except Exception as exc:
+            self.get_logger().warn(f"[ASSOC] could not publish merge_pending: {exc}")
+
     def _hypothesis_gc(self, live_keys):
         """Drop hypotheses whose pair no longer exists. GA-188.
 
@@ -840,16 +903,41 @@ class ObjectServices(Node):
             [built[id(o)] for o in ordered], ctx, k=MERGE_KNN_K)
 
         back = {id(built[id(o)]): o for o in ordered}
+
+        # GA-232. COUNTED, NOT WRITTEN ONE BY ONE.
+        #
+        # A `not_offered` pair is one the kNN candidate generator never put forward, so it
+        # was never compared and it HAS NO SIMILARITY -- the field is null on every one of
+        # them. MEASURED on 20260901_174810_hm3d_00861: 2,350,062 of the 2,617,640
+        # merge_refused records are not_offered, 89.8% of the file, and 2,351,696 records
+        # carry no similarity at all. Those two numbers are the same population.
+        #
+        # That matters because of what the per-pair record is FOR. The docstring below
+        # defends writing full records rather than counters, and the argument it defends is
+        # about the similarity band -- "the 0.85-0.925 band was EMPTY, so the old gate would
+        # have refused them too". A record with no similarity cannot participate in that
+        # argument. Every record that CAN still gets written in full: 267,578 of them,
+        # including all 120,635 at or above 0.85.
+        #
+        # The cost of writing them was not small. hook_decisions.jsonl reached 1.71 GB on a
+        # 61-minute run, /graph_data could not parse it inside 120 s, and the disk filled.
+        # Dropping this one population takes the file to roughly a tenth with no loss to any
+        # question the bundle is asked -- and the COUNT is kept exactly, by exclusion reason,
+        # so "how many pairs were never offered, and why" is still answerable.
+        excluded_tally = {}
         for aa, bb, meta in excluded:
             a, b = back.get(id(aa)), back.get(id(bb))
             if a is not None and b is not None:
-                # `meta` carries its own "reason" key, which COLLIDES with _refused's
-                # positional `reason` parameter -- passing it through as **meta raises
-                # TypeError: got multiple values for argument 'reason'. Renamed rather than
-                # dropped: why a pair was never offered is the whole point of logging it.
-                meta = dict(meta)
-                meta["exclusion_reason"] = meta.pop("reason", None)
-                _refused(a, b, "not_offered", None, **meta)
+                why = str((meta or {}).get("reason"))
+                excluded_tally[why] = excluded_tally.get(why, 0) + 1
+        if excluded_tally:
+            try:
+                self.decision_log.write(
+                    "not_offered_summary", "<sweep>",
+                    n_pairs=sum(excluded_tally.values()),
+                    by_reason=excluded_tally)
+            except Exception as e:
+                self.get_logger().error(f"decision_log not_offered_summary failed: {e}")
 
         pairs = []
         for aa, bb, meta in offered:
@@ -863,10 +951,11 @@ class ObjectServices(Node):
                               str(getattr(b, "object_id", None) or b.label))))
                 for a, b, _m in pairs}
         dropped = self._hypothesis_gc(live)
-        self.log_both('info', f"[ASSOC] sweep {self._merge_sweep}: {len(pairs)} offerti, "
-                              f"{len(excluded)} esclusi, su {len(ordered)} oggetti "
-                              f"(all-pairs sarebbe {len(ordered) * (len(ordered) - 1) // 2}); "
-                              f"ipotesi vive {len(self._hypotheses)}, scartate {dropped}")
+        self.log_both('info', f"[ASSOC] sweep {self._merge_sweep}: {len(pairs)} offered, "
+                              f"{len(excluded)} excluded, of {len(ordered)} objects "
+                              f"(all-pairs would be {len(ordered) * (len(ordered) - 1) // 2}); "
+                              f"live hypotheses {len(self._hypotheses)}, dropped {dropped}")
+        self._publish_merge_pending()
         return pairs, ctx, built
 
     def _cb_merge_objects(self, request, response):
@@ -1394,7 +1483,7 @@ class ObjectServices(Node):
                 # at warn level and became 190 lines of noise that read like a defect.
                 self.log_both(
                     'debug',
-                    f"[EMBEDDING] nessun embedding per '{label}' "
+                    f"[EMBEDDING] no embedding for '{label}' "
                     f"(descrizione='{description}')"
                 )
                 new_obj.embedding = None
@@ -1431,8 +1520,8 @@ class ObjectServices(Node):
                 assigned_room = CFG["rooms"]["default_room_id"]
             if not assigned_room:
                 raise ValueError(
-                    f"Impossibile assegnare l'oggetto '{label}': nessuna stanza corrente "
-                    f"nota (robot fuori da qualsiasi poligono o posa non ancora disponibile)."
+                    f"cannot assign object '{label}': no current room "
+                    f"is known (the robot is outside every polygon, or its pose is not available yet)."
                 )
 
             new_obj.room_id = assigned_room
@@ -1644,9 +1733,9 @@ class ObjectServices(Node):
                         if not new_room or new_room not in self.room_manager.scene_graph:
                             self.log_both(
                                 "warn",
-                                f"[SPOSTAMENTO RIFIUTATO] '{best_match.label}': nessuna stanza "
-                                f"risolvibile per la nuova posizione (room={new_room!r}); "
-                                f"l'oggetto resta dov'era")
+                                f"[MOVE REFUSED] '{best_match.label}': no room "
+                                f"resolvable for the new position (room={new_room!r}); "
+                                f"the object stays where it was")
                             response.success = False
                             response.message = f"move refused: no resolvable room for {obj_id}"
                             response.object_id = getattr(best_match, "object_id", "") or ""
@@ -1718,7 +1807,7 @@ class ObjectServices(Node):
                         self.room_manager.update_room_geometry(new_room, bbox)
                         if updated_obj.label not in self.room_manager.scene_graph[new_room]["objects"]:
                             self.room_manager.scene_graph[new_room]["objects"].append(updated_obj.label)
-                        self.log_operation(f"[SPOSTAMENTO] '{best_match.label}' si è mosso di {distance:.2f}m")
+                        self.log_operation(f"[MOVED] '{best_match.label}' moved by {distance:.2f}m")
                         # The same event, joinable. The prose line above names a label, carries no
                         # identifier and no date, and cannot be joined to anything; it stays for
                         # a human reading the console.
@@ -1826,7 +1915,7 @@ def main(args=None):
         from datetime import datetime
         print(f"\nOBJECT SERVICES chiuso ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
         
-        # Forza anche un ultimo salvataggio globale delle percezioni
+        # Force one last global save of the perceptions
         save_persistent_perceptions(service_node)
 
     finally:

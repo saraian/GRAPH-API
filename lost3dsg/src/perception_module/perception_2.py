@@ -14,7 +14,15 @@ from threading import Lock
 # The simulator host's control surface: the dashboard pushes overlay toggles to its
 # /set_config, and its own overlay reads them every frame. Polling /get_config here is
 # what makes the same toggle reach /image_with_bb, the feed the bridge actually serves.
-FEED_HOST = os.environ.get("FEED_HOST", "http://127.0.0.1:7790")
+# GA-270. From config; see config.py "services". Third literal of the same shape found in
+# this sweep -- the other two each cost a run.
+try:
+    from config import CFG as _P2_CFG
+except ImportError:
+    _P2_CFG = {}
+_P2_SVC = (_P2_CFG.get("services", {}) or {}) if isinstance(_P2_CFG, dict) else {}
+FEED_HOST = os.environ.get("FEED_HOST") or (
+    f"http://{_P2_SVC.get('feed_host', '127.0.0.1')}:{_P2_SVC.get('feed_port', 7790)}")
 _VIS_POLL_SECONDS = 2.0
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +45,7 @@ from rclpy.duration import Duration  # noqa: E402
 from rclpy.executors import MultiThreadedExecutor  # noqa: E402
 from rclpy.logging import LoggingSeverity  # noqa: E402
 from rclpy.node import Node  # noqa: E402
-from rclpy.qos import DurabilityPolicy, QoSProfile  # noqa: E402
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy  # noqa: E402
 from sensor_msgs.msg import Image, PointCloud2  # noqa: E402
 from std_msgs.msg import Bool, String  # noqa: E402
 from tf2_ros import TransformException  # noqa: E402
@@ -51,6 +59,7 @@ from cloud import get_perception_backend  # noqa: E402
 from cv_utils import (  # noqa: E402
     _clear_markers,
     draw_boxes_3d,
+    draw_cloud,
     init_bbox_publisher,
     mask_list_to_centroid_and_bbox,
     mask_list_to_pointcloud2,
@@ -64,7 +73,8 @@ from models import OWLv2, VitSam  # noqa: E402
 from object_info import Object  # noqa: E402
 from perception_utils import compute_fov_volume_from_depth, get_project_root  # noqa: E402
 from tf_transformations import euler_from_quaternion, quaternion_inverse, quaternion_multiply  # noqa: E402
-from utils import draw_detections  # noqa: E402
+from utils import draw_detections, draw_masks  # noqa: E402
+from sensor_msgs_py import point_cloud2 as _pc2  # noqa: E402
 from vlm_call import VlmClient  # noqa: E402
 from world_model import wm  # noqa: E402
 
@@ -139,6 +149,26 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.vitsam = None
             self.file_logger.info(f"Using Cloud Perception Backend: {backend_type}")
         self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=_encode_for_vlm)
+        # GA-215. DEBUG OVERLAY: publish the annotated frame at every perception stage, as
+        # each result appears, rather than once at the end of the cycle. Off by default --
+        # it costs an encode and a publish per stage, and a measured run should not pay for
+        # a debugging view. Env wins over config so it can be flipped for one run.
+        self._debug_overlay = (
+            os.environ.get("PERCEPTION_DEBUG", "").lower() in ("1", "true", "yes", "on")
+            or bool(CFG.get("perception", {}).get("debug_overlay", False)))
+        if self._debug_overlay:
+            self.log_both("info", "[DEBUG] stage-by-stage overlay ON: /image_with_bb is "
+                                  "republished after detection, segmentation and geometry")
+            # GA-218. rtabmap's cloud, subscribed HERE because this node holds the transform
+            # the projection needs. Latest-only (depth 1): an old cloud drawn against a new
+            # frame is worse than no cloud, and queueing them would guarantee exactly that.
+            self._latest_cloud = None
+            self.create_subscription(
+                PointCloud2, "/rtabmap/cloud_map", self._on_cloud_map,
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+                           history=HistoryPolicy.KEEP_LAST))
+            self.log_both("info", "[DEBUG] subscribed to /rtabmap/cloud_map for the voxel overlay")
+
         # GA-210. ONE executor for the life of the node, so a description outlives the cycle
         # that asked for it. Per-call executors joined on exit, which is what made the
         # describer synchronous.
@@ -189,6 +219,26 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.create_subscription(Image, "/gt/semantic_instance",
                                      self._gt_semantic_callback, 10)
 
+    def _on_cloud_map(self, msg):
+        """Keep the newest cloud as an (N,3) array. GA-218.
+
+        Decoded once on arrival rather than per drawn frame: the cloud changes far less often
+        than the camera does, and decoding it three times per cycle to draw three stages
+        would put the cost in the wrong place.
+        """
+        try:
+            # Same call room_manager already uses in production against this topic.
+            raw = list(_pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True))
+            # `len(None)` on an empty cloud would raise into the handler below and log a
+            # decode failure that never happened -- an empty cloud is a normal state early in
+            # a run, not an error.
+            self._latest_cloud = (
+                np.array([[float(q[0]), float(q[1]), float(q[2])] for q in raw],
+                         dtype=np.float32) if raw else None)
+        except Exception as exc:
+            self.get_logger().warn(f"[DEBUG] cloud decode failed: {exc}")
+            self._latest_cloud = None
+
     def _init_publishers(self):
         qos_latched = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         qos_default = 10
@@ -207,8 +257,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.camera_data = utils.SyncedCameraData(self, sync_tolerance_ms=2000)
         
     def _init_state(self):
-        self.head_joints = ["head_1_joint", "head_2_joint", "habitat_camera"]
-        self.base_joints = ["wheel_left_joint", "wheel_right_joint"]
+        # GA-236. The frames to watch come from CONFIG, not a TIAGo literal.
+        #
+        # This was ["head_1_joint", "head_2_joint", "habitat_camera"] plus two wheel joints.
+        # Four of those five are TIAGo frames that do not exist in a Habitat deployment, so
+        # joint_callback failed four lookups every second -- 383 logged occurrences of
+        # head_1_joint alone in a 61-minute run.
+        #
+        # The noise was not the real fault. The failures are caught and the loop continues,
+        # so `motion_scores` ended up with ONE entry and
+        #     moving = sum(motion_scores) / len(motion_scores) >= threshold
+        # computed the mean of a five-source design from a single reading, with nothing
+        # anywhere reporting that four fifths of the intended evidence was missing. A
+        # statistic that looks like an aggregate and is one measurement.
+        _frames_cfg = (CFG.get("frames", {}) or {})
+        self.head_joints = list(_frames_cfg.get("motion_watch") or ["habitat_camera"])
+        self.base_joints = list(_frames_cfg.get("motion_watch_base") or [])
+        self._motion_absent_logged = False
         self.position_threshold = 0.05
         self.last_joint_positions = {}
         self.is_stationary = True
@@ -406,6 +471,55 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             yaw=yaw, distance=distance, image_id=image_id
         )
 
+    def process_crop_grid(self, batch):
+        """GA-209. One VLM call for a batch of crops. -> {"__grid__": {label: result}}
+
+        WHY THIS EXISTS. The provider is not the bottleneck -- measured 2026-09-01, regolo
+        gemma4-31b 0.55 s/image against openrouter qwen2.5-vl-72b 0.56 s, so a bigger model
+        buys nothing. The cost is the STRAGGLER: one call in five hung near the 15 s timeout
+        against a 0.55 s median, and a concurrent batch finishes when its slowest member
+        does, so a five-crop cycle measured vlm_ms = 13,713. Measured fix, same provider:
+        five separate calls at concurrency 8 took 1.69 s, one 3x2 grid took 0.88 s. 1.91x,
+        by removing the parallelism rather than by tuning it.
+
+        FALLBACK IS PER-CELL, NOT PER-BATCH. If the reply omits or garbles some cells, only
+        those go back through the single-crop path. A grid that half-worked must cost a
+        retry on the missing half, never a confident description attached to the wrong
+        object -- which is why crop_grid.parse joins on the printed cell number instead of
+        on array position.
+        """
+        import crop_grid
+
+        labels = [c["label"] for c in batch]
+        images = [c["cropped"] for c in batch]
+        out = {}
+        try:
+            canvas, rows, cols, _cell = crop_grid.compose(images)
+            if canvas is None:
+                raise ValueError("empty grid")
+            prompt = crop_grid.build_prompt(labels, rows, cols)
+            reply = self.vlm.call_image_prompt(canvas, prompt)
+            cells, missing = crop_grid.parse(reply, len(batch))
+        except Exception as exc:
+            self.get_logger().warn(
+                f"[VLM] grid call failed ({type(exc).__name__}: {exc}); "
+                f"falling back to {len(batch)} single-crop call(s)")
+            cells, missing = [None] * len(batch), list(range(len(batch)))
+
+        for i, cell in enumerate(cells):
+            if cell is not None:
+                out[labels[i]] = dict(cell, label=labels[i])
+        if missing:
+            self.log_both("info", f"[VLM] grid answered {len(batch) - len(missing)}/"
+                                  f"{len(batch)} cells; {len(missing)} fall back to single calls")
+            for i in missing:
+                try:
+                    out[labels[i]] = self.process_crop_vlm(batch[i]) or {}
+                except Exception as exc:
+                    self.get_logger().error(f"Crop VLM fallback failed for {labels[i]}: {exc}")
+                    out[labels[i]] = {}
+        return {"__grid__": out}
+
     # -------------------------------------------------------------------------
     # TODO (Lazy Two-Stage Crop Refinement & Property Separation):
     # - Stage 1 (Hot Detection Cycle): Detector produces primary class noun (e.g. "chair").
@@ -457,8 +571,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
         self._io_executor.submit(self.save_visualizations, image_raw.copy(), depth.copy(), list(detections), PROJECT_ROOT)
 
+        # GA-215: the detector has answered and the masks exist. Show them NOW -- everything
+        # below takes time, and until today none of it was visible until all of it finished.
+        self._debug_stage("detector+masks", image_raw, detections, camera_info, cycle_stamp)
         self._assign_instance_labels(detections)
+        self._debug_stage("labelled", image_raw, detections, camera_info, cycle_stamp)
         centroids_3d, bboxes_3d = self._compute_3d_geometry(detections, depth, camera_info, camera_data["transform"])
+        self._debug_stage("3d-geometry", image_raw, detections, camera_info, cycle_stamp,
+                          bboxes_3d=bboxes_3d, transform=camera_data["transform"], depth=depth)
         self._add_pca_orientation(detections, bboxes_3d, depth, camera_info, camera_data["transform"])
         self._publish_image_with_bb(image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth)
         crops_data = self.prepare_crops(detections, image_raw, PROJECT_ROOT)
@@ -470,11 +590,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # computed correctly and thrown away one line too early.
         self._archive_detections(detections, bboxes_3d, centroids_3d, image_raw,
                                  camera_data.get("transform"), cycle_stamp,
-                                 crops_data=crops_data)
+                                 crops_data=crops_data, depth=depth)
         self.publish_crops(crops_data)
         self._attach_crop_embeddings(detections, crops_data)
         vlm_results = self._run_crop_vlm_batch(crops_data)
-        descriptions = self._build_descriptions(detections, vlm_results)
+        descriptions = self._build_descriptions(detections, vlm_results, crops_data)
         self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp)
         self._publish_description_array(detections, descriptions, cycle_stamp)
         self._update_world_model(detections, centroids_3d, bboxes_3d, descriptions)
@@ -518,6 +638,50 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 pass
         return self._vis_live
 
+    def _debug_stage(self, stage, image_raw, detections, camera_info, stamp,
+                     bboxes_3d=None, transform=None, depth=None):
+        """Publish what is known RIGHT NOW. GA-215; no-op unless debug overlay is on.
+
+        Each stage overwrites the same topic, so the viewer shows one frame being refined
+        rather than four competing streams. The stage name is burned into the image: without
+        it a half-finished frame is indistinguishable from a finished one that found less,
+        which is the whole failure this view exists to make visible.
+        """
+        if not self._debug_overlay:
+            return
+        try:
+            drawn = image_raw.copy()
+            # GA-218: the cloud goes down FIRST, so masks, boxes and labels stay readable on
+            # top of it. Needs this frame's transform, so it only appears from the geometry
+            # stage onward -- the earlier stages have no transform to project with, and
+            # drawing with a neighbouring frame's transform is the mistake this avoids.
+            cloud = getattr(self, "_latest_cloud", None)
+            if cloud is not None and transform is not None:
+                draw_cloud(drawn, cloud, camera_info, transform)
+            if detections:
+                draw_masks(drawn, detections)
+                # 2D boxes at every stage: they are what the DETECTOR said, and keeping them
+                # visible after the 3D boxes appear is how a box that failed to lift shows up.
+                draw_detections(drawn, detections)
+                if bboxes_3d and transform is not None:
+                    min_vis, tol_abs, tol_rel = visibility_cfg(self._live_visibility())
+                    draw_boxes_3d(drawn, bboxes_3d,
+                                  [getattr(d, "instance_label", None) or d.label for d in detections],
+                                  camera_info, transform, depth,
+                                  min_visible_points=min_vis, tol_abs=tol_abs, tol_rel=tol_rel)
+            _n_cloud = 0 if getattr(self, "_latest_cloud", None) is None else len(self._latest_cloud)
+            cv2.putText(drawn, f"[{stage}] {len(detections)} det  {_n_cloud} cloud pts",
+                        (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
+            cv2.putText(drawn, f"[{stage}] {len(detections)} det  {_n_cloud} cloud pts",
+                        (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (60, 230, 60), 1)
+            msg = self.bridge.cv2_to_imgmsg(drawn, "bgr8")
+            msg.header.stamp = stamp
+            msg.header.frame_id = camera_info.header.frame_id
+            self.pub_image.publish(msg)
+        except Exception as exc:
+            # A debugging view must never take the cycle down with it.
+            self.get_logger().warn(f"[DEBUG] stage '{stage}' overlay failed: {exc}")
+
     def _publish_image_with_bb(self, image_raw, detections, bboxes_3d, camera_info, transform, stamp, depth=None):
         """/image_with_bb shows the 3D boxes projected back into the frame they were
         measured from, under the same visibility rule as the simulator overlay; the
@@ -526,6 +690,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         sees the latest frame instead of "No image"."""
         drawn = image_raw.copy()
         if detections:
+            # GA-214: MASKS FIRST, so boxes and labels stay legible on top of the fill.
+            # Gated on the `seg` flag the viewer already sends through /set_config, and ON by
+            # default: the segmenter's output is the hardest stage to judge from numbers, and
+            # a live view that hides it leaves the one thing you cannot check afterwards.
+            _viz = self._live_visibility() or {}
+            _seg = str(_viz.get("seg", "1")).lower() not in ("0", "false", "off", "no")
+            if _seg:
+                draw_masks(drawn, detections)
             flat = [det for det, box in zip(detections, bboxes_3d) if not box]
             if flat:
                 draw_detections(drawn, flat)
@@ -644,7 +816,15 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         for label, fut in self._vlm_pending.items():
             if fut.done():
                 try:
-                    results[label] = fut.result() or {}
+                    r = fut.result() or {}
+                    # A grid future is shared by every label in its batch and returns all of
+                    # them at once; a single-crop future returns just this label's result.
+                    # The marker keeps the two apart explicitly -- sniffing the dict's keys
+                    # would misread a description that happened to contain the label.
+                    if isinstance(r, dict) and "__grid__" in r:
+                        results[label] = r["__grid__"].get(label, {}) or {}
+                    else:
+                        results[label] = r
                 except Exception as exc:
                     self.get_logger().error(f"Crop VLM future failed for {label}: {exc}")
                     results[label] = {}
@@ -663,26 +843,55 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # memory would climb. Dropping the oldest is visible in the log; an unbounded queue
         # is not.
         max_pending = int(CFG.get("vlm", {}).get("max_pending_crops", 64))
-        for crop in valid_crops:
-            label = crop["label"]
-            if label in self._vlm_pending:
-                continue          # already queued and not yet answered; do not ask twice
-            if len(self._vlm_pending) >= max_pending:
-                self.log_both("warn", f"[VLM] backlog at {max_pending}; not queueing "
-                                      f"'{label}' this cycle (describer slower than detection)")
-                break
-            self._vlm_pending[label] = self._vlm_executor.submit(self.process_crop_vlm, crop)
+        fresh = [c for c in valid_crops if c["label"] not in self._vlm_pending]
+        room = max(0, max_pending - len(self._vlm_pending))
+        if len(fresh) > room:
+            self.log_both("warn", f"[VLM] backlog at {max_pending}; queueing {room} of "
+                                  f"{len(fresh)} crop(s) (describer slower than detection)")
+            fresh = fresh[:room]
+
+        grid_cells = int(CFG.get("vlm", {}).get("grid_cells", 0))
+        if grid_cells > 1 and len(fresh) > 1:
+            # GA-209. One request per batch instead of one per crop. Every label in a batch
+            # holds the SAME future, and the harvest pulls its own cell out of the shared
+            # result -- so the existing per-label bookkeeping is untouched.
+            import crop_grid
+            for idx in crop_grid.plan(len(fresh), grid_cells):
+                batch = [fresh[i] for i in idx]
+                fut = self._vlm_executor.submit(self.process_crop_grid, batch)
+                for c in batch:
+                    self._vlm_pending[c["label"]] = fut
+            self.log_both("info", f"[VLM] grid: {len(fresh)} crop(s) in "
+                                  f"{len(crop_grid.plan(len(fresh), grid_cells))} request(s)")
+        else:
+            for crop in fresh:
+                self._vlm_pending[crop["label"]] = self._vlm_executor.submit(
+                    self.process_crop_vlm, crop)
 
         self.log_both("info", f"[VLM] queued {len(valid_crops)} crop(s), "
                               f"{len(results)} landed, {len(self._vlm_pending)} in flight")
         return results
 
-    def _build_descriptions(self, detections, vlm_results):
+    def _build_descriptions(self, detections, vlm_results, crops_data=None):
+        """GA-277. `crop_path` rides along so the admission gate can SEE the object.
+
+        The gate is handed geometry -- label, bbox, room -- and no pixels, so a VLM check on a
+        held decision had nothing to look at. The crop is already written to disk for the
+        describer; this carries WHERE, not the image, so the seam stays a small message.
+        Keyed by instance_label because that is what both sides already agree on.
+        """
+        by_label = {}
+        for c in (crops_data or []):
+            if c and c.get("label") and c.get("path"):
+                by_label[c["label"]] = c["path"]
         descriptions = []
         for det in detections:
             res = (vlm_results.get(det.instance_label, {}) or {})
             d = {field: res.get(field, "unknown") for field in DESCRIPTION_FIELDS}
             d["confirmed"] = getattr(det, "is_confirmed", True)
+            # Empty string, not absent: the msg field always exists, and "" reads as "no crop
+            # was written for this detection" rather than as a missing key nobody set.
+            d["crop_path"] = by_label.get(det.instance_label, "")
             if "provenance" in res:
                 d["provenance"] = res["provenance"]
             descriptions.append(d)
@@ -710,7 +919,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self._gt_semantic.pop(next(iter(self._gt_semantic)))
 
     def _archive_detections(self, detections, bboxes_3d, centroids_3d, image_raw,
-                            transform, cycle_stamp, crops_data=None):
+                            transform, cycle_stamp, crops_data=None, depth=None):
         """Write the frame and one row per detection. No-op unless archiving is enabled.
 
         Placed AFTER the 3D geometry so the row carries the 3D box and centroid too, and
@@ -725,6 +934,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         if frame_id is None:
             return
         arch.record_frame(frame_id, image_raw)
+        # GA-279. The depth THIS detection was measured from, archived beside the RGB. Every
+        # measurement-provenance question so far has died on its absence, and the re-render
+        # workaround does not validate.
+        arch.record_depth(frame_id, depth)
         # EXACT stamp match only. If the semantic frame for THIS frame_id is not held, the
         # rows carry no GT and say why -- never the nearest available frame.
         semantic = getattr(self, "_gt_semantic", {}).get(frame_id)
@@ -734,9 +947,20 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             cam = [float(t.x), float(t.y), float(t.z)]
         except Exception:
             cam = None
+        # GA-230. The ORIENTATION beside the position. Without it a bundle records where the
+        # camera stood and not where it pointed, and a 3D box cannot be drawn back onto the
+        # frame it came from except by solving for the rotation from the frame's own
+        # detections -- which works, at 0.75 deg median, but only on frames carrying four or
+        # more correspondences. Four floats remove that dependency entirely.
+        _cam_quat = None
+        try:
+            _r = transform.transform.rotation
+            _cam_quat = [float(_r.x), float(_r.y), float(_r.z), float(_r.w)]
+        except Exception:
+            _cam_quat = None
         for i, det in enumerate(detections):
             arch.record_detection(
-                frame_id, det, camera_position=cam,
+                frame_id, det, camera_position=cam, camera_transform=_cam_quat,
                 centroid=(centroids_3d[i] if centroids_3d is not None
                           and i < len(centroids_3d) else None),
                 bbox_3d=(bboxes_3d[i] if bboxes_3d is not None
@@ -890,6 +1114,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
     def joint_callback(self):
         tracked_joints = self.head_joints + self.base_joints
         motion_scores = []
+        _missing = []
 
         for joint_name in tracked_joints:
             try:
@@ -947,10 +1172,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 self.last_joint_positions[joint_name] = position
 
             except TransformException as ex:
-                self.get_logger().info(
-                    f"Could not transform {joint_name} to {from_frame_rel}: {ex}"
-                )
+                # ONCE, at debug. This ran at 1 Hz per missing frame and produced hundreds of
+                # INFO lines carrying the text of an error that was expected.
+                if not self._motion_absent_logged:
+                    self.get_logger().debug(
+                        f"motion watch: {joint_name} has no transform to {from_frame_rel} "
+                        f"({ex}); it is excluded from the motion average for this run")
+                _missing.append(joint_name)
 
+        # The mean must say what it is a mean OF. A five-source design reporting one source
+        # is not wrong here -- habitat_camera is the thing that moves -- but silence about
+        # the other four is how a mean-of-one passes for an aggregate.
+        if _missing and not self._motion_absent_logged:
+            self._motion_absent_logged = True
+            self.log_both("warn", f"motion watch: {len(tracked_joints) - len(_missing)} of "
+                                  f"{len(tracked_joints)} frames resolve; absent: "
+                                  f"{', '.join(_missing)}. The motion average uses only the "
+                                  f"frames that resolve.")
         if not motion_scores:
             return
 

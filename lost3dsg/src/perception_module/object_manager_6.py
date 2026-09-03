@@ -40,11 +40,11 @@ from world_model import wm
 # `F405 may be undefined` instead of `F821 undefined name`.
 from utils import compute_iou_3d
 from room_manager import RoomManager
-from nlp_utils import get_embedding, lost_similarity, world2vec
+from nlp_utils import get_embedding, lost_similarity, lost_similarity_detailed, world2vec
 from datetime import datetime
 from cv_utils import publish_persistent_bboxes
 from config import CFG
-from association import Observation
+from association import AssocObject, Observation, search_radius
 from hooks import DecisionLog, load_hooks
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
@@ -69,6 +69,73 @@ BBOX_REDUCTION_RATIO = CFG["association"]["bbox_reduction_ratio"]
 # 0.0 -- so the key that appeared to govern the neighbour radius never did. It is its own
 # value and now has its own key, default 2.0 to reproduce that behaviour exactly.
 REEVALUATION_RADIUS = CFG["association"].get("reevaluation_radius_m", 2.0)
+# GA-289. The tracking path (check_tracking_transition) ran `lost_similarity` over EVERY stable
+# object with no geometry consulted at all, and a win needed no evidence: two identical labels
+# score exactly 1.000 on nothing else measurable, and `>` keeps the FIRST such object at a tie.
+# Measured 2026-09-03 over the six runs of the day (GA-190's rows): 368 comparisons, 95% of
+# them beyond 1.0 m, and all four winners at 1.000 -- a `faucet` seen in the second bathroom
+# attached to `faucet#1` in the first, 9.8 m away. Era (rule 34): geometry-blind since the
+# first import (3353c96, 2026-07-04; FOUND from 82745b2); the label-only 1.000 became
+# reachable when GA-101 dropped absent terms from the divisor (2026-09-01) -- before that the
+# `continue` on a missing embedding made this loop unreachable in every run (GA-90).
+#
+# Same criterion as the merge path (D1: locality before similarity): the object's own
+# covariance shell via association.search_radius. Objects with no covariance yet get their
+# extent plus this configured radius, by the orchestrator's ruling of 2026-09-03 (session
+# 9fee2a6d). The same `merge_min_evidence` that guards the sweep now guards the win here.
+# ponytail: frustum culling (behind-the-camera pruning) is deliberately NOT built -- unmeasured,
+# and it would give om6 a camera-pose dependency; it stays the third arm of the D1 switch.
+TRACKING_FALLBACK_RADIUS_M = float(CFG["association"].get("tracking_fallback_radius_m", 1.0))
+TRACKING_MIN_EVIDENCE = int(CFG["association"].get("merge_min_evidence", 1))
+
+
+def _bbox_centre(b):
+    if not b:
+        return None
+    try:
+        return ((b["x_min"] + b["x_max"]) / 2.0, (b["y_min"] + b["y_max"]) / 2.0,
+                (b["z_min"] + b["z_max"]) / 2.0)
+    except (KeyError, TypeError):
+        return None
+
+
+def _centre_distance(centre, other_bbox):
+    """GA-190: the cheap discriminator, measured. A few arithmetic operations against a
+    composite similarity over four terms -- measuring costs a fraction of what it measures."""
+    o = _bbox_centre(other_bbox)
+    if centre is None or o is None:
+        return None
+    return ((centre[0] - o[0]) ** 2 + (centre[1] - o[1]) ** 2 + (centre[2] - o[2]) ** 2) ** 0.5
+
+
+def tracking_reach_m(obj, fallback_m=None):
+    """GA-289: how far a persistent object may sit from a detection and still be compared.
+
+    Reuses association.search_radius -- the 99% chi-squared shell of the object's OWN
+    position covariance plus its bounding-box half-diagonal -- so the tracking path and the
+    merge path agree on what "near enough to compare" means. With no sightings recorded the
+    shell is unmeasurable; the ruled fallback is the extent plus a CONFIG radius rather than a
+    distance invented here. Returns (metres, basis) so the row can say which one applied.
+    """
+    if fallback_m is None:
+        fallback_m = TRACKING_FALLBACK_RADIUS_M
+    ao = AssocObject(object_id=getattr(obj, "object_id", None) or getattr(obj, "label", None),
+                     bbox=getattr(obj, "bbox", None), centroid=getattr(obj, "centroid", None),
+                     observations=getattr(obj, "observations", None) or [])
+    reach, basis = search_radius(ao, None)
+    if ao.covariance is None:
+        return reach + float(fallback_m), "extent + fallback radius (no covariance)"
+    return reach, basis
+
+
+def _half_diagonal_m(bbox):
+    if not bbox:
+        return 0.0
+    try:
+        return 0.5 * ((bbox["x_max"] - bbox["x_min"]) ** 2 + (bbox["y_max"] - bbox["y_min"]) ** 2
+                      + (bbox["z_max"] - bbox["z_min"]) ** 2) ** 0.5
+    except (KeyError, TypeError):
+        return 0.0
 
 
 def locality_ok(bbox, obj, threshold):
@@ -126,7 +193,21 @@ INPUT_SILENCE_MAX_STRIKES = CFG["association"].get("input_silence_max_strikes", 
 # in which "the producer had its chance" is measurable.
 INPUT_SILENCE_MIN_STOPS = CFG["association"].get("input_silence_min_stops", 3)
 # must match the bridge's own default (BRIDGE_PORT=8081); :8080 is the FOUND dashboard server
-GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL", "http://127.0.0.1:8081")
+# GA-267b. BRIDGE_PORT, honoured -- the SAME hardcoded 8081 that silenced the feed host's
+# belief poller, in a second place and with a far worse consequence.
+#
+# The bridge moves to 8091 whenever 8081 is taken, which it is on this machine. With this
+# pinned to 8081 every Graph API POST failed, so `add_new_object` never received an
+# object_id, no `link` record was written, and NOTHING entered the world model. Run
+# 20260902_172331 logged 4 admit decisions, 0 links and no persistent_perception.json, then
+# ended itself: "no /bbox_3d for 202s ... 0 objects in the map". The decisions were real and
+# the map was empty, and the grade counter alone could not tell the difference.
+# GA-270. Config first, env override second. The literal that used to live here cost this
+# run its entire world model; see config.py "services" for why addresses are configuration.
+_SVC = (CFG.get("services", {}) or {})
+GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL") or (
+    f"http://{_SVC.get('bridge_host', '127.0.0.1')}:"
+    f"{os.environ.get('BRIDGE_PORT') or _SVC.get('bridge_port', 8081)}")
 GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
 GRAPH_API_AUTOSTART = os.environ.get("GRAPH_API_AUTOSTART", "1").lower() not in {"0", "false", "no"}
 SYNC_BUFFER_LIMIT = 20
@@ -493,7 +574,7 @@ class ObjectManagerService(Node):
         
         with open(SYNTHETIC_LOG_FILE, "a") as f:
             f.write(f"\n{'='*50}\n")
-            f.write(f"NUOVO AVVIO: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"NEW RUN: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"{'='*50}\n")
 
         self.exploration_mode = True
@@ -594,7 +675,7 @@ class ObjectManagerService(Node):
         
         #self.room_area_pub = self.create_publisher(MarkerArray, '/room_areas_array', qos_latch)
         
-        # Avvisa Perception dei cambi di stanza
+        # Tell Perception about room changes
         self.room_pub = self.create_publisher(String, '/current_room', 10)
        
         # Service server
@@ -721,15 +802,115 @@ class ObjectManagerService(Node):
             key=lambda entry: abs(float(entry.get("timestamp", timestamp_sec)) - float(timestamp_sec))
         )
 
+    def _scan_acc(self):
+        """Per-cycle accumulator for the tracking scan. Reset by the cycle, not by the call."""
+        if getattr(self, "_scan_stats", None) is None:
+            self._scan_stats = {"calls": 0, "visited": 0, "skipped_unstable": 0,
+                                "scored": 0, "distances": [], "winner_distance": None,
+                                "winners": 0,
+                                # GA-289: what the two new gates did, so the fix is measured
+                                # from the same row that measured the defect.
+                                "pruned_locality": 0, "locality_unmeasured": 0,
+                                "reach_fallback": 0, "refused_evidence": 0}
+        self._scan_stats["calls"] += 1
+        return self._scan_stats
+
+    def flush_scan_summary(self, frame_id=None):
+        """Emit ONE row summarising this cycle's tracking scan, then reset.
+
+        The same shape as `not_offered_summary` on the merge path, and for the same reason:
+        a path that records nothing cannot be measured, and every performance claim about it
+        stays a code reading. One row per cycle, never one per comparison.
+        """
+        st = getattr(self, "_scan_stats", None)
+        self._scan_stats = None
+        if not st or not st["calls"]:
+            return
+        d = sorted(st["distances"])
+
+        def pct(q):
+            if not d:
+                return None
+            return d[min(len(d) - 1, max(0, int(round(q / 100.0 * (len(d) - 1)))))]
+
+        try:
+            self.decision_log.write(
+                "tracking_scan_summary", "<cycle>",
+                frame=frame_id,
+                detections=st["calls"],
+                objects_visited=st["visited"],
+                skipped_unstable=st["skipped_unstable"],
+                comparisons_scored=st["scored"],
+                winners=st["winners"],
+                winner_distance=st["winner_distance"],
+                # GA-289. Skipped before similarity because the object was outside its own
+                # reach; distance unmeasurable (no bbox) so NOT pruned; reach came from the
+                # fallback radius (no covariance yet); would-be winners refused on evidence.
+                pruned_locality=st["pruned_locality"],
+                locality_unmeasured=st["locality_unmeasured"],
+                reach_fallback=st["reach_fallback"],
+                refused_evidence=st["refused_evidence"],
+                # the distribution of the LOSERS is the number that decides whether a
+                # locality gate would have saved anything here
+                loser_distance_min=(round(d[0], 3) if d else None),
+                loser_distance_p50=(round(pct(50), 3) if d else None),
+                loser_distance_p90=(round(pct(90), 3) if d else None),
+                loser_distance_max=(round(d[-1], 3) if d else None),
+                # How many comparisons a locality gate at each radius would have skipped.
+                # Reported against FIXED radii rather than a configured constant, because
+                # `MAX_MATCH_DISTANCE` no longer exists -- GA-49 removed `max_match_distance_m`
+                # from config, so the brief's "it is consulted after the scan" is out of date:
+                # there is nothing to consult. The distribution lets the reader pick a radius
+                # after seeing the data rather than before.
+                would_prune={f"{r}m": sum(1 for x in d if x > r)
+                             for r in (0.5, 1.0, 1.5, 2.0, 3.0)})
+        except Exception as exc:
+            self.get_logger().warn(f"tracking_scan_summary not written: {exc}")
+
     @synchronized_world_model
     def check_tracking_transition(self, label_base, color, material, description_embedding, bbox):
         best_match = None
         highest_similarity = -1.0
+        # GA-190: measure this scan. The merge path is legible -- it logs what candidate
+        # selection excluded, which is why 87% pruning could be MEASURED there tonight -- and
+        # this path logs nothing at all, so its cost is invisible. D1 says locality gates
+        # before similarity; here `lost_similarity` runs over EVERY persistent object and
+        # MAX_MATCH_DISTANCE is consulted only on the winner. That is certainly a contract
+        # deviation; whether it costs anything is unknown, and a handful of comparisons per
+        # detection would make it a tidiness issue rather than a performance one.
+        #
+        # Cheap by construction: a centroid distance is a few arithmetic operations against a
+        # composite similarity over four terms including a word2vec embedding, so measuring
+        # costs a fraction of a percent of what it measures. Accumulated here, ONE summary
+        # row per cycle -- hook_decisions.jsonl is already 1.8 GB and 99.98% merge_refused.
+        _scan = self._scan_acc()
+        _new_c = _bbox_centre(bbox)
+        _new_half = _half_diagonal_m(bbox)
 
         for obj in wm.persistent_perceptions:
+            _scan["visited"] += 1
             if (time.time() - getattr(obj, 'creation_time', 0)) < OBJECT_STABILITY_TIMEOUT:
+                # Skipped INSIDE the loop, so it is visited to be discarded: it belongs
+                # outside the candidate set, and the count says how often that costs a visit.
+                _scan["skipped_unstable"] += 1
                 continue
-            
+            _d = _centre_distance(_new_c, getattr(obj, "bbox", None))
+            if _d is not None:
+                _scan["distances"].append(_d)
+                # GA-289. D1: locality BEFORE similarity. The object's own reach (covariance
+                # shell, or extent + fallback) plus the detection's half-diagonal, the same
+                # symmetric test the merge path applies. Pruned pairs are counted, not scored.
+                _reach, _basis = tracking_reach_m(obj)
+                if "fallback" in _basis:
+                    _scan["reach_fallback"] += 1
+                if _d > _reach + _new_half:
+                    _scan["pruned_locality"] += 1
+                    continue
+            else:
+                # No distance is measurable (no bbox on one side): the discriminator is
+                # absent, so this ABSTAINS from pruning rather than assuming near or far.
+                _scan["locality_unmeasured"] += 1
+
             obj_label_base = obj.label.split('#')[0] if '#' in obj.label else obj.label
 
             if not hasattr(obj, "embedding") or obj.embedding is None:
@@ -739,14 +920,28 @@ class ObjectManagerService(Node):
             # descriptions (VLM down) every embedding is None, so this `continue`
             # made the EXPLORATION -> TRACKING transition impossible: the stack never
             # reached updates, the uncertain pool or merging.
-            similarity = lost_similarity(world2vec, label_base, obj_label_base, color, obj.color,
-                                         material, obj.material, description_embedding, obj.embedding)
-            
+            similarity, _ev = lost_similarity_detailed(
+                world2vec, label_base, obj_label_base, color, obj.color,
+                material, obj.material, description_embedding, obj.embedding)
+
+            _scan["scored"] += 1
             if similarity > SIM_THRESHOLD and similarity > highest_similarity:
+                # GA-289. Evidence before a win, AFTER the similarity test on purpose: a
+                # low-score loser must keep its own reason. A 1.000 on the label alone is
+                # GA-101's zero-evidence merge on this path, and it does not win here either.
+                if _ev["optional_count"] < TRACKING_MIN_EVIDENCE:
+                    _scan["refused_evidence"] += 1
+                    continue
                 highest_similarity = similarity
                 best_match = obj
+                _scan["winner_distance"] = _d
 
         if best_match:
+            # GA-190: counted here, not in the loop. Set inside the loop it would count every
+            # improvement to the running best rather than the one match this detection made,
+            # and the summary would report more winners than detections. My own check caught
+            # that this was never incremented at all.
+            _scan["winners"] += 1
             print(f"[BEST MATCH FOUND] Detected: '{label_base}' -> Best in memory: '{best_match.label}' (Score: {highest_similarity:.3f})")
             
             if best_match.bbox is None:
@@ -969,6 +1164,10 @@ class ObjectManagerService(Node):
             color = description.color
             material = description.material
             description_text = description.description
+            # GA-277. getattr, not attribute access: a bundle replayed against an OLDER
+            # interface has no such field, and the seam must not raise on a message shape
+            # that was valid when it was recorded.
+            crop_path = getattr(description, "crop_path", "") or ""
 
             description_embedding = get_embedding(world2vec, description_text)
 
@@ -1167,6 +1366,10 @@ class ObjectManagerService(Node):
                     "label": label, "bbox": bbox, "color": color, "material": material,
                     "description": description_text,
                     "room_id": self.room_manager.assign_room_by_geometry(bbox),
+                    # GA-277. The gate sees geometry and no pixels, so an image-based check
+                    # on a borderline decision had nothing to look at. The PATH, not the
+                    # image: the seam stays a small message and the reader opens the file.
+                    "crop_path": crop_path,
                 }
                 decision = self.filter_hook.judge(proposal)
                 self.decision_log.write("admission", label, filter=self.filter_hook.name, outcome=decision.outcome,
@@ -1213,7 +1416,26 @@ class ObjectManagerService(Node):
                     ann = decision.annotation or {}
                     aligned = (ann.get("alignment") or {}).get("status") == "aligned"
                     new_obj.onto_type = ann.get("entity") if aligned else None
-                    new_obj.onto_aligned = bool(aligned and new_obj.onto_type)
+                    # GA-240, owner ruling 2026-09-02. A PROVISIONAL admission -- the filter's
+                    # hold or no-grounds -- enters the map and must be unusable by the
+                    # ontological layer until the association/core level resolves it.
+                    #
+                    # Enforced HERE, at the one place the flag is set, because
+                    # `association.channel_ontology` already abstains unless BOTH sides are
+                    # aligned: "one or both sides unaligned; alignment is required before
+                    # use". So clearing this single flag is exactly "not usable in the
+                    # ontological layers", and it cannot be forgotten by a consumer that
+                    # never learns about a new field -- there is no new field for the channel
+                    # to check.
+                    #
+                    # `ontologically_usable` is recorded beside it so a bundle SAYS why the
+                    # object is unaligned. Without it, a provisional object and a genuinely
+                    # unalignable one are indistinguishable after the fact, which is the
+                    # class of ambiguity this project keeps paying for.
+                    new_obj.provisional = bool(getattr(decision, "provisional", False))
+                    new_obj.ontologically_usable = not new_obj.provisional
+                    new_obj.onto_aligned = bool(aligned and new_obj.onto_type
+                                                and new_obj.ontologically_usable)
 
                     current_perception_objects.append(new_obj)
                     objects_modified = True
@@ -1270,6 +1492,11 @@ class ObjectManagerService(Node):
         response.status = "tracking_activated" if tracking_activated else "success"
         response.num_objects = len(wm.persistent_perceptions)
         response.tracking_mode_activated = tracking_activated
+
+        # GA-190: one row per cycle, after every detection in this callback has scanned.
+        # Flushed here rather than inside check_tracking_transition so the unit is the CYCLE,
+        # matching `not_offered_summary` on the merge path.
+        self.flush_scan_summary(frame_id=getattr(self, "_current_frame_id", None))
 
         return response
 

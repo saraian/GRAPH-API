@@ -2,7 +2,7 @@
 map_database.py
 ---------------
 Persistenza temporale per ObjectManagerNode (TIAGo).
-Salva ogni cambiamento con timestamp — nessuna sovrascrittura.
+Records every change with a timestamp; nothing is overwritten.
 Include il supporto per la Mappatura Semantica Topologica (room_id).
 """
 
@@ -152,12 +152,12 @@ class MapDatabase(Store):
     # ------------------------------------------------------------------ #
 
     def on_new_object(self, obj, phase: str = "exploration", step: int = 0):
-        """Chiama in add_new_object() — registra un nuovo oggetto."""
+        """Called from add_new_object() — records a new object."""
         now = datetime.now().isoformat()
         x, y, z = self._centroid(obj.bbox)
         bbox_json = json.dumps(obj.bbox) if obj.bbox else None
         
-        # Estrai la stanza dall'oggetto
+        # Take the room from the object
         room = getattr(obj, 'room_id', 'unknown')
 
         with sqlite3.connect(self.db_path) as conn:
@@ -183,7 +183,7 @@ class MapDatabase(Store):
     def on_object_moved(self, obj, old_bbox: dict, new_bbox: dict,
                         distance: float, iou: float,
                         phase: str = "tracking", step: int = 0):
-        """Chiama in modify_existing_object() — caso IoU bassa (oggetto spostato)."""
+        """Called from modify_existing_object() — the low-IoU case (object moved)."""
         now = datetime.now().isoformat()
         x_old, y_old, z_old = self._centroid(old_bbox)
         x_new, y_new, z_new = self._centroid(new_bbox)
@@ -235,7 +235,7 @@ class MapDatabase(Store):
 
     def on_object_deleted(self, obj, reason: str = "",
                           phase: str = "tracking", step: int = 0):
-        """Chiama in delete_undetected_objects() e delete_uncertain_objects()."""
+        """Called from delete_undetected_objects() and delete_uncertain_objects()."""
         now = datetime.now().isoformat()
         x, y, z = self._centroid(obj.bbox)
         room = getattr(obj, 'room_id', 'unknown')
@@ -287,7 +287,7 @@ class MapDatabase(Store):
                  "distance": r["distance"], "iou": r["iou"], "notes": r["notes"]} for r in rows]
 
     def on_uncertain_added(self, obj, step: int = 0):
-        """Chiama quando aggiungi a uncertain_objects in modify_existing_object()."""
+        """Called when adding to uncertain_objects in modify_existing_object()."""
         now = datetime.now().isoformat()
         room = getattr(obj, 'room_id', 'unknown')
         

@@ -1205,7 +1205,7 @@ class RoomManager:
 
     def ask_vlm_room_info(self, room_objects_labels, encoded_image=None):
         """
-        Interroga il VLM per ottenere nome e descrizione della stanza.
+        Asks the VLM for the room's name and description.
         Supporta sia testo che immagini codificate in Base64.
         """
         if not room_objects_labels:
@@ -1363,10 +1363,10 @@ class RoomManager:
 
     def finalize_current_room(self, persistent_objects):
         room_id = self.current_room_id
-        print(f"[FINALIZZAZIONE] Chiamata finalize per: {room_id}")
+        print(f"[FINALISE] finalize called for: {room_id}")
         room_node = self.init_room_node(room_id)
 
-        # 1. Recupera oggetti della stanza, unendo gli oggetti già registrati
+        # 1. Collect the room's objects, merging those already registered
         #    nella room ai label osservati in questa chiamata.
         room_labels = []
         for label in room_node.get("objects", []) or []:
@@ -1391,7 +1391,7 @@ class RoomManager:
         room_labels_vlm = [self._vlm_room_label(label) for label in room_labels if str(label).strip()]
         
         semantic_name = "Unknown_Room"
-        description = "Nessuna descrizione (VLM non disponibile o stanza vuota)."
+        description = "No description (the VLM was unavailable, or the room is empty)."
 
 
 

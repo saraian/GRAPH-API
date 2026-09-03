@@ -77,7 +77,22 @@ class PerceptionIOMixin:
     def prepare_crops(self, detections, image_raw, project_root):
         height, width = image_raw.shape[:2]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        crops_dir = os.path.join(project_root, "output/cropped_images")
+        # GA-238. THE CROPS WERE WRITTEN INTO THE CONTAINER'S OWN SOURCE TREE.
+        # `project_root` resolves inside /ws, which does not survive the container, so every
+        # crop this function produced was discarded when the run ended. The bundle's crops
+        # directory has been empty in every run, and the viewer shows its "no crop captured
+        # yet" placeholder on every object card as the direct consequence.
+        #
+        # It is a RETENTION fault, not a perception one: `crop_meta` is populated on all
+        # 1,530 detection rows of 20260901_174810_hm3d_00861, so the crops were constructed
+        # correctly and then thrown away.
+        #
+        # `cropped_images` is the name the READER wants -- graph_api_bridge._crop_dirs
+        # searches `_active_output_dir() / "cropped_images"` first. live_run.sh separately
+        # creates `$RUN_DIR/crops`, a THIRD name that nothing reads or writes.
+        out_root = os.environ.get("GRAPH_API_OUTPUT_DIR")
+        crops_dir = (os.path.join(out_root, "cropped_images") if out_root
+                     else os.path.join(project_root, "output/cropped_images"))
         os.makedirs(crops_dir, exist_ok=True)
 
         crops = []
@@ -115,7 +130,12 @@ class PerceptionIOMixin:
             crop_path = os.path.join(crops_dir, f"crop_{safe_label}_{timestamp}_{idx}.jpg")
             self._io_executor.submit(self.save_crop_file, crop_path, bordered.copy())
             crops.append({"cropped": crop, "label": det.instance_label, "idx": idx,
-                          "crop_meta": crop_meta})
+                          "crop_meta": crop_meta,
+                          # GA-277. The path is already computed for the disk write; carrying
+                          # it is free and it is the ONLY way the admission gate can ever see
+                          # the image. The gate receives geometry, not pixels, so a VLM check
+                          # on a held decision has nothing to look at without this.
+                          "path": crop_path})
         return crops
 
     def publish_crops(self, crops_data):
