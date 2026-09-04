@@ -227,6 +227,36 @@ def tracking_gate():
     wm.persistent_perceptions.clear()
 
 
+def object_centroid():
+    """GA-296: a world-model Object must carry the centroid its sighting record needs.
+
+    Both Object(...) sites passed None, so `_record_sighting` returned early on every object
+    ever created and `observations` stayed empty -- which made the covariance shell, the
+    co-visibility channel and appearance re-id abstain by construction on BOTH association
+    paths. Asserted here on the real constructor argument, not on the helper alone.
+    """
+    import inspect
+
+    from object_services import _centroid_from_bbox
+
+    c = _centroid_from_bbox(BOX)
+    assert isinstance(c, list) and [round(x, 3) for x in c] == [0.5, 0.5, 0.5], c
+    import json as _j
+    _j.dumps(c)   # the object it lands on is serialised; a numpy array would raise here
+    assert _centroid_from_bbox(None) is None
+    assert _centroid_from_bbox({"x_min": 0}) is None
+
+    src = inspect.getsource(object_services)
+    assert "Object(label, None, bbox" not in src, "the add path still creates a centroid-less object"
+    assert "_centroid_from_bbox(bbox)" in src
+
+    # An object built the way the service builds one has a usable position for the sighting
+    # guard: this is the exact condition _record_sighting tests before recording.
+    o = object_info.Object("chair", _centroid_from_bbox(BOX), BOX)
+    assert getattr(o, "centroid", None) is not None
+    assert o.observations == [], "a fresh object records nothing until it is sighted"
+
+
 def empty_embedding():
     """GA-171: an EMPTY embedding must read as absent evidence, never crash the merge.
 
@@ -277,6 +307,7 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("empty embedding is absent, not a crash (GA-171)", empty_embedding),
                  ("tracking scan summary: one row per cycle (GA-190)", scan_summary),
                  ("tracking gate: locality, then evidence (GA-289)", tracking_gate),
+                 ("world-model object carries a centroid (GA-296)", object_centroid),
                  ("inside_area", inside_area),
                  ("save_uncertain_objects", save_uncertain),
                  ("reassign_objects_by_geometry", reassign_rooms),

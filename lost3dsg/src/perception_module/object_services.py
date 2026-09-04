@@ -124,6 +124,32 @@ os.makedirs(log_dir, exist_ok=True)
 SYNTHETIC_LOG_FILE = os.path.join(log_dir, "operations.txt")
 
 
+def _centroid_from_bbox(bbox):
+    """GA-296. The centroid a world-model Object is created WITHOUT.
+
+    Both `Object(...)` sites here passed `None` for it and nothing downstream ever assigned
+    it, so `obj.centroid` was None for the life of every object in the map. That is not
+    cosmetic: `_record_sighting` returns early on `centroid is None`, so NO OBJECT HAS EVER
+    RECORDED A SIGHTING -- `observations` is empty everywhere, `position_covariance` returns
+    None for every object, and `search_radius` therefore falls back to extent-only on BOTH
+    the merge sweep and the tracking scan. Measured consequence: GA-289's `reach_fallback`
+    is 14801/14801 and 3014/3014 in the two runs that carry the counter, i.e. 100%.
+
+    The covariance shell, co-visibility and appearance re-identification are all functions of
+    `observations`, so all three have been abstaining by construction since GA-186 rather
+    than because the evidence was absent. Deriving it from the box the object already has
+    is the whole fix; the box is the only position information the object carries.
+    """
+    b = assoc._as_bounds(bbox)
+    if b is None:
+        return None
+    # A plain list, not the numpy array box_centroid returns: this value is stored on a
+    # long-lived object that is serialised by `save_persistent_perceptions` and tested for
+    # truth in several readers, and a numpy array raises on both. Every consumer that wants
+    # an array (AssocObject, Observation) calls np.asarray on it anyway.
+    return [float(v) for v in assoc.box_centroid(b)]
+
+
 def synchronized_world_model(callback):
     """Serialize callbacks that read/write the shared world model."""
     @wraps(callback)
@@ -1451,7 +1477,7 @@ class ObjectServices(Node):
             color       = request.color
             material    = request.material
 
-            new_obj = Object(label, None, bbox, description, color, material)
+            new_obj = Object(label, _centroid_from_bbox(bbox), bbox, description, color, material)
             # Identity remains stable when visual attributes are refined.
             new_obj.object_id = f"obj_{uuid.uuid4().hex}"
             new_obj.creation_time = time.time()
@@ -1746,7 +1772,7 @@ class ObjectServices(Node):
 
                         updated_obj = Object(
                             best_match.label,
-                            None,
+                            _centroid_from_bbox(bbox),
                             bbox,
                             best_match.description,
                             best_match.color,
