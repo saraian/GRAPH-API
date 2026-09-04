@@ -257,6 +257,68 @@ def object_centroid():
     assert o.observations == [], "a fresh object records nothing until it is sighted"
 
 
+def fov_transform_vectorised():
+    """LAT-1: one lookup + _apply_transform must equal the per-point path exactly.
+
+    The old branch computed `R.dot(p) + T` for each point, each with its own
+    lookup_transform; the new one computes `p.dot(R.T) + T` once for the whole (N,3) array.
+    The same product written the other way round, so the two agree to floating-point
+    accumulation order and NOT to the last bit -- the first version of this check asserted
+    exact equality and failed at 6.8e-14, which is how the plan's word "bit-identical" was
+    caught. The bound below is tight enough that a wrong rotation convention (the failure
+    this replaces) misses it by many orders of magnitude.
+    """
+    import numpy as _np
+    from cv_utils import _apply_transform, _get_R_and_T
+
+    class _V:
+        def __init__(self, x, y, z, w=None):
+            self.x, self.y, self.z = x, y, z
+            if w is not None:
+                self.w = w
+
+    class _T:
+        def __init__(self):
+            self.transform = self
+            # a real rotation (45 deg about z) with a translation, not identity: an identity
+            # transform passes under either convention and would prove nothing.
+            self.rotation = _V(0.0, 0.0, 0.3826834, 0.9238795)
+            self.translation = _V(1.5, -2.0, 0.25)
+
+    trans = _T()
+    R, T = _get_R_and_T(trans)
+    pts = _np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [-4.5, 0.25, 7.0], [1e3, -1e3, 5.0]])
+
+    per_point = _np.asarray([R.dot(p) + T for p in pts])
+    vectorised = _apply_transform(pts, trans)
+    assert vectorised.shape == per_point.shape
+    worst = float(_np.abs(vectorised - per_point).max())
+    assert worst < 1e-9, worst          # measured 6.8e-14 on coordinates up to 1e3 m
+
+    # The value this function actually returns is the min/max per axis, in metres, and it
+    # must not move enough to matter to a containment test with metre-scale thresholds.
+    for i in range(3):
+        assert abs(float(vectorised[:, i].min()) - float(per_point[:, i].min())) < 1e-9
+        assert abs(float(vectorised[:, i].max()) - float(per_point[:, i].max())) < 1e-9
+
+
+def dead_crop_publisher_gone():
+    """LAT-5: nothing publishes to /cropped_image any more, and nothing calls publish_crops.
+
+    Asserted against the real sources: the topic had no subscriber in either tree, so the
+    encode-and-publish ran every cycle for nobody.
+    """
+    import inspect
+
+    import input_output
+    io_src = inspect.getsource(input_output)
+    p2_src = inspect.getsource(perception_2)
+    assert "def publish_crops" not in io_src
+    assert "publish_crops(" not in p2_src
+    assert "/cropped_image" not in p2_src
+    assert not hasattr(input_output.PerceptionIOMixin, "publish_crops")
+
+
 def empty_embedding():
     """GA-171: an EMPTY embedding must read as absent evidence, never crash the merge.
 
@@ -308,6 +370,8 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("tracking scan summary: one row per cycle (GA-190)", scan_summary),
                  ("tracking gate: locality, then evidence (GA-289)", tracking_gate),
                  ("world-model object carries a centroid (GA-296)", object_centroid),
+                 ("FOV transform: one lookup equals per-point (LAT-1)", fov_transform_vectorised),
+                 ("dead crop publisher removed (LAT-5)", dead_crop_publisher_gone),
                  ("inside_area", inside_area),
                  ("save_uncertain_objects", save_uncertain),
                  ("reassign_objects_by_geometry", reassign_rooms),

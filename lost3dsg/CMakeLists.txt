@@ -47,9 +47,19 @@ install(PROGRAMS
   src/perception_module/object_manager_6.py
   src/perception_module/object_services.py
   src/perception_module/room_manager.py
-  src/perception_module/habitat_camera_node.py
+  # GA-299. habitat_camera_node.py is NOT installed: it is a HOST-side node. It imports
+  # habitat_sim, which is not in graphapi-run:humble and is not meant to be -- habitat renders on
+  # the host in the conda env and reaches the container over the TCP feed. Installing it put a
+  # module in the image that cannot be imported there, and smoke_test.sh step 4, which derives its
+  # list FROM THE TREE rather than by hand (GA-84), correctly failed on it.
+  #
+  # The install list is the declaration of what belongs in the ROS image, so the fix belongs here,
+  # not in the test: a name list in the test would be the hand-maintained inventory GA-84 removed.
+  # Nothing in the container imports or runs it -- habitat_feed_node.py only NAMES it in comments,
+  # one of which already said "that module also imports habitat_sim".
   src/perception_module/habitat_feed_node.py
   src/perception_module/graph_api_bridge.py
+  src/perception_module/live_overlay.py
   src/perception_module/vlm_call.py
   src/perception_module/label_norm.py
   # sibling modules the nodes import at runtime — without these the installed

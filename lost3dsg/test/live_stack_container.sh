@@ -54,6 +54,15 @@ else
   echo "    interface key unchanged ($BUILD_KEY); reusing the generated interfaces"
 fi
 _build_t0=$(date +%s)
+# GA-300. DELETE THE INSTALLED NODE SCRIPTS BEFORE BUILDING. colcon copies files in and never
+# takes them out, and /ws is a persistent named volume (GA-157), so a module DELETED from
+# CMakeLists stays in /ws/install and keeps being importable and runnable. Measured 4 Sep:
+# after habitat_camera_node.py was removed from the install list, a fresh build still left it
+# in the tree, and lib/lost3dsg held 37 entries for 31 installed modules. A stale module is
+# worse than a missing one: `ros2 run` would launch it and the bundle would record a source
+# hash that does not describe what executed. Only the copied .py files go; the generated
+# interfaces live under local/ and share/ and are what the build key exists to preserve.
+rm -rf /ws/install/lost3dsg/lib/lost3dsg
 colcon build --packages-select lost3dsg --cmake-args -DCMAKE_BUILD_TYPE=Release >/tmp/build.log 2>&1 \
   || { tail -30 /tmp/build.log; exit 1; }
 _build_t1=$(date +%s)
@@ -340,7 +349,8 @@ if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
   # and _144312 in localization mode. Run 20260903_230232 carried the flag and died the same way at
   # iteration 1485. Left in place it would read as a fix to whoever comes back to localization.
   # The record is PLAN_1.3 §26; the next hypothesis there is --RGBD/OptimizeMaxError 0, untested.
-  # Owner ruling 4 Sep: detection runs use SLAM mode (RTABMAP_SLAM=1) and do not come here at all.
+  # SUPERSEDED, 4 Sep ~15:55: the owner banned SLAM outright ("we will not use slam", GA-290
+  # register) and live_run.sh now REFUSES RTABMAP_SLAM=1, so every detection run DOES come here.
   _RT_DB_ARGS="--Mem/IncrementalMemory false"
   echo ">>> LOCALIZATION MODE against a copy of $RTABMAP_LOCALIZE_DB (params-sha $_have)"
   echo "    mapping is OFF; the driver must also set FEED_MAPPING_SECONDS=0"

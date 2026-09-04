@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Live demo on this machine: habitat renders on the host (conda habitat_env),
-# the ROS 2 stack runs in the graphapi-run:humble container over a TCP feed.
+# the ROS 2 stack runs in the graphapi-run:humble-ga290 container (patched rtabmap, GA-290)
+# over a TCP feed.
 # Watch: web viewer at http://localhost:8081 and snapshots in $OUT_DIR.
 #   ./live_run.sh [scene]  # foreground; ctrl-C stops everything
 # scene: hm3d_00861 (default) | hm3d_00337 | hm3d_00770 | mp3d_17DRP
@@ -436,13 +437,18 @@ export FEED_SPAWN_FLOOR="${FEED_SPAWN_FLOOR:-}"
 # different storey is not a map of this run's world. With no spawn floor, only a scene-level map
 # is eligible: guessing a floor here would localize against the wrong one and every pose would be
 # confidently wrong.
-# RTABMAP_SLAM=1 REFUSES THE PUBLISHED MAP AND MAPS FROM SCRATCH. Owner ruling, 4 Sep: after
-# three SIGABRT losses in localization mode (GA-290 refuted, see the simulator lane's PLAN_1.3 §26)
-# a detection run maps its own world instead. There was no way to say this: the block below claimed
-# the map whenever one existed, and the only way out was to point RTABMAP_LOCALIZE_DB at a file
-# that had to exist. Poses from a SLAM run are NOT comparable to the published map's frame.
+# RTABMAP_SLAM=1 IS REFUSED, HARD — NO FALLBACK. Owner ruling, 4 Sep ~15:55: "we will not use
+# slam" (GA-290 register, SLAM ban). This supersedes 2f0a57f's notice block, which let a run map
+# from scratch and leave the published map unused: SLAM grows the graph it is optimising and
+# starves the perception loop (run 20260904_082146: ~0.14 Hz, 14 frames rejected, worst 24.30 s
+# against the 15.0 s guard), so its readings are mode artifacts that a10 would then refuse every
+# localization launch for, and poses from a SLAM run are NOT comparable to the published map's
+# frame. The route away from the localization-mode abort is the rtabmap patch (PLAN_1.3 §31),
+# not SLAM.
 if [ "${RTABMAP_SLAM:-0}" = "1" ]; then
-  echo "    RTABMAP_SLAM=1 — mapping from scratch; the published map is NOT used."
+  echo "!! RTABMAP_SLAM=1 is banned by owner ruling 2026-09-04 (GA-290 register, SLAM ban)."
+  echo "   Localization against the published map is the only mode; see PLAN_1.3 §31."
+  exit 1
 fi
 if [ "${MAPPING_ONLY:-0}" != "1" ] && [ "${RTABMAP_SLAM:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   if [ -n "$FEED_SPAWN_FLOOR" ]; then
@@ -547,7 +553,14 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # exports HF_HOME=/found/.hf_cache, so weights come from a host cache at runtime and two runs
 # on one image digest can load different weights. Resolved through refs/main, a floating tag —
 # recording them pins going forward and proves nothing about any earlier run.
-IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble}
+# DEFAULT IS THE PATCHED IMAGE, graphapi-run:humble-ga290: the rtabmap.cpp:4090 guard (GA-290,
+# owner ruling "patch locally", 4 Sep; patch + build provenance in
+# lost3dsg/test/patches/rtabmap-0.23.7-ga290-guard.patch). The pristine apt-built
+# graphapi-run:humble stays on the machine for comparison; runs must NOT launch on it.
+# The docker run line at the bottom now uses "$IMAGE_TAG" — until this change it hardcoded
+# graphapi-run:humble, so IMAGE_TAG only ever stamped metadata and an override would have
+# launched the pristine image while recording itself as the patched one.
+IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble-ga290}
 IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
 HF_CACHE=${HF_CACHE:-$FOUND_ROOT/.hf_cache}
 # >>> TEST-EXTRACT _enc_rev  (test_env_stamp.sh sources the block between these markers.
@@ -821,7 +834,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
   -v "${HF_SHARED_CACHE:-/DATA/huggingface_cache}":/models/hf \
   -v "$OUT_DIR":/out \
-  graphapi-run:humble /graph_api/lost3dsg/test/live_stack_container.sh
+  "$IMAGE_TAG" /graph_api/lost3dsg/test/live_stack_container.sh
 
 # Post-run archive
 cp "$OUT_DIR"/*.log "$RUN_DIR/logs/" 2>/dev/null || true
