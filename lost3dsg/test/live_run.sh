@@ -156,6 +156,30 @@ cleanup() {
   if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
     cp "$OUT_DIR"/*.json "$OUT_DIR"/*.jsonl "$RUN_DIR/" 2>/dev/null || true
     cp "$OUT_DIR"/*.log "$RUN_DIR/logs/" 2>/dev/null || true
+    # GA-238. NO COPY IS NEEDED, and the first version of this block wrongly added one.
+    # `-v "$RUN_DIR":/ws/output` (below) means the container's output directory IS the bundle,
+    # and live_stack_container.sh exports GRAPH_API_OUTPUT_DIR=/ws/output. So once
+    # input_output.prepare_crops honours that variable -- which was the actual fix -- the
+    # crops are written straight into $RUN_DIR/cropped_images and there is nothing to move.
+    #
+    # $OUT_DIR is a DIFFERENT mount (/out). Copying from there would always find nothing and
+    # would print "no crops to harvest" over a bundle that has them, which is worse than
+    # silence: it would have sent the next reader looking for a perception failure that did
+    # not happen. Counted and reported instead, so the run states what it retained.
+    _ncrops=$(ls -1 "$RUN_DIR/cropped_images"/*.jpg 2>/dev/null | wc -l)
+    echo "    crops retained: $_ncrops in $RUN_DIR/cropped_images"
+
+    # Per-class entry counts against the scene annotation, written INTO the bundle so a run
+    # states this about itself. 20260901_174810_hm3d_00861 left 112 "dining chair" entries in
+    # a scene annotated with sixteen chairs, and nobody noticed until it was reconstructed by
+    # hand days later. It reports class counts and NOT a clustering, because clustering needs
+    # a radius and the radius moves the answer by more than 2x.
+    #
+    # HOST SIDE, AFTER THE CONTAINER HAS EXITED. Ground truth must never be readable from the
+    # runtime path; this runs here for the same reason analyse_run.py does.
+    ( cd "$FOUND_ROOT" && python3 -m tools.class_counts "$RUN_DIR" ) 2>&1 \
+      | sed 's/^/    /' || echo "    class_counts failed (non-fatal)"
+
     _point_latest_if_earned
     _publish_map_if_earned
   fi
@@ -257,25 +281,47 @@ fi
 RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
 FOUND_RUNS_DIR=${FOUND_RUNS_DIR:-$FOUND_ROOT/runs}
 RUN_DIR="$FOUND_RUNS_DIR/$RUN_ID"
+# GA-258b. EXPORTED, because the FEED HOST needs it. The host process reads
+# merge_pending.json to decide how long to dwell, and that file is written by the container
+# into /ws/output -- which is bind-mounted to $RUN_DIR, not to $OUT_DIR (/out). The feed host
+# was building the path from GRAPH_API_OUTPUT_DIR, which only exists INSIDE the container, so
+# on the host it resolved to a bare relative filename and never opened. Measured on run
+# 20260902_125130: every dwell line read "? merges pending (sweep None)" and every waypoint
+# ran to the 90-frame cap.
+export RUN_DIR
 mkdir -p "$RUN_DIR/logs" "$RUN_DIR/crops" "$RUN_DIR/snapshots"
 echo "    run bundle: $RUN_DIR (symlinked as $FOUND_RUNS_DIR/latest)"
 
 # Snapshot calibration, config, and run metadata
-cat <<'EOF' > "$RUN_DIR/calibration.json"
-{
-  "camera_name": "habitat_camera_optical",
-  "resolution": {"width": 640, "height": 480},
-  "hfov_deg": 90.0,
-  "intrinsics": {
-    "fx": 320.0,
-    "fy": 320.0,
-    "cx": 320.0,
-    "cy": 240.0
-  },
-  "distortion_model": "plumb_bob",
-  "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0]
-}
-EOF
+# GA-233. DERIVED, not a literal. This was a heredoc stating 640x480 with fx=320 while the
+# run used 1280x960 -- right only because the sensor kept a 90 deg hfov and a 4:3 aspect, so
+# the RATIO the frustum tools actually read came out the same by luck. The day FEED_HFOV or
+# the aspect changes, tools/visible_gt.py and tools/frustum_gt.py would score against the
+# wrong cone and say nothing about it.
+#
+# Written from the resolved sensor configuration instead, with fx from the pinhole relation
+# fx = (w/2) / tan(hfov/2). The values are ALSO recorded as `source: derived` so a reader can
+# tell a computed calibration from a copied constant.
+_CAL_W="${FEED_WIDTH:-1280}"; _CAL_H="${FEED_HEIGHT:-960}"; _CAL_HFOV="${FEED_HFOV:-90}"
+python3 - "$RUN_DIR/calibration.json" "$_CAL_W" "$_CAL_H" "$_CAL_HFOV" <<'PYCAL'
+import json, math, sys
+path, w, h, hfov = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+fx = (w / 2.0) / math.tan(math.radians(hfov) / 2.0)
+json.dump({
+    "camera_name": "habitat_camera_optical",
+    "resolution": {"width": w, "height": h},
+    "hfov_deg": hfov,
+    "intrinsics": {"fx": round(fx, 4), "fy": round(fx, 4),
+                   "cx": w / 2.0, "cy": h / 2.0},
+    "distortion_model": "plumb_bob",
+    "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
+    "source": "derived",
+    "source_note": ("GA-233. fx = (w/2)/tan(hfov/2) from the resolved sensor settings of THIS "
+                    "run. Was a hardcoded 640x480/fx=320 heredoc that stayed correct only "
+                    "while the hfov and aspect happened not to change."),
+}, open(path, "w"), indent=2)
+print(f"    calibration: {w}x{h} hfov {hfov} -> fx {fx:.1f} (derived)")
+PYCAL
 # The config the FEED HOST will load. It resolves $HERE/$CFG_NAME through the same
 # config.py::_load as the container, and _load returns the DEFAULTS when the file is absent —
 # silently, with hooks.filter empty. Two processes, one name, and nothing recording the split.
@@ -294,7 +340,9 @@ cp "$HERE/$CFG_NAME" "$RUN_DIR/config.yaml"
 # gate compare an intention against what actually arrived instead of echoing what it finds.
 export FOUND_ENFORCE="${FOUND_ENFORCE:-0}"
 export FOUND_HOLD_BAND="${FOUND_HOLD_BAND:-0.05}"
-export FOUND_MIN_SUPPORT="${FOUND_MIN_SUPPORT:-30}"
+# GA-263, owner ruling: 30 -> 4. See found/admission.py for why the floor stopped
+# doing anything once _envelope_key was made class-first.
+export FOUND_MIN_SUPPORT="${FOUND_MIN_SUPPORT:-4}"
 export FOUND_ROOM_ENFORCE="${FOUND_ROOM_ENFORCE:-0}"
 export FOUND_ALIGNER="${FOUND_ALIGNER:-kg}"
 # EMPTY means "use the built-in extension". found/kg_align.py:88-91 reads this as a PATH when
@@ -388,7 +436,15 @@ export FEED_SPAWN_FLOOR="${FEED_SPAWN_FLOOR:-}"
 # different storey is not a map of this run's world. With no spawn floor, only a scene-level map
 # is eligible: guessing a floor here would localize against the wrong one and every pose would be
 # confidently wrong.
-if [ "${MAPPING_ONLY:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
+# RTABMAP_SLAM=1 REFUSES THE PUBLISHED MAP AND MAPS FROM SCRATCH. Owner ruling, 4 Sep: after
+# three SIGABRT losses in localization mode (GA-290 refuted, see the simulator lane's PLAN_1.3 §26)
+# a detection run maps its own world instead. There was no way to say this: the block below claimed
+# the map whenever one existed, and the only way out was to point RTABMAP_LOCALIZE_DB at a file
+# that had to exist. Poses from a SLAM run are NOT comparable to the published map's frame.
+if [ "${RTABMAP_SLAM:-0}" = "1" ]; then
+  echo "    RTABMAP_SLAM=1 — mapping from scratch; the published map is NOT used."
+fi
+if [ "${MAPPING_ONLY:-0}" != "1" ] && [ "${RTABMAP_SLAM:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   if [ -n "$FEED_SPAWN_FLOOR" ]; then
     _mapdir=$(printf "$FOUND_ROOT/maps/%s/floor_%+.2f" "$SCENE_ARG" "$FEED_SPAWN_FLOOR")
   else
@@ -439,7 +495,7 @@ export PREFLIGHT_EXPECT_POLICY
 echo "    policy: enforce=$FOUND_ENFORCE hold_band=$FOUND_HOLD_BAND \
 min_support=$FOUND_MIN_SUPPORT rooms_enforced=$FOUND_ROOM_ENFORCE \
 aligner=$FOUND_ALIGNER ontology_ext=${FOUND_ONTOLOGY_EXT:-default} \
-corpus_order=${FOUND_CORPUS_ORDER:-abo,metrictree} kg_aliases=${FOUND_KG_ALIASES:-1}"
+corpus_order=${FOUND_CORPUS_ORDER:-<code default>} kg_aliases=${FOUND_KG_ALIASES:-1}"
 
 # ---- provenance ---------------------------------------------------------------------------
 # WHICH CODE produced this bundle. The digests come from preflight_gate.py rather than from a
@@ -460,6 +516,23 @@ read -r FOUND_SHA FOUND_N <<<"$(_tree_sha $FOUND_ROOT/found)"
 KB_SRC=${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}
 read -r KB_SHA KB_N     <<<"$(_tree_sha "$KB_SRC")"
 CFG_SHA=$(sha256sum "$HERE/$CFG_NAME" | cut -c1-16)
+# GA-283. The worst frame age the PREVIOUS RUN REJECTED, read HOST-SIDE: preflight_gate.py
+# runs INSIDE the container, where /ws/output is the current bundle and previous ones are not
+# mounted. Feeds probe a10, which refuses a run whose max_frame_age_s guard sits below an age
+# frames were already seen arriving at -- a deadlock by arithmetic that has killed two runs.
+#
+# NOT the cycle time, which the first version used and which was wrong in principle: total_ms
+# sums async work that never gates the loop. Run 20260903_110622 showed a 17.3 s total_ms
+# beside a 15 s guard and ZERO rejections, which is only possible if they are different
+# quantities. The rejected AGES are what the guard is actually compared against at runtime.
+#
+# Empty when the last run rejected nothing; a10 then passes and records that it asserted
+# nothing.
+PREFLIGHT_EXPECT_CYCLE_S=$(python3 "$HERE/last_frame_age_rejected.py" "$FOUND_RUNS_DIR" 2>/dev/null || echo "")
+export PREFLIGHT_EXPECT_CYCLE_S
+[ -n "$PREFLIGHT_EXPECT_CYCLE_S" ] && \
+  echo "    last run REJECTED a frame at ${PREFLIGHT_EXPECT_CYCLE_S}s (a10 checks max_frame_age_s against it)"
+
 MERGED_SHA=$(GRAPH_API_CONFIG="$HERE/$CFG_NAME" python3 "$HERE/preflight_gate.py" --print-merged-sha)   || { echo "!! cannot compute the merged-config sha — aborting rather than passing an empty expectation"; exit 1; }
 echo "    sources: graph-api $SRC_SHA ($SRC_N)  found $FOUND_SHA ($FOUND_N)  kb $KB_SHA ($KB_N)"
 echo "    config:  file $CFG_SHA  merged $MERGED_SHA"
@@ -557,6 +630,9 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
   "seed": ${FEED_SEED:-7},
   "feed": {
     "walk_frames": $FEED_WALK,
+    "tour_waypoints": ${FEED_TEST_TOUR:-0},
+    "tour_scan_frames": ${FEED_TEST_TOUR_SCAN:-12},
+    "tour_note": "GA-256. 0 means NO TOUR: the agent turns in place (walk radius 0) or wanders a disc around its spawn, and never leaves the room it started in. Run 20260901_174810 recorded total_distance_m 0.0 over 1,566 steps for exactly that reason, which is why coverage, room segmentation and the held-pool resolution rate could not be measured from it. A positive value is the number of farthest-point-sampled waypoints toured on the traversed storey.",
     "dwell_frames": $FEED_DWELL,
     "fps": $FEED_FPS,
     "mapping_seconds": $FEED_MAPPING_SECONDS,
@@ -571,8 +647,10 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
   },
   "policy": {"enforce": $FOUND_ENFORCE, "hold_band": $FOUND_HOLD_BAND,
              "min_support": $FOUND_MIN_SUPPORT, "rooms_enforced": $FOUND_ROOM_ENFORCE,
+    "corpus_order_note": "empty FOUND_CORPUS_ORDER means the code default in found/dims.py, standard,hssd,metrictree,abo,procthor as of GA-266, and the field then says so rather than naming an order. GA-282: this note claimed the hardcoded abo,metrictree fallback was PAST while line 638 still carried it, so every bundle up to and including 20260903_110622 records corpus_order abo,metrictree for a run that used standard(125) hssd(63) metrictree(56) abo(56) by its own decision records. The note outlived the fix it described. Read the corpus cited in each decision's margins, never this field, for any bundle stamped before 2026-09-03.",
+    "merge_min_consecutive": ${MERGE_MIN_CONSECUTIVE:-2},
              "aligner": "$FOUND_ALIGNER", "ontology_ext": "${FOUND_ONTOLOGY_EXT:-default}",
-             "corpus_order": "${FOUND_CORPUS_ORDER:-abo,metrictree}",
+             "corpus_order": "${FOUND_CORPUS_ORDER:-<code default: standard,hssd,metrictree,abo,procthor>}",
              "kg_aliases": ${FOUND_KG_ALIASES:-1},
              "policy_note": "corpus_order and kg_aliases were added 2026-09-01 (owner rulings 13, 15). ABSENT from every earlier bundle, so an older run's corpus order is metrictree,abo and its alias count is 0 -- read, never guessed from the date."},
   "provenance_intent": {
@@ -706,7 +784,8 @@ echo ">>> ROS stack in container (web viewer -> http://localhost:8081)"
 # `\` swallows the continuation, and a backtick-comment terminates an assignment prefix. Both were
 # measured on 2026-08-31; both pass `bash -n`.
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
-  -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL -e MERGE_ENGINE \
+  -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
+  -e MERGE_MIN_CONSECUTIVE \
   -e FOUND_ENFORCE -e FOUND_HOLD_BAND -e FOUND_MIN_SUPPORT -e FOUND_ROOM_ENFORCE \
   -e FOUND_ALIGNER -e FOUND_ONTOLOGY_EXT -e FOUND_STORE_PATH -e FOUND_SCENE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
@@ -720,11 +799,23 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e FEED_HOST -e FEED_PORT -e LOST3DSG_OUTPUT_DIR \
   -e GRAPH_API_AUTOSTART -e GRAPH_API_BASE_URL -e GRAPH_API_TIMEOUT \
   -e ROOM_VLM_MODEL -e OPENROUTER_API_KEY -e REGOLO_API_KEY \
+  -e FOUND_ADJUDICATE -e FOUND_ADJUDICATE_BASE_URL -e FOUND_ADJUDICATE_MODEL \
   -e HABITAT_EXAMPLE_OBJECTS_DIR -e DISPLAY \
   -e PREFLIGHT_EXPECT_CFG_SHA -e PREFLIGHT_EXPECT_MERGED_SHA -e PREFLIGHT_EXPECT_SRC_SHA \
+  -e PREFLIGHT_EXPECT_CYCLE_S \
   -v "$REPO":/graph_api:ro \
   -v graphapi_ws:/ws \
   -v $FOUND_ROOT:/found \
+  `# GA-295. THE MAP LIBRARY IS READ-ONLY, AND UNTIL NOW ONLY THE COMMENT SAID SO.
+   # live_stack_container.sh has claimed since GA-158 that "the map is mounted read-only, not
+   # copied", and printed a warning every run that it was writable. It was: /found carried no :ro,
+   # and in localization mode rtabmap is handed the canonical map AS ITS OWN database_path, so its
+   # close path writes to it. /DATA/FOUND/maps/hm3d_00861/rtabmap.db is 24 MB (5,870 pages) larger
+   # than the 1,197,514,752 its provenance recorded on 31 Aug, and was last modified 2026-09-03
+   # 22:51:58, during a run. Node, Data and integrity still match (1096/1096/ok), so this is not a
+   # claim that the geometry changed -- it is a claim that a published artefact is not immutable.
+   # The deeper mount wins, so runs still read the library and can no longer write it.` \
+  -v "$FOUND_ROOT/maps":/found/maps:ro \
   -v "${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}":/kb:ro \
   -v "$RUN_DIR":/ws/output \
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \

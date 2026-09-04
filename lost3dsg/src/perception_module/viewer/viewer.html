@@ -4,8 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Graph API Telemetry & Perception Dashboard</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.33.1/cytoscape.min.js"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- GA-243. VENDORED, not fetched. Every page in this dashboard documents that it loads no
+       external asset because it has to render on a machine with no route out -- and these two
+       lines made that false for the one page that shows the scene graph. With no network
+       `initCy()` never ran and the page printed "GRAPH OFFLINE (cytoscape CDN unreachable)".
+       `lucide@latest` was worse than merely external: an unpinned dependency that could change
+       under a run whose bundle claims to record its own environment.
+       Served from the StaticFiles mount that graph_api_bridge.py:102 already provides. -->
+  <script src="/viewer/cytoscape.min.js"></script>
+  <script src="/viewer/lucide.min.js"></script>
   <style>
     :root {
       --bg: #090d16;
@@ -83,9 +90,40 @@
 
     /* Standalone Visualization Layers Bar Below Feed */
     .viz-layer-bar-outside {
+      /* GA-268. WRAP, never scroll. The bar gained layer buttons and started overflowing
+         horizontally, which hides controls behind a scroll gesture nobody thinks to make on
+         a toolbar. Wrapping costs a row of height and keeps every control reachable. */
       display: flex; align-items: center; gap: 6px; padding: 5px 8px; margin-top: 4px;
       background: rgba(15, 23, 42, 0.75); border: 1px solid var(--border); border-radius: 6px;
-      flex-shrink: 0;
+      flex-shrink: 0; flex-wrap: wrap; row-gap: 5px; overflow-x: visible;
+    }
+    /* The bar kept moving. GA-268 made it wrap rather than scroll, which is right -- a
+       control hidden behind a scroll gesture on a toolbar is one nobody finds. But the
+       items in it show LIVE TEXT of changing length: the phase badge counts frames down,
+       cycleStamp counts ages up, the latency pills gain and lose digits. Every change
+       re-measured the row, items hopped between wrapped lines, and the whole bar shifted
+       under the cursor.
+
+       So: keep the wrap, stop the WIDTHS changing. Each live field reserves room for its
+       longest realistic value and uses tabular figures, so a digit occupies the same
+       space whatever it is. The bar now reflows only when the window does. */
+    .viz-layer-bar-outside #cycleStamp,
+    .viz-layer-bar-outside #statusLine,
+    .viz-layer-bar-outside .perception-state-badge,
+    .viz-layer-bar-outside .feed-heartbeat-badge {
+      font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+      text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      flex: 0 0 auto;
+    }
+    .viz-layer-bar-outside #cycleStamp { min-width: 44ch; }
+    .viz-layer-bar-outside #statusLine { min-width: 16ch; }
+    .viz-layer-bar-outside .perception-state-badge { min-width: 26ch; justify-content: flex-start; }
+    .viz-layer-bar-outside .feed-heartbeat-badge { min-width: 24ch; }
+    /* The latency pills jitter for the same reason, in their own panel. */
+    #latVlmPill, #latOwlPill, #latSamPill, #latProjPill,
+    #latVlm, #latOwlv2, #latNms, #latSam, #latProj, #latTotal {
+      font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+      display: inline-block; min-width: 9ch; text-align: right;
     }
     .viz-btn {
       padding: 3px 7px; font-size: 0.62rem; font-weight: 700; border-radius: 5px;
@@ -123,10 +161,37 @@
       align-items: center; justify-content: center;
     }
     .minimap-modal-backdrop.active { display: flex; }
+    /* MAXIMIZED means maximized: the modal was a fixed 680px box holding a 430x340
+       canvas on a 2560px screen. It now takes the viewport it was given. */
     .minimap-modal {
-      width: 680px; background: #0f172a; border: 1px solid var(--primary);
+      width: min(1720px, 96vw); height: 94vh; background: #0f172a;
+      border: 1px solid var(--primary);
       border-radius: 12px; padding: 16px; box-shadow: 0 16px 48px rgba(0,0,0,0.9);
       display: flex; flex-direction: column; gap: 12px;
+    }
+    /* Map-style controls: a small +/- cluster pinned in the canvas corner, the way
+       every web map does it, instead of a labelled IN / OUT / RESET button row. */
+    .bev-map-controls {
+      position: absolute; right: 10px; bottom: 10px; display: flex; flex-direction: column;
+      gap: 4px; z-index: 5;
+    }
+    .bev-map-btn {
+      width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+      background: rgba(15, 23, 42, 0.85); color: #e2e8f0; border: 1px solid var(--border);
+      border-radius: 6px; cursor: pointer; font-size: 1rem; line-height: 1;
+      backdrop-filter: blur(4px);
+    }
+    .bev-map-btn:hover { background: rgba(2, 132, 199, 0.55); color: #fff; }
+    .bev-scale-hint {
+      position: absolute; left: 10px; bottom: 10px; z-index: 5; font-size: 0.62rem;
+      font-family: monospace; color: var(--muted); background: rgba(15,23,42,0.75);
+      padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border);
+    }
+    /* Table row the user picked. Survives the 3 s re-render because renderObjectsTable
+       re-applies it from selectedObjectKey. */
+    #tableWrap tr.row-selected {
+      background: rgba(2, 132, 199, 0.35) !important;
+      box-shadow: inset 3px 0 0 #38bdf8;
     }
     .minimap-modal-header {
       display: flex; justify-content: space-between; align-items: center;
@@ -207,9 +272,14 @@
 
     /* Floating Graph Controls Toolbar */
     .graph-toolbar {
+      /* GA-268. Bottom RIGHT. It was pinned bottom-left while the layout menu it now holds
+         opens rightward, so the menu ran off the panel and the toolbar read as missing. */
       position: absolute;
       bottom: 12px;
-      left: 12px;
+      right: 12px;
+      max-width: calc(100% - 24px);
+      flex-wrap: wrap;
+      justify-content: flex-end;
       display: flex;
       gap: 5px;
       background: rgba(11, 19, 41, 0.88);
@@ -221,6 +291,22 @@
       z-index: 20;
       box-shadow: 0 6px 20px rgba(0,0,0,0.6);
     }
+    /* GA-251. The layout menu. */
+    #layoutMenu {
+      position: absolute; bottom: 34px; right: 0; z-index: 70; width: 268px;
+      max-height: 60vh; overflow-y: auto;
+      background: rgba(11,19,41,0.98); border: 1px solid rgba(56,189,248,0.35);
+      border-radius: 7px; padding: 4px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    }
+    #layoutMenu .lm-item {
+      display: block; width: 100%; text-align: left; background: none; border: 0;
+      color: #cbd5e1; padding: 5px 8px; border-radius: 5px; cursor: pointer;
+      font: 11px ui-monospace, monospace;
+    }
+    #layoutMenu .lm-item:hover { background: rgba(56,189,248,0.16); color: #38bdf8; }
+    #layoutMenu .lm-item b { display: block; font-size: 11px; }
+    #layoutMenu .lm-item span { display: block; color: #64748b; font-size: 9.5px; line-height: 1.35; }
+
     .graph-tool-btn {
       width: 28px;
       height: 28px;
@@ -245,6 +331,30 @@
       color: #fff;
       border-color: #38bdf8;
     }
+    /* GA-247. The filter panel. Absolute over the graph, not a sidebar: it is consulted
+       while looking at the graph, and a sidebar would take width the nodes need. */
+    #nodeFilterPanel {
+      position: absolute; top: 42px; right: 10px; z-index: 60; width: 232px;
+      background: rgba(11,19,41,0.97); border: 1px solid rgba(56,189,248,0.35);
+      border-radius: 7px; padding: 9px 11px; box-shadow: 0 8px 26px rgba(0,0,0,0.55);
+      font: 11px ui-monospace, monospace; color: #cbd5e1;
+    }
+    #nodeFilterPanel .nf-head {
+      font-size: 9.5px; letter-spacing: .1em; color: #64748b; font-weight: 700;
+      text-transform: uppercase; margin-bottom: 4px; display: flex; align-items: center; gap: 5px;
+    }
+    #nodeFilterPanel .nf-row {
+      display: flex; align-items: center; gap: 6px; padding: 1.5px 0; cursor: pointer;
+    }
+    #nodeFilterPanel .nf-row:hover { color: #38bdf8; }
+    #nodeFilterPanel .nf-n { margin-left: auto; color: #64748b; font-variant-numeric: tabular-nums; }
+    #nodeFilterPanel .nf-scroll { max-height: 216px; overflow-y: auto; }
+    #nodeFilterPanel .nf-all {
+      background: rgba(30,41,59,.9); color: #94a3b8; border: 1px solid rgba(255,255,255,.14);
+      border-radius: 4px; font: 700 9px ui-monospace,monospace; padding: 1px 6px; cursor: pointer;
+    }
+    #nodeFilterPanel .nf-all:hover { color: #38bdf8; border-color: #38bdf8; }
+
     .graph-layout-pill {
       padding: 3px 8px;
       background: rgba(30, 41, 59, 0.7);
@@ -281,7 +391,13 @@
       border-radius: 10px;
       box-shadow: 0 10px 32px rgba(0,0,0,0.75);
       padding: 10px 12px;
-      width: 250px;
+      width: 292px;
+      /* The card is absolutely positioned inside a panel that is 54% of the column and
+         whose parent clips overflow. At six relation rows it was taller than the panel,
+         so the bottom rows were cut off — the legend looked half empty. Bound it to the
+         panel and let it scroll instead. */
+      max-height: calc(100% - 54px);
+      overflow-y: auto;
       z-index: 25;
       display: none;
     }
@@ -574,7 +690,15 @@
              feed watchdog). With flex-wrap they spilled onto a second line whenever the
              text grew, which grew this strip and SHRANK THE FEED ABOVE IT -- the feed box
              changed height every few seconds. The strip now keeps one line and scrolls. -->
-        <div class="viz-layer-bar-outside" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: nowrap; height: 26px; overflow-x: auto; overflow-y: hidden; white-space: nowrap;">
+        <!-- No inline layout here. It used to carry `flex-wrap: nowrap; height: 26px;
+             overflow-x: auto`, which I added to stop the bar changing height. Inline style
+             beats the stylesheet, so GA-268's `flex-wrap: wrap` never applied: the bar
+             scrolled instead of wrapping, and every control past the right edge -- PCA
+             ROTATION among them -- was simply out of sight behind a scroll gesture nobody
+             makes on a toolbar. The vertical jitter that inline style was fixing is now
+             handled properly, by pinning the WIDTH of the live-text fields in the
+             stylesheet, so the bar can wrap without moving. -->
+        <div class="viz-layer-bar-outside">
           <!-- Left: Feed Watchdog & Perception Status Badges -->
           <div style="display: flex; align-items: center; gap: 6px;">
             <span id="feedStatusBadge" class="feed-heartbeat-badge live"><span class="pulse-dot"></span> <span id="feedStatusText">FEED • STREAMING</span></span>
@@ -606,10 +730,13 @@
             <div class="sidebar-panel-header">
               <span style="display:flex;align-items:center;gap:6px;"><i data-lucide="share-2" style="width:14px;height:14px;"></i> 3D SCENE GRAPH</span>
               <div style="display: flex; align-items: center; gap: 6px;">
-                <button id="btnToggleLegend" class="refresh-icon-btn" onclick="toggleGraphLegend()" title="Toggle Ontological Color Legend"><i data-lucide="palette" style="width:12px;height:12px;"></i> LEGEND</button>
-                <button id="btnToggleContainment" class="refresh-icon-btn" onclick="toggleContainmentEdges()" title="Filter Room Containment Edges to Declutter Graph"><i data-lucide="filter" style="width:12px;height:12px;"></i> <span id="lblContainment">ROOM EDGES: ON</span></button>
+                <!-- Icon-only controls: the words LEGEND / ROOM EDGES: ON / REFRESH ate the
+                     header. State lives in the active styling and the tooltip. -->
+                <button id="btnToggleLegend" class="refresh-icon-btn" onclick="toggleGraphLegend()" title="Ontological legend and edge-type filters" style="padding:4px 6px;"><i data-lucide="palette" style="width:14px;height:14px;"></i></button>
+                <button id="btnNodeFilter" class="refresh-icon-btn" onclick="toggleNodeFilterPanel()" title="Filter what is drawn — node types, classes, crops" style="padding:4px 6px;"><i data-lucide="sliders-horizontal" style="width:14px;height:14px;"></i></button>
+                <div id="nodeFilterPanel" style="display:none"></div>
                 <span id="graphStatus" style="font-size: 0.72rem; color: var(--muted); margin: 0 4px;">LIVE</span>
-                <button id="refreshGraphBtn" class="refresh-icon-btn" title="Refresh Graph"><i data-lucide="refresh-cw" style="width:12px;height:12px;"></i> REFRESH</button>
+                <button id="refreshGraphBtn" class="refresh-icon-btn" title="Refresh graph" style="padding:4px 6px;"><i data-lucide="refresh-cw" style="width:14px;height:14px;"></i></button>
               </div>
             </div>
             <div id="cy"></div>
@@ -628,14 +755,13 @@
                 <div class="legend-item"><span class="legend-node-chip object"></span> <b>Confirmed Object (3D Grounded)</b></div>
                 <div class="legend-item"><span class="legend-node-chip temp"></span> <b>Candidate / Temporary</b></div>
               </div>
-              <div style="font-size:0.62rem; font-weight:700; color:var(--muted); text-transform:uppercase; margin-bottom:4px; border-top:1px solid rgba(51,65,85,0.4); padding-top:4px;">Spatial Relations (Edges)</div>
-              <div style="display:flex; flex-direction:column; gap:3px;">
-                <div class="legend-item"><span class="legend-edge-line" style="background:#38bdf8; border-top:1px dashed #38bdf8;"></span> <b style="color:#38bdf8;">isLocatedIn / isIn</b> (Containment)</div>
-                <div class="legend-item"><span class="legend-edge-line" style="background:#f59e0b;"></span> <b style="color:#f59e0b;">supports / isOn</b> (Resting on)</div>
-                <div class="legend-item"><span class="legend-edge-line" style="background:#10b981;"></span> <b style="color:#10b981;">isNextTo / adjacentTo</b> (Proximity)</div>
-                <div class="legend-item"><span class="legend-edge-line" style="background:#a78bfa;"></span> <b style="color:#a78bfa;">isAbove</b> (Elevation)</div>
-                <div class="legend-item"><span class="legend-edge-line" style="background:#94a3b8;"></span> <b style="color:#94a3b8;">isUnder</b> (Subjacency)</div>
+              <div style="font-size:0.62rem; font-weight:700; color:var(--muted); text-transform:uppercase; margin-bottom:4px; border-top:1px solid rgba(51,65,85,0.4); padding-top:4px; display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
+                <span>Spatial Relations (Edges)</span>
+                <span style="font-weight:600; text-transform:none; letter-spacing:0; font-size:0.56rem;">click a row to show / hide</span>
               </div>
+              <!-- Rows are built by renderEdgeTypeLegend() from EDGE_TYPES so the legend, the
+                   toggles and the live counts cannot drift apart. -->
+              <div id="edgeTypeLegend" style="display:flex; flex-direction:column; gap:3px;"></div>
             </div>
 
             <!-- Floating Graph Navigation & Layout Controls Toolbar -->
@@ -644,12 +770,25 @@
               <button class="graph-tool-btn" onclick="zoomCy(0.8)" title="Zoom Out"><i data-lucide="zoom-out" style="width:14px;height:14px;"></i></button>
               <button class="graph-tool-btn" onclick="fitCy()" title="Fit & Center All Nodes"><i data-lucide="maximize-2" style="width:14px;height:14px;"></i></button>
               <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
-              <button id="btnLayoutCose" class="graph-layout-pill active" onclick="setGraphLayout('cose')" title="Physics / Force Directed Layout">⚡ FORCE</button>
-              <button id="btnLayoutConcentric" class="graph-layout-pill" onclick="setGraphLayout('concentric')" title="Concentric / Hierarchy Layout">◎ ORBIT</button>
-              <button id="btnLayoutBreadthfirst" class="graph-layout-pill" onclick="setGraphLayout('breadthfirst')" title="Tree / Hierarchy Layout">🌲 TREE</button>
-              <button id="btnLayoutCircle" class="graph-layout-pill" onclick="setGraphLayout('circle')" title="Circular Layout">◯ CIRCLE</button>
+              <button id="btnFitGraph" class="graph-layout-pill" onclick="fitCy()" title="Fit the whole graph in the window">⤢ FIT</button>
+              <button id="btnPhysics" class="graph-layout-pill" onclick="toggleGraphPhysics()" title="Force-directed relaxation. Separate from the layout mode: it re-settles whatever mode is selected, and it is expensive above a few hundred nodes.">⚡ PHYSICS: OFF</button>
               <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
-              <button id="btnToggleConcepts" class="graph-layout-pill" onclick="toggleOntologyConcepts()" title="Toggle Abstract Ontological Concept Nodes">🏛 CONCEPTS</button>
+              <!-- GA-251. Six layout pills in a row is most of the toolbar's width, and only
+                   one of them is ever active. Collapsed into a menu that names the current
+                   choice, so the bar stays short and the state is still readable at a glance. -->
+              <div style="position:relative">
+                <button id="btnLayoutMenu" class="graph-layout-pill active" onclick="toggleLayoutMenu()"
+                        title="Layout mode">🗺 MAP ▾</button>
+                <div id="layoutMenu" style="display:none">
+                  <button class="lm-item" onclick="pickLayout('map','🗺 MAP')"><b>🗺 MAP</b><span>the room's floor plan — neighbours on screen are neighbours in the room</span></button>
+                  <button class="lm-item" onclick="pickLayout('float','✳ FLOAT')"><b>✳ FLOAT</b><span>repulsion only, no edge forces — shows the node set</span></button>
+                  <button class="lm-item" onclick="pickLayout('grid','▦ GRID')"><b>▦ GRID</b><span>even rows and columns, sorted by class</span></button>
+                  <button class="lm-item" onclick="pickLayout('concentric','◎ ORBIT')"><b>◎ ORBIT</b><span>rings by status — collapses to one ring in a single room</span></button>
+                  <button class="lm-item" onclick="pickLayout('breadthfirst','🌲 TREE')"><b>🌲 TREE</b><span>hierarchy from the room outward</span></button>
+                  <button class="lm-item" onclick="pickLayout('circle','◯ CIRCLE')"><b>◯ CIRCLE</b><span>one ring, insertion order</span></button>
+                </div>
+              </div>
+              <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
               <button id="btnLockGraph" class="graph-tool-btn" onclick="toggleLockGraph()" title="Lock / Unlock Node Dragging"><i data-lucide="unlock" style="width:14px;height:14px;"></i></button>
             </div>
 
@@ -765,10 +904,11 @@
           <div id="tabContentObjects" class="tab-content active" style="padding: 8px;">
             <!-- Admission Audit Category Pills -->
             <div style="display: flex; gap: 4px; margin-bottom: 6px; flex-wrap: wrap;">
-              <button id="btnAuditAdmitted" class="viz-btn active" onclick="setAuditFilter('admitted')" style="padding: 3px 8px; font-size: 0.65rem; font-weight: bold;">🟢 ADMITTED (<span id="auditCountAdmitted">0</span>)</button>
-              <button id="btnAuditHold" class="viz-btn" onclick="setAuditFilter('on_hold')" style="padding: 3px 8px; font-size: 0.65rem; font-weight: bold; background:#1e293b; color:#f59e0b; border-color:#f59e0b;">🟡 ON HOLD (<span id="auditCountHold">0</span>)</button>
-              <button id="btnAuditRejected" class="viz-btn" onclick="setAuditFilter('rejected')" style="padding: 3px 8px; font-size: 0.65rem; font-weight: bold; background:#1e293b; color:#ef4444; border-color:#ef4444;">🔴 REJECTED (<span id="auditCountRejected">0</span>)</button>
-              <button id="btnAuditAbstained" class="viz-btn" onclick="setAuditFilter('abstained')" style="padding: 3px 8px; font-size: 0.65rem; font-weight: bold; background:#1e293b; color:#94a3b8; border-color:#94a3b8;">⚪ NO-GROUNDS (<span id="auditCountAbstained">0</span>)</button>
+              <button id="btnAuditAll" class="viz-btn active" onclick="setAuditFilter('all')" title="Every object in the graph, plus every proposal the gate stopped before it became one" style="padding: 3px 8px; font-size: 0.65rem; font-weight: bold;">ALL (<span id="auditCountAll">0</span>)</button>
+              <button id="btnAuditAdmitted" class="viz-btn" onclick="setAuditFilter('admit')" title="The gate admitted it on ontological grounds" style="padding: 3px 8px; font-size: 0.65rem; font-weight: bold; background:#1e293b; color:#10b981; border-color:#10b981;">🟢 ADMITTED (<span id="auditCountAdmitted">0</span>)</button>
+              <button id="btnAuditHold" class="viz-btn" onclick="setAuditFilter('hold')" title="The gate refused to decide yet — held, not abstained" style="padding: 3px 8px; font-size: 0.65rem; font-weight: bold; background:#1e293b; color:#f59e0b; border-color:#f59e0b;">🟡 HELD (<span id="auditCountHold">0</span>)</button>
+              <button id="btnAuditRejected" class="viz-btn" onclick="setAuditFilter('decline')" title="The gate declined it against a prior" style="padding: 3px 8px; font-size: 0.65rem; font-weight: bold; background:#1e293b; color:#ef4444; border-color:#ef4444;">🔴 DECLINED (<span id="auditCountRejected">0</span>)</button>
+              <button id="btnAuditAbstained" class="viz-btn" onclick="setAuditFilter('no_grounds')" title="The gate had no grounds to decide on — it abstained" style="padding: 3px 8px; font-size: 0.65rem; font-weight: bold; background:#1e293b; color:#94a3b8; border-color:#94a3b8;">⚪ NO GROUNDS (<span id="auditCountAbstained">0</span>)</button>
             </div>
 
             <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; align-items: center;">
@@ -941,9 +1081,16 @@
         <h3><i data-lucide="compass" style="width:18px;height:18px;"></i> BEV WAYPOINT SELECTOR</h3>
         <button onclick="toggleMinimapModal(false)" style="background: none; border: 0; color: #fff; font-size: 1.1rem; cursor: pointer;"><i data-lucide="x" style="width:18px;height:18px;"></i></button>
       </div>
-      <div style="display: grid; grid-template-columns: 1fr 210px; gap: 14px;">
-        <div style="background: #0b1329; border-radius: 8px; overflow: hidden; display: flex; justify-content: center; align-items: center; border: 1px solid var(--border);">
-          <canvas id="bevCanvasModal" width="430" height="340" style="cursor: crosshair;"></canvas>
+      <div style="display: grid; grid-template-columns: 1fr 230px; gap: 14px; flex: 1; min-height: 0;">
+        <div id="bevModalCanvasWrap" style="position: relative; background: #0b1329; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); min-height: 0;">
+          <!-- Sized to this wrapper by sizeModalBevCanvas() on open and on resize. -->
+          <canvas id="bevCanvasModal" width="430" height="340" style="cursor: grab; display: block;"></canvas>
+          <div class="bev-map-controls">
+            <button class="bev-map-btn" onclick="bevZoomStep(1.4)" title="Zoom in (scroll wheel, or double-click the map)">+</button>
+            <button class="bev-map-btn" onclick="bevZoomStep(1/1.4)" title="Zoom out (scroll wheel)">−</button>
+            <button class="bev-map-btn" onclick="recenterBEV()" title="Recentre on the agent"><i data-lucide="locate-fixed" style="width:15px;height:15px;"></i></button>
+          </div>
+          <div class="bev-scale-hint">scroll to zoom · drag to pan · double-click to zoom in</div>
         </div>
         <div style="display: flex; flex-direction: column; gap: 10px; background: #090d16; padding: 12px; border-radius: 8px; border: 1px solid var(--border);">
           <div>
@@ -959,14 +1106,10 @@
               <option value="auto">Auto Follow Agent</option>
             </select>
           </div>
-          <div>
-            <label style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; letter-spacing: 0.04em; text-transform: uppercase;">Zoom Level:</label>
-            <div style="display: flex; gap: 6px; margin-top: 6px;">
-              <button onclick="bevZoom *= 1.25;" class="refresh-icon-btn" style="flex:1; justify-content:center; padding: 5px;">IN</button>
-              <button onclick="bevZoom *= 0.8;" class="refresh-icon-btn" style="flex:1; justify-content:center; padding: 5px;">OUT</button>
-              <button onclick="bevZoom = 1.0;" class="refresh-icon-btn" style="padding: 5px;">RESET</button>
-            </div>
-          </div>
+          <!-- The IN / OUT / RESET row lived here. Zoom is now on the map itself:
+               wheel about the cursor, drag to pan, double-click to zoom, and a +/-
+               cluster pinned in the canvas corner. Those buttons also never redrew
+               the canvas, so two of the three did nothing until the next poll. -->
           <div id="bevCoords" style="font-size: 0.72rem; font-family: monospace; color: var(--muted); background: #0f172a; padding: 6px; border-radius: 4px; border: 1px solid var(--border);">
             AGENT: (—, —)
           </div>
@@ -1502,19 +1645,45 @@
       URL.revokeObjectURL(url);
     }
 
+    // A canvas draws at its `width`/`height` attributes, not its CSS box, so a bigger
+    // modal alone changes nothing: the canvas has to be resized in pixels. Sized on open
+    // and on window resize while open.
+    function sizeModalBevCanvas() {
+      const wrap = document.getElementById('bevModalCanvasWrap');
+      const canvas = document.getElementById('bevCanvasModal');
+      if (!wrap || !canvas) return;
+      const w = Math.max(320, Math.floor(wrap.clientWidth));
+      const h = Math.max(240, Math.floor(wrap.clientHeight));
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    }
+
     function toggleMinimapModal(show) {
       const backdrop = document.getElementById('minimapModalBackdrop');
       if (backdrop) {
         if (show) backdrop.classList.add('active');
         else backdrop.classList.remove('active');
       }
-      if (show && lastBEVData) {
-        setTimeout(() => renderCanvasBEV('bevCanvasModal', lastBEVData, bevZoom), 50);
+      if (show) {
+        // One frame later: the backdrop must be display:flex before the wrapper has a box.
+        setTimeout(() => {
+          sizeModalBevCanvas();
+          if (lastBEVData) renderCanvasBEV('bevCanvasModal', lastBEVData, bevZoom);
+          if (window.lucide) lucide.createIcons();
+        }, 50);
       }
     }
 
+    window.addEventListener('resize', () => {
+      const backdrop = document.getElementById('minimapModalBackdrop');
+      if (!backdrop || !backdrop.classList.contains('active')) return;
+      sizeModalBevCanvas();
+      if (lastBEVData) renderCanvasBEV('bevCanvasModal', lastBEVData, bevZoom);
+    });
+
     let topdownImgObj = null;
     let bevPanX = 0, bevPanY = 0;
+    // Set by a BEV drag so the click that ends the drag is not read as a waypoint.
+    let bevDragMoved = false;
 
     function drawBEV(data) {
       if (!data) return;
@@ -1532,33 +1701,89 @@
       if (lastBEVData) drawBEV(lastBEVData);
     }
 
+    // Map-style zoom: the point under the cursor stays under the cursor.
+    //
+    // The BEV maps world -> screen as  s = centre + (world - agent) * 25 * zoom, with
+    // centre = (w/2 + pan). Holding the world point under the cursor fixed across a zoom
+    // change of k gives  centre' = m - (m - centre) * k, which is the pan below.
+    // Plain multiplication of bevZoom (what the old IN/OUT buttons did) zooms about the
+    // canvas centre instead, so whatever you were looking at slides away.
+    function bevZoomAt(canvas, mx, my, factor) {
+      const z0 = bevZoom;
+      const z1 = Math.max(0.2, Math.min(5.0, z0 * factor));
+      if (z1 === z0) return;
+      const k = z1 / z0;
+      const cX = canvas.width / 2 + bevPanX;
+      const cY = canvas.height / 2 + bevPanY;
+      bevPanX = (mx - (mx - cX) * k) - canvas.width / 2;
+      bevPanY = (my - (my - cY) * k) - canvas.height / 2;
+      bevZoom = z1;
+      if (lastBEVData) drawBEV(lastBEVData);
+    }
+
+    // Canvas pixel coordinates, not CSS ones: the modal canvas is not 1:1 with its box.
+    function bevCanvasPoint(canvas, e) {
+      const r = canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - r.left) * (canvas.width / (r.width || 1)),
+        y: (e.clientY - r.top) * (canvas.height / (r.height || 1))
+      };
+    }
+
+    // The +/- cluster zooms about the middle of whichever BEV canvas is on screen.
+    function bevZoomStep(factor) {
+      const backdrop = document.getElementById('minimapModalBackdrop');
+      const id = (backdrop && backdrop.classList.contains('active')) ? 'bevCanvasModal' : 'bevCanvasHUD';
+      const canvas = document.getElementById(id);
+      if (!canvas) return;
+      bevZoomAt(canvas, canvas.width / 2, canvas.height / 2, factor);
+    }
+
     function setupBEVInteractions(canvasId) {
       const canvas = document.getElementById(canvasId);
       if (!canvas) return;
       let isDragging = false;
+      let moved = false;
       let startX = 0, startY = 0;
 
       canvas.addEventListener('mousedown', (e) => {
         isDragging = true;
+        moved = false;
+        bevDragMoved = false;
         startX = e.clientX - bevPanX;
         startY = e.clientY - bevPanY;
+        canvas.style.cursor = 'grabbing';
       });
 
       canvas.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
+        moved = true;
+        bevDragMoved = true;
         bevPanX = e.clientX - startX;
         bevPanY = e.clientY - startY;
         if (lastBEVData) drawBEV(lastBEVData);
       });
 
-      window.addEventListener('mouseup', () => { isDragging = false; });
+      window.addEventListener('mouseup', () => {
+        isDragging = false;
+        canvas.style.cursor = 'grab';
+      });
 
       canvas.addEventListener('wheel', (e) => {
         e.preventDefault();
-        if (e.deltaY < 0) bevZoom = Math.min(5.0, bevZoom * 1.1);
-        else bevZoom = Math.max(0.2, bevZoom * 0.9);
-        if (lastBEVData) drawBEV(lastBEVData);
+        const p = bevCanvasPoint(canvas, e);
+        bevZoomAt(canvas, p.x, p.y, e.deltaY < 0 ? 1.12 : 1 / 1.12);
       }, { passive: false });
+
+      canvas.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        const p = bevCanvasPoint(canvas, e);
+        bevZoomAt(canvas, p.x, p.y, 1.6);
+      });
+
+      // `moved` is kept per-canvas for readability; bevDragMoved is what the waypoint
+      // click handler reads, because that handler is registered before this one.
+      void moved;
     }
 
     function renderCanvasBEV(canvasId, data, currentZoom) {
@@ -1819,26 +2044,89 @@
       });
     }
 
+    // Fitting a single node drove the zoom to whatever cytoscape needed to fill the pane
+    // with one 26px circle, which lands the reader inside the tangle with no context.
+    // Frame the node together with the neighbours it is still connected to THROUGH VISIBLE
+    // edges — with isNextTo and isIn hidden that hood is a handful of nodes, not 269 — and
+    // cap the zoom so a two-node hood cannot fill the pane either.
+    const SELECT_MAX_ZOOM = 1.6;
+
     function selectGraphNodeById(nodeId, nameHint) {
       if (!cy) return;
-      const targetNode = cy.$('#' + nodeId);
-      if (targetNode && targetNode.length > 0) {
-        cy.nodes().unselect();
-        targetNode.select();
-        cy.animate({ fit: { eles: targetNode, padding: 80 }, duration: 400 });
-        showNodeDetails(targetNode.data());
+      const targetNode = cy.getElementById(nodeId);
+      if (!targetNode || targetNode.length === 0) return;
 
-        switchTab('objects');
-        const listEl = document.getElementById('objectList');
-        if (listEl) {
-          const matchingItem = Array.from(listEl.children).find(child => child.textContent.includes(nodeId) || (nameHint && child.textContent.includes(nameHint)));
-          if (matchingItem) {
-            matchingItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            matchingItem.style.background = 'rgba(2, 132, 199, 0.35)';
-            setTimeout(() => { matchingItem.style.background = ''; }, 1800);
-          }
-        }
+      cy.nodes().unselect();
+      targetNode.select();
+
+      const visEdges = targetNode.connectedEdges().filter(e => e.style('display') !== 'none');
+      const hood = targetNode.union(visEdges).union(visEdges.connectedNodes());
+      // Same treatment a tap gives: everything outside the hood fades, so the framed
+      // region is readable instead of being one bright node in a grey mess.
+      cy.elements().addClass('faded');
+      hood.removeClass('faded');
+
+      cy.animate(
+        { fit: { eles: hood, padding: 90 }, duration: 400 },
+        { complete: () => {
+            if (cy.zoom() > SELECT_MAX_ZOOM) { cy.zoom(SELECT_MAX_ZOOM); cy.center(targetNode); }
+            applyDensityScale();
+          } }
+      );
+      showNodeDetails(targetNode.data());
+
+      switchTab('objects');
+      // The objects table is the list now; `objectList` no longer existed, which is why
+      // no row ever lit up.
+      highlightObjectRow(nodeId, targetNode.data('label'));
+    }
+
+    // Which row the user picked. The table re-renders every 3 s, so the highlight is
+    // stored and re-applied rather than written once onto a row that is about to be
+    // replaced — that is why the flash never survived.
+    let selectedObjectKey = null;
+
+    function applyRowHighlight() {
+      const wrap = document.getElementById('tableWrap');
+      if (!wrap) return null;
+      wrap.querySelectorAll('tr.row-selected').forEach(r => r.classList.remove('row-selected'));
+      if (!selectedObjectKey) return null;
+      const k = String(selectedObjectKey).replace(/"/g, '\\"');
+      const row = wrap.querySelector('tr[data-node-id="' + k + '"]') ||
+                  wrap.querySelector('tr[data-label="' + k + '"]');
+      if (row) row.classList.add('row-selected');
+      return row;
+    }
+
+    // The cross-panel selection in the injected replay script calls this by label.
+    // Rows carry BOTH keys — data-node-id and data-label — so either resolves without
+    // matching against the text of a cell.
+    function highlightObjectRow(nodeId, label) {
+      selectedObjectKey = nodeId || label || null;
+      let row = applyRowHighlight();
+      if (!row && label) { selectedObjectKey = label; row = applyRowHighlight(); }
+      if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return !!row;
+    }
+
+    // window.selectObject(labelOrId): select an object from anywhere — table row, graph
+    // node, BEV, or the injected replay script. Falls back to a label lookup when the
+    // caller has no node id.
+    //
+    // NB for callers: the replay server injects its own window.selectObject at the end of
+    // the body, which replaces this one. Anything that must reach the objects table should
+    // call window.highlightObjectRow(nodeId, label) — that name is not taken. And prefer a
+    // node id: labels are NOT unique here (269 nodes, 117 distinct labels).
+    function selectObject(key) {
+      if (!key) return false;
+      let node = cy ? cy.getElementById(String(key)) : null;
+      if ((!node || node.length === 0) && cy) {
+        node = cy.nodes().filter(n => n.data('label') === key);
       }
+      if (node && node.length > 0) { selectGraphNodeById(node[0].id()); return true; }
+      // No node: the gate stopped this proposal, so only the table can show it.
+      switchTab('objects');
+      return highlightObjectRow(null, key);
     }
 
     // Modal Navmesh Waypoint Click Handler
@@ -1846,12 +2134,16 @@
     if (modalCanvas) {
       modalCanvas.addEventListener('click', (evt) => {
         if (!lastBEVData || !lastBEVData.agent) return;
-        const rect = modalCanvas.getBoundingClientRect();
-        const clickX = evt.clientX - rect.left;
-        const clickY = evt.clientY - rect.top;
+        // The click that ends a pan is a pan, not a waypoint.
+        if (bevDragMoved) { bevDragMoved = false; return; }
+        const p = bevCanvasPoint(modalCanvas, evt);
+        const clickX = p.x;
+        const clickY = p.y;
 
         const w = modalCanvas.width, h = modalCanvas.height;
-        const cx = w / 2, cy = h / 2;
+        // Pan was ignored here, so after dragging the map every waypoint landed at the
+        // wrong place. Same centre the renderer uses.
+        const cx = w / 2 + bevPanX, cy = h / 2 + bevPanY;
         const scale = 25.0 * bevZoom;
 
         // ROS convention: x/y = ground plane, z = height (floor)
@@ -1976,8 +2268,123 @@
     }
     setInterval(checkFeedHeartbeat, 1000);
 
-    let currentGraphLayout = 'cose';
-    let showContainmentEdges = true;
+    // GA-226. Was 'cose'. Force-directed is O(V^2) per iteration and the graph reaches 270
+    // nodes with 3,231 edges, so it was the most expensive option AND the least readable one
+    // -- a near-complete `isNextTo` subgraph has no force structure to find. ORBIT shows the
+    // room-to-object hierarchy the data actually has. PHYSICS is still one click away.
+    // GA-244. GRID, not concentric. MEASURED on 270 nodes: concentric returns the same ring
+    // key for all 269 objects (every one has status 'permanent'), so it puts them on ONE ring
+    // sized for 269 label boxes -- extent 29,257 units, fit zoom 0.0126, every node drawn at
+    // 0.4 px with 4.3 px between neighbours. That is the "dense disc": edges between points
+    // too small to see. Grid on the same graph: extent 1,215, zoom 0.82, nodes at 20 px,
+    // 37.9 px apart.
+    //
+    // NOTHING IS COLLAPSED. All 270 nodes remain, individually visible and selectable; the
+    // change is where they are put, not how many there are.
+    let currentGraphLayout = 'map';
+    let physicsOn = false;
+
+    function toggleGraphPhysics() {
+      physicsOn = !physicsOn;
+      const b = document.getElementById('btnPhysics');
+      if (b) {
+        b.textContent = '⚡ PHYSICS: ' + (physicsOn ? 'ON' : 'OFF');
+        b.classList.toggle('active', physicsOn);
+      }
+      runSelectedLayout();
+    }
+    // ------------------------------------------------------------------
+    // Edge-type visibility, driven from the ontological legend.
+    //
+    // Measured on bundle 20260901_174810_hm3d_00861: 3,231 edges — isNextTo 1,620,
+    // isIn 774, isLocatedIn 269, isAbove 269, isUnder 269, isOn 30. isNextTo and isIn
+    // are 2,394 of them (74%) and carry no structure a reader can use at this density:
+    // they are what turns the panel into a hairball. Both start OFF; every type is one
+    // click away and the row states what it costs.
+    const EDGE_TYPES = [
+      { rel: 'isLocatedIn', match: ['isLocatedIn'], color: '#38bdf8', dashed: true,
+        name: 'isLocatedIn', note: '(Room containment)', on: true },
+      { rel: 'isIn', match: ['isIn'], color: '#38bdf8', dashed: true,
+        name: 'isIn', note: '(Membership)', on: false },
+      { rel: 'isOn', match: ['isOn', 'supports'], color: '#f59e0b',
+        name: 'supports / isOn', note: '(Resting on)', on: true },
+      { rel: 'isNextTo', match: ['isNextTo', 'adjacentTo'], color: '#10b981',
+        name: 'isNextTo / adjacentTo', note: '(Proximity)', on: false },
+      { rel: 'isAbove', match: ['isAbove'], color: '#a78bfa',
+        name: 'isAbove', note: '(Elevation)', on: true },
+      // OFF by default: isUnder is the exact reverse of isAbove, confirmed by set equality
+      // on this bundle (269 vs 269, every pair mirrored). Drawing both doubles the ink for
+      // zero information. Still toggleable -- the data is there, it is just redundant.
+      { rel: 'isUnder', match: ['isUnder'], color: '#94a3b8',
+        name: 'isUnder', note: '(Subjacency — mirrors isAbove)', on: false }
+    ];
+    const edgeTypeOn = new Map(EDGE_TYPES.map(t => [t.rel, t.on]));
+    const edgeTypeSelector = (t) => t.match.map(m => 'edge[label="' + m + '"]').join(',');
+
+    function renderEdgeTypeLegend() {
+      const host = document.getElementById('edgeTypeLegend');
+      if (!host) return;
+      host.innerHTML = EDGE_TYPES.map(t => `
+        <div class="legend-item" data-rel="${t.rel}" onclick="toggleEdgeType('${t.rel}')"
+             title="Show or hide every ${t.rel} edge"
+             style="cursor:pointer; display:flex; align-items:center; gap:5px; user-select:none;">
+          <span class="legend-edge-line" style="background:${t.color};${t.dashed ? ' border-top:1px dashed ' + t.color + ';' : ''}"></span>
+          <b data-relname="${t.rel}" style="color:${t.color};">${t.name}</b>
+          <span style="color:var(--muted); font-size:0.6rem;">${t.note}</span>
+          <span data-count="${t.rel}" style="margin-left:auto; font-family:monospace; font-size:0.6rem; color:var(--muted);">—</span>
+        </div>`).join('');
+      syncEdgeTypeUi();
+    }
+
+    function syncEdgeTypeUi() {
+      EDGE_TYPES.forEach(t => {
+        const on = edgeTypeOn.get(t.rel);
+        const row = document.querySelector('#edgeTypeLegend [data-rel="' + t.rel + '"]');
+        if (row) row.style.opacity = on ? '1' : '0.4';
+        const nm = document.querySelector('#edgeTypeLegend [data-relname="' + t.rel + '"]');
+        if (nm) nm.style.textDecoration = on ? 'none' : 'line-through';
+        const cnt = document.querySelector('#edgeTypeLegend [data-count="' + t.rel + '"]');
+        if (cnt && cy) {
+          const n = cy.edges(edgeTypeSelector(t)).length;
+          cnt.textContent = (on ? '' : 'hidden ') + n;
+          cnt.style.color = on ? 'var(--muted)' : '#64748b';
+        }
+      });
+      // The room-edges button in the panel header is the same switch as the isLocatedIn
+      // row, so it reads its state rather than keeping its own. Icon-only now, so the
+      // state is in the active styling and the tooltip.
+      const on = edgeTypeOn.get('isLocatedIn');
+      const btn = document.getElementById('btnToggleContainment');
+      if (btn) {
+        btn.classList.toggle('active', !on);
+        btn.title = on ? 'Room containment edges (isLocatedIn): SHOWN — click to hide'
+                       : 'Room containment edges (isLocatedIn): HIDDEN — click to show';
+      }
+    }
+
+    // ponytail: hiding edges does not move nodes, so no re-layout here — the toggle is
+    // instant and the reader keeps their bearings. Re-run FIT if you want it re-framed.
+    function applyEdgeTypeFilters() {
+      if (cy) {
+        cy.batch(() => {
+          EDGE_TYPES.forEach(t => {
+            cy.edges(edgeTypeSelector(t)).style('display', edgeTypeOn.get(t.rel) ? 'element' : 'none');
+          });
+        });
+      }
+      syncEdgeTypeUi();
+    }
+
+    function setEdgeType(rel, on) {
+      if (!edgeTypeOn.has(rel)) return;
+      edgeTypeOn.set(rel, !!on);
+      applyEdgeTypeFilters();
+    }
+
+    function toggleEdgeType(rel) {
+      setEdgeType(rel, !edgeTypeOn.get(rel));
+    }
+
     let isLegendOpen = false;
 
     function toggleGraphLegend(forceState) {
@@ -1989,21 +2396,29 @@
     }
 
     function toggleContainmentEdges() {
-      showContainmentEdges = !showContainmentEdges;
-      const lbl = document.getElementById('lblContainment');
-      const btn = document.getElementById('btnToggleContainment');
-      if (lbl) lbl.textContent = showContainmentEdges ? 'ROOM EDGES: ON' : 'ROOM EDGES: HIDDEN';
-      if (btn) btn.classList.toggle('active', !showContainmentEdges);
-
-      if (cy) {
-        if (showContainmentEdges) {
-          cy.edges('[label="isLocatedIn"]').style('display', 'element');
-        } else {
-          cy.edges('[label="isLocatedIn"]').style('display', 'none');
-        }
-        runSelectedLayout();
-      }
+      toggleEdgeType('isLocatedIn');
     }
+
+    let layoutMenuOpen = false;
+    function toggleLayoutMenu() {
+      layoutMenuOpen = !layoutMenuOpen;
+      const m = document.getElementById('layoutMenu');
+      if (m) m.style.display = layoutMenuOpen ? 'block' : 'none';
+    }
+    function pickLayout(mode, label) {
+      const b = document.getElementById('btnLayoutMenu');
+      if (b) b.textContent = label + ' \u25be';
+      layoutMenuOpen = true; toggleLayoutMenu();      // close it
+      setGraphLayout(mode);
+    }
+    // Close on any click outside, the behaviour every menu has and whose absence is noticed.
+    document.addEventListener('click', ev => {
+      if (!layoutMenuOpen) return;
+      const m = document.getElementById('layoutMenu'), b = document.getElementById('btnLayoutMenu');
+      if (m && !m.contains(ev.target) && b && !b.contains(ev.target)) {
+        layoutMenuOpen = true; toggleLayoutMenu();
+      }
+    }, true);
 
     function setGraphLayout(mode) {
       currentGraphLayout = mode;
@@ -2013,10 +2428,454 @@
       runSelectedLayout();
     }
 
+    // GA-248. MAP: the room's own floor plan, quantised to a grid.
+    //
+    // THE KEY REALISATION, and it took a measurement to see it: every node already carries an
+    // exact 3D position. Every force layout, every stress majorization, every neighbour
+    // embedding exists to RECONSTRUCT a geometry from a graph. We do not have to reconstruct
+    // anything -- we have the geometry, and the graph is a blurred copy of it. Hop distance
+    // on the informative edge set correlates with true 3D distance at only r = 0.60, and on
+    // isNextTo alone at r = 0.228.
+    //
+    // MEASURED against neighbourhood preservation at k=10 (chance = 10/269 = 0.037):
+    //   FLOAT              NP@10 3D 0.041   hop 0.051   <- AT CHANCE. carries no adjacency.
+    //   stress majorization         --      hop 0.277   best stress, still worse than this
+    //   MAP (this)                0.488         0.250   13x chance on geometry
+    //   raw projection            0.840         0.320   the ceiling, but 1,396 overlaps
+    // FLOAT places every relation at the random-pair length: isOn 194 px, isIn 198, isAbove
+    // 197, isNextTo 176, random 182. The edges are decoration. Under MAP the lengths form a
+    // ladder -- containment and support tightest, adjacency next -- for free, from geometry.
+    //
+    // WHY A GRID and not the raw projection: 207 of 270 objects have a same-class neighbour
+    // within 8.6 cm, so the projection piles duplicates on one pixel. Continuous overlap
+    // removal does not converge on that input -- measured, 463 overlapping pairs still left
+    // after 400 passes. Quantising to distinct cells resolves co-located duplicates by
+    // construction, and costs metric exactness we do not need.
+    //
+    // z is dropped because z is the VERTICAL axis here (std 0.48 against 1.16 and 2.70).
+    function runMapLayout() {
+      if (!cy) return;
+      const nodes = cy.nodes(':visible').length ? cy.nodes(':visible') : cy.nodes();
+      const n = nodes.length;
+      if (!n) return;
+      const CELL_W = 104, CELL_H = 36, SLACK = 1.6, ASPECT = Math.max(0.4, cy.width() / cy.height());
+
+      const gx = new Float64Array(n), gy = new Float64Array(n);
+      let cx = 0, cy0 = 0, np = 0;
+      nodes.forEach((el, i) => {
+        const p = el.data('position');
+        if (p && p.length >= 2) { cx += p[1]; cy0 += p[0]; np++; }
+      });
+      cx = np ? cx / np : 0; cy0 = np ? cy0 / np : 0;
+      let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+      nodes.forEach((el, i) => {
+        const p = el.data('position');
+        // The room node has no position of its own; the centroid is the honest placement,
+        // not the origin, which would fling it into a corner of an unrelated coordinate frame.
+        gx[i] = (p && p.length >= 2) ? p[1] : cx;
+        gy[i] = (p && p.length >= 2) ? p[0] : cy0;
+        if (gx[i] < minx) minx = gx[i]; if (gx[i] > maxx) maxx = gx[i];
+        if (gy[i] < miny) miny = gy[i]; if (gy[i] > maxy) maxy = gy[i];
+      });
+
+      const cells = Math.ceil(n * SLACK);
+      const ratio = (ASPECT * CELL_H) / CELL_W;
+      const rows = Math.max(1, Math.round(Math.sqrt(cells / ratio)));
+      const cols = Math.max(1, Math.ceil(cells / rows));
+
+      const ex = Math.max(maxx - minx, 1e-9), ey = Math.max(maxy - miny, 1e-9);
+      const fx = new Float64Array(n), fy = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        fx[i] = (gx[i] - minx) / ex * (cols - 1);
+        fy[i] = (gy[i] - miny) / ey * (rows - 1);
+      }
+
+      // Densest region first, then spiral out to the nearest free cell. Claiming in input
+      // order would let an outlier take a central cell that a crowded cluster needs.
+      let mx = 0, my = 0;
+      for (let i = 0; i < n; i++) { mx += fx[i]; my += fy[i]; }
+      mx /= n; my /= n;
+      const keyd = new Float64Array(n);
+      for (let i = 0; i < n; i++) keyd[i] = (fx[i]-mx)*(fx[i]-mx) + (fy[i]-my)*(fy[i]-my);
+      const ord = Array.from({length: n}, (_, i) => i).sort((a, b) => (keyd[a]-keyd[b]) || (a-b));
+
+      const taken = new Uint8Array(cols * rows);
+      const cellOf = new Int32Array(n);
+      const maxR = Math.max(cols, rows);
+      for (const i of ord) {
+        const bx = Math.round(fx[i]), by = Math.round(fy[i]);
+        let best = -1, bestD = Infinity;
+        for (let r = 0; r < maxR; r++) {
+          for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const x = bx + dx, y = by + dy;
+            if (x < 0 || x >= cols || y < 0 || y >= rows) continue;
+            const c = y * cols + x;
+            if (taken[c]) continue;
+            const d = (x-fx[i])*(x-fx[i]) + (y-fy[i])*(y-fy[i]);
+            if (d < bestD) { bestD = d; best = c; }
+          }
+          if (best >= 0) break;
+        }
+        if (best < 0) best = taken.indexOf(0);
+        taken[best] = 1;
+        cellOf[i] = best;
+      }
+
+      // Greedy alone lands ~2.5x off the optimal assignment. Three swap passes close it to
+      // within a few percent of a Hungarian solve, in milliseconds and in plain JS.
+      const freeCells = [];
+      for (let c = 0; c < cols * rows; c++) if (!taken[c]) freeCells.push(c);
+      const cxOf = c => c % cols, cyOf = c => Math.floor(c / cols);
+      const err = (i, c) => { const dx = cxOf(c)-fx[i], dy = cyOf(c)-fy[i]; return dx*dx + dy*dy; };
+      for (let pass = 0; pass < 3; pass++) {
+        let moves = 0;
+        for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+          const ci = cellOf[i], cj = cellOf[j];
+          if (err(i,cj) + err(j,ci) < err(i,ci) + err(j,cj) - 1e-12) {
+            cellOf[i] = cj; cellOf[j] = ci; moves++;
+          }
+        }
+        for (let i = 0; i < n; i++) {
+          let bk = -1, bd = err(i, cellOf[i]);
+          for (let k = 0; k < freeCells.length; k++) {
+            const d = err(i, freeCells[k]);
+            if (d < bd - 1e-12) { bd = d; bk = k; }
+          }
+          if (bk >= 0) { const old = cellOf[i]; cellOf[i] = freeCells[bk]; freeCells[bk] = old; moves++; }
+        }
+        if (!moves) break;
+      }
+
+      const positions = {};
+      nodes.forEach((el, i) => {
+        positions[el.id()] = { x: cxOf(cellOf[i]) * CELL_W, y: cyOf(cellOf[i]) * CELL_H };
+      });
+      const lay = cy.layout({ name: 'preset', positions: positions, fit: false, animate: false });
+      lay.one('layoutstop', () => {
+        cy.zoom(1); cy.center();
+        cy.scratch('_degRank', null);
+        if (typeof applyDensityScale === 'function') applyDensityScale();
+      });
+      lay.run();
+    }
+
+    // GA-246. FLOAT: a force layout with NO EDGE FORCES AT ALL.
+    //
+    // Every force layout in cytoscape (cose, fcose, cola) models edges as springs, and that
+    // is precisely what ruins this graph: 269 isLocatedIn edges pull every object onto the
+    // single room node, and 1,620 isNextTo edges pull physically-adjacent duplicates into the
+    // same point. The result is a hairball whose density is an artefact of the edge set, not
+    // of the data. Turning the spring constant down does not fix it either -- gravity and the
+    // ideal-edge-length term still act.
+    //
+    // So this simulates repulsion ONLY. Nodes push each other apart until nobody overlaps; a
+    // weak pull toward the centroid keeps the cloud from drifting off-screen forever. Edges
+    // are drawn afterwards and influence nothing. What you see is 270 nodes distributing
+    // themselves in the available space, which is what "show me all of them" actually needs.
+    //
+    // O(n^2) per step. At 270 nodes that is 36,315 pairs; 300 steps is ~11 M distance
+    // computations, tens of milliseconds. A quadtree would be the fix above a few thousand
+    // nodes, and this graph is nowhere near that.
+    function runFloatLayout(steps) {
+      if (!cy) return;
+      const nodes = cy.nodes();
+      const n = nodes.length;
+      if (!n) return;
+      steps = steps || (n > 400 ? 90 : 150);   // sized seed converges in ~150
+
+      // The separation each node wants is its own drawn size, label included -- so a node
+      // with a long label claims the room its label needs and the text stops colliding.
+      const P = new Float64Array(n * 2), R = new Float64Array(n);
+      const RX = new Float64Array(n), RY = new Float64Array(n);
+      nodes.forEach((el, i) => {
+        // GA-250. ANISOTROPIC LABELS, ISOTROPIC CIRCLES -- that was the crowding.
+        // A label box is typically 150x30: five times wider than tall. Taking the diagonal
+        // as a single radius under-reserves the horizontal axis, so neighbours collide
+        // left-to-right while sitting comfortably apart vertically, which is exactly the
+        // owner's screenshot -- labels overwriting each other on a well-spaced field of dots.
+        // Reserve the HALF-WIDTH, the axis that actually runs out.
+        const bb = el.boundingBox({ includeLabels: true });
+        RX[i] = Math.max(24, bb.w / 2);
+        RY[i] = Math.max(14, bb.h / 2);
+        R[i] = Math.max(18, Math.hypot(bb.w, bb.h) / 2);
+      });
+      // A phyllotaxis spiral with spacing c places node i at c*sqrt(i), covering area
+      // pi*c^2*n. Setting that equal to the area the nodes need -- n * (2.5*Rmean)^2 -- gives
+      // the constant below, so the seed is already close to the answer.
+      let rmean = 0;
+      for (let i = 0; i < n; i++) rmean += R[i];
+      rmean /= n;
+      const SEED_R = 2.5 * rmean / Math.sqrt(Math.PI);
+      nodes.forEach((el, i) => {
+        const pos = el.position();
+        // Seed on a phyllotaxis spiral rather than at random: a random seed gives a different
+        // picture every run and makes two screenshots incomparable, which is the same
+        // complaint as a random colour palette.
+        // Seed spacing derived from the node sizes, not a constant. The first version used
+        // r = 14*sqrt(i), which packs 270 nodes of radius ~30 into a disc a quarter of the
+        // area they need -- the simulation then spent its whole cooling budget just pushing
+        // them apart and stopped 157 overlapping pairs short. Seeding at the area the nodes
+        // actually require converges in a fraction of the steps AND finishes the job.
+        const a = i * 2.399963229728653, r = SEED_R * Math.sqrt(i + 1);
+        P[i * 2] = (pos && isFinite(pos.x) ? pos.x * 0.001 : 0) + r * Math.cos(a);
+        P[i * 2 + 1] = (pos && isFinite(pos.y) ? pos.y * 0.001 : 0) + r * Math.sin(a);
+      });
+
+      let temp = 1.0;
+      for (let step = 0; step < steps; step++) {
+        for (let i = 0; i < n; i++) {
+          let fx = 0, fy = 0;
+          const xi = P[i * 2], yi = P[i * 2 + 1];
+          for (let j = 0; j < n; j++) {
+            if (i === j) continue;
+            let dx = xi - P[j * 2], dy = yi - P[j * 2 + 1];
+            let d2 = dx * dx + dy * dy;
+            if (d2 < 1e-6) {           // exactly coincident: nudge deterministically
+              dx = (i - j) * 1e-3; dy = (j - i) * 1e-3; d2 = dx * dx + dy * dy;
+            }
+            const d = Math.sqrt(d2);
+            // Elliptical separation: normalise the offset by the summed half-extents on each
+            // axis, so a pair is "apart" when their LABEL BOXES clear, not when their
+            // circumscribed circles do.
+            const wx = (RX[i] + RX[j]) * 1.06, wy = (RY[i] + RY[j]) * 1.30;
+            const e = Math.hypot(dx / wx, dy / wy);
+            const want = e > 1e-9 ? d / e : (R[i] + R[j]);
+            if (d < want) {
+              // Linear in the overlap, not 1/d^2: an inverse-square kernel explodes for the
+              // coincident duplicates this map is full of (same-class entries sit 2 cm apart)
+              // and throws them to the far side of the canvas.
+              const push = (want - d) / d;
+              fx += dx * push; fy += dy * push;
+            }
+          }
+          // Weak centring, the ONLY non-repulsive term. Without it the cloud expands without
+          // bound, because pure repulsion has no equilibrium.
+          // 0.0015, chosen by measurement. The centring term is the only thing opposing
+          // repulsion, so it sets the equilibrium density. Swept at 150 steps on 270 nodes
+          // of radius 30 (overlap = closer than 60 units):
+          //   0.012  -> 132 overlaps, closest 48.8   the cloud is compressed
+          //   0.006  ->  10 overlaps, closest 56.4
+          //   0.003  ->   1 overlap,  closest 60.0
+          //   0.0015 ->   0 overlaps, closest 67.8   <- this
+          // Weaker still would keep drifting outward for no gain in readability.
+          fx -= xi * 0.0015; fy -= yi * 0.0015;
+          const mag = Math.hypot(fx, fy), cap = 40 * temp;
+          if (mag > cap) { fx = fx / mag * cap; fy = fy / mag * cap; }
+          P[i * 2] = xi + fx * 0.5; P[i * 2 + 1] = yi + fy * 0.5;
+        }
+        temp *= 0.994;                 // cool, so it settles instead of jittering
+      }
+
+      // RESCALE TO THE PANE so `fit` lands near zoom 1. Without this the simulation's own
+      // units decide the zoom, and because the radii include LABEL boxes the extent comes out
+      // several times the pane -- measured live at zoom 0.19, nodes 4.1 px, which is the same
+      // complaint as concentric even though the spacing itself was correct. Normalising the
+      // extent to the container makes the layout's spacing survive the fit.
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (let i = 0; i < n; i++) {
+        if (P[i * 2] < minX) minX = P[i * 2];
+        if (P[i * 2] > maxX) maxX = P[i * 2];
+        if (P[i * 2 + 1] < minY) minY = P[i * 2 + 1];
+        if (P[i * 2 + 1] > maxY) maxY = P[i * 2 + 1];
+      }
+      const ext = cy.extent ? null : null;
+      const cw = Math.max(320, cy.width() - 90), ch = Math.max(240, cy.height() - 90);
+      const sx = (maxX - minX) > 1 ? cw / (maxX - minX) : 1;
+      const sy = (maxY - minY) > 1 ? ch / (maxY - minY) : 1;
+      // One isotropic factor, not sx and sy separately: anisotropic scaling would squash the
+      // circles the repulsion just spaced evenly and reintroduce overlap along one axis.
+      //
+      // AND NEVER COMPRESS. `Math.min(sx, sy)` alone squeezes the layout into the pane, and
+      // squeezing is exactly what reintroduces the overlap the simulation just removed:
+      // measured at k = fit, 541 pairs overlapped with the closest 15.9 px against a 17.25 px
+      // radius. The arithmetic is unavoidable -- 270 nodes at 34.5 px need ~252,000 px of
+      // node area, and labels more, in a 533,872 px pane.
+      //
+      // So the layout keeps its own spacing and is allowed to be LARGER than the pane. All
+      // 270 nodes exist, none overlaps, none is collapsed, and the pane shows part of it --
+      // pan, or press FIT for the whole thing smaller. That is a choice the viewer can make
+      // per moment; a squashed layout is a choice made for them, permanently, and wrongly.
+      const k = Math.min(1, Math.min(sx, sy) * 2.2);
+      const cxm = (minX + maxX) / 2, cym = (minY + maxY) / 2;
+
+      const positions = {};
+      nodes.forEach((el, i) => {
+        positions[el.id()] = { x: (P[i * 2] - cxm) * k, y: (P[i * 2 + 1] - cym) * k };
+      });
+      // Centre at natural scale rather than fitting: `fit` would undo the point of the line
+      // above by zooming out until everything is in view, which is the same compression by
+      // another route. FIT is one click away when the overview is what is wanted.
+      const lay = cy.layout({ name: 'preset', positions: positions, fit: false,
+                             animate: false });
+      lay.one('layoutstop', () => {
+        cy.zoom(1); cy.center();
+        cy.scratch('_degRank', null);
+        if (typeof applyDensityScale === 'function') applyDensityScale();
+      });
+      lay.run();
+    }
+
+    // GA-247. ONE PLACE THAT SAYS WHAT IS DRAWN.
+    //
+    // The room-edges button toggled exactly one edge relation and duplicated the isLocatedIn
+    // legend row, and CONCEPTS sat among the LAYOUT pills although it changes the node set,
+    // not the arrangement. Two controls, in two places, neither of which said what it was a
+    // member of. This is the membership: node types, then classes, checkable individually.
+    //
+    // Classes are listed because that is the axis with the information on a single-room
+    // scene: 24 of them over 269 objects, "dining chair" alone 112. Showing one class is how
+    // you look at the duplication without deleting anything.
+    // Crops are OFF by default. applyCropBackgrounds issues one image request per object
+    // and one un-batched style write each -- 269 of both on a sync, which is the largest
+    // avoidable cost on this page. Off by default makes that cost opt-in rather than the
+    // price of opening the tab.
+    // Crops ON by default. GA-247 gated crop loading behind this flag to stop 269 image
+    // requests on every sync -- correct -- but the flag defaults OFF and its only control
+    // is a checkbox inside a filter panel that is closed on load. So the thumbnails could
+    // not appear at all, and did not, and it read as "crops are not being collected"
+    // while 133 of them sat in the bundle. The cost GA-247 was avoiding is now handled
+    // properly by the cache plus the retry timer, not by leaving the feature off.
+    let cropsShown = true;
+    let nodeFilterOpen = false;
+    const nodeTypeShown = { room: true, object: true, concept: true };
+    const classShown = {};                 // class -> bool; absent means shown
+
+    function toggleNodeFilterPanel() {
+      nodeFilterOpen = !nodeFilterOpen;
+      const el = document.getElementById('nodeFilterPanel');
+      if (!el) return;
+      el.style.display = nodeFilterOpen ? 'block' : 'none';
+      if (nodeFilterOpen) renderNodeFilter();
+    }
+
+    function baseClassOf(n) {
+      return String(n.data('label') || '').replace(/#\d+$/, '').trim() || '(unlabelled)';
+    }
+
+    function renderNodeFilter() {
+      const el = document.getElementById('nodeFilterPanel');
+      if (!el || !cy) return;
+      const counts = {};
+      cy.nodes().forEach(n => {
+        if ((n.data('type') || 'object') !== 'object') return;
+        const c = baseClassOf(n);
+        counts[c] = (counts[c] || 0) + 1;
+      });
+      const types = ['room', 'object', 'concept'].map(t => {
+        const n = cy.nodes('[type="' + t + '"]').length;
+        return '<label class="nf-row"><input type="checkbox" data-nf-type="' + t + '"' +
+               (nodeTypeShown[t] ? ' checked' : '') + (n ? '' : ' disabled') + '> ' +
+               t + ' <span class="nf-n">' + n + '</span></label>';
+      }).join('');
+      const classes = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([c, n]) =>
+        '<label class="nf-row"><input type="checkbox" data-nf-class="' +
+        c.replace(/"/g, '&quot;') + '"' + (classShown[c] === false ? '' : ' checked') + '> ' +
+        c + ' <span class="nf-n">' + n + '</span></label>').join('');
+      el.innerHTML =
+        '<div class="nf-head">SHOW</div>' +
+        '<label class="nf-row"><input type="checkbox" id="nfCrops"' +
+        (cropsShown ? ' checked' : '') + '> image crops</label>' +
+        '<div class="nf-head" style="margin-top:8px">NODE TYPES</div>' + types +
+        '<div class="nf-head" style="margin-top:8px">CLASSES <button class="nf-all" ' +
+        'onclick="setAllClasses(true)">all</button>' +
+        '<button class="nf-all" onclick="setAllClasses(false)">none</button></div>' +
+        '<div class="nf-scroll">' + classes + '</div>';
+      const cb = el.querySelector('#nfCrops');
+      if (cb) cb.onchange = () => { cropsShown = cb.checked; applyCropVisibility(); };
+      el.querySelectorAll('input[data-nf-type]').forEach(i => {
+        i.onchange = () => { nodeTypeShown[i.dataset.nfType] = i.checked; applyNodeFilter(); };
+      });
+      el.querySelectorAll('input[data-nf-class]').forEach(i => {
+        i.onchange = () => { classShown[i.dataset.nfClass] = i.checked; applyNodeFilter(); };
+      });
+    }
+
+    function setAllClasses(on) {
+      if (!cy) return;
+      cy.nodes().forEach(n => {
+        if ((n.data('type') || 'object') === 'object') classShown[baseClassOf(n)] = on;
+      });
+      renderNodeFilter();
+      applyNodeFilter();
+    }
+
+    function applyCropVisibility() {
+      if (!cy) return;
+      if (cropsShown) {
+        if (typeof applyCropBackgrounds === 'function') applyCropBackgrounds();
+        return;
+      }
+      cy.batch(() => {
+        cy.nodes('[type="object"]').forEach(n => n.style({
+          'background-image': 'none', 'background-fit': 'none',
+        }));
+      });
+    }
+
+    function applyNodeFilter() {
+      if (!cy) return;
+      cy.batch(() => {
+        cy.nodes().forEach(n => {
+          const t = n.data('type') || 'object';
+          const cls = t === 'object' ? baseClassOf(n) : null;
+          // `display: none` and not `visibility`, so a hidden node stops taking part in the
+          // layout too -- otherwise FLOAT would keep reserving space for things nobody asked
+          // to see, and hiding a class would not open the view up at all.
+          const show = nodeTypeShown[t] !== false && (cls === null || classShown[cls] !== false);
+          n.style('display', show ? 'element' : 'none');
+        });
+      });
+      // The concept nodes are a node TYPE now, so the old dedicated toggle is redundant; keep
+      // its loader working if concepts have not been fetched yet.
+      if (nodeTypeShown.concept && typeof ensureConceptNodes === 'function') ensureConceptNodes();
+    }
+
     function runSelectedLayout() {
       if (!cy) return;
       let layoutOpts = null;
-      if (currentGraphLayout === 'concentric') {
+      // PHYSICS is a separate axis from LAYOUT MODE: it relaxes whatever mode is selected.
+      // It is also the expensive one, so it only runs when explicitly asked for.
+      if (physicsOn) {
+        const n = cy.nodes().length;
+        const phys = cy.layout({
+          name: 'cose', animate: false, numIter: n > 150 ? 120 : 600, randomize: false,
+          nodeDimensionsIncludeLabels: true, fit: true, padding: 60,
+          nodeRepulsion: 350000, idealEdgeLength: 220, edgeElasticity: 20,
+          gravity: 0.005, nestingFactor: 0.02, nodeOverlap: 40, componentSpacing: 120
+        });
+        // PHYSICS used to return without ever calling applyDensityScale, so the one mode
+        // the owner runs in was the one mode with no density scaling at all.
+        phys.one('layoutstop', () => { cy.scratch('_degRank', null); applyDensityScale(); });
+        phys.run();
+        return;
+      }
+      if (currentGraphLayout === 'map') {
+        runMapLayout();
+        return;
+      }
+      if (currentGraphLayout === 'float') {
+        runFloatLayout();
+        return;
+      }
+      if (currentGraphLayout === 'grid') {
+        // `avoidOverlap` plus label-aware sizing is what turns 0.4 px nodes into 20 px ones;
+        // `condense: false` keeps the cells from collapsing back onto each other.
+        layoutOpts = {
+          name: 'grid', animate: false, fit: true, padding: 40,
+          avoidOverlap: true, condense: false, nodeDimensionsIncludeLabels: true,
+          spacingFactor: 1.05,
+          // Rooms first, then objects grouped by class, so neighbours in the grid are
+          // neighbours in meaning rather than in insertion order.
+          sort: (a, b) => {
+            const ta = a.data('type') === 'room' ? 0 : 1, tb = b.data('type') === 'room' ? 0 : 1;
+            if (ta !== tb) return ta - tb;
+            const la = String(a.data('label') || '').replace(/#\d+$/, '');
+            const lb = String(b.data('label') || '').replace(/#\d+$/, '');
+            return la === lb ? 0 : (la < lb ? -1 : 1);
+          },
+        };
+      } else if (currentGraphLayout === 'concentric') {
         layoutOpts = {
           name: 'concentric',
           animate: cy.nodes().length <= 60,
@@ -2056,6 +2915,29 @@
         // that animation, plus the O(n^2) overlap pass on layoutstop, made the whole
         // page crawl. Above a threshold: settle it silently and bound the iterations.
         const big = cy.nodes().length > 60;
+        // HUGE: physics is the wrong tool entirely. cose is O(V^2) per iteration and this
+        // graph reaches 270 nodes with 3,231 edges, so 250 bounded iterations still cost
+        // ~19 M force computations before a single frame is drawn -- and the result is a
+        // hairball, because a near-complete `isNextTo` subgraph has no force-directed
+        // structure to find. Fall back to concentric, which is O(V log V), deterministic,
+        // and actually shows the room-to-object hierarchy the data has.
+        // The FORCE pill still works; this only changes what you get without asking.
+        if (cy.nodes().length > 150 || cy.edges().length > 800) {
+          const layout = cy.layout({
+            name: 'concentric', animate: false, fit: true, padding: 60,
+            nodeDimensionsIncludeLabels: true,
+            concentric: n => n.data('type') === 'room' ? 10
+                             : (n.data('status') === 'permanent' ? 5 : 2),
+            levelWidth: () => 2, spacingFactor: 2.0
+          });
+          // One overlap pass, not two: at 270 nodes each O(n^2) pass is ~73 k comparisons.
+          layout.one('layoutstop', () => {
+            resolveNodeOverlaps(12, 1); cy.fit(undefined, 60);
+            cy.scratch('_degRank', null); applyDensityScale();
+          });
+          layout.run();
+          return;
+        }
         layoutOpts = {
           name: 'cose',
           animate: !big,
@@ -2078,7 +2960,10 @@
       // resolveNodeOverlaps is O(n^2) per pass. Its own note says "quadtree if
       // hundreds"; until then, spend fewer passes on a big graph rather than freezing.
       const passes = cy.nodes().length > 60 ? 2 : 8;
-      layout.one('layoutstop', () => { resolveNodeOverlaps(12, passes); cy.fit(undefined, 60); });
+      layout.one('layoutstop', () => {
+        resolveNodeOverlaps(12, passes); cy.fit(undefined, 60);
+        cy.scratch('_degRank', null); applyDensityScale();
+      });
       layout.run();
     }
 
@@ -2133,18 +3018,107 @@
     }
 
     // Screen-constant-ish labels: base px at zoom>=1, up to 2.2x when zoomed out.
-    function applyZoomLabelScale() {
+    // GA-235. Node size and label visibility follow BOTH zoom and local density. At 270
+    // nodes a fixed 26px node with an always-on label means the labels cover the graph and
+    // the structure disappears behind its own annotation -- the same failure as the BEV.
+    //
+    // Zoomed OUT: nodes shrink, labels appear only on the well-connected ones, because at
+    // that scale you are reading shape, not names. Zoomed IN: everything grows back.
+    function applyDensityScale() {
       if (!cy) return;
-      const z = cy.zoom();
-      const k = z < 1 ? Math.min(2.2, 1 / Math.sqrt(z)) : 1;
-      cy.batch(() => {
-        cy.nodes().forEach(n => {
-          const base = n.data('type') === 'room' ? 12 : 10;
-          n.style('font-size', (base * k) + 'px');
+      // Runnable check: `window.__densityRuns` in the console must be > 0 after a layout
+      // and must climb on every zoom. It was silently never called under PHYSICS.
+      window.__densityRuns = (window.__densityRuns || 0) + 1;
+
+      // GA-254. CLASS TOGGLE, NOT PER-NODE STYLE WRITES.
+      //
+      // MEASURED, 6 s continuous wheel gesture at 270 nodes / 3,231 edges:
+      //   as shipped                   12.8 fps   main thread blocked 5,407 of 6,000 ms
+      //   this version                 47.7 fps   blocked 752 ms
+      //   both passes removed entirely 57.8 fps   <- cytoscape's own ceiling
+      // Cytoscape renders this graph at 58 fps. Our style passes took it to 13.
+      //
+      // WHY THE OLD FORM WAS SLOW. `nd.style({...})` calls applyBypass per element, which
+      // invalidates that element's style cache and every edge attached to it. 270 of those
+      // cost 89 ms; the same work as a class toggle costs 4.3 ms -- twenty times cheaper,
+      // because a class flips a bit and lets the stylesheet resolve the value once.
+      //
+      // Throttling was the wrong lever and I reached for it twice. The passes were already
+      // gated to 3 calls per gesture and it was still 13 fps, because each CALL cost 114 ms.
+      // The fix is to make the call cheap, not rarer.
+      const z = cy.zoom(), n = cy.nodes().length;
+      if (!cy.scratch('_degRank')) {
+        const degs = cy.nodes().map(x => x.degree());
+        const sorted = [...degs].sort((a, b) => b - a);
+        cy.scratch('_degRank', sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.15))] || 0);
+      }
+      const hubDeg = cy.scratch('_degRank');
+      const cut = (n > 150 ? 0.85 : 0.55) / Math.max(0.15, z);
+
+      // Node SIZE is quantised into buckets so it changes a handful of times over a whole
+      // gesture instead of every frame; between buckets nothing is written at all.
+      const bucket = Math.round(Math.log(Math.max(z, 0.02)) * 3);
+      if (cy.scratch('_sizeBucket') !== bucket) {
+        cy.scratch('_sizeBucket', bucket);
+        const size = Math.max(14, Math.min(34, 26 * Math.pow(z, 0.35)));
+
+        // LABELS NEED A FLOOR TOO, for the opposite reason to node size.
+        //
+        // Node width/height already scale sub-linearly with a floor of 14, so nodes stay
+        // visible zoomed out. Font size had no such treatment: it is a fixed model value,
+        // so RENDERED size is model * zoom -- purely linear. 10 px at zoom 1, 4 px at zoom
+        // 0.4, then culled outright by min-zoomed-font-size. Zooming out to see the whole
+        // graph is exactly when the labels are most needed, and exactly when they vanished.
+        //
+        // Rendered = model * z, so holding rendered at MIN_LABEL_PX means model = MIN / z.
+        // Take the larger of that and the base, capped so a far zoom-out does not produce
+        // giant text. Zooming IN still scales naturally, because there the base wins.
+        //
+        // Written on the same bucket change as the size above, through the same two
+        // collection-level calls -- no extra per-node work, so GA-254's 58 fps stands.
+        // The cap is in MODEL units while the thing being protected is the RENDERED size,
+        // so a low cap defeats the floor exactly where it is needed: at zoom 0.25 the model
+        // hit 38 and rendered fell to 9.5 px, at 0.12 to 4.6 px -- measured. Rendered size
+        // is already bounded above by MIN_LABEL_PX itself (model = MIN/z gives rendered =
+        // MIN), so the cap only needs to stop pathological values at a near-zero zoom.
+        const MIN_LABEL_PX = 11, LABEL_CAP = 200;
+        const fontFor = base => Math.min(LABEL_CAP, Math.max(base, MIN_LABEL_PX / Math.max(z, 0.02)));
+
+        cy.batch(() => {
+          cy.nodes('[type="room"]').style({ width: size * 1.5, height: size * 1.5,
+                                            'font-size': fontFor(12) });
+          cy.nodes('[type!="room"]').style({ width: size, height: size,
+                                             'font-size': fontFor(10) });
         });
-        cy.edges().style('font-size', (8 * Math.min(k, 1.8)) + 'px');
+      }
+
+      // The hub flag never changes during a gesture, so it is computed once per node and
+      // cached. Recomputing degree() per node per call was 43 ms of the old 114.
+      cy.batch(() => {
+        cy.nodes().forEach(nd => {
+          let hub = nd.scratch('_hub');
+          if (hub === undefined) {
+            hub = (nd.degree() >= hubDeg) || nd.data('type') === 'room';
+            nd.scratch('_hub', hub);
+          }
+          const keep = z > cut || hub || nd.selected();
+          if (keep === nd.hasClass('nolabel')) nd.toggleClass('nolabel', !keep);
+        });
       });
     }
+
+    // GA-254. applyZoomLabelScale WAS DELETED. It cost 496 ms per call and did nothing
+    // that survived:
+    //   - its node loop wrote `font-size`, and every call site runs applyDensityScale
+    //     immediately afterwards, which overwrote it. 55 ms of pure dead work per call.
+    //   - its remaining line, `cy.edges().style('font-size', ...)` across 3,231 edges,
+    //     measured 442.8 ms -- on its own the single most expensive operation on the page.
+    // Edge label scaling is now the renderer's job through `min-zoomed-font-size` in the
+    // stylesheet, which culls per frame in native code for nothing.
+    //
+    // Kept as a no-op rather than removed, because call sites exist in several places and a
+    // stale reference would throw where a slow function merely dragged.
+    function applyZoomLabelScale() { /* GA-254: superseded by min-zoomed-font-size */ }
 
     // Room membership as a border colour.
     //
@@ -2172,10 +3146,71 @@
       return roomColourIndex.get(roomId) || null;
     }
 
+    // Room ids are internal ("room_0"); the graph node carries the room VLM's semantic
+    // label ("dining_and_wine_area"). The objects table printed the raw id, so one room
+    // wore two different names on one screen. One index, and every surface reads it.
+    let roomLabelIndex = new Map();
+
+    function indexRoomLabels(nodes) {
+      roomLabelIndex = new Map();
+      (nodes || []).forEach(n => {
+        if (!n || n.type !== 'room') return;
+        const key = n.room || String(n.id || '').replace(/^n_/, '');
+        const lbl = n.semantic_label || (n.detected ? n.label : null);
+        if (key && lbl && lbl !== key) roomLabelIndex.set(key, lbl);
+      });
+    }
+
+    function roomLabelFor(roomId) {
+      return roomId ? (roomLabelIndex.get(roomId) || null) : null;
+    }
+
+    // A room with no semantic label keeps its raw id — inventing a name would be worse —
+    // but renders monospace and italic so it never reads as one.
+    function roomCellHtml(roomId) {
+      if (!roomId) return '<span style="color:var(--muted);">—</span>';
+      const lbl = roomLabelFor(roomId);
+      if (lbl) return `<span title="room id: ${roomId}">${lbl}</span>`;
+      return `<span title="no semantic label recorded for this room — showing the raw id"
+                    style="font-family:monospace; font-size:0.68rem; color:var(--muted); font-style:italic;">${roomId}</span>`;
+    }
+
+    // GA-245. COLOUR BY CLASS when the room cannot differentiate anything.
+    //
+    // applyRoomColours below returns early on a single-room scene, which is correct for what
+    // it does -- but it left all 269 object nodes the SAME #0284c7. Nothing on the page
+    // distinguished a chair from a doorway, so 270 identical dots is what the eye got.
+    // This run has 1 room and 24 base classes; the class is the only axis with any
+    // information in it, so that is what gets the hue.
+    //
+    // Deterministic hue from the class name, so the same class is the same colour across
+    // runs and across the feed overlay, which hashes its label the same way. A random palette
+    // would make two screenshots of one object incomparable.
+    function classHue(label) {
+      const base = String(label || '').replace(/#\d+$/, '');
+      let h = 0;
+      for (let i = 0; i < base.length; i++) h = (h * 31 + base.charCodeAt(i)) % 360;
+      return h;
+    }
+
+    function applyClassColours() {
+      if (!cy) return;
+      const objs = cy.nodes('[type="object"]');
+      if (!objs.length) return;
+      cy.batch(() => {
+        objs.forEach(n => {
+          const h = classHue(n.data('label'));
+          n.style({ 'background-color': 'hsl(' + h + ',62%,52%)' });
+        });
+      });
+    }
+
     function applyRoomColours() {
       if (!cy) return;
       const ids = cy.nodes('[type="room"]').map(n => n.data('room') || n.id());
-      if (ids.length < 2) return;          // one room: leave the page exactly as it was
+      // One room cannot colour anything, so colour by CLASS instead of leaving 269 nodes
+      // identical. The early return was right about rooms and wrong about the outcome.
+      if (ids.length < 2) { applyClassColours(); return; }
       assignRoomColours(ids);
       cy.batch(() => {
         cy.nodes('[type="room"]').forEach(n => {
@@ -2192,6 +3227,24 @@
     // Crop thumbnails as object-node backgrounds. Preload via Image() so a
     // missing crop never hits cytoscape; 404s retried at most every 30s.
     const cropBgCache = new Map(); // node id -> {ok: bool, t: ms}
+    // Retry crops on their own clock, not the graph's.
+    //
+    // applyCropBackgrounds is called only from inside the graph-sync block, which runs
+    // when the graph VERSION changes. In a replay the version never changes, so it ran
+    // exactly once -- and the cache records each failure with a 30 s retry that nothing
+    // ever came back to collect. Any crop that failed on first load therefore stayed
+    // missing for the life of the page. That is exactly what happened while /crop was
+    // bound to the wrong handler: the route got fixed, the page still showed no
+    // thumbnails, because nothing asked a second time.
+    //
+    // Cheap to repeat: the cache short-circuits every crop that already loaded, so the
+    // steady state is one Map lookup per object.
+    setInterval(() => {
+      if (typeof cy === 'undefined' || !cy) return;
+      if (typeof cropsShown !== 'undefined' && !cropsShown) return;
+      applyCropBackgrounds();
+    }, 10000);
+
     function applyCropBackgrounds() {
       if (!cy) return;
       const now = Date.now();
@@ -2346,6 +3399,12 @@
           { selector: 'edge[label="isNextTo"]', style: { 'line-color': '#10b981', 'target-arrow-color': '#10b981', 'color': '#10b981' } },
           { selector: 'edge[label="isAbove"]', style: { 'line-color': '#a78bfa', 'target-arrow-color': '#a78bfa', 'color': '#a78bfa' } },
           { selector: 'edge[label="isUnder"]', style: { 'line-color': '#94a3b8', 'target-arrow-color': '#94a3b8', 'color': '#94a3b8' } },
+          // GA-254. The label cull is a CLASS now, resolved once by the stylesheet, instead
+          // of a per-node `text-opacity` bypass written 270 times per pass.
+          { selector: 'node.nolabel', style: { 'text-opacity': 0 } },
+          // And the renderer's own per-frame cull, which costs nothing because it happens in
+          // native code during the draw rather than in a JS pass before it.
+          { selector: 'node', style: { 'min-zoomed-font-size': 7 } },
           {
             selector: '.faded',
             style: {
@@ -2364,15 +3423,65 @@
             }
           }
         ],
-        elements: []
+        elements: [],
+
+        // RENDERER PERFORMANCE. There were no perf options here at all, and this graph is
+        // not small: the archived run draws 270 nodes and 3,231 edges, of which 1,620 are
+        // `isNextTo` -- a near-complete subgraph. Every pan and zoom redrew every edge, its
+        // arrowhead and its label, which is what made the panel crawl.
+        //
+        // `hideEdgesOnViewport` is the one that matters here, because edges outnumber nodes
+        // 12:1; `textureOnViewport` repaints a bitmap instead of the scene while the user is
+        // dragging. Both restore the real rendering the moment the gesture ends, so nothing
+        // is permanently hidden -- this trades fidelity DURING a gesture, not after it.
+        hideEdgesOnViewport: true,
+        textureOnViewport: true,
+        motionBlur: false,
+        pixelRatio: 1
       });
 
       // Zoom-compensated labels: grow font when zoomed out so labels stay readable
       let zoomRafPending = false;
+    let lastScaleZoom = 0, zoomSettleTimer = null;
       cy.on('zoom', () => {
         if (zoomRafPending) return;
         zoomRafPending = true;
-        requestAnimationFrame(() => { zoomRafPending = false; applyZoomLabelScale(); });
+        requestAnimationFrame(() => {
+          zoomRafPending = false;
+          // GA-249. THE ZOOM STALL WAS OURS, not the renderer's.
+          //
+          // Both of these walk all 270 nodes and write a style per node. Bound to the zoom
+          // event through rAF, they ran on EVERY frame of a wheel gesture -- 540 style writes
+          // per frame, each invalidating cytoscape's style cache. A continuous wheel emits
+          // dozens of events a second.
+          //
+          // Nothing they compute changes meaningfully over a small zoom delta: the size term
+          // is 26*z^0.35 and the label cut is a threshold. So they run only when the zoom has
+          // actually moved enough to change the answer -- a 12% ratio -- and once more when
+          // the gesture stops.
+          const z = cy.zoom();
+          if (!lastScaleZoom || z / lastScaleZoom > 1.12 || lastScaleZoom / z > 1.12) {
+            lastScaleZoom = z;
+            applyZoomLabelScale(); applyDensityScale();
+          }
+          // GA-249b. THE SETTLE TIMER MUST CARRY THE SAME GUARD, and leaving it out made the
+          // throttle circular. Each pass costs ~700 ms with 568 edges (a node style write
+          // invalidates every edge attached to it), which is longer than the 140 ms delay --
+          // so the timer fired on EVERY step and re-ran the full pass regardless of the ratio
+          // check above. Slow steps caused the timer; the timer caused the slow steps.
+          //
+          // MEASURED, 12 wheel steps at 1.05x:
+          //   handler as written        736.5 ms/step   568 edges
+          //   handler removed entirely   80.7 ms/step  3231 edges
+          // The edges are not the cost. The per-node restyle is.
+          clearTimeout(zoomSettleTimer);
+          zoomSettleTimer = setTimeout(() => {
+            const zn = cy.zoom();
+            if (lastScaleZoom && zn / lastScaleZoom < 1.12 && lastScaleZoom / zn < 1.12) return;
+            lastScaleZoom = zn;
+            applyZoomLabelScale(); applyDensityScale();
+          }, 160);
+        });
       });
 
       // Neighborhood highlight: fade everything but the tapped element's hood
@@ -2486,7 +3595,96 @@
     }
 
     let showOntologyConcepts = false;
-    let currentAuditFilter = 'admitted';
+    let currentAuditFilter = 'all';
+
+    // The four-valued grade the admission gate issues. `hold` is NOT abstention — a held
+    // candidate is one the gate refused to decide on YET, and folding it into no-grounds
+    // erases the verdict this project rests on. The decision log spells two of the four
+    // differently (reject / abstain), so one map normalises them to the grade.
+    const VERDICTS = {
+      admit:      { text: 'ADMITTED',   color: '#10b981' },
+      hold:       { text: 'HELD',       color: '#f59e0b' },
+      decline:    { text: 'DECLINED',   color: '#ef4444' },
+      no_grounds: { text: 'NO GROUNDS', color: '#94a3b8' },
+      unknown:    { text: 'NO RECORD',  color: '#64748b' }
+    };
+    const GRADE_OF = {
+      admit: 'admit', admitted: 'admit',
+      hold: 'hold', on_hold: 'hold',
+      reject: 'decline', rejected: 'decline', decline: 'decline', declined: 'decline',
+      abstain: 'no_grounds', abstained: 'no_grounds', no_grounds: 'no_grounds'
+    };
+    // An unrecognised outcome grades as `unknown` and prints NO RECORD. It never defaults
+    // into one of the four — a missing verdict is not a verdict.
+    const gradeOf = (outcome) => GRADE_OF[String(outcome === undefined || outcome === null ? '' : outcome).toLowerCase()] || 'unknown';
+
+    // GA-275. READ THE FOUR-VALUED VERDICT, NOT THE THREE-VALUED PROJECTION.
+    // FOUND grades admit / hold / decline / no_grounds; the GRAPH-API seam it is projected
+    // onto has only ADMIT / REJECT / ABSTAIN, so `outcome` collapses HOLD and NO_GROUNDS
+    // into one value and GRADE_OF maps abstain -> no_grounds. The table therefore printed
+    // NO GROUNDS over objects the gate had HELD -- measured on run 20260902_221606, 11 of
+    // 39 abstains (28%) were holds: "within measured envelope (n=170, abo); inside hold
+    // band (0.044 <= 0.05)" displayed as if the gate had no grounds at all.
+    //
+    // The record carries the real grade at annotation.verdict.grade. Prefer it, and fall
+    // back to the projection only when it is absent -- an older bundle has no such field
+    // and must still render, as the projection, rather than as NO RECORD.
+    const gradeOfRecord = (d) => {
+      const g = (((d || {}).annotation || {}).verdict || {}).grade;
+      return gradeOf(g || (d || {}).outcome);
+    };
+
+    // One row per object. Graph nodes carry their own `decision`; proposals the gate
+    // stopped never became nodes, so the admission log is the only place they exist and
+    // the table is the only surface that can show them. A node's own verdict always wins.
+    // NB: the label is NOT a key. Measured on this bundle: 269 object nodes carry only
+    // 117 distinct labels — 54 labels are shared by several distinct objects sitting
+    // metres apart ("dining chair#13" is ten different chairs). Rows are therefore one
+    // per NODE, and the label set is used only to keep the decision log from repeating
+    // an object the graph already shows.
+    function verdictRows() {
+      const rows = [];
+      const seenLabels = new Set();
+      (lastAdmittedNodes || []).forEach(n => {
+        if (!n) return;
+        const d = n.decision || {};
+        seenLabels.add(n.label);
+        rows.push({
+          id: n.id || '', label: n.label || 'object', room: n.room || null, node: n,
+          grade: gradeOfRecord(d), reason: d.reason || '',
+          conf: typeof n.confidence === 'number' ? n.confidence : null
+        });
+      });
+      const s = lastAdmissionSummary || {};
+      // The log holds one record per decision, not per object, so it is deduped by label.
+      const addLog = (list, grade) => (list || []).forEach(it => {
+        const label = it && (it.object || it.label);
+        if (!label || seenLabels.has(label)) return;
+        seenLabels.add(label);
+        rows.push({
+          id: '', label: label, room: null, node: null,
+          grade: grade, reason: it.reason || '', conf: null, logOnly: true
+        });
+      });
+      addLog(s.on_hold, 'hold');
+      addLog(s.rejected, 'decline');
+      addLog(s.abstained, 'no_grounds');
+      return rows;
+    }
+
+    // Pill counts come from the rows themselves, so what a pill promises is what the
+    // table then shows. They used to come from admission_summary and did not match.
+    function updateAuditCounts(rows) {
+      const c = { all: rows.length, admit: 0, hold: 0, decline: 0, no_grounds: 0 };
+      rows.forEach(r => { if (c[r.grade] !== undefined) c[r.grade]++; });
+      const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+      set('auditCountAll', c.all);
+      set('auditCountAdmitted', c.admit);
+      set('auditCountHold', c.hold);
+      set('auditCountRejected', c.decline);
+      set('auditCountAbstained', c.no_grounds);
+      return c;
+    }
 
     function toggleOntologyConcepts() {
       showOntologyConcepts = !showOntologyConcepts;
@@ -2496,17 +3694,24 @@
       refreshGraph();
     }
 
+    // Button id per filter value. The old version compared 'on_hold'.replace('_','')
+    // against 'hold', which never matched, so the HELD pill never lit up.
+    const AUDIT_BUTTONS = {
+      all: 'btnAuditAll', admit: 'btnAuditAdmitted', hold: 'btnAuditHold',
+      decline: 'btnAuditRejected', no_grounds: 'btnAuditAbstained'
+    };
+
     function setAuditFilter(filter) {
+      if (!AUDIT_BUTTONS[filter]) return;
       currentAuditFilter = filter;
-      ['Admitted', 'Hold', 'Rejected', 'Abstained'].forEach(f => {
-        const btn = document.getElementById('btnAudit' + f);
-        if (btn) {
-          const match = f.toLowerCase() === filter.replace('_', '');
-          btn.classList.toggle('active', match);
-          btn.style.background = match ? '#0284c7' : '#1e293b';
-        }
+      Object.entries(AUDIT_BUTTONS).forEach(([key, id]) => {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        const match = key === filter;
+        btn.classList.toggle('active', match);
+        btn.style.background = match ? '#0284c7' : '#1e293b';
       });
-      renderObjectsTable(lastAdmittedNodes);
+      renderObjectsTable();
     }
 
     // Room-VLM reachability badge: distinguishes "no objects yet" from a dead VLM
@@ -2557,7 +3762,7 @@
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(30,41,59,0.6); padding:6px 10px; border-radius:6px;">
               <span style="font-size:0.7rem; color:var(--muted); text-transform:uppercase;">Room</span>
-              <span style="font-size:0.75rem; font-weight:bold; color:#f8fafc;">${data.room || 'Unknown'}</span>
+              <span style="font-size:0.75rem; font-weight:bold; color:#f8fafc;">${data.room ? roomCellHtml(data.room) : 'Unknown'}</span>
             </div>
 
             <!-- Room classification (semantic_label from the room VLM) -->
@@ -2716,9 +3921,14 @@
           // a sync re-ran the overlap pass and re-requested every node's crop.
           // A filter or overlay change must still re-render, so it clears the marker.
           const unchanged = (data.version && data.version === lastGraphVersion);
-          lastGraphVersion = data.version || null;
-
+          // GA-242. The version is recorded ONLY when the sync below actually runs.
+          // It used to be assigned here, before the `cy` guard -- so if the first
+          // /graph_data response landed before initCy() had created `cy`, the version was
+          // banked anyway and every later poll saw `unchanged` and skipped. The graph then
+          // stayed empty forever. In a replay it can never recover, because the bundle is
+          // static and the version never changes again.
           if (!unchanged && cy && data.elements && Array.isArray(data.elements.nodes)) {
+            lastGraphVersion = data.version || null;
             try {
               const nodesList = [...data.elements.nodes];
               const edgesList = [...(data.elements.edges || [])];
@@ -2861,9 +4071,7 @@
 
               if (newNodes.length > 0 || newEdges.length > 0) {
                 cy.add([...newNodes, ...newEdges]);
-                if (!showContainmentEdges) {
-                  cy.edges('[label="isLocatedIn"]').style('display', 'none');
-                }
+                applyEdgeTypeFilters();   // new edges obey the legend toggles too
                 if (wasEmpty) {
                   runSelectedLayout();
                 } else if (newNodes.length > 0) {
@@ -2886,7 +4094,10 @@
                 }
                 applyZoomLabelScale();
               }
-              applyCropBackgrounds();
+              // GA-247: honour the crops checkbox. This fired on every sync regardless,
+              // so 269 image requests and 269 un-batched style writes happened whether or
+              // not anyone wanted the thumbnails.
+              if (cropsShown) applyCropBackgrounds();
               applyRoomColours();
 
               // Item 3: the panel was rendered once on tap and never again, so it
@@ -2927,19 +4138,11 @@
           if (edgesTabEl) edgesTabEl.textContent = edgeCount;
           if (objCountLabel) objCountLabel.textContent = nodeCount;
 
-          // Update admission audit counters
-          if (lastAdmissionSummary) {
-            const elA = document.getElementById('auditCountAdmitted');
-            const elH = document.getElementById('auditCountHold');
-            const elR = document.getElementById('auditCountRejected');
-            const elAb = document.getElementById('auditCountAbstained');
-            if (elA) elA.textContent = lastAdmissionSummary.admitted_count || nodeCount;
-            if (elH) elH.textContent = lastAdmissionSummary.on_hold_count || 0;
-            if (elR) elR.textContent = lastAdmissionSummary.rejected_count || 0;
-            if (elAb) elAb.textContent = lastAdmissionSummary.abstained_count || 0;
-          }
-
-          renderObjectsTable(objectNodes);
+          // The audit pill counts are computed inside renderObjectsTable, from the same
+          // rows it is about to draw, so a pill can never promise a count the table
+          // does not then show.
+          indexRoomLabels(rawNodes);
+          renderObjectsTable();
           if (statusEl) statusEl.textContent = 'LIVE';
         })
         .catch(err => {
@@ -2951,96 +4154,82 @@
         });
     }
 
-    function renderObjectsTable(nodes) {
+    const escHtml = (s) => String(s === undefined || s === null ? '' : s)
+      .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    // The three text boxes above the table were never wired to anything. With ALL now
+    // the default filter the table is 269+ rows, so they are wired here rather than left
+    // as decoration. ponytail: plain substring match, no fuzzy search.
+    function textFilterValue(id) {
+      const el = document.getElementById(id);
+      return el && el.value ? el.value.trim().toLowerCase() : '';
+    }
+
+    function matchesTextFilters(row, conceptText) {
+      const q = textFilterValue('searchInput');
+      const qRoom = textFilterValue('roomInput');
+      const qLabel = textFilterValue('labelInput');
+      const label = String(row.label || '').toLowerCase();
+      const roomText = (roomLabelFor(row.room) || row.room || '').toLowerCase();
+      // Label and concept only. Matching the room name here made "wine" return all 269
+      // objects, because every one of them is in dining_and_wine_area. The Room box is
+      // the control for that.
+      if (q && !(label.includes(q) || String(conceptText || '').toLowerCase().includes(q))) return false;
+      if (qRoom && !roomText.includes(qRoom)) return false;
+      if (qLabel && !label.includes(qLabel)) return false;
+      return true;
+    }
+
+    function renderObjectsTable() {
       const wrap = document.getElementById('tableWrap');
       if (!wrap) return;
 
-      if (currentAuditFilter === 'on_hold') {
-        const list = (lastAdmissionSummary && lastAdmissionSummary.on_hold) ? lastAdmissionSummary.on_hold : [];
-        if (!list.length) {
-          wrap.innerHTML = '<div class="empty" style="padding:12px;text-align:center;color:var(--muted);font-size:0.75rem;">No candidates currently on hold</div>';
-          return;
-        }
-        let html = '<table><thead><tr><th>Candidate</th><th>Position</th><th>Status</th></tr></thead><tbody>';
-        list.forEach(item => {
-          html += `<tr>
-            <td><b style="color:#f59e0b;">${item.label}</b></td>
-            <td style="font-family:monospace; font-size:0.7rem;">${item.position_str || 'Accumulating'}</td>
-            <td><span style="font-size:0.65rem; padding:1px 5px; border-radius:4px; background:rgba(245,158,11,0.2); color:#f59e0b;">ON HOLD</span></td>
-          </tr>`;
-        });
-        html += '</tbody></table>';
-        wrap.innerHTML = html;
-        return;
-      }
+      const all = verdictRows();
+      updateAuditCounts(all);
 
-      if (currentAuditFilter === 'rejected') {
-        const list = (lastAdmissionSummary && lastAdmissionSummary.rejected) ? lastAdmissionSummary.rejected : [];
-        if (!list.length) {
-          wrap.innerHTML = '<div class="empty" style="padding:12px;text-align:center;color:#10b981;font-size:0.75rem;">0 Rejected proposals (All admitted)</div>';
-          return;
-        }
-        let html = '<table><thead><tr><th>Proposal</th><th>Filter</th><th>Reason</th></tr></thead><tbody>';
-        list.forEach(item => {
-          html += `<tr>
-            <td><b style="color:#ef4444;">${item.object || item.label}</b></td>
-            <td>${item.filter || 'FOUND'}</td>
-            <td style="color:#ef4444; font-size:0.68rem;">${item.reason || 'Prior violation'}</td>
-          </tr>`;
-        });
-        html += '</tbody></table>';
-        wrap.innerHTML = html;
-        return;
-      }
-
-      if (currentAuditFilter === 'abstained') {
-        const list = (lastAdmissionSummary && lastAdmissionSummary.abstained) ? lastAdmissionSummary.abstained : [];
-        if (!list.length) {
-          wrap.innerHTML = '<div class="empty" style="padding:12px;text-align:center;color:var(--muted);font-size:0.75rem;">0 Abstained proposals</div>';
-          return;
-        }
-        let html = '<table><thead><tr><th>Proposal</th><th>Reason</th></tr></thead><tbody>';
-        list.forEach(item => {
-          html += `<tr>
-            <td><b>${item.object || item.label}</b></td>
-            <td>${item.reason || 'No vocabulary match'}</td>
-          </tr>`;
-        });
-        html += '</tbody></table>';
-        wrap.innerHTML = html;
-        return;
-      }
-
-      // Default: Admitted objects
-      if (!nodes || !nodes.length) {
+      const graded = currentAuditFilter === 'all' ? all : all.filter(r => r.grade === currentAuditFilter);
+      if (!all.length) {
         wrap.innerHTML = '<div class="empty" style="padding:12px;text-align:center;color:var(--muted);font-size:0.75rem;">No objects detected yet</div>';
         return;
       }
-      let html = '<table><thead><tr><th>Label</th><th>Room</th><th>Concept</th><th>Score</th></tr></thead><tbody>';
-      nodes.forEach(n => {
-        const id = n.id || '';
-        const label = n.label || 'object';
-        const room = n.room || '-';
-        // Absent confidence renders as an em dash, never as a confident 100%.
-        const conf = typeof n.confidence === 'number' ? n.confidence : null;
-        const onto = getAlignment(n);
+
+      let html = '<table><thead><tr><th>Label</th><th>Verdict</th><th>Room</th><th>Concept</th><th>Score</th></tr></thead><tbody>';
+      let shown = 0;
+      graded.forEach(r => {
+        const onto = r.node ? getAlignment(r.node) : null;
         // The concept carries its IRI: the class is only meaningful as the thing the
         // ontology actually identifies. An entity with no recorded IRI shows the bare
         // name and says so on hover, rather than implying one it does not have.
         const conceptName = (onto && onto.entity)
           ? (onto.iri
-              ? `<a href="${onto.iri}" target="_blank" rel="noopener" title="${onto.iri}" style="color:#a78bfa; text-decoration:underline dotted;">${onto.entity}</a>`
-              : `<span title="no IRI recorded by the aligner">${onto.entity}</span>`)
+              ? `<a href="${escHtml(onto.iri)}" target="_blank" rel="noopener" title="${escHtml(onto.iri)}" style="color:#a78bfa; text-decoration:underline dotted;">${escHtml(onto.entity)}</a>`
+              : `<span title="no IRI recorded by the aligner">${escHtml(onto.entity)}</span>`)
           : '—';
-        html += `<tr onclick="selectGraphNodeById('${id}')">
-          <td><b>${label}</b></td>
-          <td>${room}</td>
+        if (!matchesTextFilters(r, onto && onto.entity)) return;
+        shown++;
+        const v = VERDICTS[r.grade] || VERDICTS.unknown;
+        const why = r.reason ? escHtml(r.reason) : 'no reason recorded';
+        // Absent confidence renders as an em dash, never as a confident 100%.
+        const conf = r.conf;
+        // A row with no graph node is a proposal the gate stopped: it can be listed but
+        // it cannot be selected, so it does not pretend to be clickable.
+        const clickable = !!r.id;
+        html += `<tr data-label="${escHtml(r.label)}" ${clickable ? `data-node-id="${escHtml(r.id)}" onclick="selectGraphNodeById('${escHtml(r.id)}')"` : `onclick="highlightObjectRow(null, '${escHtml(r.label).replace(/'/g, '&#39;')}')"`}>
+          <td><b${r.logOnly ? ' style="color:var(--muted);" title="not in the graph — the gate stopped this proposal"' : ''}>${escHtml(r.label)}</b></td>
+          <td><span title="${why}" style="font-size:0.6rem; font-weight:800; padding:1px 5px; border-radius:4px; white-space:nowrap; color:${v.color}; border:1px solid ${v.color}; background:rgba(15,23,42,0.6);">${v.text}</span></td>
+          <td>${r.room ? roomCellHtml(r.room) : '<span style="color:var(--muted);">—</span>'}</td>
           <td style="color:#a78bfa; font-size:0.68rem;">${conceptName}</td>
-          <td>${conf === null ? '—' : (conf * 100).toFixed(0) + '%'}</td>
+          <td>${conf === null || conf === undefined ? '—' : (conf * 100).toFixed(0) + '%'}</td>
         </tr>`;
       });
       html += '</tbody></table>';
+
+      if (!shown) {
+        wrap.innerHTML = '<div class="empty" style="padding:12px;text-align:center;color:var(--muted);font-size:0.75rem;">No object matches this filter</div>';
+        return;
+      }
       wrap.innerHTML = html;
+      applyRowHighlight();   // the 3 s re-render must not drop the user's selection
     }
 
     let activeGraphFilter = 'all';
@@ -3061,6 +4250,17 @@
     window.toggleOntologyConcepts = toggleOntologyConcepts;
     window.toggleGraphLegend = toggleGraphLegend;
     window.toggleContainmentEdges = toggleContainmentEdges;
+    window.toggleEdgeType = toggleEdgeType;     // called from the legend rows
+    window.setEdgeType = setEdgeType;
+    window.renderObjectsTable = renderObjectsTable;
+    // Cross-panel selection hook for the injected replay script: it may pass either a
+    // node id or an object label. Rows carry data-node-id AND data-label.
+    window.selectObject = selectObject;
+    window.highlightObjectRow = highlightObjectRow;
+    window.selectGraphNodeById = selectGraphNodeById;
+    window.bevZoomStep = bevZoomStep;
+    window.recenterBEV = recenterBEV;
+    window.toggleMinimapModal = toggleMinimapModal;
     window.setGraphLayout = setGraphLayout;
     window.zoomCy = zoomCy;
     window.fitCy = fitCy;
@@ -3199,8 +4399,23 @@
       if (typeof cytoscape !== 'undefined') initCy();
       else { const gs = document.getElementById('graphStatus'); if (gs) gs.textContent = 'GRAPH OFFLINE (cytoscape CDN unreachable)'; }
       initResizers();
+      renderEdgeTypeLegend();
       refreshGraph();
       setInterval(refreshGraph, 3000);
+
+      // The three filter boxes above the objects table had no listeners at all.
+      ['searchInput', 'roomInput', 'labelInput'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', renderObjectsTable);
+      });
+      const resetBtn = document.getElementById('resetBtn');
+      if (resetBtn) resetBtn.addEventListener('click', () => {
+        ['searchInput', 'roomInput', 'labelInput'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.value = '';
+        });
+        setAuditFilter('all');
+      });
       initFeedInteraction();
       setupBEVInteractions('bevCanvasHUD');
       setupBEVInteractions('bevCanvasModal');

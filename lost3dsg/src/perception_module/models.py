@@ -68,7 +68,7 @@ class OWLv2():
                 if int(label) < len(self.classes):
                     classes.append(self.classes[int(label)])
                 else:
-                    print(f"[WARN] OWLv2 ha restituito un indice fuori range: {label} (Classi disponibili: {len(self.classes)})")
+                    print(f"[WARN] OWLv2 returned an out-of-range index: {label} (classes available: {len(self.classes)})")
                     classes.append("unknown_object") # Assegna un'etichetta di fallback
                 # --- MODIFICA FINE ---
                 confidences.append(float(score))
@@ -108,7 +108,7 @@ class DINO():
 
     def predict(self, image, box_threshold=0.4, text_threshold=0.3):
         if self.classes is None:
-            raise ValueError("Chiama set_classes prima di predict().")
+            raise ValueError("call set_classes before predict().")
 
         if isinstance(image, np.ndarray):
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)

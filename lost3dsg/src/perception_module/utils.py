@@ -119,7 +119,7 @@ class SyncedCameraData:
                 self._check_all_ready()
         except Exception as e:
             # Per le bbox 3D preferiamo una posa esatta al timestamp del frame RGB:
-            # se non è disponibile, invalidiamo la cache così il frame viene scartato.
+            # when unavailable, invalidate the cache so the frame is dropped.
             self.cached_transform = None
 
             # GA-95. The TF-at-image-stamp principle above is CORRECT and stays: a box is
@@ -299,7 +299,7 @@ def get_distinct_color(index):
     r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
     return ColorRGBA(r=r, g=g, b=b, a=1.0)
 
-def apply_nms(bboxs, labels, scores, iou_threshold=0.5):
+def apply_nms(bboxs, labels, scores, iou_threshold=0.5, containment_threshold=None):
     """
     Apply CLASS-AWARE Non-Maximum Suppression to remove overlapping bounding boxes.
     NMS is applied SEPARATELY for each class, so boxes of different classes are never suppressed.
@@ -316,6 +316,14 @@ def apply_nms(bboxs, labels, scores, iou_threshold=0.5):
     """
     if len(bboxs) == 0:
         return [], [], []
+
+    if containment_threshold is None:
+        try:
+            from config import CFG
+            containment_threshold = float(
+                (CFG.get("perception", {}) or {}).get("containment_threshold", 0.85))
+        except Exception:
+            containment_threshold = 0.85
 
     # Convert to numpy arrays for easier manipulation
     bboxs = np.array(bboxs)
@@ -369,8 +377,29 @@ def apply_nms(bboxs, labels, scores, iou_threshold=0.5):
             # IoU = intersection / union
             iou = intersection / (areas[i] + areas[order[1:]] - intersection)
 
-            # Keep only boxes with IoU below threshold
-            inds = np.where(iou <= iou_threshold)[0]
+            # GA-276. CONTAINMENT, because IoU IS BLIND TO NESTING.
+            # A small box wholly inside a large one has IoU = area_small/area_large: at a 5x
+            # size difference that is 0.2, far below any sane threshold, so it survives.
+            # MEASURED on run 20260902_221606: 61 same-class pairs in one frame where one box
+            # is >90% contained in the other, and ALL 61 have IoU < 0.5 -- median IoU 0.185
+            # against median IoS 0.934. That is the concentric stack of five `bed` boxes and
+            # four `nightstand` boxes the operator saw on the live overlay.
+            #
+            # IoS = intersection / area of the SMALLER box. 1.0 means fully contained.
+            # Boxes are visited in DESCENDING score order, so the survivor is always the
+            # stronger detection and the suppressed one is always the weaker -- on the
+            # measured pairs the contained box scored 0.15-0.28 against 0.49-0.60.
+            #
+            # THE RISK, and it is real: 2D containment is not 3D containment. Two same-class
+            # objects at different depths -- a far chair seen "inside" a near chair's box --
+            # nest in the image while being distinct in the world. This trades that rare
+            # false merge against a measured, constant flood of duplicates. Set
+            # perception.containment_threshold to 1.01 to disable it without a code edit.
+            smaller = np.minimum(areas[i], areas[order[1:]])
+            ios = np.where(smaller > 0, intersection / np.maximum(smaller, 1e-9), 0.0)
+
+            # Keep only boxes below BOTH thresholds
+            inds = np.where((iou <= iou_threshold) & (ios <= containment_threshold))[0]
             order = order[inds + 1]
 
         # Map back to original indices
@@ -394,6 +423,46 @@ def rectangles_overlap(rect1, rect2):
     
     return not (x1_max < x2_min or x2_max < x1_min or 
                 y1_max < y2_min or y2_max < y1_min)
+
+# Distinct, high-contrast BGR fills for mask overlays. Deliberately not a colormap over the
+# label string: two adjacent objects of the same class would then get the same colour and the
+# overlay would show one blob where the segmenter found two. Cycled by DETECTION INDEX, so
+# neighbours always differ.
+_MASK_COLOURS = [(60, 60, 230), (60, 200, 60), (230, 140, 40), (200, 60, 200),
+                 (40, 210, 210), (230, 90, 140), (120, 200, 60), (60, 140, 230)]
+
+
+def draw_masks(img, detections, alpha=0.40):
+    """Paint each detection's SAM mask over the frame. GA-214.
+
+    The live view showed boxes and labels but never the masks, so the one stage whose output
+    is hardest to judge from numbers -- segmentation -- was the one stage you could not
+    watch. A box tells you the detector fired; only the mask tells you whether it grabbed the
+    object, half of it, or the wall behind it.
+
+    Blended, not replaced: at alpha 0.40 the underlying pixels stay visible, so a mask that
+    has slipped off its object is obvious rather than hidden under an opaque patch. A
+    detection with no mask is SKIPPED silently -- that is a normal state for a box the
+    segmenter declined, and drawing a rectangle in its place would imply a mask that is not
+    there.
+    """
+    overlay = None
+    for i, det in enumerate(detections):
+        m = getattr(det, "mask", None)
+        if m is None:
+            continue
+        m = np.asarray(m)
+        if m.ndim == 3:
+            m = m[0] if m.shape[0] in (1, 3) else m[..., 0]
+        if m.shape[:2] != img.shape[:2] or not m.any():
+            continue
+        if overlay is None:
+            overlay = img.copy()
+        overlay[m.astype(bool)] = _MASK_COLOURS[i % len(_MASK_COLOURS)]
+    if overlay is not None:
+        cv2.addWeighted(overlay, alpha, img, 1.0 - alpha, 0, dst=img)
+    return img
+
 
 def draw_detections(img, detections):
     occupied_regions = [] 

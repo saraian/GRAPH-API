@@ -868,6 +868,130 @@ def a9_feed_streaming(log_path="/tmp/feed_node.log", window_s=12.0, min_new=2):
     return False, detail
 
 
+def a10_frame_age_rejected_frames(expect_rejected_max_s=None):
+    """`perception.max_frame_age_s` must exceed the frame ages the LAST RUN actually rejected.
+
+    A GUARD SHORTER THAN THE AGES FRAMES ARRIVE AT IS A DEADLOCK BY ARITHMETIC: no frame can
+    satisfy it, and nothing in the logs names the cause -- the symptom reads as "Cached frame
+    too old", which looks like a slow feed. It has happened twice:
+      * GA-164, run 20260901_144539: guard 1.0 s, frames a median 7.14 s stale. 1650 rejected,
+        ZERO perception cycles in 17 minutes.
+      * GA-281, run 20260902_221606: guard 5.0 s. 243 frames discarded across 543 cycle
+        attempts; 26 /bbox_3d reached object_manager_6, which waited 204 s and os._exit(1)'d.
+
+    IT COMPARES A MEASUREMENT AGAINST THE SAME MEASUREMENT, and that is the second version.
+    The first compared the guard against the previous run's `total_ms`, which is WRONG in
+    principle: total_ms sums work that does not gate the loop, so it could fail a healthy run
+    or pass a deadlocked one. Run 20260903_110622 showed both quantities at once -- total_ms
+    17290.7 ms beside a 15.0 s guard and ZERO frames rejected -- which is only explicable if
+    they are different quantities, and they are.
+
+    The ages at which frames were REJECTED are logged verbatim ("Cached frame too old (6.60s)")
+    and are exactly what the guard is compared against at runtime. If the last run rejected a
+    frame at 8.52 s and the guard is still 5.0 s, it will reject them again.
+
+    PASSES when the last run rejected NOTHING -- there is no evidence of a problem and none is
+    invented. Records `asserted` either way, so a bundle says whether a check was made.
+    """
+    cfg_name = os.environ.get("CFG_NAME", "")
+    here = os.path.dirname(os.path.abspath(__file__))
+    cfg_path = os.path.join(here, cfg_name) if cfg_name else ""
+    guard = None
+    if cfg_path and os.path.isfile(cfg_path):
+        try:
+            import yaml
+            guard = ((yaml.safe_load(open(cfg_path)) or {}).get("perception") or {}).get(
+                "max_frame_age_s")
+        except Exception as exc:
+            return SKIPPED, {"reason": f"could not read {cfg_name}: {exc}"}
+    if guard is None:
+        return SKIPPED, {"reason": f"no perception.max_frame_age_s in {cfg_name or '<no CFG_NAME>'}"}
+
+    try:
+        worst = float(expect_rejected_max_s) if expect_rejected_max_s not in (None, "", "0") else None
+    except (TypeError, ValueError):
+        worst = None
+    if worst is None or worst <= 0:
+        return True, {"max_frame_age_s": float(guard), "last_run_rejected_frames": False,
+                      "asserted": False,
+                      "note": "the previous run rejected no frames for age (or there was no "
+                              "previous run); the guard is recorded and nothing was asserted"}
+
+    ok = float(guard) > worst
+    return ok, {
+        "max_frame_age_s": float(guard),
+        "last_run_worst_rejected_age_s": round(worst, 2),
+        "margin_s": round(float(guard) - worst, 2),
+        "asserted": True,
+        "reason": ("" if ok else
+                   f"DEADLOCK BY ARITHMETIC: the last run REJECTED a frame at {worst:.2f} s "
+                   f"and the guard is still {guard} s. Frames arriving at that age will be "
+                   f"rejected again and the perception loop will starve. Raise "
+                   f"perception.max_frame_age_s above {worst:.2f} s, or make frames arrive "
+                   f"fresher."),
+    }
+
+
+def a11_tf_buffer_outlasts_frame_window():
+    """`tf.buffer_cache_s` must exceed `perception.max_frame_age_s` with margin.
+
+    A FRAME THAT OUTLIVES THE TF BUFFER CANNOT BE PLACED. The stamps are already explicit --
+    utils.py:109 looks the transform up at `cached_rgb.header.stamp`, the frame's own
+    timestamp, which is exactly right -- but you cannot look up a time that has been EVICTED,
+    however precisely you name it. The lookup then fails or extrapolates, and a 3D box built
+    on a bad transform lands BESIDE its object. That is visible in the feed overlay as boxes
+    offset from the furniture they describe, and it is not a projection bug: the overlay
+    projects with the current pose onto the current frame, correctly.
+
+    MEASURED, run 20260903_123748: 7 `habitat_camera_optical->map` extrapolation failures and
+    16 agent-pose failures, requesting a median 6.4 s (max 31.3 s) BEFORE the oldest data in
+    the buffer. It followed raising max_frame_age_s 5.0 -> 15.0 to break a different deadlock,
+    against a buffer left at 30 s -- and config.py's own comment already stated the rule the
+    two must obey ("Must match the Buffer(cache_time=...) in perception_2") while nothing
+    enforced it. A rule in a comment is not a rule.
+
+    The margin is 2x rather than 1x: equality means the very oldest surviving frame lands on
+    the very edge of the buffer, where a moment of TF publisher lag evicts it anyway.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    cfg_name = os.environ.get("CFG_NAME", "")
+    cfg_path = os.path.join(here, cfg_name) if cfg_name else ""
+    merged = {}
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(here), "src", "perception_module"))
+        from config import CFG
+        merged = CFG
+    except Exception as exc:
+        return SKIPPED, {"reason": f"could not import config: {exc}"}
+    cache = (merged.get("tf") or {}).get("buffer_cache_s")
+    age = (merged.get("perception") or {}).get("max_frame_age_s")
+    # The yaml overrides the code default; read it the same way the run will.
+    if cfg_path and os.path.isfile(cfg_path):
+        try:
+            import yaml
+            y = yaml.safe_load(open(cfg_path)) or {}
+            age = ((y.get("perception") or {}).get("max_frame_age_s", age))
+            cache = ((y.get("tf") or {}).get("buffer_cache_s", cache))
+        except Exception:
+            pass
+    if cache is None or age is None:
+        return SKIPPED, {"reason": f"missing tf.buffer_cache_s ({cache}) or "
+                                   f"perception.max_frame_age_s ({age})"}
+    ok = float(cache) >= 2.0 * float(age)
+    return ok, {
+        "tf_buffer_cache_s": float(cache),
+        "max_frame_age_s": float(age),
+        "ratio": round(float(cache) / max(float(age), 1e-9), 2),
+        "required_ratio": 2.0,
+        "reason": ("" if ok else
+                   f"A FRAME CAN OUTLIVE THE TF BUFFER: max_frame_age_s is {age} s against a "
+                   f"{cache} s buffer. A frame accepted at {age} s will be transformed against "
+                   f"a buffer that may no longer hold its stamp, and its 3D box will land "
+                   f"beside its object. Raise tf.buffer_cache_s to at least {2.0*float(age)} s, "
+                   f"or lower max_frame_age_s."),
+    }
+
+
 PROBES = {
     "a1": ("aligner_identity", a1_aligner_identity),
     "a2": ("config_identity", a2_config_identity),
@@ -877,6 +1001,8 @@ PROBES = {
     "a6": ("camera_pose_offset", a6_camera_pose_offset),
     "a7": ("source_frozen", a7_source_frozen),
     "a8": ("stack_imports", a8_stack_imports),
+    "a10": ("frame_age_vs_rejected", a10_frame_age_rejected_frames),
+    "a11": ("tf_buffer_outlasts_frames", a11_tf_buffer_outlasts_frame_window),
 }
 
 # PROBES THAT ONLY MAKE SENSE AFTER THE STACK IS UP, kept in a SEPARATE dict on purpose.
@@ -916,6 +1042,9 @@ def main(argv=None):
     ap.add_argument("--expect-config-sha", help="sha of the config FILE, from the launcher")
     ap.add_argument("--expect-merged-sha", help="sha of the MERGED cfg, from the launcher")
     ap.add_argument("--expect-src-sha", help="K=V,K=V tree digests the launcher recorded")
+    # Read on the HOST, where the previous bundle exists; this gate runs in the container.
+    ap.add_argument("--expect-cycle-s", default="",
+                    help="worst frame age the previous run REJECTED, seconds, for a10")
     ap.add_argument("--install-tree", default=INSTALL_TREE,
                     help="where the container copied the node sources; a8 imports from it")
     ap.add_argument("--scratch-dir", default="/out",
@@ -998,9 +1127,29 @@ def main(argv=None):
         "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha)),
         "a8": lambda: a8_stack_imports(install=args.install_tree),
         "a9": lambda: a9_feed_streaming(args.feed_log, args.feed_window_s),
+        # GA-281. REGISTERING A PROBE TAKES TWO EDITS, and the comment beside
+        # POST_START_PROBES already says what happens when only one is made: the id lands in
+        # the default set, `bound[pid]` raises KeyError, the probe records SKIPPED, and a
+        # skipped probe fails the gate. I made exactly that mistake and it refused run
+        # 20260903_105431 before it started -- which is the gate working, not failing.
+        "a10": lambda: a10_frame_age_rejected_frames(args.expect_cycle_s),
+        "a11": a11_tf_buffer_outlasts_frame_window,
     }
 
     bound.update({pid: fn for pid, (_n, fn, _s) in external.items()})
+
+    # REGISTRATION IS TWO EDITS AND THIS ASSERTS BOTH WERE MADE. A probe declared in PROBES
+    # but absent from `bound` raises KeyError, records SKIPPED, and a skipped probe FAILS the
+    # gate -- so a half-registered probe refuses every run with a message about itself rather
+    # than about the system. That has now happened twice (a9, then a10). Failing here instead
+    # names the real fault in one line, before a container is built.
+    _declared = set(PROBES) | set(POST_START_PROBES) | set(external)
+    _unbound = sorted(_declared - set(bound))
+    if _unbound:
+        raise SystemExit(
+            f"preflight_gate is misconfigured: probe(s) {_unbound} are declared in PROBES but "
+            f"have no entry in `bound`. Every declared probe needs both. This would otherwise "
+            f"surface as 'probe raised: KeyError' and refuse the run.")
 
     observe = {p.strip() for p in (args.observe or "").split(",") if p.strip()}
     _unknown = observe - set(all_probes)

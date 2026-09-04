@@ -40,6 +40,9 @@ This version publishes the schema the consumer actually reads.
 import json
 import math
 import sys
+import threading
+import time
+import traceback
 
 import numpy as np
 
@@ -55,11 +58,25 @@ HEIGHT_BAND_M = (0.4, 2.0)
 MIN_VERTICAL_EXTENT_M = 0.8
 DEPTH_RANGE_M = (0.3, 8.0)        # outside this the depth return is not trustworthy
 PIXEL_STRIDE = 4                  # subsample; a wall is not a fine structure
-RANSAC_ITERS = 60
+
+
+def _walls_cfg():
+    """Tuning from config.walls, with the previous literals as the fallback. Imported
+    lazily so the geometry above stays runnable on a host with no ROS package path."""
+    try:
+        from config import CFG
+        return CFG.get("walls", {}) or {}
+    except Exception:
+        return {}
+
+
+_WCFG = _walls_cfg()
+MIN_INTERVAL_S = float(_WCFG.get("min_interval_s", 0.5))
+RANSAC_ITERS = int(_WCFG.get("ransac_iters", 60))
 RANSAC_TOL_M = 0.05               # inlier distance to the fitted line
 MIN_INLIERS = 60
 MIN_SEGMENT_LEN_M = 0.5
-MAX_SEGMENTS = 12
+MAX_SEGMENTS = int(_WCFG.get("max_segments", 12))
 
 
 def _fit_segments(xy, z):
@@ -75,21 +92,30 @@ def _fit_segments(xy, z):
         idx = np.flatnonzero(remaining)
         if len(idx) < MIN_INLIERS:
             break
-        best_inliers, best_dir, best_p = None, None, None
-        for _ in range(RANSAC_ITERS):
-            a, b = rng.choice(idx, size=2, replace=False)
-            d = xy[b] - xy[a]
-            n = math.hypot(*d)
-            if n < 1e-6:
-                continue
-            d = d / n
-            normal = np.array([-d[1], d[0]])
-            dist = np.abs((xy[idx] - xy[a]) @ normal)
-            inl = idx[dist <= RANSAC_TOL_M]
-            if best_inliers is None or len(inl) > len(best_inliers):
-                best_inliers, best_dir, best_p = inl, d, xy[a]
-        if best_inliers is None or len(best_inliers) < MIN_INLIERS:
+        # All RANSAC_ITERS hypotheses at once. They are independent -- scoring them in a
+        # Python loop cost 435 ms/frame on 8k points and starved rtabmap of a core; the
+        # arithmetic was never the problem, the 720 sequential numpy calls were.
+        # Determinism is kept (same seeded rng) but the DRAW ORDER differs from the loop
+        # version, so a given frame can yield a different equally-valid segment set.
+        pairs = rng.choice(idx, size=(RANSAC_ITERS, 2), replace=True)
+        pa, pb = xy[pairs[:, 0]], xy[pairs[:, 1]]
+        d = pb - pa
+        n = np.hypot(d[:, 0], d[:, 1])
+        ok = n >= 1e-6                       # a pair that drew the same point twice
+        if not ok.any():
             break
+        d = d[ok] / n[ok, None]
+        pa = pa[ok]
+        normals = np.stack([-d[:, 1], d[:, 0]], axis=1)          # (H, 2)
+        # (H, N): distance from every candidate point to every hypothesis line.
+        dist = np.abs(np.einsum("nj,hj->hn", xy[idx], normals)
+                      - np.einsum("hj,hj->h", pa, normals)[:, None])
+        counts = (dist <= RANSAC_TOL_M).sum(axis=1)
+        h = int(counts.argmax())
+        if counts[h] < MIN_INLIERS:
+            break
+        best_inliers = idx[dist[h] <= RANSAC_TOL_M]
+        best_dir, best_p = d[h], pa[h]
         pts = xy[best_inliers]
         t = (pts - best_p) @ best_dir
         p0, p1 = best_p + best_dir * t.min(), best_p + best_dir * t.max()
@@ -111,19 +137,24 @@ def _node_class():
     above stays testable on a host with no ROS: `python3 wall_detector.py --selfcheck`."""
     import tf2_ros
     from cv_bridge import CvBridge
+    from cv_utils import _apply_transform, _pixels_to_points_habitat_camera
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import CameraInfo, Image
     from std_msgs.msg import String
     from tf2_ros import TransformException
 
-    from cv_utils import _apply_transform, _pixels_to_points_habitat_camera
-
     class WallDetector(Node):
         def __init__(self):
             super().__init__("wall_detector")
             self.bridge = CvBridge()
             self.camera_info = None
+            self._last_fit = 0.0
+            self._pending = None
+            self._wake = threading.Event()
+            self._stop = threading.Event()
+            self._worker = threading.Thread(target=self._fit_worker, daemon=True)
+            self._worker.start()
             self.tf_buffer = tf2_ros.Buffer()
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
             self.create_subscription(CameraInfo, "/camera/camera_info", self._info_cb,
@@ -142,6 +173,14 @@ def _node_class():
         def _depth_cb(self, msg):
             if self.camera_info is None:
                 return
+            # Rate limit BEFORE any work. Dropping the frame here costs nothing; dropping it
+            # after the unprojection has already spent the CPU this guard exists to save.
+            now = time.monotonic()
+            if now - self._last_fit < MIN_INTERVAL_S:
+                return
+            if self._pending is not None:
+                return          # a fit is already queued; this frame is redundant
+            self._last_fit = now
             try:
                 t = self.tf_buffer.lookup_transform("map", msg.header.frame_id, msg.header.stamp)
             except TransformException as exc:
@@ -168,10 +207,35 @@ def _node_class():
             band = ((pts_map[:, 2] >= HEIGHT_BAND_M[0]) & (pts_map[:, 2] <= HEIGHT_BAND_M[1]))
             if band.sum() < MIN_INLIERS:
                 return
-            walls = segments_to_wall_dicts(
-                _fit_segments(pts_map[band][:, :2], pts_map[band][:, 2]))
-            if walls:
-                self.pub.publish(String(data=json.dumps(walls)))
+            # The fit is the only expensive step, and it runs OFF the executor thread.
+            # rclpy.spin() is single-threaded, so a 164 ms fit inside this callback also
+            # blocks this node's OWN /tf subscription -- the buffer the next lookup_transform
+            # above reads. Blocking here makes the detector fail its own TF lookups.
+            # numpy releases the GIL inside the einsum, so the worker really does run beside
+            # the executor rather than interleaving with it.
+            self._pending = (pts_map[band][:, :2].copy(), pts_map[band][:, 2].copy())
+            self._wake.set()
+
+        def _fit_worker(self):
+            """One fit at a time. A frame arriving mid-fit REPLACES the pending one instead
+            of queueing: the newest depth frame is the only one worth fitting, and an
+            unbounded queue would turn a CPU shortage into a memory leak and a growing lag."""
+            while not self._stop.is_set():
+                if not self._wake.wait(timeout=0.2):
+                    continue
+                self._wake.clear()
+                job, self._pending = self._pending, None
+                if job is None:
+                    continue
+                try:
+                    walls = segments_to_wall_dicts(_fit_segments(job[0], job[1]))
+                except Exception:
+                    # A worker thread that dies silently leaves a node that looks healthy and
+                    # publishes nothing. Log with the traceback and keep the thread alive.
+                    self.get_logger().error(f"wall fit failed: {traceback.format_exc()}")
+                    continue
+                if walls:
+                    self.pub.publish(String(data=json.dumps(walls)))
 
     return WallDetector
 

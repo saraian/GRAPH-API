@@ -46,16 +46,102 @@ class DetectionArchive:
         self.save_rgb = save_rgb
         self._lock = threading.Lock()
         self._frames_written = set()
+        self._depth_written = set()
         self.n_rows = 0
         self.n_failed = 0
         self._path = None
         self._frame_dir = None
+        self._depth_dir = None
+        # GA-279. Depth costs ~57 KB/frame as 16-bit PNG; a long run is ~33 MB. Opt OUT,
+        # not in: the absence of depth is what made six research hypotheses untestable, and
+        # a default that has to be remembered is a default that will be forgotten.
+        self.save_depth = str(os.environ.get("ARCHIVE_DEPTH", "1")).strip() != "0"
         if self.enabled:
             self._frame_dir = os.path.join(root, "frames")
             os.makedirs(self._frame_dir, exist_ok=True)
+            if self.save_depth:
+                self._depth_dir = os.path.join(root, "depth")
+                os.makedirs(self._depth_dir, exist_ok=True)
+                # UNITS WRITTEN DOWN, beside the data they describe.
+                try:
+                    with open(os.path.join(self._depth_dir, "README.json"), "w") as fh:
+                        json.dump({
+                            "format": "16-bit grayscale PNG, one per frame_id",
+                            "units": "millimetres",
+                            "scale": "value / 1000.0 = metres",
+                            "zero_means": "no return (NaN/inf at capture), NOT a surface at 0 m",
+                            "max": 65535,
+                            "note": "written at capture time; needs no pose or simulator to read",
+                        }, fh, indent=1)
+                except OSError:
+                    pass
             self._path = os.path.join(root, "detections.jsonl")
 
     # -- frames ---------------------------------------------------------------------------
+
+    def record_depth(self, frame_id, depth):
+        """Write the depth image once per frame id, 16-bit PNG in MILLIMETRES. GA-279.
+
+        WHY THE BUNDLE MUST CARRY THIS. No bundle has ever held depth, and that single gap
+        made 6 of 27 hypotheses untestable in the 2026-09-02 research workflow. The
+        workaround was to RE-RENDER depth in habitat_sim at the logged poses -- which then
+        failed to validate: 96 orientations at the documented position reached a phase
+        correlation of 0.0213 against an unrelated-image floor of 0.0081, so the renders
+        were pictures of somewhere else. Depth captured AT THE MOMENT OF DETECTION needs no
+        pose, no frame convention and no simulator. It removes the problem rather than
+        solving it.
+
+        16-BIT, AND THE PRECISION IS THE POINT. Measured at real navigable poses at this
+        run's 1280x960: raw float32 is 4800 KB/frame; 16-bit PNG in mm is a median 57 KB
+        (range 8-152), 84x smaller, and lossless at millimetre precision; 8-bit over a 10 m
+        range is 8 KB but quantises to 3.9 cm. The extents this exists to explain are
+        0.1-9 mm, so 8-bit would erase the measurement we are chasing. At 57 KB a
+        five-waypoint tour costs ~8 MB and a long run ~33 MB, against 36 GB free -- under a
+        tenth of one rtabmap database. No decimation: dropping frames drops exactly the ones
+        a later question needs.
+
+        THE UNITS ARE WRITTEN DOWN, not left to be inferred from the range. A reader who
+        guesses metres from a plausible-looking array is off by 1000x and will not notice.
+
+        THE QUANTISATION EDGE, stated because it is easy to trip over. A depth BELOW 1 mm
+        truncates to 0 and is then indistinguishable from "no return". No real reading is
+        sub-millimetre -- the near clip is far beyond it -- so this does not bite in
+        practice, but it means the stored image cannot represent one. Separately: the
+        EXTENTS this archive exists to explain are 0.1-9 mm, and those are DIFFERENCES
+        between depth values, not depth values. At 1 mm resolution a 9 mm object still
+        spans nine steps and is measurable, while a sub-millimetre extent reads as zero --
+        which is the correct answer, because a surface with no measurable thickness is
+        exactly the "no thickness was observed" case.
+        """
+        if not self.enabled or depth is None or not getattr(self, "save_depth", True):
+            return None
+        with self._lock:
+            path = os.path.join(self._depth_dir, f"{frame_id}.png")
+            if frame_id in self._depth_written:
+                return path
+            try:
+                import numpy as _np
+                d = _np.asarray(depth, dtype=_np.float32)
+                # NaN and inf are "no return", which is a FACT about the sensor and is
+                # stored as 0 -- distinguishable from a real reading because no surface sits
+                # at exactly 0 mm. Clipping at 65535 mm (65.5 m) is beyond any indoor range.
+                d = _np.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
+                mm = _np.clip(d * 1000.0, 0, 65535).astype(_np.uint16)
+                import cv2 as _cv2
+                ok = _cv2.imwrite(path, mm)
+                if not ok:
+                    raise OSError("imwrite returned False")
+                self._depth_written.add(frame_id)
+                return path
+            except Exception as exc:
+                # Say so once. A silently absent depth frame is indistinguishable from a
+                # frame where nothing was detected, and that ambiguity is what this whole
+                # change exists to remove.
+                if not getattr(self, "_depth_warned", False):
+                    self._depth_warned = True
+                    print(f"[detection_archive] depth NOT archived ({type(exc).__name__}: "
+                          f"{exc}); frames/ will hold RGB only", flush=True)
+                return None
 
     def record_frame(self, frame_id, rgb):
         """Write the RGB frame once per frame id. Returns the path, or None."""
@@ -67,7 +153,20 @@ class DetectionArchive:
             path = os.path.join(self._frame_dir, f"{frame_id}.jpg")
             try:
                 from PIL import Image
-                Image.fromarray(rgb[:, :, :3].astype("uint8")).save(path, quality=92)
+                # GA-225. THE ARRAY IS BGR, NOT RGB, whatever the parameter is called.
+                # utils.py asks cv_bridge for 'bgr8', so everything downstream carries
+                # OpenCV's channel order -- models.py converts with COLOR_BGR2RGB before it
+                # touches PIL, and cloud/client.py hands it to cv2.imencode, which expects
+                # BGR. This line was the one place that gave a BGR array straight to
+                # Image.fromarray, which reads it as RGB. Every archived frame therefore had
+                # red and blue exchanged: measured on 20260901_174810_hm3d_00861, mean blue
+                # led mean red by 16-18 counts across every frame, on a scene with a wood
+                # floor and warm light where red should lead. It renders as a blue cast.
+                #
+                # Display only -- no measurement reads these JPEGs; the detector, the VLM and
+                # the crop encoder all take the in-memory array by their own correct path. It
+                # does mean every EXISTING bundle's frames are swapped and stay that way.
+                Image.fromarray(rgb[:, :, 2::-1].astype("uint8")).save(path, quality=92)
                 self._frames_written.add(frame_id)
                 return path
             except Exception as exc:
@@ -79,7 +178,7 @@ class DetectionArchive:
 
     def record_detection(self, frame_id, det, camera_position=None, centroid=None,
                          bbox_3d=None, crop_meta=None, stamp=None, room_id=None,
-                         semantic_frame=None):
+                         semantic_frame=None, camera_transform=None):
         """One row per detection per frame. All of it, or none of it.
 
         The 2D box and the mask come straight off the Detection the pipeline already built --
@@ -100,6 +199,15 @@ class DetectionArchive:
                 "camera_position": list(camera_position) if camera_position is not None else None,
                 "room_id": room_id,
                 "crop_meta": crop_meta,
+                # GA-230. THE CAMERA ROTATION, so a 3D box can be put back on the frame it
+                # was measured from. The row carried `camera_position` and no orientation,
+                # which is half a pose: it says where the camera was and not where it looked.
+                #
+                # The rotation IS recoverable without this -- solving Wahba's problem on the
+                # frame's own detections gives a median 0.75 deg residual -- but only for the
+                # 71 of 84 frames that carry the four correspondences the solve needs. Four
+                # floats close the other 13, and cost nothing to write.
+                "camera_quat_xyzw": camera_transform,
                 "mask_rle": self._encode_mask(getattr(det, "mask", None)),
             }
             # GROUND TRUTH, and named so nothing can mistake it for a perception output.

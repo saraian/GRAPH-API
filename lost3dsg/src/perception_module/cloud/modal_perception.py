@@ -79,6 +79,10 @@ class PerceptionRequest(BaseModel):
     labels: List[str] = Field(..., description="Candidate open-vocabulary labels from VLM")
     score_threshold: float = Field(default=0.15, description="Confidence threshold for detections")
     nms_threshold: float = Field(default=0.50, description="IoU threshold for non-maximum suppression")
+    containment_threshold: float = Field(
+        default=0.85,
+        description="IoS threshold (intersection over the SMALLER box) for suppressing a "
+                    "nested detection that IoU cannot see. 1.01 disables it. GA-286.")
 
 
 MIN_CROP_PX = 4
@@ -269,7 +273,25 @@ class PerceptionService:
                 h_inter = np.maximum(0.0, yy2 - yy1)
                 inter = w_inter * h_inter
                 iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)
-                inds = np.where(iou <= req.nms_threshold)[0]
+                # GA-276/286. CONTAINMENT, because IoU IS BLIND TO NESTING. A small box wholly
+                # inside a large one has IoU = area_small/area_large: at a 5x size difference
+                # that is 0.2, far below any sane threshold, so it survives. MEASURED on run
+                # 20260902_221606: 61 same-class pairs in one frame where one box is >90%
+                # contained in the other, and ALL 61 have IoU < 0.5 -- median IoU 0.185 against
+                # median IoS 0.934. Replaying that run's detections, containment suppression
+                # takes 206 boxes to 149.
+                #
+                # THIS COPY EXISTS BECAUSE THE FIX WAS PUT IN THE WRONG PLACE FIRST. It was
+                # added to utils.apply_nms, the LOCAL path -- and `backend: modal` runs NMS
+                # here, server-side, so the fix was inert for every cloud run. The two
+                # implementations must agree; the local one carries the same comment.
+                #
+                # IoS = intersection / area of the SMALLER box. Boxes are visited in DESCENDING
+                # score order, so the survivor is always the stronger detection.
+                smaller = np.minimum(areas[i], areas[order[1:]])
+                ios = np.where(smaller > 0, inter / np.maximum(smaller, 1e-9), 0.0)
+                inds = np.where((iou <= req.nms_threshold)
+                                & (ios <= req.containment_threshold))[0]
                 order = order[inds + 1]
 
         boxes = boxes[keep_indices]

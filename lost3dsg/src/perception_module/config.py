@@ -12,6 +12,26 @@ _DEFAULTS = {
     # pre-existing flag (this module used to contain only this line)
     "simulation": False,
     "vlm": {
+        # GA-209. Crops per VLM request. 0 or 1 keeps the previous behaviour, one call per
+        # crop at crop_concurrency. Measured 2026-09-01: five separate calls at concurrency
+        # 8 took 1.69 s, one 3x2 grid took 0.88 s -- 1.91x, by removing the straggler rather
+        # than by tuning around it. Above ~6 the cells fall below 224 px and the describer
+        # starts losing detail, so crop_grid batches instead of building one large grid.
+        # MEASURED OFF, 2026-09-03. The grid was benchmarked at 1.41x against SEQUENTIAL
+        # per-crop calls -- but the system runs them CONCURRENTLY at crop_concurrency 8, and
+        # my own probe script says so in a comment I then ignored. A number measured under a
+        # different execution model is not a prediction about this system.
+        #
+        # What it cost, on run 20260903_110622: the BLOCKING whole-image label call went from
+        # a 2.11 s median (n=26) to 11.03 s (n=16), 5.2x. The grid does not slow the crop
+        # describer -- that is asynchronous and never appears in vlm_ms. It SATURATES THE
+        # SHARED VLM PROVIDER with 4 large multi-cell images at ~5 s each, and the blocking
+        # label call queues behind them.
+        #
+        # The straggler the grid was meant to remove is real (one call in five at 13.7 s
+        # against a 0.55 s median) but costs less than paying 5 s every cycle to insure
+        # against it. Set to 6 to re-enable; the code is unchanged and self-checking.
+        "grid_cells": 0,
         "base_url": "http://localhost:11434/v1",
         "model": "gemma4:e2b",
         # empty -> use OPENAI_API_KEY env if set, else the legacy api.txt next
@@ -59,6 +79,13 @@ _DEFAULTS = {
         # the label weight alone, so two identical labels score exactly 1.0000 -- above any
         # threshold, on zero measured evidence. 0 restores the old behaviour.
         "merge_min_evidence": 1,
+        # GA-289. Tracking path (check_tracking_transition): a persistent object with no
+        # position covariance yet has no measurable shell, so its search reach is its own
+        # extent plus this radius. Objects WITH a covariance use association.search_radius
+        # and never read this. `merge_min_evidence` above governs the tracking win as well.
+        # Category (c), stated policy: 1.0 m is where 95% of the day's tracking comparisons
+        # already sat beyond, and 2.3x the nearest recorded loser (0.355 m).
+        "tracking_fallback_radius_m": 1.0,
         # GA-83 / GA-94: input-starvation watchdog. Seconds of /bbox_3d silence per check,
         # and consecutive silent checks before the node ends the run.
         "input_silence_timeout_s": 60.0,
@@ -88,7 +115,47 @@ _DEFAULTS = {
         # its neighbours.
         "reevaluation_radius_m": 2.0,
     },
+    # GA-270. SERVICE ADDRESSES BELONG IN CONFIG, not in module literals.
+    #
+    # Two separate outages this session came from the same shape of defect: a hardcoded
+    # "http://127.0.0.1:8081" in habitat_feed_host (the belief poller reached nothing, so the
+    # Habitat window drew no boxes for a whole run) and another in object_manager_6 (every
+    # Graph API POST failed, so 4 admit decisions minted 0 objects and the run ended with an
+    # empty map). The bridge moves to 8091 whenever 8081 is taken, which it is on this
+    # machine -- and neither literal moved with it.
+    #
+    # A resource address is configuration. It is stated once, recorded in the bundle with the
+    # rest of the config, and every consumer reads it from here. The env var still overrides
+    # for a single run; what is gone is the module-level default that nothing can reach.
+    "walls": {
+        # A wall does not move, so re-fitting one per depth frame buys nothing and costs a
+        # core. At 30 fps the detector demanded ~5 cores and starved rtabmap; this is the
+        # knob that made it affordable, not the RANSAC speed-up.
+        "min_interval_s": 0.5,
+        "ransac_iters": 60,
+        "max_segments": 12,
+    },
+    "cloud": {
+        # GA-278. Scale applied to the frame BEFORE it is sent to the perception backend.
+        # The request is bandwidth-bound to ~1.76 s; 0.75 captures the whole saving (-21%
+        # request time) at -4% detections across six frames, which is inside the per-frame
+        # variance. 1.0 sends the frame untouched, exactly as before this knob existed.
+        "send_scale": 0.75,
+    },
+    "services": {
+        "bridge_host": "127.0.0.1",
+        "bridge_port": 8081,
+        "feed_host": "127.0.0.1",
+        "feed_port": 7790,
+    },
     "frames": {
+        # GA-236. Frames the motion detector watches. Default is the Habitat camera
+        # ALONE, because that is the only one that exists here: the previous literal
+        # named two TIAGo head joints and two wheel joints, none of which resolve in
+        # this deployment, and their absence was reported as four lookup failures a
+        # second rather than once. A TIAGo deployment sets these to its own frames.
+        "motion_watch": ["habitat_camera"],
+        "motion_watch_base": [],
         # The frame the perception back-projects into. Must be an OPTICAL frame
         # (x right, y down, z forward). Publishing a body pose under this name
         # puts depth into the height axis — see habitat_camera_node.py, which
@@ -180,7 +247,26 @@ _DEFAULTS = {
         # GA-95: the TF buffer's cache window. A frame whose stamp is older than this can
         # never be transformed again -- the data has been evicted -- so it is dropped
         # rather than retried. Must match the Buffer(cache_time=...) in perception_2.
-        "buffer_cache_s": 30.0,
+        # GA-284. RAISED 30 -> 90, and the reason is a coupling the comment above states as a
+        # rule that nothing enforced. `max_frame_age_s` went 5.0 -> 15.0 (GA-281, to break a
+        # deadlock where the cycle outlived its own freshness window), which lets a frame wait
+        # three times longer before it is transformed. On run 20260903_123748 that produced
+        # 7 `habitat_camera_optical->map` extrapolation failures and 16 agent-pose failures --
+        # lookups a median 6.4 s, max 31.3 s BEFORE the oldest data still in the buffer.
+        #
+        # A BOX BUILT ON A FAILED TRANSFORM LANDS BESIDE ITS OBJECT. That is visible in the
+        # feed overlay as boxes offset from the furniture they describe, and it is not a
+        # projection bug: the overlay projects with the CURRENT pose onto the CURRENT frame,
+        # correctly. The world coordinates were wrong before they ever reached it.
+        #
+        # THE STAMPS WERE NEVER THE PROBLEM. utils.py:109 already looks the transform up at
+        # `cached_rgb.header.stamp`, the frame's own timestamp, which is exactly right. You
+        # cannot look up a time that has been EVICTED, however precisely you name it.
+        #
+        # 90 s is 6x the frame window, so a frame that survives max_frame_age can always be
+        # transformed. Cost is memory for TF history, which is small. preflight probe a11 now
+        # refuses a run where this does not exceed max_frame_age_s with margin.
+        "buffer_cache_s": 90.0,
     },
     "rooms": {
         # GA-137. How the GVD skeleton is built.
@@ -216,6 +302,19 @@ _DEFAULTS = {
         "floor_tolerance_m": 0.5,
         "mapping_seconds": 150.0,
         "walk_frames": 6,
+        # GA-258. DWELL MODE, dynamic by default. A fixed dwell is wrong in both
+        # directions: it wastes frames when no merge is waiting to be confirmed, and leaves
+        # before confirmation when one is. Dynamic dwell asks the object manager what is
+        # pending and stays while the answer is above zero, between the bounds below.
+        # Set dwell_dynamic false for a fixed-length dwell -- which is what a clean
+        # one-variable ablation of merge_min_consecutive needs, since dynamic dwell makes
+        # duration co-vary with the parameter under test.
+        "dwell_dynamic": True,
+        "dwell_min_frames": 8,
+        "dwell_max_frames": 90,
+        "tour_waypoints": 0,
+        "tour_scan_frames": 12,
+
         "dwell_frames": 60,
         "fps": 3.0,
     },
@@ -234,6 +333,17 @@ _DEFAULTS = {
         "depth_tol_rel": 0.05,
     },
     "perception": {
+        # GA-276. IoU-NMS cannot see a nested box: fully contained at a 5x size
+        # difference gives IoU 0.2. Suppress on IoS (intersection over the SMALLER box)
+        # as well. Measured 61 fully-contained same-class pairs in one run, every one
+        # with IoU < 0.5. Set to 1.01 to disable containment suppression entirely.
+        "containment_threshold": 0.85,
+        # GA-288. Consecutive perception cycles whose VLM label call FAILED before the run is
+        # ended. Mirrors association.input_silence_max_strikes (om6's watchdog), which the
+        # owner approved for the same shape. One failed cycle is skipped LOUDLY and counted;
+        # this many in a row means the VLM is gone, not blinking. 0 disables the guard and
+        # restores crash-on-first-failure.
+        "vlm_strikes_max": 3,
         # GA-164. Oldest frame get_synced_data will accept, seconds. Was a hardcoded 1.0
         # that no config could reach. At 1280x960 frames arrived a MEDIAN 7.14 s stale and
         # this check rejected all 1650 of them, so ZERO perception cycles ran in 17 minutes.

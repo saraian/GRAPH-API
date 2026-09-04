@@ -183,7 +183,7 @@ def color_name_to_rgb(color_name: str) -> tuple:
 
 def color_similarity_rgb(color1: str, color2: str, word2vec_model=None) -> float:
     """
-    Calcola la similarità tra due colori usando la distanza RGB euclidea.
+    Similarity between two colours, by Euclidean RGB distance.
     Se i colori non sono riconosciuti, fa fallback a word2vec.
 
     Args:
@@ -209,12 +209,12 @@ def color_similarity_rgb(color1: str, color2: str, word2vec_model=None) -> float
         else:
             return 0.0
 
-    # Calcola distanza euclidea nello spazio RGB normalizzato
-    # Distanza massima possibile = sqrt(3) (da bianco a nero)
+    # Euclidean distance in the normalised RGB space
+    # Largest possible distance = sqrt(3), white to black
     distance = np.sqrt(sum((a - b) ** 2 for a, b in zip(rgb1, rgb2)))
     max_distance = np.sqrt(3.0)  # sqrt(1^2 + 1^2 + 1^2)
 
-    # Converti distanza in similarità: 0 distanza = 1 similarità
+    # Distance to similarity: distance 0 gives similarity 1
     similarity = 1.0 - (distance / max_distance)
 
     return max(0.0, min(1.0, similarity))
@@ -262,7 +262,7 @@ def get_embedding(model, text):
                 vectors.append(model[w.lower()])
         
         if not vectors:
-            # Se nessuna parola della descrizione è nel vocabolario di Word2Vec
+            # When no word of the description is in the Word2Vec vocabulary
             return None
             
         # Calcola il vettore medio dell'intera frase

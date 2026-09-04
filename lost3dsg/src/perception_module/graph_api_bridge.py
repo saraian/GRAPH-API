@@ -168,6 +168,17 @@ class BridgeNode(Node):
         self.last_raw_time = 0.0      # stale annotated frame can never masquerade as live
         # the raw feed publishes /camera/rgb (habitat_feed_node.py:126). The old
         # '/camera/rgb/image_raw' had no publisher at all, so this fallback never fired.
+        # GA-271. Detected walls, from wall_detector's per-frame depth fit -- NOT from the
+        # accumulated map, so this works with no map at all. Each segment carries the height
+        # band it was observed over, which is what distinguishes a measured surface from
+        # "observed free space stopped here".
+        #
+        # The bridge is the hub because both views need the same segments: the Habitat window
+        # runs on the host and cannot subscribe to ROS, and the dashboard is served from here.
+        # Two subscribers would be two versions of the truth.
+        from std_msgs.msg import String as _WallStr
+        self.latest_walls, self.walls_stamp = [], 0.0
+        self.create_subscription(_WallStr, '/detected_wall_segments', self._on_walls, 10)
         self.create_subscription(Image, '/camera/rgb', self._on_raw_image, 10)
         self.create_subscription(Image, '/image_with_bb', self._on_annotated_image, 10)
 
@@ -196,6 +207,14 @@ class BridgeNode(Node):
             self.latest_jpeg = jpeg
             self.last_frame_time = time.time()
 
+    def _on_walls(self, msg):
+        """Keep the newest wall segments. A decode failure is counted, not swallowed."""
+        try:
+            self.latest_walls = json.loads(msg.data)
+            self.walls_stamp = time.time()
+        except (ValueError, TypeError) as exc:
+            self.get_logger().warn(f"wall segments undecodable: {exc}")
+
     def _on_raw_image(self, msg: Image):
         jpeg = self._convert_to_jpeg(msg)
         if jpeg:
@@ -206,7 +225,7 @@ class BridgeNode(Node):
         client = self.cli[key]
 
         if not client.wait_for_service(timeout_sec=2.0):
-            raise RuntimeError(f"Servizio '{key}' non disponibile")
+            raise RuntimeError(f"service '{key}' unavailable")
 
         future = client.call_async(req)
 
@@ -230,7 +249,7 @@ class BridgeNode(Node):
             exc = future.exception()
             if exc is not None:
                 raise RuntimeError(f"Errore dal servizio '{key}': {exc}")
-            raise RuntimeError(f"Nessuna risposta dal servizio '{key}'")
+            raise RuntimeError(f"no response from service '{key}'")
 
         return result
 
@@ -739,7 +758,7 @@ def graph_data(request: Request = None):
         elif grade in ("abstain", "no_grounds", "hold"):
             abstained.append(rec)
 
-    return {
+    payload = {
         # Bumps only when a file the graph is built from changes, so the viewer can
         # skip an identical re-sync (which re-ran layout and re-fetched every crop).
         "version": version,
@@ -764,6 +783,18 @@ def graph_data(request: Request = None):
             "abstained": abstained,
         }
     }
+    # GA-222. THE ETAG WAS COMPUTED AND NEVER SENT. It is built at the top of this function and
+    # used only to answer a request that already carries `if-none-match` -- but nothing ever put
+    # it on a 200, so no client could learn it, no client sent it back, and the 304 branch above
+    # was unreachable. The viewer polls this route every 3 s: on the archived run it re-serialised
+    # 270 nodes and 3,231 edges into 19 MB each time, 8.7 s per request against a 3 s poll, and
+    # every other endpoint queued behind it. The cache existed in full and was never armed.
+    #
+    # `request is None` keeps the plain dict, because /admission_audit calls this function
+    # directly and does `g.get("admission_summary")` on the result.
+    if request is None:
+        return payload
+    return JSONResponse(content=payload, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
 
 @app.get("/admission_audit")
@@ -1013,6 +1044,37 @@ def _crop_file(target: str):
     return best[1] if best else None
 
 
+@app.get("/walls")
+def get_walls():
+    """Detected wall segments, per-frame from depth. GA-271.
+
+    `available` is explicit because wall_detector is OPT-IN (WALL_DETECTOR=1): it cost 4.4
+    cores and starved rtabmap, so it is off by default. An empty list from a node that is not
+    running and an empty list from a frame with no walls are different facts, and a viewer
+    that cannot tell them apart will report "no walls" for a detector nobody started.
+    """
+    node = get_node()
+    walls = list(getattr(node, "latest_walls", []) or []) if node else []
+    stamp = float(getattr(node, "walls_stamp", 0.0) or 0.0) if node else 0.0
+    age = (time.time() - stamp) if stamp else None
+    return {
+        "walls": walls,
+        "count": len(walls),
+        "age_s": round(age, 2) if age is not None else None,
+        "available": stamp > 0.0,
+        "why": (None if stamp > 0.0 else
+                "no /detected_wall_segments seen; wall_detector is opt-in (WALL_DETECTOR=1)"),
+    }
+
+
+# BOTH spellings, and the singular one matters most: every `crop_url` this bridge emits
+# is `/crop/<id>`. When get_walls was added its decorator was inserted BETWEEN
+# `@app.get("/crop/{target}")` and this function, so the singular route bound to
+# get_walls and every crop request on the dashboard came back as the walls JSON. Nothing
+# errored -- the viewer asked for an image, got 136 bytes of JSON, and simply showed no
+# thumbnail, which reads as "crops are not being collected" when 133 of them were sitting
+# in the bundle. A decorator belongs to the function directly beneath it; anything
+# inserted between the two silently steals the route.
 @app.get("/crop/{target}")
 @app.get("/crops/{target}")
 def get_crop_image(target: str, request: Request = None):
@@ -1042,7 +1104,15 @@ def get_crop_image(target: str, request: Request = None):
                         headers={"ETag": etag, "Cache-Control": "public, max-age=3600"})
 
 
-FEED_HOST = os.environ.get("FEED_HOST", "http://127.0.0.1:7790")
+# GA-270. From config; see config.py "services". The bridge probes this address for every
+# frame, so a stale literal here degrades the live view silently rather than loudly.
+try:
+    from config import CFG as _BRIDGE_CFG
+except ImportError:
+    _BRIDGE_CFG = {}
+_SVC_B = (_BRIDGE_CFG.get("services", {}) or {}) if isinstance(_BRIDGE_CFG, dict) else {}
+FEED_HOST = os.environ.get("FEED_HOST") or (
+    f"http://{_SVC_B.get('feed_host', '127.0.0.1')}:{_SVC_B.get('feed_port', 7790)}")
 
 # Serve composite_*.jpg fallback frames only if this fresh — older ones are
 # leftovers from past recordings and masquerade as a live feed.

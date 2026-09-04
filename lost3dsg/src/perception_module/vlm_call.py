@@ -90,7 +90,37 @@ class VlmClient:
         raw = self._vlm_call(prompt, self._encode(rgb))
         return self.parse_labels_response(raw)
 
+    def _clean_labels(self, raw_labels):
+        """Lemmatise and de-duplicate, logging what was collapsed. GA-285.
+
+        A dropped label is PRINTED, not swallowed: a term the VLM asked for and the detector
+        never saw is a fact about the run, and silently shrinking the request is how a
+        vocabulary gap becomes invisible.
+        """
+        try:
+            import label_norm
+        except ImportError:
+            # No normaliser on the path is not a reason to ask for duplicates, but it is also
+            # not a reason to fail: fall back to the previous behaviour and say so once.
+            if not getattr(self, "_label_norm_warned", False):
+                self._label_norm_warned = True
+                print("[vlm] label_norm unavailable; label list NOT de-duplicated", flush=True)
+            return [str(x).strip().lower() for x in raw_labels if str(x).strip()]
+        kept, dropped = label_norm.clean(raw_labels)
+        if dropped:
+            print("[vlm] label list: " + ", ".join(
+                f"{d!r} -> {k!r} ({why})" for d, k, why in dropped), flush=True)
+        return kept
+
     def parse_labels_response(self, raw: str):
+        """VLM reply -> the label list the detector is asked for.
+
+        GA-285. EVERY return path goes through label_norm.clean(). Two of the three did no
+        de-duplication at all, and none collapsed synonyms -- so a reply containing both
+        "door" and "doorway" asked the detector for both, and it returned the same pixels
+        twice at IoS 1.00 in every frame. Class-aware NMS cannot merge them afterwards; the
+        duplicates have to not be created.
+        """
         if not raw:
             return []
         cleaned = re.sub(r"```json|```", "", raw).strip()
@@ -105,7 +135,7 @@ class VlmClient:
                     self.last_room_belief = data.get("room_belief")
                     objects = data.get("objects", [])
                     if isinstance(objects, list) and objects:
-                        return [str(x).strip().lower() for x in objects if str(x).strip()]
+                        return self._clean_labels(objects)
         except Exception:
             pass
 
@@ -115,7 +145,7 @@ class VlmClient:
             if match:
                 items = json.loads(match.group(0))
                 if isinstance(items, list):
-                    return [str(x).strip().lower() for x in items if str(x).strip()]
+                    return self._clean_labels(items)
         except Exception:
             pass
 
@@ -127,9 +157,25 @@ class VlmClient:
                 continue
             for part in line.split(","):
                 part = re.sub(r"[^\w\s-]", "", part).strip().lower()
-                if part and part not in labels:
+                if part:
                     labels.append(part)
-        return labels
+        return self._clean_labels(labels)
+
+    def call_image_prompt(self, image, prompt):
+        """One image, one prompt, RAW text back. GA-209.
+
+        The grid describer needs a call that does not assume a single object: no per-crop
+        cache (a grid is a composite that never repeats), no crop-response parsing (the
+        reply is a list of cells, parsed by crop_grid.parse), and no default-result
+        swallowing -- the CALLER decides what a failure means, because for a grid the right
+        answer to a bad reply is to retry the missing cells individually, not to return
+        "unknown" for all of them.
+
+        Raising rather than returning a default is deliberate: `call_crop_full` catches its
+        own failure and hands back a filled-in "unknown" record, which is right when one
+        object is at stake and wrong when six are.
+        """
+        return self._vlm_call(prompt, self._encode(image))
 
     def call_crop(self, prompt_path, label):
         return open(prompt_path).read().strip().replace("{LABEL}", label)
