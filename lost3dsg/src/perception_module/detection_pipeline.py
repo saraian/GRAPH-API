@@ -53,6 +53,32 @@ def pca_oriented_box(pts_map, min_anisotropy=1.2):
     }
 
 
+def _backend_health_no_roundtrip(backend, backend_type):
+    """LAT-4. Telemetry must never add a network round trip to the detect path.
+
+    `backend.health()` was called once per cycle to fill one telemetry field. On the HTTP
+    client that is a SECOND Modal request beside the detection itself -- ~1.5 s warm, and a
+    cold container turns it into tens of seconds for a field nobody controls anything with.
+
+    The HTTP client already caches its last result in `last_health`, refreshed by whoever
+    probes it deliberately, so the field is served from that. With no probe yet the value is
+    reported as UNKNOWN rather than as reachable: this path cannot tell, and writing `True`
+    here would be the telemetry asserting something it did not measure.
+
+    Local and provider backends compute their health from state already in memory, with no
+    I/O at all, so they are still called directly.
+    """
+    if backend is None or not hasattr(backend, "health"):
+        return {"reachable": True, "type": backend_type}
+    if hasattr(backend, "health_url"):          # the HTTP client: cached only, never probed here
+        cached = getattr(backend, "last_health", None)
+        if cached:
+            return dict(cached, source="cached (LAT-4: not probed on the detect path)")
+        return {"reachable": None, "type": backend_type,
+                "source": "not probed on the detect path (LAT-4)"}
+    return backend.health()
+
+
 class DetectionPipelineMixin:
     def run_detection(self, camera_data):
         self.log_both("info", "=== START DETECTION ===")
@@ -218,10 +244,7 @@ class DetectionPipelineMixin:
             "last_updated": time.time(),
             "components": {
                 "vlm": vlm_info,
-                "perception_backend": (
-                    backend.health() if backend and hasattr(backend, "health")
-                    else {"reachable": True, "type": backend_type}
-                ),
+                "perception_backend": _backend_health_no_roundtrip(backend, backend_type),
             }
         }
         self.latest_latencies = latencies

@@ -244,7 +244,6 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         qos_default = 10
 
         self.pub_image = self.create_publisher(Image, "/image_with_bb", qos_latched)
-        self.pub_crop = self.create_publisher(Image, "/cropped_image", qos_default)
         self.bbox_pub = self.create_publisher(Bbox3dArray, "/bbox_3d", qos_default)
         self.pub_object_descriptions = self.create_publisher(ObjectDescriptionArray, "/object_descriptions", qos_default)
         self.pcl_objects_pub = self.create_publisher(PointCloud2, "/pcl_objects", qos_latched)
@@ -566,7 +565,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             return
         if not detections:
             self._publish_image_with_bb(image_raw, [], [], camera_info, camera_data["transform"], cycle_stamp, depth)
-            self.publish_empty_state(depth, camera_info, cycle_stamp)
+            # LAT-2: hand over the FOV computed at the top of this cycle instead of
+            # letting the empty-state path project the whole depth image a second time.
+            self.publish_empty_state(depth, camera_info, cycle_stamp, fov_volume=fov_volume)
             return
 
         self._io_executor.submit(self.save_visualizations, image_raw.copy(), depth.copy(), list(detections), PROJECT_ROOT)
@@ -591,7 +592,6 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._archive_detections(detections, bboxes_3d, centroids_3d, image_raw,
                                  camera_data.get("transform"), cycle_stamp,
                                  crops_data=crops_data, depth=depth)
-        self.publish_crops(crops_data)
         self._attach_crop_embeddings(detections, crops_data)
         vlm_results = self._run_crop_vlm_batch(crops_data)
         descriptions = self._build_descriptions(detections, vlm_results, crops_data)

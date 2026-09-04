@@ -44,7 +44,7 @@ class PerceptionIOMixin:
         except Exception as exc:
             self.log_both("error", f"Background JSON dump failed: {exc}")
 
-    def publish_empty_state(self, depth, camera_info, cycle_stamp=None):
+    def publish_empty_state(self, depth, camera_info, cycle_stamp=None, fov_volume=None):
         stamp = cycle_stamp if cycle_stamp is not None else self.get_clock().now().to_msg()
         # The object cloud (/pcl_objects, latched) is deliberately NOT wiped here: an
         # empty cycle used to overwrite the last detection's cloud with a zero-point
@@ -52,7 +52,13 @@ class PerceptionIOMixin:
         self.pub_object_descriptions.publish(self.make_header_msg(ObjectDescriptionArray, stamp=stamp, frame_id="map"))
 
         empty_bboxes = self.make_header_msg(Bbox3dArray, stamp=stamp, frame_id="map")
-        fov = compute_fov_volume_from_depth(depth, camera_info, self)
+        # LAT-2. The caller has already computed this for THIS cycle, deliberately early
+        # while the stamp is still inside the TF buffer. Recomputing it here repeated the
+        # whole depth-to-map projection on every empty cycle for a value already in hand.
+        # Recomputed only when a caller supplies nothing, so the function stays usable on
+        # its own.
+        fov = fov_volume if fov_volume is not None else compute_fov_volume_from_depth(
+            depth, camera_info, self)
         if fov:
             for key, value in fov.items():
                 setattr(empty_bboxes, f"fov_{key}", value)
@@ -138,12 +144,8 @@ class PerceptionIOMixin:
                           "path": crop_path})
         return crops
 
-    def publish_crops(self, crops_data):
-        for crop in filter(None, crops_data):
-            try:
-                msg = self.bridge.cv2_to_imgmsg(crop["cropped"], encoding="bgr8")
-                msg.header.stamp = self.get_clock().now().to_msg()
-                msg.header.frame_id = "camera"
-                self.pub_crop.publish(msg)
-            except Exception as exc:
-                self.get_logger().error(f"Crop publish error for {crop['label']}: {exc}")
+    # LAT-5. `publish_crops` DELETED, with its `/cropped_image` publisher. It encoded and
+    # published every crop of every cycle to a topic NOTHING SUBSCRIBED TO: every crop
+    # consumer in either tree reads the `cropped_images` DIRECTORY instead (the bridge's
+    # `_crop_dirs`, the dashboard server, `test_graph_data.py`). Checked across both trees
+    # before deleting; the only other references were the two dead snapshots.
