@@ -363,8 +363,13 @@ class DetectionPipelineMixin:
     def _run_open_vocab_detector(self, rgb_image, labels):
         self.detector.set_classes(labels)
         t0 = time.time()
+        # H10. The LOCAL backend was detecting at predict()'s hardcoded 0.35 while the
+        # cloud path forwards `perception.score_threshold` (0.15) -- the same run config
+        # meant different detections on different backends. The config value is passed
+        # here now, same read as the cloud path.
         with torch.inference_mode():
-            bboxs, detected_labels, scores = self.detector.predict(rgb_image)
+            bboxs, detected_labels, scores = self.detector.predict(
+                rgb_image, box_threshold=CFG.get("perception", {}).get("score_threshold", 0.15))
         self.log_both("info", f"[PROFILE] OWLv2 predict: {time.time() - t0:.3f}s")
 
         if self._abort_if_moving("OWLv2 detection"):
@@ -373,7 +378,12 @@ class DetectionPipelineMixin:
 
     def _apply_detection_nms(self, bboxs, labels, scores):
         t0 = time.time()
-        bboxs, labels, scores = apply_nms(bboxs, labels, scores, iou_threshold=0.5)
+        # H11. The local path hardcoded IoU 0.5 while the cloud backend reads
+        # `perception.nms_threshold` -- same config, different suppression per backend.
+        # Same read as the cloud path now.
+        bboxs, labels, scores = apply_nms(
+            bboxs, labels, scores,
+            iou_threshold=CFG.get("perception", {}).get("nms_threshold", 0.50))
         self.log_both("info", f"[PROFILE] NMS: {time.time() - t0:.3f}s")
         return bboxs, labels, scores
 
