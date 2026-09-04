@@ -49,6 +49,11 @@ def worst_rejected_age(runs_dir):
             continue                    # no perception log: this run says nothing either way
         if _bridge_never_bound(runs_dir, d):
             continue                    # see the docstring below: not a sample of a working loop
+        try:
+            if os.path.getsize(log) == 0:
+                continue                # GA-301: an EMPTY log is not evidence of a clean run
+        except OSError:
+            continue
         worst = 0.0
         try:
             with open(log, errors="replace") as fh:
@@ -112,6 +117,16 @@ def _selfcheck():
                                 "Cached frame too old (5.57s), discarding\n")
     assert worst_rejected_age(root) == "8.52", worst_rejected_age(root)
 
+    # AN EMPTY perception.log IS NOT A CLEAN RUN. GA-301: run 20260904_143558 was REFUSED by the
+    # gate, so perception never started and its log was 0 bytes. "No rejection lines" then read as
+    # "the newest run was fine" and the very next launch passed a10 -- so a refused run silenced the
+    # probe, and the gate could be defeated by launching twice. An empty log is no evidence either
+    # way, and the search must continue past it.
+    bundle("20260404_000000_x", "")
+    assert worst_rejected_age(root) == "8.52", worst_rejected_age(root)
+    import shutil as _sh
+    _sh.rmtree(os.path.join(root, "20260404_000000_x"))
+
     # A BUNDLE WHOSE BRIDGE NEVER BOUND IS SKIPPED, and the search continues past it.
     b = bundle("20260303_000000_x", "Cached frame too old (18.22s), discarding\n")
     with open(os.path.join(b, "bridge.log"), "w") as fh:
@@ -142,7 +157,7 @@ def _selfcheck():
     os.symlink(os.path.join(root, "20260404_000000_x"), os.path.join(root, "latest"))
     assert worst_rejected_age(root) == "", "`latest` is a name, not a sample"
     print("  last_frame_age_rejected selfcheck OK (empty/missing dir, worst-of-many, newest "
-          "clean run wins, dead-bridge bundle skipped, no-log skipped, malformed age ignored, `latest` ignored)")
+          "clean run wins, dead-bridge and empty-log bundles skipped, no-log skipped, malformed age ignored, `latest` ignored)")
     return 0
 
 
