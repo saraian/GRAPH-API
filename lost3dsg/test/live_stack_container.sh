@@ -54,7 +54,7 @@ else
   echo "    interface key unchanged ($BUILD_KEY); reusing the generated interfaces"
 fi
 _build_t0=$(date +%s)
-# GA-297. DELETE THE INSTALLED NODE SCRIPTS BEFORE BUILDING. colcon copies files in and never
+# GA-300. DELETE THE INSTALLED NODE SCRIPTS BEFORE BUILDING. colcon copies files in and never
 # takes them out, and /ws is a persistent named volume (GA-157), so a module DELETED from
 # CMakeLists stays in /ws/install and keeps being importable and runnable. Measured 4 Sep:
 # after habitat_camera_node.py was removed from the install list, a fresh build still left it
@@ -349,7 +349,8 @@ if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
   # and _144312 in localization mode. Run 20260903_230232 carried the flag and died the same way at
   # iteration 1485. Left in place it would read as a fix to whoever comes back to localization.
   # The record is PLAN_1.3 §26; the next hypothesis there is --RGBD/OptimizeMaxError 0, untested.
-  # Owner ruling 4 Sep: detection runs use SLAM mode (RTABMAP_SLAM=1) and do not come here at all.
+  # SUPERSEDED, 4 Sep ~15:55: the owner banned SLAM outright ("we will not use slam", GA-290
+  # register) and live_run.sh now REFUSES RTABMAP_SLAM=1, so every detection run DOES come here.
   _RT_DB_ARGS="--Mem/IncrementalMemory false"
   echo ">>> LOCALIZATION MODE against a copy of $RTABMAP_LOCALIZE_DB (params-sha $_have)"
   echo "    mapping is OFF; the driver must also set FEED_MAPPING_SECONDS=0"

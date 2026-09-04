@@ -11,7 +11,7 @@ mkdir -p /ws/src
 rm -rf /ws/src/lost3dsg
 cp -r /graph_api/lost3dsg /ws/src/lost3dsg
 cd /ws
-# GA-297. DELETE THE INSTALLED NODE SCRIPTS BEFORE BUILDING. colcon copies files in and never
+# GA-300. DELETE THE INSTALLED NODE SCRIPTS BEFORE BUILDING. colcon copies files in and never
 # takes them out, and /ws is a persistent named volume (GA-157), so a module DELETED from
 # CMakeLists stays in /ws/install and keeps being importable and runnable. Measured 4 Sep:
 # after habitat_camera_node.py was removed from the install list, a fresh build still left it
