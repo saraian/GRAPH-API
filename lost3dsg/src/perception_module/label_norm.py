@@ -29,11 +29,16 @@ import sys
 
 # Irregular plurals that the rules below would get wrong. Small on purpose: every entry is a
 # word an indoor detector actually emits.
+# W5. "buses" and "lenses" are hand entries for the SAME reason "glasses"/"vases" already
+# were: they are true s-stems + "es", and the "-se"+s reading below would take "buses" to
+# "buse". The vocabulary is indoor-scene nouns; a rule cannot be spelled for both
+# "houses"/"bookcases" and "buses" without a dictionary, so the exceptions are explicit.
 IRREGULAR = {
     "shelves": "shelf", "leaves": "leaf", "knives": "knife", "loaves": "loaf",
     "people": "person", "children": "child", "feet": "foot", "teeth": "tooth",
     "mice": "mouse", "boxes": "box", "dishes": "dish", "benches": "bench",
     "couches": "couch", "glasses": "glass", "vases": "vase", "mattresses": "mattress",
+    "buses": "bus", "lenses": "lens",
 }
 
 # Words ending in 's' that are NOT plurals. Without this, "glass" becomes "glas".
@@ -79,10 +84,16 @@ def singularise(word):
             head = last
         elif last.endswith("ies") and len(last) > 4:
             head = last[:-3] + "y"       # canopies -> canopy
-        elif last.endswith(("ches", "shes", "xes", "zes", "ses")):
-            head = last[:-2]             # benches -> bench
+        elif last.endswith(("ches", "shes", "xes", "zes")):
+            head = last[:-2]             # benches -> bench, boxes -> box
         else:
-            head = last[:-1]             # chairs -> chair
+            # W5. NO "ses" arm: "-ses" is ambiguous by spelling alone and the old 2-char
+            # strip mangled every "-se"+s stem (houses->"hous", bookcases->"bookcas",
+            # suitcases->"suitcas"), asking the detector for a non-word and losing the
+            # object. The "-se" reading is kept -- it is the common furniture-vocabulary
+            # case -- and the genuine s-stems (buses, lenses; glasses, vases already) are
+            # hand entries in IRREGULAR, the precedent this file already used.
+            head = last[:-1]             # chairs -> chair, houses -> house, bookcases -> bookcase
     return (w[: -len(last)] + head) if len(w) > len(last) else head
 
 
@@ -95,9 +106,17 @@ def normalise(label):
     return singularise(s) if s else s
 
 
+# W4. The table above stores the forms a PERSON writes (plural "chest of drawers"); the
+# labels arriving here are NORMALISED (head noun singularised: "chest of drawer"). Exact
+# membership then missed the only plural-headed member, and `dresser` + `chest of drawers`
+# both reached the detector -- the exact duplicate boxes this module exists to prevent.
+# Normalised-vs-normalised, computed once here.
+_SYNONYMS_NORMALISED = tuple(frozenset(normalise(m) for m in group) for group in SYNONYMS)
+
+
 def _synonym_key(label):
     """-> a stable key shared by every member of a synonym class, else the label itself."""
-    for i, group in enumerate(SYNONYMS):
+    for i, group in enumerate(_SYNONYMS_NORMALISED):
         if label in group:
             return f"__syn{i}"
     return label
@@ -157,6 +176,25 @@ def _selfcheck():
     k, _ = clean(["couch", "sofa", "chair"])
     assert k == ["couch", "chair"], k
     print("  ok  synonym classes collapse; unrelated labels survive")
+
+    # W4. THE ONE PLURAL-HEADED MEMBER. Measured defect: clean(['dresser','chest of
+    # drawers']) -> (['dresser','chest of drawer'], []) -- the group never matched after
+    # the head noun was singularised, and both terms reached the detector.
+    k, d = clean(["dresser", "chest of drawers"])
+    assert k == ["dresser"], k
+    assert d and d[0][0] == "chest of drawers" and "synonym" in d[0][2], d
+    k, _ = clean(["chest of drawers", "dresser"])
+    assert k == ["chest of drawer"], "first occurrence wins, whichever it is"
+    print("  ok  plural-headed synonym member collapses (dresser / chest of drawers)")
+
+    # W5. "-ses" no longer strips two chars off "-se"+s stems.
+    for plural, singular in (("houses", "house"), ("bookcases", "bookcase"),
+                             ("suitcases", "suitcase"), ("buses", "bus"),
+                             ("benches", "bench"), ("boxes", "box")):
+        assert singularise(plural) == singular, f"{plural} -> {singularise(plural)!r}"
+    k, _ = clean(["bookcases", "bookcase", "Bookcase"])
+    assert k == ["bookcase"], k
+    print("  ok  houses/bookcases/suitcases survive; buses via the hand entry; benches/boxes still strip")
 
     # DISTINCT THINGS MUST SURVIVE. Collapsing these would lose real objects.
     k, _ = clean(["table", "desk", "nightstand", "shelf", "cabinet", "chair", "stool"])
