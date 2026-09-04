@@ -2,6 +2,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -181,6 +182,19 @@ class BridgeNode(Node):
         self.create_subscription(_WallStr, '/detected_wall_segments', self._on_walls, 10)
         self.create_subscription(Image, '/camera/rgb', self._on_raw_image, 10)
         self.create_subscription(Image, '/image_with_bb', self._on_annotated_image, 10)
+
+        # TF, for the live overlay's camera pose. Optional on purpose: if tf2_ros is not
+        # importable the attribute stays None, _pose_from_tf returns None, and the overlay
+        # falls back to the newest recorded pose instead of the node failing to construct.
+        # /health reports which source answered, so the fallback is never mistaken for TF.
+        self.tf_buffer = None
+        try:
+            from tf2_ros import TransformListener
+            from tf2_ros.buffer import Buffer
+            self.tf_buffer = Buffer()
+            self.tf_listener = TransformListener(self.tf_buffer, self)
+        except ImportError as exc:
+            self.get_logger().warn(f"tf2_ros unavailable, overlay will use recorded poses: {exc}")
 
     def _convert_to_jpeg(self, msg: Image) -> bytes:
         try:
@@ -968,20 +982,34 @@ def _decision_records():
 
 
 def _crop_dirs():
-    """Resolve the cropped_images directory once. Eight directories were globbed
-    up to three times per object per request; only one of them is ever the run's."""
+    """Resolve the cropped_images directories for the ACTIVE run.
+
+    Cached, because eight directories were being globbed up to three times per object per
+    request and only one of them is ever the run's. KEYED ON THE ACTIVE OUTPUT DIRECTORY,
+    because that directory MOVES: the replay dashboard re-points GRAPH_API_OUTPUT_DIR when
+    it follows a new run or when a bundle is chosen from the page, and every other reader
+    here re-resolves per call.
+
+    Cached once and forever, this returned the FIRST run's crop directory for the whole life
+    of the process. Measured 2026-09-04 on the replay dashboard: 146 of 147 nodes carried a
+    crop_url and every one of them answered with the 346-byte placeholder SVG, while the same
+    route on the live bridge returned real JPEGs -- because the live bridge's output directory
+    never moves and the replay server's always does. It reads on screen as "the crops were
+    never collected", and the crops were on disk the whole time (414 files in that bundle).
+    """
     global _CROP_DIRS
-    if _CROP_DIRS is None:
+    active = _active_output_dir()
+    if _CROP_DIRS is None or _CROP_DIRS[0] != active:
         candidates = [
-            _active_output_dir(),
+            active,
             _PROJECT_ROOT / "output",
             Path("/ws/install/lost3dsg/output"),
             Path("/ws/output"),
             Path("/out"),
             Path("/tmp/graphapi_live"),
         ]
-        _CROP_DIRS = [c / "cropped_images" for c in candidates]
-    return [d for d in _CROP_DIRS if d.exists()]
+        _CROP_DIRS = (active, [c / "cropped_images" for c in candidates])
+    return [d for d in _CROP_DIRS[1] if d.exists()]
 
 
 def _crop_label(target: str) -> str:
@@ -1147,6 +1175,200 @@ _feed_probe_blocked_until = 0.0
 _last_frame_source = None
 
 
+# ---------------------------------------------------------------------------------------
+# THE LIVE OVERLAY. Boxes on the frame the dashboard is actually showing.
+#
+# The simulator draws its belief overlay only into its own GUI window copy, so the frame it
+# SERVES has never carried a box -- measured 2026-09-04, the bridge frame and the host frame
+# were byte-identical at 117,117 bytes. Perception's /image_with_bb does carry boxes, but it
+# publishes one frame per cycle, so the dashboard alternated between clean frames and an
+# occasional annotated one. That is the "an older frame with boxes flashes past" report.
+#
+# Here the boxes are PROJECTED from the persistent world model onto whichever frame is being
+# served, so an object stays outlined for as long as it is in view. The projection lives in
+# live_overlay.py and is verified there against the pipeline's own recorded 2D boxes.
+try:
+    from . import live_overlay as _lo
+except ImportError:                                   # launched by file path, not as a package
+    import live_overlay as _lo
+
+OVERLAY_ON = os.environ.get("BRIDGE_OVERLAY", "1") == "1"
+# The frame the world model is expressed in, and the camera frame to look it up as. Both are
+# configurable because a rename in the TF tree must not silently draw boxes in the wrong place.
+OVERLAY_MAP_FRAME = os.environ.get("BRIDGE_OVERLAY_MAP_FRAME", "map")
+OVERLAY_CAM_FRAME = os.environ.get("BRIDGE_OVERLAY_CAM_FRAME", "habitat_camera_optical")
+
+_OVERLAY_OBJ = {"key": None, "objects": []}
+_OVERLAY_INTR = {"key": None, "value": None}
+_OVERLAY_OUT = {"key": None, "jpeg": None}
+# WHICH source gave the pose. Reported on /health beside frame_source, because a pose from a
+# stale detection record and a pose from TF draw the same picture and are not the same claim.
+_overlay_pose_source = None
+
+
+def _overlay_objects():
+    """The persistent world model, re-read when the file changes. Same file /graph_data uses."""
+    path = _active_output_dir() / "persistent_perception.json"
+    try:
+        st = path.stat()
+    except OSError:
+        return []
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if _OVERLAY_OBJ["key"] != key:
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return _OVERLAY_OBJ["objects"]
+        objs = data if isinstance(data, list) else data.get("objects", [])
+        _OVERLAY_OBJ.update(key=key, objects=[o for o in objs if isinstance(o, dict)])
+    return _OVERLAY_OBJ["objects"]
+
+
+def _overlay_intrinsics(width, height):
+    """Intrinsics for a frame of this size.
+
+    calibration.json is written per run and is authoritative. It is recorded for the sensor's
+    own resolution, so a frame served at another size is scaled rather than used as-is -- fx
+    and cx are in pixels and do not survive a resize. With no calibration, derive from the
+    feed's horizontal field of view, which is what calibration.json itself does.
+    """
+    path = _active_output_dir() / "calibration.json"
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, width, height)
+    except OSError:
+        st, key = None, ("hfov", width, height)
+    if _OVERLAY_INTR["key"] == key:
+        return _OVERLAY_INTR["value"]
+    intr = None
+    if st is not None:
+        try:
+            cal = json.loads(path.read_text())
+            i, res = cal["intrinsics"], cal.get("resolution") or {}
+            sw, sh = res.get("width") or width, res.get("height") or height
+            kx, ky = width / float(sw), height / float(sh)
+            intr = {"fx": i["fx"] * kx, "fy": i["fy"] * ky,
+                    "cx": i["cx"] * kx, "cy": i["cy"] * ky}
+        except (OSError, ValueError, KeyError, ZeroDivisionError, TypeError):
+            intr = None
+    if intr is None:
+        hfov = math.radians(float(os.environ.get("FEED_HFOV", "90")))
+        f = (width / 2.0) / math.tan(hfov / 2.0)
+        intr = {"fx": f, "fy": f, "cx": width / 2.0, "cy": height / 2.0}
+    _OVERLAY_INTR.update(key=key, value=intr)
+    return intr
+
+
+def _pose_from_tf():
+    """The camera pose from TF, or None. THE CORRECT LIVE SOURCE, and the only per-frame one.
+
+    WRITTEN, NOT RUN. There was no live stack up when this was added, so this path has never
+    answered. It returns None on anything unexpected and the caller falls through to the
+    recorded pose, which is why a wrong frame name here degrades rather than misdraws -- and
+    /health says which source actually answered, so "TF is working" is never assumed.
+    """
+    node = get_node()
+    buf = getattr(node, "tf_buffer", None) if node else None
+    if buf is None:
+        return None
+    try:
+        import rclpy.time
+        t = buf.lookup_transform(OVERLAY_MAP_FRAME, OVERLAY_CAM_FRAME, rclpy.time.Time())
+    except Exception:      # tf2 raises several unrelated exception types; none is fatal here
+        return None
+    tr, ro = t.transform.translation, t.transform.rotation
+    return ([tr.x, tr.y, tr.z], [ro.x, ro.y, ro.z, ro.w], "tf")
+
+
+def _pose_from_detections(max_age=90.0):
+    """The camera pose recorded with the newest detection, or None.
+
+    One perception cycle stale by construction, so boxes lag while the agent walks. It is the
+    fallback, not the design, and it is what makes the overlay testable with no ROS at all.
+    """
+    path = _active_output_dir() / "detections.jsonl"
+    try:
+        st = path.stat()
+        if time.time() - st.st_mtime > max_age:
+            return None
+        with path.open("rb") as f:
+            f.seek(max(0, st.st_size - 262144))
+            tail = f.read().splitlines()
+    except OSError:
+        return None
+    for line in reversed(tail):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("camera_position") and r.get("camera_quat_xyzw"):
+            return (r["camera_position"], r["camera_quat_xyzw"], "newest detection record")
+    return None
+
+
+def _overlay_pose(max_age=90.0):
+    """The camera pose to draw with, TF first and the recorded pose second.
+
+    `max_age` is threaded through to the recorded source and defaults to what it always was,
+    so every existing caller is unchanged (working rule 6 applied to a signature). Only
+    /overlay_pose passes anything else, and only to REPLAY an archived run's own poses -- see
+    the route, which refuses to call that a live reading.
+    """
+    global _overlay_pose_source
+    for src in (_pose_from_tf, lambda: _pose_from_detections(max_age=max_age)):
+        got = src()
+        if got:
+            _overlay_pose_source = got[2]
+            return got
+    _overlay_pose_source = None
+    return None
+
+
+def _with_overlay(jpeg):
+    """Draw the world model's boxes onto `jpeg`. Returns the original on any failure.
+
+    Cached on the frame bytes and the pose, because /feed calls this at up to 12 Hz over
+    sources that update at ~3 Hz; without it every repeat would pay a decode and an encode.
+    """
+    if not OVERLAY_ON or not jpeg:
+        return jpeg
+    objects = _overlay_objects()
+    if not objects:
+        return jpeg
+    pose = _overlay_pose()
+    if not pose:
+        return jpeg
+    pos, quat, _ = pose
+    key = (hashlib.sha1(jpeg).hexdigest(), tuple(pos), tuple(quat), len(objects))
+    if _OVERLAY_OUT["key"] == key:
+        return _OVERLAY_OUT["jpeg"]
+    try:
+        img = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return jpeg
+        h, w = img.shape[:2]
+        boxes = _lo.visible_boxes(objects, pos, quat, _overlay_intrinsics(w, h), w, h)
+        if not boxes:
+            _OVERLAY_OUT.update(key=key, jpeg=jpeg)
+            return jpeg
+        _lo.draw(img, boxes, cv2)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if not ok:
+            return jpeg
+        out = buf.tobytes()
+    except (cv2.error, ValueError, TypeError, AttributeError) as exc:
+        # COUNTED, not swallowed: an overlay that silently stops drawing looks exactly like a
+        # run that has found nothing, which is the confusion this whole file keeps unpicking.
+        _OVERLAY_FAILURES["n"] += 1
+        _OVERLAY_FAILURES["last"] = f"{type(exc).__name__}: {exc}"
+        return jpeg
+    _OVERLAY_OUT.update(key=key, jpeg=out)
+    return out
+
+
+_OVERLAY_FAILURES = {"n": 0, "last": None}
+
+
 def _best_frame():
     """The freshest frame worth showing, newest source first.
 
@@ -1207,6 +1429,11 @@ def _latest_fresh_composite():
 def proxy_frame():
     frame = _best_frame()
     if frame:
+        # NOT when perception's own overlay is what answered: that frame already carries the
+        # boxes AND the masks, drawn from the detection itself rather than reprojected, and
+        # drawing over it would put two rectangles round every object.
+        if _last_frame_source != "perception overlay":
+            frame = _with_overlay(frame)
         return Response(content=frame, media_type="image/jpeg")
     return Response(status_code=503)
 
@@ -1217,6 +1444,8 @@ def proxy_feed():
         last, last_sent = None, 0.0
         while True:
             frame_data = _best_frame()
+            if frame_data and _last_frame_source != "perception overlay":
+                frame_data = _with_overlay(frame_data)   # see proxy_frame for why the guard
 
             # Don't re-push a frame the browser already has: the sources run at ~3 fps
             # and this loop at 12.5, so most iterations used to resend an identical JPEG
@@ -1504,6 +1733,9 @@ def _stamp():
     if node and getattr(node, "last_frame_time", 0):
         out["frame_at"] = node.last_frame_time
     out["frame_source"] = _last_frame_source
+    out["overlay"] = {"on": OVERLAY_ON, "pose_source": _overlay_pose_source,
+                      "objects": len(_OVERLAY_OBJ["objects"]),
+                      "failures": _OVERLAY_FAILURES["n"], "last_error": _OVERLAY_FAILURES["last"]}
     return out
 
 
@@ -1650,6 +1882,72 @@ def _nodes_per_room(conn):
         else:
             counts["unassigned"] += 1
     return counts
+
+
+@app.get("/overlay_pose")
+def get_overlay_pose(width: int = 0, height: int = 0, max_age: float = 90.0):
+    """The camera pose the overlay draws with, and the view frustum it implies.
+
+    ONE ROUTE FOR BOTH MODES, which is why it lives here and not in the dashboard. The replay
+    server IMPORTS this module, so in replay it answers locally off the bundle's own files; in
+    live mode the dashboard's catch-all proxies to it. A second implementation on the
+    dashboard would be a second convention, and this file already records what the wrong
+    convention costs (live_overlay's header: 1630 px).
+
+    WHICH SOURCE ANSWERED IS PART OF THE ANSWER, never inferred by the caller. `source` is
+    "tf" for the real per-frame pose and "newest detection record" for the recorded one, which
+    is one perception cycle stale by construction. As of 2026-09-04 `_pose_from_tf` has never
+    answered -- its own docstring says WRITTEN, NOT RUN -- so a caller that sees "tf" here is
+    seeing something this project has not yet observed, and should say so.
+
+    `max_age` exists so an ARCHIVED run can be replayed through this exact code path. A stale
+    pose is still returned with `age_s` and `stale` set, and the caller must not print it as a
+    live reading. The default is the live default: 90 s.
+
+    The frustum is `live_overlay.frustum_rays`, in the CAMERA frame, at 1 m. Its shape does
+    not depend on the resolution (see that function), so a stale calibration.json moves the
+    pixel scale and not the drawing.
+    """
+    d = _active_output_dir()
+    cal = d / "calibration.json"
+    res_src = "calibration.json"
+    if not width or not height:
+        try:
+            r = json.loads(cal.read_text())["resolution"]
+            width, height = int(r["width"]), int(r["height"])
+        except (OSError, ValueError, KeyError, TypeError):
+            width, height, res_src = 0, 0, "NOT AVAILABLE (no calibration.json)"
+    else:
+        res_src = "caller"
+    intr = _overlay_intrinsics(width, height) if width and height else None
+
+    det = d / "detections.jsonl"
+    try:
+        age = time.time() - det.stat().st_mtime
+    except OSError:
+        age = None
+
+    pose = _overlay_pose(max_age=max_age)
+    out = {"output_dir": str(d), "resolution": [width, height], "resolution_source": res_src,
+           "intrinsics": intr, "detections_age_s": age, "max_age_s": max_age,
+           "tf_map_frame": OVERLAY_MAP_FRAME, "tf_cam_frame": OVERLAY_CAM_FRAME}
+    if not pose:
+        # NOT A POSE OF ZERO. An absent pose is absent, and the reason is named: a caller that
+        # got {0,0,0} back would draw a camera at the origin and it would look like a reading.
+        out.update(pose=None, why=(
+            "no pose: TF did not answer and no detection record newer than "
+            f"{max_age:.0f} s carries camera_position + camera_quat_xyzw"
+            + (f" (detections.jsonl is {age:.0f} s old)" if age is not None else
+               " (no detections.jsonl in this output directory)")))
+        return JSONResponse(out)
+    pos, quat, source = pose
+    out.update(pose={"position": pos, "quat_xyzw": quat}, source=source,
+               stale=bool(source != "tf" and age is not None and age > max_age),
+               frustum_rays_cam=(_lo.frustum_rays(intr, width, height, 1.0) if intr else None),
+               frustum_note=("corner rays in the CAMERA OPTICAL frame at 1 m; rotate by "
+                             "quat_xyzw and add position. Same convention as the projection "
+                             "in live_overlay.project_box."))
+    return JSONResponse(out)
 
 
 @app.get("/health")
