@@ -114,16 +114,23 @@ z=d.get('nearest_scene_floor'); z=d['floor_height_m'] if z is None else z
 print(f'floor_{z:+.2f}')" "${db}.floor.json")
   local dest="$FOUND_ROOT/maps/${SCENE_ARG}/${fl}"
   mkdir -p "$dest"
-  # HARD LINK, NOT COPY. Every published map existed twice — once in maps/ and once in the bundle
-  # it came from — and at 0.3-1.2 GB each that was 4.7 GB of duplication with /DATA at 99% full.
-  # A link is one copy on disk with both paths valid, and it survives the bundle being read later.
-  # Falls back to a copy across filesystems, where a link is impossible.
-  #
-  # A write through EITHER path would change both. Nothing writes a published map — the
-  # localization branch mounts it read-only now — but that is the property to preserve.
-  ln "$db" "$dest/rtabmap.db" 2>/dev/null || cp "$db" "$dest/rtabmap.db"
+  # COPY, NOT HARD LINK. Owner ruling GA-295(c), 4 Sep: the library is an INDEPENDENT copy. The
+  # link era was a disk-space decision when /DATA was 99% full (it is ~72% now); its cost was
+  # measured on hm3d_00861: the canonical map, its source bundle and a localize db were ONE
+  # INODE UNDER THREE NAMES, so when the write path was live (before the :ro mount, 546fd17)
+  # every surviving copy drifted together by 24 MB and no copy could say which table grew. A
+  # copy decouples the library from the bundle it came from. A publish that cannot afford the
+  # copy FAILS LOUDLY — no fallback to the link: a silent fallback would resurrect the
+  # single-inode library exactly when the disk is tight again.
+  cp "$db" "$dest/rtabmap.db"
   cp "${db}.floor.json" "$dest/rtabmap.db.floor.json"
   cp "$RUN_DIR/rtabmap.db.params-sha" "$dest/rtabmap.db.params-sha" 2>/dev/null || true
+  # PROVENANCE AT PUBLISH TIME (GA-295: mp3d_17DRP was published with none and its drift became
+  # uncheckable). bytes + sha256 of the copy, the bundle's own integrity marker, source run —
+  # the drift check travels with the map. Failure here is LOUD by design: this is the last call
+  # in the EXIT trap, so nothing after it is lost.
+  python3 "$HERE/stamp_map_provenance.py" "$dest/rtabmap.db" "$SCENE_ARG" "$RUN_ID" "$mark" \
+      "$dest/rtabmap.db.params-sha"
   echo "    map published: $dest/rtabmap.db ($(cat "$mark"))"
 }
 
