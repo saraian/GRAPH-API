@@ -335,12 +335,13 @@ if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
     echo "   to it, but nothing is enforcing that. Mount the map read-only (-v <host>:<path>:ro)"
     echo "   so the canonical map cannot be modified by a run that is only reading it."
   fi
-  # GA-290. --RGBD/MaxOdomCacheSize 0: runs 20260903_110622 and _144312 died of SIGABRT at
-  # Rtabmap.cpp:4090 (_optimizedPoses) in localization mode, both after "Rejecting localization
-  # ... wrong loop closure detected after graph optimization" on the odom-cache path. Owner-approved
-  # 3 Sep ~22:37 in session c6a7359d as a hypothesis test, NOT a proven fix: one run decides. Not part of the params-sha
-  # (that hashes grid args only), so the published map stays valid.
-  _RT_DB_ARGS="--Mem/IncrementalMemory false --RGBD/MaxOdomCacheSize 0"
+  # GA-290, REFUTED, AND THE FLAG IS GONE WITH IT. --RGBD/MaxOdomCacheSize 0 was the owner-approved
+  # hypothesis for the Rtabmap.cpp:4090 (_optimizedPoses) SIGABRT that killed runs 20260903_110622
+  # and _144312 in localization mode. Run 20260903_230232 carried the flag and died the same way at
+  # iteration 1485. Left in place it would read as a fix to whoever comes back to localization.
+  # The record is PLAN_1.3 §26; the next hypothesis there is --RGBD/OptimizeMaxError 0, untested.
+  # Owner ruling 4 Sep: detection runs use SLAM mode (RTABMAP_SLAM=1) and do not come here at all.
+  _RT_DB_ARGS="--Mem/IncrementalMemory false"
   echo ">>> LOCALIZATION MODE against a copy of $RTABMAP_LOCALIZE_DB (params-sha $_have)"
   echo "    mapping is OFF; the driver must also set FEED_MAPPING_SECONDS=0"
 fi

@@ -436,7 +436,15 @@ export FEED_SPAWN_FLOOR="${FEED_SPAWN_FLOOR:-}"
 # different storey is not a map of this run's world. With no spawn floor, only a scene-level map
 # is eligible: guessing a floor here would localize against the wrong one and every pose would be
 # confidently wrong.
-if [ "${MAPPING_ONLY:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
+# RTABMAP_SLAM=1 REFUSES THE PUBLISHED MAP AND MAPS FROM SCRATCH. Owner ruling, 4 Sep: after
+# three SIGABRT losses in localization mode (GA-290 refuted, see the simulator lane's PLAN_1.3 §26)
+# a detection run maps its own world instead. There was no way to say this: the block below claimed
+# the map whenever one existed, and the only way out was to point RTABMAP_LOCALIZE_DB at a file
+# that had to exist. Poses from a SLAM run are NOT comparable to the published map's frame.
+if [ "${RTABMAP_SLAM:-0}" = "1" ]; then
+  echo "    RTABMAP_SLAM=1 — mapping from scratch; the published map is NOT used."
+fi
+if [ "${MAPPING_ONLY:-0}" != "1" ] && [ "${RTABMAP_SLAM:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   if [ -n "$FEED_SPAWN_FLOOR" ]; then
     _mapdir=$(printf "$FOUND_ROOT/maps/%s/floor_%+.2f" "$SCENE_ARG" "$FEED_SPAWN_FLOOR")
   else
