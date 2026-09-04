@@ -68,7 +68,8 @@ def worst_rejected_age(runs_dir):
 def _bridge_never_bound(runs_dir, bundle):
     """True when this run's bridge never got its port. Such a run is NOT a sample.
 
-    GA-292. Run 20260903_223859 collided with an unrelated process on 8081, so the bridge
+    GA-294. (Renumbered from GA-292, which the orchestrator had already assigned to the
+    owner-ordered view MIN_SUPPORT fix.) Run 20260903_223859 collided with an unrelated process on 8081, so the bridge
     never bound and every object_manager POST failed. It rejected 4 frames, worst 18.22 s,
     and a10 then refused the next launch against a 15.0 s guard.
 
