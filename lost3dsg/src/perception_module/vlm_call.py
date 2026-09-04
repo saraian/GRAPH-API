@@ -7,6 +7,13 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 from config import CFG
+from crop_context import (
+    CALL_FAILED,
+    MODEL_ABSTAINED,
+    OK,
+    PARSE_FAILED,
+    classify_description_result,
+)
 
 
 def compute_crop_hash(cropped_image) -> str:
@@ -181,19 +188,33 @@ class VlmClient:
         return open(prompt_path).read().strip().replace("{LABEL}", label)
 
     def parse_crop_response(self, raw, label):
+        """-> the parsed record, or None when the reply could not be read. W6.
+
+        The previous version returned an all-"unknown" default on a parse failure, making a
+        malformed reply byte-identical to a genuine model "unknown" -- the conflation that
+        inflated the reported unknown-description rate (49%/59%) with parse failures the
+        model never made. `detection_archive` itself calls that outcome "unrecoverable".
+        The CALLER now decides what a parse failure means and marks it.
+        """
         default_result = {k: "unknown" for k in ("description", "color", "material", "shape")}
         default_result.update({"label": label, "json_answer": "{}"})
 
         try:
             cleaned = re.sub(r"```json|```", "", raw).strip()
             match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-            obj_data = json.loads(match.group(0) if match else "{}").get("objects", [{}])[0]
+            if match is None:
+                # No JSON object anywhere in the reply is a PARSE failure, not an
+                # abstention: the old `else "{}"` arm turned pure prose into an
+                # all-"unknown" record byte-identical to a genuine refusal -- the exact
+                # conflation this function exists to remove (caught by the W6 smoke check).
+                return None
+            obj_data = json.loads(match.group(0)).get("objects", [{}])[0]
             result = dict(default_result)
             result.update({k: obj_data.get(k, "unknown") for k in ("description", "color", "material", "shape")})
-            result["json_answer"] = match.group(0) if match else "{}"
+            result["json_answer"] = match.group(0)
             return result
         except Exception:
-            return default_result
+            return None
 
     def call_crop_full(self, prompt_path, label, cropped, yaw: float = 0.0, distance: float = 1.0, image_id: str = ""):
         """Single-object VLM description with viewpoint-bucketed crop cache and provenance retention."""
@@ -212,17 +233,6 @@ class VlmClient:
 
         try:
             raw = self._vlm_call(prompt, self._encode(cropped))
-            parsed = self.parse_crop_response(raw, label)
-            provenance = {
-                "model": model_name,
-                "image_id": image_id,
-                "timestamp": now_iso,
-                "cached": False,
-                "viewpoint": {"pose_bucket": pose_bucket, "range_bucket": range_bucket},
-            }
-            parsed["provenance"] = provenance
-            self.cache.put(cache_key, parsed, provenance)
-            return parsed
         except Exception:
             default_result = {k: "unknown" for k in ("description", "color", "material", "shape")}
             default_result.update({
@@ -233,7 +243,36 @@ class VlmClient:
                     "image_id": image_id,
                     "timestamp": now_iso,
                     "cached": False,
+                    "status": CALL_FAILED,
                     "error": "call_failed"
                 }
             })
             return default_result
+
+        # W6. classify_description_result (crop_context, decision 6) was built for exactly
+        # this split and until now was never called on the live path: a failed call is an
+        # infrastructure problem, a failed parse a brittleness problem, an abstention a
+        # genuine refusal -- three different fixes that all read as the same "unknown".
+        parsed = self.parse_crop_response(raw, label)
+        status = classify_description_result(raw, parsed, call_error=None)
+        if parsed is None:
+            # PARSE_FAILED: the call succeeded, the reply could not be read. The fields stay
+            # "unknown" -- an unparseable answer is no answer -- but the record now SAYS so.
+            parsed = {k: "unknown" for k in ("description", "color", "material", "shape")}
+            parsed.update({"label": label, "json_answer": "{}"})
+        provenance = {
+            "model": model_name,
+            "image_id": image_id,
+            "timestamp": now_iso,
+            "cached": False,
+            "status": status,
+            "viewpoint": {"pose_bucket": pose_bucket, "range_bucket": range_bucket},
+        }
+        if status == PARSE_FAILED:
+            provenance["error"] = PARSE_FAILED
+        parsed["provenance"] = provenance
+        if status in (OK, MODEL_ABSTAINED):
+            # Only genuine answers are cached. A parse failure used to enter the cache too,
+            # serving the same non-answer on every later view of the same crop.
+            self.cache.put(cache_key, parsed, provenance)
+        return parsed

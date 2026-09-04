@@ -38,8 +38,9 @@ def pca_oriented_box(pts_map, min_anisotropy=1.2):
     u = xy[:, 0] * c + xy[:, 1] * s      # box frame
     v = -xy[:, 0] * s + xy[:, 1] * c
     z = pts[:, 2]
-    # ponytail: 1/99 percentile trim instead of SOR — the AABB pass already
-    # validated these points; this only guards the extents against stragglers
+    # ponytail: 1/99 percentile trim. Since W8 these points ARE the AABB pass's SOR'd
+    # set (same _filter_object_points arguments), so the claim below finally holds;
+    # the trim stays as a residual-straggler guard, not as the only one.
     lo_u, hi_u = np.percentile(u, [1, 99])
     lo_v, hi_v = np.percentile(v, [1, 99])
     lo_z, hi_z = np.percentile(z, [1, 99])
@@ -240,6 +241,12 @@ class DetectionPipelineMixin:
             "client": client_timings,
             "sam_ms": round(t_sam * 1000.0, 1),
             "projection_ms": round(t_proj * 1000.0, 1),
+            # WN1. This is the DETECTION sub-span only (entry of run_detection to here) --
+            # NOT the cycle: `publish_objects` wraps it with FOV computation, 3D geometry,
+            # PCA orientation, crops, archiving and the world-model write, which together
+            # roughly double the wall time. Kept under this name because summarize_run and
+            # the viewer read it; the true cycle is `cycle_ms`, written by publish_objects
+            # at cycle completion. Any latency table must quote `cycle_ms`.
             "total_ms": round(t_total * 1000.0, 1),
             "last_updated": time.time(),
             "components": {
@@ -260,7 +267,8 @@ class DetectionPipelineMixin:
         except Exception:
             pass
 
-        self.log_both("info", f"Detection complete: {len(detections)} objects (total cycle: {t_total:.3f}s)")
+        self.log_both("info", f"Detection complete: {len(detections)} objects (detection span: {t_total:.3f}s; "
+                              f"the full cycle is `cycle_ms`, written at publish_objects completion -- WN1)")
         return detections
 
     def _refresh_room_geometry_if_available(self):
@@ -384,9 +392,11 @@ class DetectionPipelineMixin:
 
     def _add_pca_orientation(self, detections, bboxes_3d, depth, camera_info, transform):
         """Add the optional PCA keys to each valid bbox dict, in place.
-        # ponytail: re-lifts a 2k-point subsample per mask instead of editing
+        # ponytail: re-lifts the object's points per mask instead of editing
         # cv_utils (outside the Agent-1 boundary); fold into
-        # mask_list_to_centroid_and_bbox if projection_ms ever hurts."""
+        # mask_list_to_centroid_and_bbox if projection_ms ever hurts -- the points
+        # computed here are IDENTICAL to the AABB pass's (W8), so the lift is pure
+        # duplication."""
         if transform is None:
             return
         fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
@@ -396,7 +406,17 @@ class DetectionPipelineMixin:
             try:
                 pts = _filter_object_points(
                     det.mask[:, :, 0], depth, fx, fy, cx, cy,
-                    max_points_per_obj=2000, remove_outliers=False,
+                    # W8. The SAME parameters `mask_list_to_centroid_and_bbox` (the AABB
+                    # pass) uses. The previous 2k-point remove_outliers=False subsample
+                    # did NOT "already have validated points" -- it re-lifted a FRESH
+                    # subsample with no SOR, so a mask bleeding onto the wall/floor kept
+                    # its far points in `oriented_extents` while the AABB dropped them:
+                    # two extents for one object, and the size gate PREFERS the oriented
+                    # one, so the bleed could flip admit/hold/decline. With the same
+                    # arguments the subsample is deterministic, so this is literally the
+                    # same kept point set the AABB was built from.
+                    max_points_per_obj=20000, remove_outliers=True,
+                    sor_k=30, sor_std=1.5,
                 )
                 if pts is None:
                     continue

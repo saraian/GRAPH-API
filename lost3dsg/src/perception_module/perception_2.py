@@ -108,6 +108,10 @@ else:
 
 DESCRIPTION_FIELDS = ("description", "color", "material", "shape")
 
+# WN1. Where the latency record lives -- the same two paths detection_pipeline writes, kept
+# as one constant so the cycle-time stamp and the detection-span stamp land in one file.
+LATENCY_JSON_PATHS = ("/tmp/perception_latencies.json", "/ws/output/perception_latencies.json")
+
 # ponytail: fixed cap for images sent to the VLM; make it a CFG["vlm"] knob if a
 # model ever needs finer input. The base64 payload dominates vlm_ms, not the answer.
 VLM_IMAGE_MAX_SIDE = 512
@@ -119,6 +123,52 @@ def _encode_for_vlm(img):
     if scale < 1.0:
         img = cv2.resize(img, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
     return numpy_to_base64(img)
+
+
+def _description_status(res):
+    """W6. Which route produced a description record: the four-way split the run can count.
+
+    `unanswered` -- nothing landed for this object this cycle (describer still in flight,
+    or the result was refused by the W2 box check). `call_failed` / `parse_failed` /
+    `model_abstained` / `ok` -- read from the provenance the VLM client now stamps on every
+    answer (crop_context's classify_description_result vocabulary). Grid cells carry no
+    provenance, so they fall to the content test, same vocabulary. An empty record is
+    `unanswered`, never `model_abstained`: a description that never arrived is not a refusal.
+    """
+    if not res:
+        return "unanswered"
+    prov = res.get("provenance") or {}
+    status = prov.get("status")
+    if status:
+        return status
+    err = prov.get("error")
+    if err:
+        return err                    # older records carried only the error key
+    if str(res.get("description", "")).strip().lower() in ("", "unknown", "none", "n/a"):
+        return "model_abstained"
+    return "ok"
+
+
+def _bbox_iou(a, b):
+    """W2. IoU of two (x0, y0, x1, y1) pixel boxes; 0.0 when either is not one.
+
+    Used to decide whether a deferred VLM result was computed for the detection
+    it is about to decorate. 0.0 on a malformed box REFUSES the result: the cost
+    of a wrongly-dropped description is one more abstention, the cost of a
+    wrongly-attached one is a wrong attribute on the map.
+    """
+    try:
+        ax0, ay0, ax1, ay1 = a
+        bx0, by0, bx1, by1 = b
+    except (TypeError, ValueError):
+        return 0.0
+    iw = min(ax1, bx1) - max(ax0, bx0)
+    ih = min(ay1, by1) - max(ay0, by0)
+    if iw <= 0.0 or ih <= 0.0:
+        return 0.0
+    inter = iw * ih
+    union = (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter
+    return inter / union if union > 0.0 else 0.0
 
 
 class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
@@ -176,6 +226,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             max_workers=int(CFG.get("vlm", {}).get("crop_concurrency", 4)),
             thread_name_prefix="crop_vlm")
         self._vlm_pending = {}
+        # W2. For every pending label, the frame and 2D box of the crop the description
+        # is being computed FROM. Set at submit, popped at harvest, injected into the
+        # result so `_build_descriptions` can refuse one whose object is no longer current.
+        self._vlm_origin = {}
 
         # GA-95: one source for the cache window. utils.CameraData drops a frame whose stamp
         # is older than this, so the two must not drift apart.
@@ -534,6 +588,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         pass
 
     def publish_objects(self):
+        # WN1. The TRUE cycle wall time, entry to completion of this method. `total_ms`
+        # covers only run_detection's own span and was logged as "total cycle" -- ~2x off
+        # against the publish_objects wall. Interrupted/empty cycles do not write one:
+        # a cycle_ms exists only for a cycle that completed.
+        t_cycle = time.time()
         self.processing_interrupted = False
         self.log_both("info", "publish_objects entered")
 
@@ -570,7 +629,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.publish_empty_state(depth, camera_info, cycle_stamp, fov_volume=fov_volume)
             return
 
-        self._io_executor.submit(self.save_visualizations, image_raw.copy(), depth.copy(), list(detections), PROJECT_ROOT)
+        # H12: save_visualizations no longer takes the root — it resolves the same
+        # bundle root the crops and the per-cycle JSON use.
+        self._io_executor.submit(self.save_visualizations, image_raw.copy(), depth.copy(), list(detections))
 
         # GA-215: the detector has answered and the masks exist. Show them NOW -- everything
         # below takes time, and until today none of it was visible until all of it finished.
@@ -582,7 +643,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                           bboxes_3d=bboxes_3d, transform=camera_data["transform"], depth=depth)
         self._add_pca_orientation(detections, bboxes_3d, depth, camera_info, camera_data["transform"])
         self._publish_image_with_bb(image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth)
-        crops_data = self.prepare_crops(detections, image_raw, PROJECT_ROOT)
+        # H12: prepare_crops resolves the bundle root itself; PROJECT_ROOT is no longer
+        # threaded through. W2: the frame key is mandatory provenance.
+        crops_data = self.prepare_crops(detections, image_raw,
+                                        frame_id_from_stamp(cycle_stamp))
         # GA-172: archived AFTER prepare_crops so the row can carry `crop_meta`, and still
         # BEFORE the VLM batch so a describer failure cannot cost the record of what was
         # detected. It used to run before prepare_crops, so crop_meta DID NOT YET EXIST when
@@ -600,8 +664,34 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._update_world_model(detections, centroids_3d, bboxes_3d, descriptions)
         self._queue_perceptions_json()
         self._publish_agent_pose(cycle_stamp)
+        self._record_cycle_ms(time.time() - t_cycle)
         self.waiting_for_input = False
         self.log_both("info", "publish_objects completed")
+
+    def _record_cycle_ms(self, cycle_seconds):
+        """WN1. Stamp the completed cycle's wall time into the latency record.
+
+        `total_ms` (run_detection's own span) stays for its existing readers; `cycle_ms`
+        is the number any latency claim must quote. Same two paths the detection
+        pipeline writes, so one file carries both.
+        """
+        lat = getattr(self, "latest_latencies", None)
+        if not isinstance(lat, dict):
+            lat = {}
+            self.latest_latencies = lat
+        lat["cycle_ms"] = round(cycle_seconds * 1000.0, 1)
+        lat["last_updated"] = time.time()
+        try:
+            import json
+            for target_path in LATENCY_JSON_PATHS:
+                try:
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    with open(target_path, "w") as f:
+                        json.dump(lat, f, indent=2)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # last /get_config answer and when it was fetched; rebound per instance on use
     _vis_live = {}
@@ -775,7 +865,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self._io_executor.submit(self.write_clip_embeddings, snapshot)
 
     def write_clip_embeddings(self, embeddings):
-        path = os.path.join(PROJECT_ROOT, "output", "clip_embeddings.json")
+        # H12: the same root every other writer in this seam uses — the bundle, when set.
+        from input_output import resolve_output_root
+        path = os.path.join(resolve_output_root(), "clip_embeddings.json")
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
@@ -828,6 +920,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 except Exception as exc:
                     self.get_logger().error(f"Crop VLM future failed for {label}: {exc}")
                     results[label] = {}
+                # W2. Attach the origin recorded at submit time -- frame and 2D box of the
+                # crop this result was computed from -- so the consumer can tell a deferred
+                # answer for THIS object from one for whatever answered to the same string
+                # when it left. Popped, not read: a harvested origin is spent.
+                results[label]["origin"] = self._vlm_origin.pop(label)
             else:
                 still_pending[label] = fut
         self._vlm_pending = still_pending
@@ -861,16 +958,27 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 fut = self._vlm_executor.submit(self.process_crop_grid, batch)
                 for c in batch:
                     self._vlm_pending[c["label"]] = fut
+                    self._vlm_remember_origin(c)
             self.log_both("info", f"[VLM] grid: {len(fresh)} crop(s) in "
                                   f"{len(crop_grid.plan(len(fresh), grid_cells))} request(s)")
         else:
             for crop in fresh:
                 self._vlm_pending[crop["label"]] = self._vlm_executor.submit(
                     self.process_crop_vlm, crop)
+                self._vlm_remember_origin(crop)
 
         self.log_both("info", f"[VLM] queued {len(valid_crops)} crop(s), "
                               f"{len(results)} landed, {len(self._vlm_pending)} in flight")
         return results
+
+    def _vlm_remember_origin(self, crop):
+        """W2. Record where a pending description came FROM: frame + 2D box.
+
+        Direct indexing on purpose: a crop dict without `frame`/`bbox` is a broken
+        producer, and defaulting it here would rebuild the exact silent
+        misattribution this bookkeeping exists to prevent.
+        """
+        self._vlm_origin[crop["label"]] = {"frame": crop["frame"], "bbox": crop["bbox"]}
 
     def _build_descriptions(self, detections, vlm_results, crops_data=None):
         """GA-277. `crop_path` rides along so the admission gate can SEE the object.
@@ -878,16 +986,34 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         The gate is handed geometry -- label, bbox, room -- and no pixels, so a VLM check on a
         held decision had nothing to look at. The crop is already written to disk for the
         describer; this carries WHERE, not the image, so the seam stays a small message.
-        Keyed by instance_label because that is what both sides already agree on.
+        Keyed by instance_label because that is what both sides already agree on -- and
+        REFUSED when the label string no longer names the same object (W2): a harvested
+        result carries the frame and 2D box of its crop, and is dropped unless that box
+        overlaps the detection it would decorate. Same object, robot moved -> kept;
+        same string, different object -> refused and logged, and the object is described
+        by its own fresh submission instead.
         """
         by_label = {}
         for c in (crops_data or []):
             if c and c.get("label") and c.get("path"):
                 by_label[c["label"]] = c["path"]
+        min_iou = float(CFG.get("vlm", {}).get("stale_result_min_iou", 0.1))
         descriptions = []
         for det in detections:
             res = (vlm_results.get(det.instance_label, {}) or {})
+            origin = res.get("origin")
+            if origin is not None and _bbox_iou(det.bbox, origin["bbox"]) < min_iou:
+                self.log_both(
+                    "warn",
+                    f"[VLM] refusing deferred description for {det.instance_label}: taken in "
+                    f"frame {origin['frame']} for a box that does not overlap this detection "
+                    f"(< {min_iou} IoU) -- the label string names a different object now (W2)")
+                res = {}
             d = {field: res.get(field, "unknown") for field in DESCRIPTION_FIELDS}
+            # W6. The route this description took, so a run can split the "unknown"
+            # population into call_failed / parse_failed / model_abstained / unanswered
+            # instead of reporting one conflated rate.
+            d["status"] = _description_status(res)
             d["confirmed"] = getattr(det, "is_confirmed", True)
             # Empty string, not absent: the msg field always exists, and "" reads as "no crop
             # was written for this detection" rather than as a missing key nobody set.
@@ -1072,6 +1198,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # would raise TypeError on `confirmed`.
             obj = Object(det.label, centroid, bbox,
                          **{k: v for k, v in desc.items() if k in DESCRIPTION_FIELDS})
+            # W6: the status rides the world-model object so the per-cycle snapshot can
+            # carry the four-way split. Additive attribute: no reader tests for it.
+            obj.status = desc.get("status", "")
             # distinct from obj.embedding (the 300-d word2vec description vector)
             obj.clip_embedding = getattr(det, "clip_embedding", None)
             wm.add_actual_perception(obj)
@@ -1105,6 +1234,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 "label": obj.label,
                 "centroid": obj.centroid.tolist() if hasattr(obj.centroid, "tolist") else list(obj.centroid or []),
                 "bbox": obj.bbox,
+                "status": getattr(obj, "status", ""),
                 **{field: getattr(obj, field) for field in DESCRIPTION_FIELDS},
             }
             for obj in wm.actual_perceptions
@@ -1224,6 +1354,18 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
     def destroy_node(self):
         try:
             self._io_executor.shutdown(wait=True)
+        except Exception:
+            pass
+        # H-item from the review: the DESCRIBER executor was never shut down, so a slow
+        # crop call (60 s stragglers measured against a 0.55 s median) delayed node exit
+        # by its full remaining runtime. Queued descriptions are CANCELLED — nobody
+        # will read them in a dying node — and running calls are not waited on: they are
+        # stateless HTTP requests whose results land in a future nobody harvests.
+        try:
+            self._vlm_executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # py<3.9 has no cancel_futures; wait=False alone still unblocks the exit.
+            self._vlm_executor.shutdown(wait=False)
         except Exception:
             pass
         super().destroy_node()

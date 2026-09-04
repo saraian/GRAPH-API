@@ -308,7 +308,13 @@ def save_persistent_perceptions(node):
     current_ids = set()
     changed = False
 
-    for obj in wm.persistent_perceptions:
+    # One SNAPSHOT for both the iteration and `current_ids` below. Iterating the LIVE
+    # list while a merge on the HTTP thread removes from it makes Python's list
+    # iterator silently skip an object -- which then falls out of `current_ids` and is
+    # DELETED from the stored JSON by the `removed_ids` pass below while still being on
+    # the map: a live object vanishing from the artifact. The snapshot is one copy of
+    # tens of pointers; the dump then describes one consistent world.
+    for obj in wm.snapshot():
         if not getattr(obj, "object_id", None):
             obj.object_id = f"obj_{uuid.uuid4().hex}"
 

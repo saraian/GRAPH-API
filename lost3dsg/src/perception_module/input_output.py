@@ -13,11 +13,25 @@ from perception_utils import compute_fov_volume_from_depth
 from utils import draw_detections
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 PROJECT_ROOT = (
     _MODULE_DIR.split('/install/', 1)[0]
     if '/install/' in _MODULE_DIR
     else os.path.abspath(os.path.join(_MODULE_DIR, "../.."))
 )
+
+
+def resolve_output_root():
+    """H12. ONE output root for EVERY writer in this module.
+
+    `prepare_crops` wrote under `GRAPH_API_OUTPUT_DIR` (the run bundle) while
+    `save_visualizations` and `write_perceptions_json` wrote under `PROJECT_ROOT/output`
+    (the module path) — the two coincide only via the container's mapping, so with the env
+    set anywhere else the visualizations and the per-cycle JSON orphaned while the crops
+    landed in the bundle. One resolver: bundle env var if set, else the module path.
+    """
+    out_root = os.environ.get("GRAPH_API_OUTPUT_DIR")
+    return out_root if out_root else os.path.join(PROJECT_ROOT, "output")
 
 
 class PerceptionIOMixin:
@@ -36,7 +50,8 @@ class PerceptionIOMixin:
             self.log_both("error", f"Background crop save failed ({path}): {exc}")
 
     def write_perceptions_json(self, perceptions_snapshot):
-        perceptions_path = os.path.join(PROJECT_ROOT, "output", "actual_perceptions.json")
+        # H12: the same root prepare_crops writes under — the bundle, when set.
+        perceptions_path = os.path.join(resolve_output_root(), "actual_perceptions.json")
         try:
             os.makedirs(os.path.dirname(perceptions_path), exist_ok=True)
             with open(perceptions_path, "w") as file_obj:
@@ -65,9 +80,12 @@ class PerceptionIOMixin:
         self.bbox_pub.publish(empty_bboxes)
         self.waiting_for_input = False
 
-    def save_visualizations(self, image_raw, depth, detections, project_root):
+    def save_visualizations(self, image_raw, depth, detections):
+        # H12: the same root prepare_crops writes under — the bundle, when set. The
+        # `project_root` parameter is gone: the only caller passed PROJECT_ROOT, which is
+        # exactly the module-path arm the resolver falls back to anyway.
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        visualization_dir = os.path.join(project_root, "output/visualizations")
+        visualization_dir = os.path.join(resolve_output_root(), "visualizations")
         os.makedirs(visualization_dir, exist_ok=True)
 
         cv2.imwrite(os.path.join(visualization_dir, f"bbox_{timestamp}.jpg"), draw_detections(image_raw.copy(), detections))
@@ -80,7 +98,10 @@ class PerceptionIOMixin:
         os.makedirs(depth_dir, exist_ok=True)
         cv2.imwrite(os.path.join(depth_dir, f"depth_{timestamp}.jpg"), depth_norm)
 
-    def prepare_crops(self, detections, image_raw, project_root):
+    def prepare_crops(self, detections, image_raw, frame_key):
+        """`frame_key` (W2) and the output root (H12) are required, not optional: a crop
+        without provenance is the exact misattribution W2 exists to stop, and a
+        project_root parameter nobody read was the H12 split itself."""
         height, width = image_raw.shape[:2]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         # GA-238. THE CROPS WERE WRITTEN INTO THE CONTAINER'S OWN SOURCE TREE.
@@ -96,9 +117,8 @@ class PerceptionIOMixin:
         # `cropped_images` is the name the READER wants -- graph_api_bridge._crop_dirs
         # searches `_active_output_dir() / "cropped_images"` first. live_run.sh separately
         # creates `$RUN_DIR/crops`, a THIRD name that nothing reads or writes.
-        out_root = os.environ.get("GRAPH_API_OUTPUT_DIR")
-        crops_dir = (os.path.join(out_root, "cropped_images") if out_root
-                     else os.path.join(project_root, "output/cropped_images"))
+        # H12: one resolver for crops, visualizations and the per-cycle JSON alike.
+        crops_dir = os.path.join(resolve_output_root(), "cropped_images")
         os.makedirs(crops_dir, exist_ok=True)
 
         crops = []
@@ -130,17 +150,30 @@ class PerceptionIOMixin:
                 crops.append(None)
                 continue
 
-            bordered = crop.copy()
-            cv2.rectangle(bordered, (0, 0), (bordered.shape[1] - 1, bordered.shape[0] - 1), (0, 255, 0), 2)
+            # W7. The file gets the SAME pixels the describer sees. The old code drew a
+            # 2 px green rectangle into the on-disk copy only: the admission gate
+            # (GA-277) reads `crop_path`, the describer reads `['cropped']`, so the two
+            # VLM judgments were made on different pixels and could never be compared --
+            # and a full-frame green border is an artefact the gate model was never
+            # meant to see. The referent is already marked by the mask contour
+            # (crop_context decision 3); drawing the crop boundary added nothing.
             safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", det.instance_label)
             crop_path = os.path.join(crops_dir, f"crop_{safe_label}_{timestamp}_{idx}.jpg")
-            self._io_executor.submit(self.save_crop_file, crop_path, bordered.copy())
+            self._io_executor.submit(self.save_crop_file, crop_path, crop.copy())
             crops.append({"cropped": crop, "label": det.instance_label, "idx": idx,
                           "crop_meta": crop_meta,
+                          # W2. The frame and the 2D box this crop was taken from, so a
+                          # deferred VLM result can be checked against the detection that
+                          # receives it: instance_label is a per-frame ordinal ("chair#1")
+                          # reused every cycle, and a result computed for one object must
+                          # not attach to another that answers to the same string later.
+                          # Required fields, not optional: a crop without provenance is
+                          # exactly the misattribution this exists to stop.
+                          "bbox": (x0, y0, x1, y1), "frame": frame_key,
                           # GA-277. The path is already computed for the disk write; carrying
                           # it is free and it is the ONLY way the admission gate can ever see
                           # the image. The gate receives geometry, not pixels, so a VLM check
-                          # on a held decision has nothing to look at without this.
+                          # on a held decision had nothing to look at without this.
                           "path": crop_path})
         return crops
 

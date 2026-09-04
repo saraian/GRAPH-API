@@ -14,6 +14,8 @@ Executing the path once is the whole of what was missing.
 
 Run: python3 test_perception_smoke.py
 """
+import json
+import os
 import pathlib
 import sys
 
@@ -364,14 +366,300 @@ def install_list():
     assert r.returncode == 0, r.stdout.strip() or r.stderr.strip()
 
 
+def vlm_result_gating():
+    """W2: a deferred VLM result attaches only to a detection whose 2D box overlaps the
+    crop the result was computed from. instance_label is a per-frame ordinal reused
+    across cycles, so the string alone cannot tell one object from another."""
+    node = perception_2.DetectObjectsNode.__new__(perception_2.DetectObjectsNode)
+    node._undeliverable_fields = set()
+    node.log_both = lambda *a, **k: None
+    node.get_logger = lambda: rosstub.Any()
+
+    same = Det("chair")
+    same.bbox = (10, 10, 50, 60)
+    elsewhere = Det("chair")
+    elsewhere.bbox = (400, 300, 450, 360)
+
+    res = {"chair": {"description": "a red chair", "color": "red",
+                     "material": "fabric", "shape": "rectangular",
+                     "origin": {"frame": "frame_0001", "bbox": (11, 11, 49, 59)}}}
+
+    kept = perception_2.DetectObjectsNode._build_descriptions(node, [same], dict(res))
+    assert kept[0]["description"] == "a red chair", "a result for this object must attach"
+    assert kept[0]["status"] == "ok", "an answered description must say so (W6)"
+
+    refused = perception_2.DetectObjectsNode._build_descriptions(node, [elsewhere], dict(res))
+    assert refused[0]["description"] == "unknown", \
+        "a result for a different object must be refused, not attached"
+    assert refused[0]["status"] == "unanswered", \
+        "a refused result must read unanswered, not model_abstained (W6)"
+
+    # the IoU helper itself: identical boxes 1.0, disjoint 0.0, malformed 0.0 (refuse)
+    assert perception_2._bbox_iou((0, 0, 10, 10), (0, 0, 10, 10)) == 1.0
+    assert perception_2._bbox_iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0.0
+    assert perception_2._bbox_iou(None, (0, 0, 10, 10)) == 0.0
+    assert perception_2._bbox_iou((0, 0, 10, 10), (5, 0, 15, 10)) == 0.3333333333333333
+
+
+def vlm_status_split():
+    """W6: call_failed / parse_failed / model_abstained are three different defects and
+    must not land on the map as the same 'unknown'. parse failure is MARKED, never cached;
+    a genuine answer IS cached; the status survives to _build_descriptions' output."""
+    import tempfile
+
+    import numpy as _np
+    import vlm_call
+
+    good = ('```json\n{"objects":[{"description":"a red chair","color":"red",'
+            '"material":"fabric","shape":"rectangular"}]}\n```')
+
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+        fh.write("describe {LABEL}")
+        prompt_path = fh.name
+
+    img = _np.zeros((16, 16, 3), dtype=_np.uint8)
+
+    def client(reply):
+        calls = {"n": 0}
+
+        def fn(prompt, b64):
+            calls["n"] += 1
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+        c = vlm_call.VlmClient(vlm_call_fn=fn, image_encoder_fn=lambda im: "")
+        return c, calls
+
+    # parse failure: marked, not cached (the second call re-asks the model)
+    c, calls = client("the model rambles, no json anywhere")
+    r = c.call_crop_full(prompt_path, "chair", img)
+    assert r["provenance"]["status"] == "parse_failed", r["provenance"]
+    assert r["description"] == "unknown"
+    assert r["provenance"].get("error") == "parse_failed"
+    r2 = c.call_crop_full(prompt_path, "chair", img)
+    assert calls["n"] == 2, "a parse failure must not enter the crop cache"
+
+    # call failure: marked call_failed
+    c, calls = client(RuntimeError("provider down"))
+    r = c.call_crop_full(prompt_path, "chair", img)
+    assert r["provenance"]["status"] == "call_failed", r["provenance"]
+
+    # genuine answer: ok, cached
+    c, calls = client(good)
+    r = c.call_crop_full(prompt_path, "chair", img)
+    assert r["provenance"]["status"] == "ok", r["provenance"]
+    assert r["description"] == "a red chair"
+    r2 = c.call_crop_full(prompt_path, "chair", img)
+    assert calls["n"] == 1, "a genuine answer must be served from the cache"
+    assert r2["description"] == "a red chair"
+
+    # genuine abstention: model_abstained, cached (a refusal is an answer)
+    abstain = '```json\n{"objects":[{"description":"unknown"}]}\n```'
+    c, _ = client(abstain)
+    r = c.call_crop_full(prompt_path, "chair", img)
+    assert r["provenance"]["status"] == "model_abstained", r["provenance"]
+
+    # the parser itself: malformed -> None (the caller decides), valid -> record
+    c, _ = client("")
+    assert c.parse_crop_response("garbage", "chair") is None
+    parsed = c.parse_crop_response(good, "chair")
+    assert parsed and parsed["description"] == "a red chair"
+
+    # the status derivation used by _build_descriptions
+    s = perception_2._description_status
+    assert s({}) == "unanswered"
+    assert s({"provenance": {"status": "parse_failed"}}) == "parse_failed"
+    assert s({"provenance": {"error": "call_failed"}}) == "call_failed"  # older shape
+    assert s({"description": "unknown"}) == "model_abstained"           # grid cell
+    assert s({"description": "a red chair"}) == "ok"                    # grid cell
+
+
+def cycle_ms_recorded():
+    """WN1: the completed cycle's wall time is stamped beside the detection span, so a
+    latency claim can quote the cycle (publish_objects entry->completion) and not the
+    detection sub-span that `total_ms` actually measures (~2x off)."""
+    import json as _json
+    import tempfile
+
+    node = perception_2.DetectObjectsNode.__new__(perception_2.DetectObjectsNode)
+    node.latest_latencies = {"total_ms": 100.0}
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = perception_2.LATENCY_JSON_PATHS
+        perception_2.LATENCY_JSON_PATHS = (os.path.join(tmp, "perception_latencies.json"),)
+        try:
+            perception_2.DetectObjectsNode._record_cycle_ms(node, 13.7)
+        finally:
+            perception_2.LATENCY_JSON_PATHS = saved
+        assert node.latest_latencies["cycle_ms"] == 13700.0, node.latest_latencies
+        assert node.latest_latencies["total_ms"] == 100.0, "the detection span must survive"
+        with open(os.path.join(tmp, "perception_latencies.json")) as fh:
+            on_disk = _json.load(fh)
+        assert on_disk["cycle_ms"] == 13700.0 and on_disk["total_ms"] == 100.0
+
+
+def disappearance_removal_client():
+    """GA-297: the disappearance-removal client returns the count+labels so the wiring
+    can MEASURE the deletion rate, and reports a failed call as None -- not as a bool
+    that erases the reason. (The wiring itself, inside object_tracking_callback, is
+    WRITTEN, NOT TESTED: the callback needs a live bridge.)"""
+    import object_manager_6 as om6mod
+
+    node = om6mod.ObjectManagerService.__new__(om6mod.ObjectManagerService)
+    node.get_logger = lambda: rosstub.Any()
+
+    node._call_graph_api = lambda m, p, json_body: {
+        "deleted_count": 2, "deleted_labels": ["chair", "desk"]}
+    res = node.delete_undetected_objects(BOX, [Det("chair")], True)
+    assert res and res["deleted_count"] == 2 and res["deleted_labels"] == ["chair", "desk"], res
+
+    def boom(m, p, json_body):
+        raise RuntimeError("bridge down")
+    node._call_graph_api = boom
+    assert node.delete_undetected_objects(BOX, [Det("chair")], True) is None, \
+        "a failed removal call must report failure, not False"
+
+
+def pca_gets_aabb_points():
+    """W8: the PCA orientation must lift the SAME SOR'd point set the AABB was built
+    from. The old 2k-point remove_outliers=False subsample kept mask-bleed far points
+    in `oriented_extents` while the AABB dropped them -- two extents for one object,
+    and the size gate PREFERS the oriented one, so the bleed could flip a verdict."""
+    import detection_pipeline as dp
+    import numpy as _np
+
+    seen = {}
+
+    def recorder(mask, depth, fx, fy, cx, cy, **kw):
+        seen.update(kw)
+        return _np.array([[0., 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0],
+                           [0, 1, 0], [1, 1, 0], [2, 1, 0], [3, 1, 0],
+                           [0, 2, 0], [1, 2, 0], [2, 2, 0], [3, 2, 0],
+                           [1.5, 1.0, 0.5], [1.5, 1.0, 0.6], [1.5, 1.0, 0.7]])
+
+    saved_fop, saved_at = dp._filter_object_points, dp._apply_transform
+    dp._filter_object_points = recorder
+    dp._apply_transform = lambda pts, t: pts
+    try:
+        node = dp.DetectionPipelineMixin.__new__(dp.DetectionPipelineMixin)
+        node.log_both = lambda *a, **k: None
+        det = Det("chair")
+        det.mask = _np.zeros((4, 4, 1), dtype=_np.uint8)
+        det.mask[0, 0, 0] = 1
+        bbox = {"x_min": 0.0}
+
+        class CI:
+            k = [1.0, 0, 0, 0, 1.0, 0, 0, 0, 0]
+
+        dp.DetectionPipelineMixin._add_pca_orientation(node, [det], [bbox], None, CI(), "map")
+    finally:
+        dp._filter_object_points, dp._apply_transform = saved_fop, saved_at
+    assert seen.get("remove_outliers") is True, f"PCA must not lift un-SOR'd points: {seen}"
+    assert seen.get("sor_k") == 30 and seen.get("sor_std") == 1.5, seen
+    assert seen.get("max_points_per_obj") == 20000, seen
+    assert "oriented_extents" in bbox, f"the stubbed point set must still yield a box: {bbox}"
+
+
+def crop_file_gets_describer_pixels():
+    """W7: `prepare_crops` submits the SAME pixels to the file writer that the describer
+    gets in `['cropped']`. The on-disk copy used to carry a 2 px green border the
+    in-memory crop did not, so the gate (which reads the file) and the describer judged
+    different pixels. cv2 is stubbed in this harness, so the check compares the SUBMITTED
+    array against the describer's array -- the defect was a divergence between exactly
+    those two, and that needs no real imwrite."""
+    import numpy as _np
+    import perception_2 as _p2
+
+    submitted = {}
+
+    class SyncExec:
+        def submit(self, fn, *a, **k):
+            if fn.__name__ == "save_crop_file":
+                submitted["path"], submitted["image"] = a[0], a[1]
+
+    node = _p2.DetectObjectsNode.__new__(_p2.DetectObjectsNode)
+    node._io_executor = SyncExec()
+    node.get_logger = lambda: rosstub.Any()
+    node.log_both = lambda *a, **k: None
+
+    det = Det("chair")
+    det.bbox = (0, 0, 32, 32)
+    det.mask = _np.ones((32, 32, 1), dtype=_np.uint8)
+
+    img = _np.zeros((32, 32, 3), dtype=_np.uint8)
+    img[:, :] = (200, 0, 0)                    # solid BLUE in BGR: no green pixel anywhere
+
+    old = os.environ.get("GRAPH_API_OUTPUT_DIR")
+    os.environ["GRAPH_API_OUTPUT_DIR"] = "/tmp/opencode_w7_crops"
+    try:
+        crops = _p2.DetectObjectsNode.prepare_crops(node, [det], img, "frame_w7")
+    finally:
+        if old is None:
+            os.environ.pop("GRAPH_API_OUTPUT_DIR", None)
+        else:
+            os.environ["GRAPH_API_OUTPUT_DIR"] = old
+    assert crops and crops[0], "a crop must be produced"
+    assert "image" in submitted, "the crop file write must be submitted"
+    assert _np.array_equal(submitted["image"], crops[0]["cropped"]), \
+        "the file and the describer must receive the same pixels (W7)"
+    corner = submitted["image"][1, 1].astype(int)
+    assert corner[1] < 80, f"no green border may be drawn: {tuple(corner)}"
+    assert crops[0]["frame"] == "frame_w7" and len(crops[0]["bbox"]) == 4, \
+        "the W2 provenance fields must ride along"
+
+
+def save_persistent_roundtrip():
+    """GA-107's save site: every LIVE object must survive the round-trip into
+    persistent_perception.json. The old live-list iteration could silently skip an
+    object under a concurrent removal -- and the skipped object was then DELETED from
+    the stored JSON by the removed_ids pass while still on the map. (The race itself
+    needs a live merge thread; this check pins the round-trip on a quiet list.)"""
+    import tempfile
+
+    original = object_services.PROJECT_ROOT
+    wm.persistent_perceptions.clear()
+    a = object_info.Object("chair", [0.0, 0.0, 0.0], BOX)
+    b = object_info.Object("desk", [1.0, 1.0, 0.0], FAR)
+    a.object_id, b.object_id = "obj_a", "obj_b"
+    wm.persistent_perceptions.extend([a, b])
+    with tempfile.TemporaryDirectory() as tmp:
+        object_services.PROJECT_ROOT = tmp
+        try:
+            object_services.save_persistent_perceptions(rosstub.Any())
+            with open(os.path.join(tmp, "output", "persistent_perception.json")) as fh:
+                on_disk = json.load(fh)
+        finally:
+            object_services.PROJECT_ROOT = original
+        ids = {e["object_id"] for e in on_disk}
+        assert ids == {"obj_a", "obj_b"}, f"both live objects must survive: {ids}"
+        # and a second save with one removed must drop exactly that one
+        wm.persistent_perceptions.remove(b)
+        with tempfile.TemporaryDirectory() as tmp2:
+            object_services.PROJECT_ROOT = tmp2
+            try:
+                object_services.save_persistent_perceptions(rosstub.Any())
+                with open(os.path.join(tmp2, "output", "persistent_perception.json")) as fh:
+                    on_disk2 = json.load(fh)
+            finally:
+                object_services.PROJECT_ROOT = original
+            ids2 = {e["object_id"] for e in on_disk2}
+            assert ids2 == {"obj_a"}, f"the removal must be the only change: {ids2}"
+
+
 for name, fn in [("description chain (build -> publish -> world model)", description_chain),
                  ("install list covers every import (GA-128)", install_list),
                  ("empty embedding is absent, not a crash (GA-171)", empty_embedding),
                  ("tracking scan summary: one row per cycle (GA-190)", scan_summary),
                  ("tracking gate: locality, then evidence (GA-289)", tracking_gate),
                  ("world-model object carries a centroid (GA-296)", object_centroid),
-                 ("FOV transform: one lookup equals per-point (LAT-1)", fov_transform_vectorised),
-                 ("dead crop publisher removed (LAT-5)", dead_crop_publisher_gone),
+                  ("FOV transform: one lookup equals per-point (LAT-1)", fov_transform_vectorised),
+                  ("dead crop publisher removed (LAT-5)", dead_crop_publisher_gone),
+                  ("deferred VLM result refused off its object (W2)", vlm_result_gating),
+                  ("description status split: failed != abstained (W6)", vlm_status_split),
+                  ("cycle_ms stamped beside the detection span (WN1)", cycle_ms_recorded),
+                  ("disappearance removal reports count+labels (GA-297)", disappearance_removal_client),
+                  ("PCA orientation lifts the AABB's SOR'd points (W8)", pca_gets_aabb_points),
+                  ("crop file gets the describer's pixels (W7)", crop_file_gets_describer_pixels),
+                  ("persistent-JSON round-trip keeps every live object", save_persistent_roundtrip),
                  ("inside_area", inside_area),
                  ("save_uncertain_objects", save_uncertain),
                  ("reassign_objects_by_geometry", reassign_rooms),

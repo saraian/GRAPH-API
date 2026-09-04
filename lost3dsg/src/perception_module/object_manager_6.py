@@ -588,6 +588,10 @@ class ObjectManagerService(Node):
         self.seen_again = False
         self.latest_bboxes = {}
         self.latest_fov_volume = None
+        # W6. Run-cumulative tally of description statuses (ok / model_abstained /
+        # parse_failed / call_failed / unanswered), written to the decision log once per
+        # tracking cycle. Initialised here so the description loop never KeyErrors.
+        self._vlm_status_counts = {}
         self.uncertain_objects = []
         self.exploration_frame_counter = 0
         self.robot_has_moved = False
@@ -887,7 +891,14 @@ class ObjectManagerService(Node):
         _new_c = _bbox_centre(bbox)
         _new_half = _half_diagonal_m(bbox)
 
-        for obj in wm.persistent_perceptions:
+        # GA-107's named site, still iterating the LIVE list: this scan runs on the
+        # executor thread with no lock held (object_tracking_callback cannot hold it --
+        # see snapshot()'s docstring), while the HTTP surface can trigger a merge and
+        # REMOVE from this list mid-pass; a removal under a live list iterator silently
+        # skips the NEXT object, which is then never considered for association in
+        # this pass. The snapshot is the pass's consistent view: it judges the world
+        # as it was when the pass began.
+        for obj in wm.snapshot():
             _scan["visited"] += 1
             if (time.time() - getattr(obj, 'creation_time', 0)) < OBJECT_STABILITY_TIMEOUT:
                 # Skipped INSIDE the loop, so it is visited to be discarded: it belongs
@@ -1168,6 +1179,11 @@ class ObjectManagerService(Node):
             # interface has no such field, and the seam must not raise on a message shape
             # that was valid when it was recorded.
             crop_path = getattr(description, "crop_path", "") or ""
+            # W6. Same rule, same reason: the status field postdates older interfaces.
+            # Tallied per run so the "unknown" population can be split into its routes
+            # (ok / model_abstained / parse_failed / call_failed / unanswered) from the log.
+            status = getattr(description, "status", "") or "unanswered"
+            self._vlm_status_counts[status] = self._vlm_status_counts.get(status, 0) + 1
 
             description_embedding = get_embedding(world2vec, description_text)
 
@@ -1181,7 +1197,8 @@ class ObjectManagerService(Node):
             del self.latest_bboxes[old_key]
             self.latest_bboxes[new_key] = {
                 "bbox": bbox, "label": label,
-                "color": color, "material": material, "description": description_text
+                "color": color, "material": material, "description": description_text,
+                "status": status
             }
 
             already_seen = False
@@ -1464,6 +1481,33 @@ class ObjectManagerService(Node):
             if uncertain_deleted:
                 objects_modified = True
 
+            # GA-297. The disappearance-removal path, wired at last -- same place as
+            # delete_uncertain_objects, so the decision "does it run during exploration?"
+            # inherits the existing answer: NO, tracking only. Exploration is map-building;
+            # deleting during it would count misses against objects the robot has not had a
+            # chance to re-look at. Guarded on a real POV volume (a None pov must not reach
+            # the service -- it refuses, but the caller should not ask) and on a config
+            # switch, default ON, so the instrumented run can measure the deletion rate and
+            # an A/B run can turn it off. Recorded EVERY call, including deleted_count=0:
+            # "the path ran and deleted nothing" is a different fact from "the path never
+            # ran", and until today they were indistinguishable in every bundle.
+            if pov_volume and CFG["association"].get("delete_undetected", True):
+                result = self.delete_undetected_objects(
+                    pov_volume, current_perception_objects,
+                    bool(request.descriptions.descriptions))
+                try:
+                    self.decision_log.write(
+                        "disappearance_removal", "<cycle>",
+                        frame=getattr(self, "_current_frame_id", None),
+                        deleted_count=int((result or {}).get("deleted_count", 0)),
+                        deleted_labels=(result or {}).get("deleted_labels", []),
+                        error=(None if result is not None else "graph_api_call_failed"))
+                except Exception as exc:
+                    self.object_services.log_both(
+                        "warn", f"[GA-297] removal row not written: {exc}")
+                if result and int(result.get("deleted_count", 0)) > 0:
+                    objects_modified = True
+
         self.latest_bboxes.clear()
 
         merged_any = self.merge_duplicate_objects()
@@ -1497,6 +1541,21 @@ class ObjectManagerService(Node):
         # Flushed here rather than inside check_tracking_transition so the unit is the CYCLE,
         # matching `not_offered_summary` on the merge path.
         self.flush_scan_summary(frame_id=getattr(self, "_current_frame_id", None))
+
+        # W6: one row per cycle with the RUN-CUMULATIVE split of description statuses, so
+        # the "unknown" population decomposes into call_failed / parse_failed /
+        # model_abstained / unanswered from the same log that counts everything else.
+        # Cumulative, not per-cycle: deltas between consecutive rows give the cycle's own.
+        counts = getattr(self, "_vlm_status_counts", None)
+        if counts:
+            try:
+                self.decision_log.write(
+                    "vlm_description_status", "<cycle>",
+                    frame=getattr(self, "_current_frame_id", None),
+                    **dict(sorted(counts.items())))
+            except Exception as exc:
+                self.object_services.log_both(
+                    "warn", f"[VLM-STATUS] tally row not written: {exc}")
 
         return response
 
@@ -1633,6 +1692,15 @@ class ObjectManagerService(Node):
             return False
 
     def delete_undetected_objects(self, pov_volume, current_perception_objects, description_received):
+        """GA-297. Client half of the disappearance-removal path.
+
+        -> the bridge's result dict ({deleted_count, deleted_labels, ...}) so the caller
+        can MEASURE the deletion rate, or None when the call failed. Was `> 0` bool --
+        and had no caller at all, which is why the map has been accumulation-only for
+        confirmed objects: the service half (object_services
+        _cb_delete_unseen_objects, miss counter toward MAX_MISSES_BEFORE_DELETE) has
+        been complete and dormant since it was written.
+        """
         payload = {
             "pov_volume_flat": [
                 pov_volume['x_min'], pov_volume['x_max'],
@@ -1644,11 +1712,10 @@ class ObjectManagerService(Node):
         }
 
         try:
-            result = self._call_graph_api("POST", "/delete_objects", json_body=payload)
-            return int(result.get("deleted_count", 0)) > 0
+            return self._call_graph_api("POST", "/delete_objects", json_body=payload)
         except RuntimeError as e:
             self.get_logger().error(f"Delete undetected objects failed via Graph API: {e}")
-            return False
+            return None
 
     def delete_uncertain_objects(self, pov_volume):
         payload = {
