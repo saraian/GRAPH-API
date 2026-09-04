@@ -806,6 +806,16 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -v "$REPO":/graph_api:ro \
   -v graphapi_ws:/ws \
   -v $FOUND_ROOT:/found \
+  `# GA-295. THE MAP LIBRARY IS READ-ONLY, AND UNTIL NOW ONLY THE COMMENT SAID SO.
+   # live_stack_container.sh has claimed since GA-158 that "the map is mounted read-only, not
+   # copied", and printed a warning every run that it was writable. It was: /found carried no :ro,
+   # and in localization mode rtabmap is handed the canonical map AS ITS OWN database_path, so its
+   # close path writes to it. /DATA/FOUND/maps/hm3d_00861/rtabmap.db is 24 MB (5,870 pages) larger
+   # than the 1,197,514,752 its provenance recorded on 31 Aug, and was last modified 2026-09-03
+   # 22:51:58, during a run. Node, Data and integrity still match (1096/1096/ok), so this is not a
+   # claim that the geometry changed -- it is a claim that a published artefact is not immutable.
+   # The deeper mount wins, so runs still read the library and can no longer write it.` \
+  -v "$FOUND_ROOT/maps":/found/maps:ro \
   -v "${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}":/kb:ro \
   -v "$RUN_DIR":/ws/output \
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
