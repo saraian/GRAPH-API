@@ -54,6 +54,15 @@ else
   echo "    interface key unchanged ($BUILD_KEY); reusing the generated interfaces"
 fi
 _build_t0=$(date +%s)
+# GA-297. DELETE THE INSTALLED NODE SCRIPTS BEFORE BUILDING. colcon copies files in and never
+# takes them out, and /ws is a persistent named volume (GA-157), so a module DELETED from
+# CMakeLists stays in /ws/install and keeps being importable and runnable. Measured 4 Sep:
+# after habitat_camera_node.py was removed from the install list, a fresh build still left it
+# in the tree, and lib/lost3dsg held 37 entries for 31 installed modules. A stale module is
+# worse than a missing one: `ros2 run` would launch it and the bundle would record a source
+# hash that does not describe what executed. Only the copied .py files go; the generated
+# interfaces live under local/ and share/ and are what the build key exists to preserve.
+rm -rf /ws/install/lost3dsg/lib/lost3dsg
 colcon build --packages-select lost3dsg --cmake-args -DCMAKE_BUILD_TYPE=Release >/tmp/build.log 2>&1 \
   || { tail -30 /tmp/build.log; exit 1; }
 _build_t1=$(date +%s)
