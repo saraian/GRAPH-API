@@ -20,8 +20,10 @@ import os
 from pathlib import Path
 import re
 import struct
+import time
 from PIL import Image as PILImage
 import uuid
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import habitat_sim
@@ -30,19 +32,135 @@ import numpy as np
 
 
 DEFAULT_SCENE = (
-    "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb"
+    "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00814-p53SfW6mjZe/p53SfW6mjZe.basis.glb"
 )
 DEFAULT_SCENE_DATASET = (
     "/root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/"
     "hm3d_annotated_basis.scene_dataset_config.json"
 )
-DEFAULT_OBJECTS = os.path.expanduser("~/exchange/lost3dsg/data/objects/example_objects")
+DEFAULT_OBJECTS = os.path.expanduser("~/exchange/lost3dsg/habitat/habitat_objects/configs")
 DEFAULT_NAVMESH = ""
 VALID_ACTIONS = frozenset({"spawn", "move", "remove", "wait"})
-MAX_STEPS = 12
-MAX_WAIT_SECONDS = 60.0
-DEFAULT_SETTLE_SECONDS = 1.5
+MAX_STEPS = 64
+MAX_COMPILED_STEPS = MAX_STEPS * 2 - 1
+MAX_WAIT_SECONDS = 200.0
+DEFAULT_SETTLE_SECONDS = 10.0
 MAX_SEMANTIC_SURFACE_SAMPLES = 80
+
+
+def load_openrouter_config():
+    """Load optional OpenRouter settings from openrouter.txt.
+
+    Environment variables take precedence over this file. The file uses a
+    small dotenv-like format and is intentionally kept outside the code so it
+    can contain the API key without changing this script.
+    """
+    config_path = Path(__file__).with_name("openrouter.txt")
+    settings = {}
+    try:
+        lines = config_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return settings
+    except OSError as exc:
+        raise RuntimeError(f"Impossibile leggere {config_path}: {exc}") from exc
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        settings[key] = value
+    return settings
+
+
+def setting(name, config, default=""):
+    """Return an environment setting, falling back to openrouter.txt."""
+    return os.environ.get(name, config.get(name, default)).strip()
+
+
+def request_llm_json(request_obj, service_name, endpoint, retry_transient=False):
+    """Perform an LLM HTTP request, retrying transient OpenRouter failures."""
+    try:
+        configured_attempts = int(os.environ.get("OPENROUTER_HTTP_RETRIES", "5"))
+    except ValueError:
+        configured_attempts = 5
+    try:
+        base_delay = float(os.environ.get("OPENROUTER_RETRY_BASE_SECONDS", "3"))
+    except ValueError:
+        base_delay = 3.0
+    max_attempts = min(10, max(1, configured_attempts)) if retry_transient else 1
+    base_delay = min(30.0, max(0.1, base_delay))
+    retryable_statuses = {408, 409, 429, 500, 502, 503, 504}
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with urlopen(request_obj, timeout=300) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            try:
+                details = exc.read().decode("utf-8", errors="replace")[:1000]
+            except OSError:
+                details = str(exc)
+            if exc.code not in retryable_statuses or attempt == max_attempts:
+                raise RuntimeError(
+                    f"Impossibile contattare {service_name} su {endpoint}: "
+                    f"HTTP {exc.code}. Risposta: {details}"
+                ) from exc
+            retry_after = None
+            if exc.headers is not None:
+                try:
+                    retry_after = float(exc.headers.get("Retry-After", ""))
+                except (TypeError, ValueError):
+                    retry_after = None
+            delay = min(
+                60.0,
+                retry_after if retry_after is not None
+                else base_delay * (2 ** (attempt - 1)),
+            )
+            print(
+                f"{service_name} HTTP {exc.code}: nuovo tentativo "
+                f"{attempt + 1}/{max_attempts} tra {delay:g}s.",
+                flush=True,
+            )
+            time.sleep(delay)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Impossibile contattare {service_name} su {endpoint}: {exc}. "
+                + (
+                    "Controlla OPENROUTER_API_KEY, OPENROUTER_URL e il modello."
+                    if retry_transient else
+                    "Controlla che Ollama sia avviato e che il modello sia installato."
+                )
+            ) from exc
+    raise AssertionError("ciclo retry LLM terminato senza risultato")
+
+
+def resolve_object_configs_dir(objects_dir):
+    """Return the directory containing Habitat ``*.object_config.json`` files.
+
+    HabitatSim's ``load_configs`` is not recursive. Object datasets commonly
+    expose a root directory with separate ``configs/`` and ``meshes/``
+    subdirectories, so accept either the configs directory or the dataset
+    root and resolve the former automatically.
+    """
+    requested = str(objects_dir or "").strip()
+    if not requested:
+        return requested
+    if not os.path.isdir(requested):
+        return requested
+    if any(name.endswith(".object_config.json") for name in os.listdir(requested)):
+        return requested
+    configs = os.path.join(requested, "configs")
+    if os.path.isdir(configs):
+        return configs
+    return requested
 # Un mobile non e' rappresentato da un solo punto centrale: su un bancone il
 # centro puo' coincidere con lavabo, fornelli o altra geometria occupata. Si
 # conservano alcuni campioni distribuiti, poi verificati con l'ingombro del
@@ -66,42 +184,14 @@ MAX_SUPPORT_HEIGHT_ABOVE_NAVMESH = 1.5
 MIN_SUPPORT_HEIGHT_ABOVE_NAVMESH = 0.30
 MAX_SUPPORT_HORIZONTAL_NAVMESH_DISTANCE = 0.35
 MAX_SEMANTIC_COLLISION_HEIGHT_ERROR = 0.12
+MAX_FOOTPRINT_HEIGHT_ERROR = 0.045
+FOOTPRINT_SAMPLE_FRACTION = 0.42
 SUPPORT_CATEGORIES = (
     "table", "desk", "shelf", "shelving", "counter", "cabinet",
     "dresser", "chest of drawers", "nightstand", "bedside", "sideboard",
     "console", "workbench", "kitchen island", "tv stand", "wardrobe",
     "bench", "stool", "piano", "couch", "sofa",
 )
-
-SUPPORT_REQUEST_ALIASES = (
-    (("tavolo", "tavoli", "tavola", "table", "tables"), ("table",)),
-    (("scrivania", "scrivanie", "desk", "desks"), ("desk",)),
-    (("mensola", "mensole", "scaffale", "scaffali", "ripiano", "ripiani",
-      "shelf", "shelves"), ("shelf", "shelving")),
-    (("bancone", "banconi", "counter", "counters"), ("counter", "kitchen island")),
-    (("comodino", "comodini", "nightstand", "nightstands", "bedside"),
-     ("nightstand", "bedside")),
-    (("cassettiera", "cassettiere", "dresser", "dressers"),
-     ("dresser", "chest of drawers")),
-    (("credenza", "credenze", "sideboard", "sideboards"), ("sideboard",)),
-    (("panca", "panche", "bench", "benches"), ("bench",)),
-    (("sgabello", "sgabelli", "stool", "stools"), ("stool",)),
-    (("divano", "divani", "couch", "couches", "sofa", "sofas"), ("couch", "sofa")),
-)
-
-QUALIFIED_SUPPORT_REQUESTS = (
-    (("bathroom counter", "bathroom counters"), ("bathroom counter",)),
-    (("kitchen counter", "kitchen counters"), ("kitchen counter",)),
-)
-
-# Nei dataset HM3D il mobile e la stanza possono essere annotati separatamente
-# (category="counter", region="bathroom"). Queste descrizioni vanno quindi
-# verificate come coppia supporto+regione, non solo come stringa di categoria.
-QUALIFIED_SUPPORT_COMPONENTS = {
-    "bathroom counter": (("counter",), ("bathroom", "toilet")),
-    "kitchen counter": (("counter",), ("kitchen",)),
-}
-
 
 def is_support_category(category):
     """Distingue mobili di supporto dagli oggetti *sopra* un supporto."""
@@ -133,75 +223,289 @@ def is_geometric_support_candidate(category):
                    for name in NON_SUPPORT_CATEGORIES)
 
 
-def requested_support_categories(request):
-    """Converte i supporti espliciti della richiesta in categorie semantiche."""
-    requested = {
-        category
-        for categories in requested_support_sequence(request)
-        for category in categories
-    }
-    return tuple(sorted(requested))
-
-
-def requested_support_sequence(request):
-    """Restituisce i tipi di supporto nell'ordine in cui sono nominati."""
-    normalized = str(request or "").strip().lower()
-    occurrences = []
-    qualified_occurrences = []
-    qualified_generic_categories = set()
-    for aliases, categories in QUALIFIED_SUPPORT_REQUESTS:
-        positions = []
-        for alias in aliases:
-            match = re.search(r"\b" + re.escape(alias) + r"\b", normalized)
-            if match is not None:
-                positions.append(match.start())
-        if positions:
-            qualified_occurrences.append((min(positions), tuple(categories)))
-            if any("counter" in category for category in categories):
-                qualified_generic_categories.add("counter")
-    for aliases, categories in SUPPORT_REQUEST_ALIASES:
-        if "counter" in qualified_generic_categories and "counter" in categories:
-            continue
-        positions = []
-        for alias in aliases:
-            match = re.search(r"\b" + re.escape(alias) + r"\b", normalized)
-            if match is not None:
-                positions.append(match.start())
-        if positions:
-            occurrences.append((min(positions), tuple(categories)))
-    occurrences.extend(qualified_occurrences)
-    occurrences.sort(key=lambda item: item[0])
-    return [categories for _, categories in occurrences]
-
-
-def point_matches_support_request(point, requested_categories):
-    if not requested_categories:
-        return True
-    category = str(point.get("category", "")).strip().lower()
-    room_categories = tuple(
+def point_matches_support_constraint(point, constraint):
+    """Match a point against a semantic constraint emitted by the LLM."""
+    if not isinstance(constraint, dict):
+        return False
+    category = str(constraint.get("category", "")).strip().lower()
+    rooms = {
         str(item).strip().lower()
-        for item in point.get("room_categories", [])
+        for item in constraint.get("room_categories", [])
         if str(item).strip()
+    }
+    if category and str(point.get("category", "")).strip().lower() != category:
+        return False
+    if rooms:
+        point_rooms = {
+            str(item).strip().lower()
+            for item in point.get("room_categories", [])
+            if str(item).strip()
+        }
+        if not rooms & point_rooms:
+            return False
+    return True
+
+
+NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4,
+    "cinque": 5, "sei": 6, "sette": 7, "otto": 8, "nove": 9,
+    "dieci": 10,
+}
+
+
+def _requested_object_count(request):
+    """Extract an explicit object count from common Italian/English requests."""
+    normalized = str(request or "").strip().lower()
+    number = r"\d+|" + "|".join(sorted(NUMBER_WORDS, key=len, reverse=True))
+    match = re.search(
+        rf"\b({number})\b(?:\s+\w+){{0,3}}\s+\b(?:objects?|oggetti?)\b",
+        normalized,
     )
-    for name in requested_categories:
-        if re.search(r"\b" + re.escape(name) + r"\b", category):
-            return True
-        components = QUALIFIED_SUPPORT_COMPONENTS.get(name)
-        if components is None:
+    if match is None:
+        return None
+    token = match.group(1)
+    return int(token) if token.isdigit() else NUMBER_WORDS[token]
+
+
+def _expected_positioned_action_count(request):
+    """Infer an exact spawn+move count when the request makes it unambiguous."""
+    count = _requested_object_count(request)
+    if count is None:
+        return None
+    normalized = str(request or "").lower()
+    asks_move = bool(re.search(
+        r"\b(move|moves|moved|sposta|spostare|muovi|muovere|trasferisci|trasferire|porta|portare)\b",
+        normalized,
+    ))
+    asks_all = bool(re.search(r"\b(all|every|tutti|tutte|ciascun[oa]?)\b", normalized))
+    return count * 2 if asks_move and asks_all else count
+
+
+def normalize_empty_support_constraints(plan):
+    """Repair only a count mismatch made entirely of unconstrained entries.
+
+    Empty constraints are interchangeable. Non-empty semantic constraints are
+    deliberately left untouched because their chronological association cannot
+    be recovered safely after the model returns the wrong array length.
+    """
+    if not isinstance(plan, dict) or not isinstance(plan.get("steps"), list):
+        return False
+    constraints = plan.get("support_constraints")
+    if not isinstance(constraints, list):
+        return False
+    required = sum(
+        step.get("action") in {"spawn", "move"}
+        for step in plan["steps"] if isinstance(step, dict)
+    )
+    if len(constraints) == required:
+        return False
+
+    def is_empty_constraint(item):
+        if not isinstance(item, dict):
+            return False
+        category = str(item.get("category", "")).strip()
+        rooms = item.get("room_categories", [])
+        return (
+            not category
+            and isinstance(rooms, list)
+            and not any(str(room).strip() for room in rooms)
+        )
+
+    if not all(is_empty_constraint(item) for item in constraints):
+        return False
+    plan["support_constraints"] = [
+        {"category": "", "room_categories": []} for _ in range(required)
+    ]
+    return True
+
+
+def validate_plan_intent(plan, request):
+    """Reject structurally valid plans that do not fulfil the user request."""
+    if not isinstance(plan, dict) or not isinstance(plan.get("steps"), list):
+        raise ValueError("piano LLM privo di steps")
+    steps = plan["steps"]
+    positioned = [step for step in steps if step.get("action") in {"spawn", "move"}]
+    constraints = plan.get("support_constraints", [])
+    if len(constraints) != len(positioned):
+        raise ValueError(
+            "support_constraints deve avere esattamente un elemento per ogni spawn/move"
+        )
+
+    spawn_steps = [step for step in steps if step.get("action") == "spawn"]
+    requested_count = _requested_object_count(request)
+    if requested_count is not None and len(spawn_steps) != requested_count:
+        raise ValueError(
+            f"la richiesta richiede {requested_count} oggetti, ma il piano ne crea "
+            f"{len(spawn_steps)}"
+        )
+
+    normalized = str(request or "").lower()
+    asks_move = bool(re.search(
+        r"\b(move|moves|moved|sposta|spostare|muovi|muovere|trasferisci|trasferire|porta|portare)\b",
+        normalized,
+    ))
+    asks_all = bool(re.search(r"\b(all|every|tutti|tutte|ciascun[oa]?)\b", normalized))
+    if asks_move and asks_all:
+        spawned_names = {str(step.get("name", "")).strip() for step in spawn_steps}
+        moved_names = {
+            str(step.get("object", "")).strip()
+            for step in steps if step.get("action") == "move"
+        }
+        missing = sorted(name for name in spawned_names if name and name not in moved_names)
+        if missing:
+            raise ValueError(
+                "la richiesta richiede di spostare tutti gli oggetti; move mancanti per: "
+                + ", ".join(missing)
+            )
+
+    wait_match = re.search(
+        r"\b(?:at\s+least|almeno)\s+(\d+(?:\.\d+)?)\s*(?:seconds?|secondi?)\b",
+        normalized,
+    )
+    if wait_match and any(step.get("action") == "move" for step in steps):
+        first_move = next(i for i, step in enumerate(steps) if step.get("action") == "move")
+        waited = sum(
+            float(step.get("seconds", 0.0))
+            for step in steps[:first_move] if step.get("action") == "wait"
+        )
+        required = float(wait_match.group(1))
+        if waited + 1e-9 < required:
+            raise ValueError(
+                f"la richiesta richiede almeno {required:g}s prima dei move; "
+                f"il piano ne attende {waited:g}"
+            )
+
+
+def placement_rank(point, object_size):
+    """Prefer conventional supports and points far from their observed edges."""
+    x, _, z = valid_position(point.get("surface_point"), "surface_point")
+    bounds = point.get("support_bounds") or []
+    edge_clearance = -float("inf")
+    centrality = -float("inf")
+    if (
+        isinstance(bounds, (list, tuple)) and len(bounds) == 2
+        and all(isinstance(item, (list, tuple)) and len(item) == 3 for item in bounds)
+    ):
+        low, high = bounds
+        half_x, half_z = float(object_size[0]) / 2.0, float(object_size[2]) / 2.0
+        edge_clearance = min(
+            x - float(low[0]) - half_x, float(high[0]) - x - half_x,
+            z - float(low[2]) - half_z, float(high[2]) - z - half_z,
+        )
+        center_x = (float(low[0]) + float(high[0])) / 2.0
+        center_z = (float(low[2]) + float(high[2])) / 2.0
+        centrality = -math.hypot(x - center_x, z - center_z)
+    category = str(point.get("category", "")).strip().lower()
+    semantic_quality = 2 if is_support_category(category) else 0
+    if category in {"surface", "object", "unknown"}:
+        semantic_quality = -1
+    return semantic_quality, edge_clearance, centrality
+
+
+def assign_valid_placements(plan, points, sim, objects_dir, margin=0.01):
+    """Assign geometry-valid placements; the LLM supplies only semantic constraints."""
+    constraints = plan.get("support_constraints", [])
+    if not isinstance(constraints, list):
+        raise ValueError("support_constraints deve essere un array")
+    templates = available_template_names(objects_dir)
+    object_templates = {}
+    object_placements = {}
+    used_placements = set()
+    valid_cache = {}
+    placement_index = 0
+
+    def valid_for_template(template):
+        if template in valid_cache:
+            return valid_cache[template]
+        handle, offset = template_handle_and_support_offset(sim, template, objects_dir)
+        object_size = template_object_size(sim, handle)
+        valid = {}
+        for point_id, point in points.items():
+            surface = collision_support_point(sim, point.get("surface_point"))
+            if surface is None:
+                continue
+            position = [surface[0], surface[1] + offset + margin, surface[2]]
+            if (
+                footprint_support_quality(sim, handle, position, surface) is not None
+                and target_has_visible_view(sim, handle, position)
+            ):
+                valid[point_id] = (
+                    point, surface, position, placement_rank(point, object_size),
+                    object_size,
+                )
+        valid_cache[template] = valid
+        return valid
+
+    def has_free_footprint(item):
+        """Keep placed AABBs apart while allowing a large support to be reused."""
+        _, surface, position, _, object_size = item
+        for placed in object_placements.values():
+            if abs(float(surface[1]) - float(placed["surface_y"])) > 0.08:
+                continue
+            other_position, other_size = placed["position"], placed["size"]
+            overlap_x = abs(float(position[0]) - float(other_position[0])) < (
+                (float(object_size[0]) + float(other_size[0])) / 2.0 + 0.03
+            )
+            overlap_z = abs(float(position[2]) - float(other_position[2])) < (
+                (float(object_size[2]) + float(other_size[2])) / 2.0 + 0.03
+            )
+            if overlap_x and overlap_z:
+                return False
+        return True
+
+    for index, step in enumerate(plan.get("steps", [])):
+        action = str(step.get("action", "")).strip().lower()
+        if action not in {"spawn", "move"}:
             continue
-        furniture_names, room_names = components
-        furniture_matches = any(
-            re.search(r"\b" + re.escape(item) + r"\b", category)
-            for item in furniture_names
+        old = None
+        if action == "spawn":
+            template = resolve_template_name(step.get("template"), templates)
+            if template is None:
+                raise ValueError(f"step {index}: template non disponibile")
+            name = str(step.get("name") or f"{template}_1").strip()
+            object_templates[name] = template
+        else:
+            name = str(step.get("object") or "").strip()
+            template = object_templates.get(name)
+            if template is None:
+                raise ValueError(f"step {index}: oggetto '{name}' non disponibile")
+            old = object_placements.pop(name, None)
+        old_placement_id = old["placement_id"] if old else None
+        constraint = constraints[placement_index] if placement_index < len(constraints) else {}
+        candidates = [
+            (point_id, item) for point_id, item in valid_for_template(template).items()
+            if point_matches_support_constraint(item[0], constraint)
+            and has_free_footprint(item)
+            and item[0].get("placement_id") != old_placement_id
+            and (
+                not plan.get("distinct_destinations", False)
+                or item[0].get("placement_id") not in used_placements
+            )
+        ]
+        if not candidates:
+            raise ValueError(
+                f"step {index}: nessun placement valido per {template} "
+                f"con vincolo {json.dumps(constraint, ensure_ascii=False)}"
+            )
+        point_id, (point, surface, position, _, object_size) = max(
+            candidates, key=lambda item: (item[1][3], str(item[0]))
         )
-        room_matches = any(
-            re.search(r"\b" + re.escape(room_name) + r"\b", room_category)
-            for room_name in room_names
-            for room_category in room_categories
-        )
-        if furniture_matches and room_matches:
-            return True
-    return False
+        # placement_id identifica la superficie semantica, ma una superficie
+        # può avere più punti geometrici. Conserviamo anche il punto preciso
+        # già validato, evitando che semantic_placement_point() ne scelga un
+        # altro durante compile_plan().
+        step["target_point"] = point_id
+        step["placement_id"] = point["placement_id"]
+        used_placements.add(point["placement_id"])
+        object_placements[name] = {
+            "placement_id": point["placement_id"],
+            "position": position,
+            "surface_y": surface[1],
+            "size": object_size,
+        }
+        placement_index += 1
 
 
 def semantic_region_categories_at(sim, position):
@@ -513,6 +817,7 @@ def valid_position(position, label="position"):
 
 
 def available_template_names(objects_dir):
+    objects_dir = resolve_object_configs_dir(objects_dir)
     if not os.path.isdir(objects_dir):
         return []
     return sorted({
@@ -894,6 +1199,7 @@ def generate_points(sim, step=0.25, margin=0.01, scene=None):
                 "category": category_name,
                 "room_categories": sorted(room_categories),
                 "surface_group": surface_group or point_id,
+                "support_bounds": [values(minimum), values(maximum)],
                 "semantic_color": semantic_object.get("color"),
                 "margin": margin,
             }
@@ -1000,8 +1306,9 @@ def semantic_placement_point(points, placement_id):
 
 def template_handle_and_support_offset(sim, template_name, objects_dir):
     manager = sim.get_object_template_manager()
-    if objects_dir and os.path.isdir(objects_dir):
-        manager.load_configs(objects_dir)
+    configs_dir = resolve_object_configs_dir(objects_dir)
+    if configs_dir and os.path.isdir(configs_dir):
+        manager.load_configs(configs_dir)
     handles = manager.get_template_handles()
     requested = Path(str(template_name)).name.lower()
     if requested.endswith(".object_config.json"):
@@ -1052,8 +1359,82 @@ def configured_object_scale():
     return factor
 
 
-def target_has_visible_view(sim, template_handle, position):
-    """Verifica in modo deterministico che il target sia visibile nella scena.
+def template_object_size(sim, template_handle):
+    """Return the scaled collision AABB size of a temporary template instance."""
+    manager = sim.get_rigid_object_manager()
+    obj = manager.add_object_by_template_handle(str(template_handle))
+    if obj is None:
+        raise ValueError(f"template non istanziabile: {template_handle}")
+    try:
+        apply_global_object_scale(obj)
+        size = obj.aabb.size()
+        return [float(size.x), float(size.y), float(size.z)]
+    finally:
+        manager.remove_object_by_id(obj.object_id)
+
+
+def footprint_support_quality(
+    sim, template_handle, position, surface,
+    height_tolerance=MAX_FOOTPRINT_HEIGHT_ERROR,
+):
+    """Validate support beneath the centre, edges and corners of an object.
+
+    Returns a small quality value when all nine rays hit the same horizontal
+    stage surface. ``None`` means that some part of the footprint overhangs,
+    intersects another height, or lacks collision support.
+    """
+    manager = sim.get_rigid_object_manager()
+    obj = manager.add_object_by_template_handle(str(template_handle))
+    if obj is None:
+        return None
+    try:
+        apply_global_object_scale(obj)
+        obj.motion_type = habitat_sim.physics.MotionType.KINEMATIC
+        obj.translation = mn.Vector3(valid_position(position))
+        size = obj.aabb.size()
+        half_x = max(0.01, FOOTPRINT_SAMPLE_FRACTION * float(size.x))
+        half_z = max(0.01, FOOTPRINT_SAMPLE_FRACTION * float(size.z))
+        expected_y = float(valid_position(surface, "support surface")[1])
+        stage_id = getattr(habitat_sim, "stage_id", None)
+        deviations = []
+        for dx, dz in (
+            (0.0, 0.0),
+            (-half_x, -half_z), (-half_x, half_z),
+            (half_x, -half_z), (half_x, half_z),
+            (-half_x, 0.0), (half_x, 0.0),
+            (0.0, -half_z), (0.0, half_z),
+        ):
+            origin = mn.Vector3(
+                float(position[0]) + dx, expected_y + 0.20,
+                float(position[2]) + dz,
+            )
+            hits = sim.cast_ray(
+                habitat_sim.geo.Ray(origin, mn.Vector3(0.0, -1.0, 0.0))
+            )
+            compatible = []
+            for hit in getattr(hits, "hits", []):
+                if int(hit.object_id) == int(obj.object_id):
+                    continue
+                if stage_id is not None and int(hit.object_id) != int(stage_id):
+                    continue
+                normal = getattr(hit, "normal", None)
+                if normal is not None:
+                    length = math.sqrt(sum(float(normal[i]) ** 2 for i in range(3)))
+                    if length <= 1e-8 or float(normal.y) / length < 0.80:
+                        continue
+                deviation = abs(float(hit.point.y) - expected_y)
+                if deviation <= float(height_tolerance):
+                    compatible.append(deviation)
+            if not compatible:
+                return None
+            deviations.append(min(compatible))
+        return 1.0 - max(deviations) / max(float(height_tolerance), 1e-9)
+    finally:
+        manager.remove_object_by_id(obj.object_id)
+
+
+def find_valid_capture_eye(sim, template_handle, position):
+    """Return a deterministic navigable camera pose with direct visibility.
 
     La collision mesh di HM3D contiene talvolta piani nascosti dentro mobili.
     Un ray verticale li scambia per superfici valide; qui istanziamo
@@ -1063,7 +1444,7 @@ def target_has_visible_view(sim, template_handle, position):
     manager = sim.get_rigid_object_manager()
     obj = manager.add_object_by_template_handle(str(template_handle))
     if obj is None:
-        return False
+        return None
     try:
         apply_global_object_scale(obj)
         target = mn.Vector3(position)
@@ -1105,12 +1486,17 @@ def target_has_visible_view(sim, template_handle, position):
                 (hit for hit in hits.hits if hit.object_id != obj.object_id), None
             )
             if obstacle is not None and float(obstacle.ray_distance) < clearance:
-                return False
+                return None
         directions = (
             (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0),
             (0.707, 0.707), (0.707, -0.707), (-0.707, 0.707), (-0.707, -0.707),
         )
-        for distance in (0.8, 1.25, 2.0):
+        eye_lifts = (
+            max(0.15, 0.5 * float(size.y)),
+            max(0.35, 1.0 * float(size.y)),
+            max(0.80, 1.5 * float(size.y)),
+        )
+        for distance in (0.8, 1.25, 2.0, 2.75):
             for dx, dz in directions:
                 candidate = target + mn.Vector3(distance * dx, 0.0, distance * dz)
                 floor = sim.pathfinder.snap_point(candidate)
@@ -1118,22 +1504,30 @@ def target_has_visible_view(sim, template_handle, position):
                     continue
                 if math.hypot(float(floor.x - candidate.x), float(floor.z - candidate.z)) > 0.35:
                     continue
-                eye = mn.Vector3(floor.x, target.y + 0.15, floor.z)
-                eye_regions = regions_at(eye)
-                if target_regions and eye_regions and not (target_regions & eye_regions):
-                    continue
-                direction = target - eye
-                if direction.length() < 0.05:
-                    continue
-                hits = sim.cast_ray(habitat_sim.geo.Ray(eye, direction.normalized()))
-                if hits.has_hits() and hits.hits[0].object_id == obj.object_id:
-                    return True
-        return False
+                for lift in eye_lifts:
+                    eye = mn.Vector3(floor.x, target.y + lift, floor.z)
+                    eye_regions = regions_at(eye)
+                    if target_regions and eye_regions and not (target_regions & eye_regions):
+                        continue
+                    direction = target - eye
+                    if direction.length() < 0.05:
+                        continue
+                    hits = sim.cast_ray(habitat_sim.geo.Ray(eye, direction.normalized()))
+                    if hits.has_hits() and hits.hits[0].object_id == obj.object_id:
+                        return values(eye)
+        return None
     finally:
         manager.remove_object_by_id(obj.object_id)
 
 
-def compile_plan(plan, points, sim, objects_dir, margin=0.01, request_text=""):
+def target_has_visible_view(sim, template_handle, position):
+    """Compatibility predicate for callers that only need validity."""
+    return find_valid_capture_eye(sim, template_handle, position) is not None
+
+
+def compile_plan(
+    plan, points, sim, objects_dir, margin=0.01, request_text="", template_catalog=None
+):
     if not isinstance(plan, dict):
         raise ValueError("il piano deve essere un oggetto JSON")
     if not isinstance(plan.get("steps"), list) or not plan["steps"]:
@@ -1145,12 +1539,13 @@ def compile_plan(plan, points, sim, objects_dir, margin=0.01, request_text=""):
 
     compiled = {"steps": [], "object_scale": configured_object_scale()}
     compiled["description"] = str(plan.get("description", "")).strip()[:160]
+    support_constraints = plan.get("support_constraints", [])
+    if not isinstance(support_constraints, list):
+        raise ValueError("support_constraints deve essere un array")
     dimensions = {}
     object_templates = {}
     available_templates = available_template_names(objects_dir)
     request_lower = str(request_text).lower()
-    requested_supports = requested_support_categories(request_text)
-    support_sequence = requested_support_sequence(request_text)
     request_template = next(
         (item for item in available_templates if item.lower() in request_lower),
         None,
@@ -1211,13 +1606,24 @@ def compile_plan(plan, points, sim, objects_dir, margin=0.01, request_text=""):
             if target not in points:
                 raise ValueError(f"target_point non trovato: {target}")
             target_metadata = points[target]
-            expected_supports = (
-                support_sequence[placement_index]
-                if placement_index < len(support_sequence)
-                else requested_supports
+            if placement_id and template_catalog and template in template_catalog:
+                allowed = {
+                    surface["placement_id"]
+                    for support in semantic_surface_catalog(template_catalog[template])
+                    for surface in support["surfaces"]
+                }
+                if placement_id not in allowed:
+                    raise ValueError(
+                        f"step {index}: placement {placement_id} non valido "
+                        f"per il template {template}"
+                    )
+            expected_constraint = (
+                support_constraints[placement_index]
+                if placement_index < len(support_constraints)
+                else {}
             )
-            if not point_matches_support_request(target_metadata, expected_supports):
-                requested_label = ", ".join(expected_supports)
+            if not point_matches_support_constraint(target_metadata, expected_constraint):
+                requested_label = json.dumps(expected_constraint, ensure_ascii=False)
                 raise ValueError(
                     f"step {index}: target_point {target} è categoria "
                     f"'{target_metadata.get('category', '')}', ma la richiesta "
@@ -1245,11 +1651,22 @@ def compile_plan(plan, points, sim, objects_dir, margin=0.01, request_text=""):
             if placement_id:
                 out["placement_id"] = placement_id
             out["position"] = [surface[0], surface[1] + support_offset + margin, surface[2]]
-            if not target_has_visible_view(sim, template_handle, out["position"]):
+            if footprint_support_quality(
+                sim, template_handle, out["position"], surface
+            ) is None:
+                raise ValueError(
+                    f"step {index}: l'impronta completa di {template} non è "
+                    f"supportata da {target}"
+                )
+            capture_eye = find_valid_capture_eye(
+                sim, template_handle, out["position"]
+            )
+            if capture_eye is None:
                 raise ValueError(
                     f"step {index}: {target} non ha spazio libero o una vista "
                     "navigabile sul supporto"
                 )
+            out["capture_eye"] = capture_eye
             out["target_category"] = str(target_metadata.get("category", ""))
             out["target_surface_point"] = surface
             out["target_surface_group"] = str(target_metadata.get("surface_group", target))
@@ -1316,8 +1733,15 @@ def compile_plan(plan, points, sim, objects_dir, margin=0.01, request_text=""):
             and index < len(compiled["steps"]) - 1
             and compiled["steps"][index + 1]["action"] != "wait"
         ):
-            with_settling.append({"action": "wait", "seconds": settle_seconds})
+            with_settling.append({
+                "action": "wait", "seconds": settle_seconds,
+                "reason": "settle",
+            })
     compiled["steps"] = with_settling
+    if len(compiled["steps"]) > MAX_COMPILED_STEPS:
+        raise ValueError(
+            f"il piano compilato supera il limite di {MAX_COMPILED_STEPS} step"
+        )
     return compiled
 
 
@@ -1364,6 +1788,7 @@ def template_placeable_points(request, points, sim, objects_dir, margin=0.01):
     handle, support_offset = template_handle_and_support_offset(
         sim, template, objects_dir
     )
+    object_size = template_object_size(sim, handle)
     valid = {}
     rejected = Counter()
     input_categories = Counter()
@@ -1380,12 +1805,17 @@ def template_placeable_points(request, points, sim, objects_dir, margin=0.01):
         position = [
             surface[0], surface[1] + support_offset + float(margin), surface[2]
         ]
+        if footprint_support_quality(sim, handle, position, surface) is None:
+            rejected["footprint"] += 1
+            rejected_categories[category] += 1
+            continue
         if not target_has_visible_view(sim, handle, position):
             rejected["view_or_clearance"] += 1
             rejected_categories[category] += 1
             continue
         checked = dict(point)
         checked["surface_point"] = surface
+        checked["placement_rank"] = placement_rank(checked, object_size)
         valid[point_id] = checked
         valid_categories[category] += 1
     print(
@@ -1408,6 +1838,38 @@ def template_placeable_points(request, points, sim, objects_dir, margin=0.01):
     return valid
 
 
+def template_placeable_catalog(request, points, sim, objects_dir, margin=0.01):
+    """Build a template -> valid placement catalog before asking the LLM."""
+    templates = available_template_names(objects_dir)
+    request_lower = str(request).lower()
+    requested_words = set(re.findall(r"[a-z0-9_-]+", request_lower))
+    candidates = [
+        template for template in templates
+        if any(word in template.lower() for word in requested_words if len(word) > 2)
+    ]
+    # If the request does not identify a family, retain the complete catalog
+    # and let the LLM choose the object type.
+    if not candidates:
+        return {"__all__": dict(points)}
+
+    catalog = {}
+    for template in candidates:
+        catalog[template] = template_placeable_points(
+            template, points, sim, objects_dir, margin=margin
+        )
+    return catalog
+
+
+def union_template_points(template_catalog):
+    """Merge per-template points while retaining one canonical point record."""
+    merged = {}
+    for point_map in template_catalog.values():
+        merged.update(point_map)
+    if not merged:
+        raise ValueError("nessun placement disponibile per i template candidati")
+    return merged
+
+
 def decode_llm_json(content):
     """Accetta JSON puro e l'occasionale blocco Markdown prodotto da un modello."""
     if not isinstance(content, str):
@@ -1422,11 +1884,16 @@ def decode_llm_json(content):
         raise RuntimeError(f"Ollama non ha restituito JSON valido: {preview}") from exc
 
 
-def fallback_plan(request, points, sim, objects_dir):
+def fallback_plan(request, points, sim, objects_dir, template_catalog=None):
     """Crea un piano minimo valido quando il modello confonde punti e oggetti."""
     templates = available_template_names(objects_dir)
     request_lower = str(request).lower()
     matching = [name for name in templates if name.lower() in request_lower]
+    catalog_templates = [
+        name for name in (template_catalog or {}) if name != "__all__"
+    ]
+    if not matching and len(catalog_templates) == 1:
+        matching = catalog_templates
     if len(matching) != 1:
         available = ", ".join(templates) or "nessuno"
         raise RuntimeError(
@@ -1434,44 +1901,13 @@ def fallback_plan(request, points, sim, objects_dir):
             f"template disponibile. Template: {available}"
         )
     template = matching[0]
-    # Il fallback deve rispettare almeno il tipo di supporto esplicitamente
-    # richiesto. Prima sceglieva sempre support_0000, spesso una shelf pur
-    # quando l'utente chiedeva un tavolo.
-    support_keywords = requested_support_categories(request)
-    support_sequence = requested_support_sequence(request)
-    preferred_points = {
-        point_id: point for point_id, point in points.items()
-        if support_keywords and point_matches_support_request(point, support_keywords)
-    }
-    if support_keywords and not preferred_points:
-        raise ValueError(
-            "nessuna superficie corrisponde al supporto richiesto: "
-            + ", ".join(support_keywords)
-        )
-    candidate_pool = preferred_points or points
-
-    def candidates_for(categories):
-        matching_points = {
-            point_id: point for point_id, point in candidate_pool.items()
-            if point_matches_support_request(point, categories)
-        }
-        return select_candidate_points(matching_points, 2) if matching_points else []
-
-    first_candidates = candidates_for(
-        support_sequence[0] if support_sequence else support_keywords
+    candidate_pool = (
+        (template_catalog or {}).get(template, points)
+        if template_catalog else points
     )
+    first_candidates = select_candidate_points(candidate_pool, 2)
     if not first_candidates:
-        expected = support_sequence[0] if support_sequence else support_keywords
-        available_categories = sorted({
-            str(point.get("category", "")).strip().lower()
-            for point in candidate_pool.values()
-            if str(point.get("category", "")).strip()
-        })
-        raise ValueError(
-            "nessun target valido per il primo supporto richiesto "
-            f"({', '.join(expected) or 'non specificato'}); categorie valide: "
-            + (", ".join(available_categories) or "nessuna")
-        )
+        raise ValueError("nessun target valido disponibile")
     first = first_candidates[0]
     name = f"{template}_1"
     steps = [{
@@ -1482,12 +1918,8 @@ def fallback_plan(request, points, sim, objects_dir):
     }]
     move_words = ("sposta", "muovi", "move", "trasferisci", "porta")
     if any(word in request_lower for word in move_words):
-        next_categories = (
-            support_sequence[1] if len(support_sequence) > 1
-            else (support_sequence[0] if support_sequence else support_keywords)
-        )
         move_candidates = [
-            point for point in candidates_for(next_categories)
+            point for point in select_candidate_points(candidate_pool, len(candidate_pool))
             if point["id"] != first["id"]
         ]
         if not move_candidates:
@@ -1502,11 +1934,16 @@ def fallback_plan(request, points, sim, objects_dir):
         steps.append({"action": "remove", "object": name})
     return {
         "description": f"Piano deterministico per {template}.",
+        "distinct_destinations": bool(any(word in request_lower for word in move_words)),
+        "support_constraints": [
+            {"category": "", "room_categories": []}
+            for step in steps if step["action"] in {"spawn", "move"}
+        ],
         "steps": steps,
     }
 
 
-def ask_llm_for_plan(request, points, objects_dir, correction=""):
+def ask_llm_for_plan(request, points, objects_dir, correction="", template_catalog=None):
     """Chiede a Ollama un piano logico usando esclusivamente punti validi."""
 
     templates = available_template_names(objects_dir)
@@ -1516,27 +1953,47 @@ def ask_llm_for_plan(request, points, objects_dir, correction=""):
         max_points = int(os.environ.get("OLLAMA_MAX_POINTS", "100"))
     except ValueError:
         max_points = 100
-    requested_supports = requested_support_categories(request)
-    support_sequence = requested_support_sequence(request)
-    matching_points = {
-        point_id: point for point_id, point in points.items()
-        if point_matches_support_request(point, requested_supports)
-    }
-    if requested_supports and not matching_points:
-        raise ValueError(
-            "nessuna superficie corrisponde al supporto richiesto: "
-            + ", ".join(requested_supports)
-        )
     # La LLM vede solo supporti e superfici semantiche. I surface_* e tutta
     # la geometria restano nella mappa interna usata da compile_plan().
-    llm_candidates = semantic_surface_catalog(matching_points or points)[:max_points]
+    llm_candidates = semantic_surface_catalog(points)[:max_points]
+    available_categories = sorted({str(item["type"]).strip().lower() for item in llm_candidates})
+    available_rooms = sorted({
+        str(room).strip().lower()
+        for item in llm_candidates for room in item.get("room_categories", [])
+    })
+    expected_constraints = _expected_positioned_action_count(request)
+    constraints_schema = {
+        "type": "array",
+        "description": "One constraint for each spawn/move, in chronological order.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "enum": [""] + available_categories},
+                "room_categories": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": [""] + available_rooms},
+                    "maxItems": 3,
+                },
+            },
+            "required": ["category", "room_categories"],
+            "additionalProperties": False,
+        },
+        "maxItems": expected_constraints or MAX_STEPS,
+    }
+    if expected_constraints is not None:
+        constraints_schema["minItems"] = expected_constraints
     schema = {
         "type": "object",
         "properties": {
             "description": {"type": "string", "maxLength": 160},
+            "distinct_destinations": {
+                "type": "boolean",
+                "description": "True when destinations must be different across the plan.",
+            },
+            "support_constraints": constraints_schema,
             "steps": {
                 "type": "array",
-                "maxItems": 12,
+                "maxItems": MAX_STEPS,
                 # oneOf rende obbligatori i campi dell'azione scelta: con il
                 # vecchio schema un remove senza object era formalmente valido.
                 "items": {
@@ -1547,9 +2004,8 @@ def ask_llm_for_plan(request, points, objects_dir, correction=""):
                                 "action": {"const": "spawn"},
                                 "name": {"type": "string", "minLength": 1},
                                 "template": {"type": "string", "enum": templates},
-                                "placement_id": {"type": "string", "enum": [s["placement_id"] for p in llm_candidates for s in p["surfaces"]]},
                             },
-                            "required": ["action", "name", "template", "placement_id"],
+                            "required": ["action", "name", "template"],
                             "additionalProperties": False,
                         },
                         {
@@ -1560,9 +2016,8 @@ def ask_llm_for_plan(request, points, objects_dir, correction=""):
                                     "type": "string", "minLength": 1,
                                     "description": "Nome esatto di un oggetto creato in uno spawn precedente; mai un placement_id",
                                 },
-                                "placement_id": {"type": "string", "enum": [s["placement_id"] for p in llm_candidates for s in p["surfaces"]]},
                             },
-                            "required": ["action", "object", "placement_id"],
+                            "required": ["action", "object"],
                             "additionalProperties": False,
                         },
                         {
@@ -1590,7 +2045,10 @@ def ask_llm_for_plan(request, points, objects_dir, correction=""):
                 }
             }
         },
-        "required": ["description", "steps"],
+        "required": [
+            "description", "distinct_destinations",
+            "support_constraints", "steps",
+        ],
         "additionalProperties": False
     }
     correction_note = (
@@ -1599,33 +2057,38 @@ def ask_llm_for_plan(request, points, objects_dir, correction=""):
     )
     instructions = (
         "You are a Habitat-Sim task planner. Create a deterministic scene script.\n"
+        "Multiple spawns are allowed when the user asks for multiple objects. "
+        "Every spawn must have a UNIQUE logical name such as toy_1 or toy_2; "
+        "never reuse a name and never use the literal name 'spawn'. For a "
+        "singular request, create exactly one spawn.\n"
         "User request: " + request + "\n"
-        "Required support sequence: "
-        + json.dumps([list(item) for item in support_sequence], ensure_ascii=False)
-        + "\n"
         "Available templates: " + json.dumps(templates, ensure_ascii=False) + "\n"
         "For every spawn, template must be copied EXACTLY from Available templates. "
         "Do not translate, abbreviate, simplify, or invent template names. "
         "For example, if the user says 'tazza', choose the matching available "
         "template such as '025_mug', but output exactly '025_mug'.\n"
-        "Use only placement_id values from the semantic catalog below.\n"
-        "If the user names a support type, every selected point must have that "
-        "semantic category. Never substitute the floor or another furniture type.\n"
-        "For spawn and move, use placement_id; never invent coordinates or surface_* ids.\n"
-        "Every spawn needs name, template, and placement_id. Every move needs object "
-        "and placement_id. Every remove needs object.\n"
+        "Do not output placement_id: the compiler assigns geometry-valid placements.\n"
+        "Extract semantic support constraints into support_constraints. Use exactly "
+        "one item for each spawn or move, in chronological order. Copy category and "
+        "room_categories exactly from the semantic support catalog; use empty strings "
+        "and an empty room_categories array when the user gives no support constraint. "
+        "CRITICAL: do not invent a support, room, or category. For a generic request "
+        "such as 'create 10 objects', every support constraint must be {category:'', "
+        "room_categories:[]}. Only fill a constraint when the user explicitly names "
+        "that support or room.\n"
+        "Every spawn needs name and template. Every move needs object. Every remove "
+        "needs object.\n"
+        "Set distinct_destinations=true only when the user explicitly requires "
+        "different destinations. Include move steps only for objects the user asks "
+        "to move; do not infer or add extra actions.\n"
+        "If the user asks to move ALL/TUTTI spawned objects, include one move for "
+        "every spawned logical name. A move must always describe a real relocation; "
+        "the compiler will reject the object's current destination. Preserve explicit "
+        "minimum waits before the move sequence.\n"
         "ACTION RULE: if the user only says 'metti' or 'posiziona', create exactly "
         "one spawn and do not add move or remove. Add move only when the user "
         "explicitly asks to spostare/muovere/trasferire/portare the object. Add "
         "remove only when the user explicitly asks to rimuoverlo/eliminarlo.\n"
-        "CRITICAL FIELD RULE: 'object' and 'placement_id' are different fields. "
-        "The 'object' field is only the logical object name from an earlier spawn. "
-        "The 'placement_id' field is only the destination support and surface.\n"
-        "VALID example: spawn name='toy', then move object='toy' with "
-        "placement_id='shelf_01::shelf_01_surface_01'.\n"
-        "INVALID example: move object='shelf_01_surface_01' or object='shelf_01::shelf_01_surface_01'.\n"
-        "When moving, choose a different semantic surface from the one used for its spawn.\n"
-        "Copy placement_id exactly from the catalog.\n"
         "The object field is an object name, never a support or surface id.\n"
         "Only remove an object that was spawned earlier in this same script.\n"
         "Do not describe the catalog. Create only the steps required by the user; "
@@ -1636,12 +2099,33 @@ def ask_llm_for_plan(request, points, objects_dir, correction=""):
         + "Semantic support catalog (no coordinates): "
         + json.dumps(llm_candidates, ensure_ascii=False)
     )
-    configured_url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
-    openai_compatible = configured_url.rstrip("/").endswith("/v1")
+    openrouter_config = load_openrouter_config()
+    configured_url = os.environ.get(
+        "OLLAMA_URL",
+        openrouter_config.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat"),
+    )
+    configured_url = configured_url.rstrip("/")
+    openrouter_key = setting("OPENROUTER_API_KEY", openrouter_config)
+    is_openrouter = (
+        "openrouter.ai" in configured_url.lower()
+        or bool(openrouter_key)
+    )
+    openai_compatible = configured_url.endswith("/v1") or is_openrouter
     if openai_compatible:
-        endpoint = configured_url.rstrip("/") + "/chat/completions"
+        if is_openrouter:
+            endpoint = setting(
+                "OPENROUTER_URL", openrouter_config,
+                "https://openrouter.ai/api/v1",
+            ).rstrip("/") + "/chat/completions"
+            model_name = setting(
+                "OPENROUTER_MODEL", openrouter_config,
+                "qwen/qwen3-30b-a3b-instruct-2507",
+            )
+        else:
+            endpoint = configured_url + "/chat/completions"
+            model_name = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
         payload = {
-            "model": "llama3.1:8b",
+            "model": model_name,
             "messages": [{"role": "user", "content": instructions}],
             "stream": False,
             "response_format": {
@@ -1652,10 +2136,19 @@ def ask_llm_for_plan(request, points, objects_dir, correction=""):
                     "schema": schema,
                 },
             },
-            "reasoning_effort": "none",
             "temperature": 0,
-            "max_tokens": 1024,
+            "max_tokens": max(
+                1024,
+                min(8192, 384 + 180 * (_requested_object_count(request) or 4)),
+            ),
         }
+        if is_openrouter:
+            # Evita che OpenRouter scelga un provider che ignora lo schema JSON.
+            payload["provider"] = {"require_parameters": True}
+        else:
+            # Parametro supportato da alcuni endpoint OpenAI-compatible locali,
+            # ma non necessario e non uniformemente accettato da OpenRouter.
+            payload["reasoning_effort"] = "none"
     else:
         endpoint = configured_url
         payload = {
@@ -1666,20 +2159,29 @@ def ask_llm_for_plan(request, points, objects_dir, correction=""):
         "format": schema,
         "options": {"temperature": 0, "num_ctx": 8192}
         }
+    headers = {"Content-Type": "application/json"}
+    if is_openrouter:
+        if not openrouter_key:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY non impostata. Configurala prima di usare OpenRouter."
+            )
+        headers["Authorization"] = f"Bearer {openrouter_key}"
+        site_url = setting("OPENROUTER_SITE_URL", openrouter_config)
+        site_title = setting("OPENROUTER_SITE_NAME", openrouter_config, "lost3dsg")
+        if site_url:
+            headers["HTTP-Referer"] = site_url
+        if site_title:
+            headers["X-OpenRouter-Title"] = site_title
     request_obj = Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
-    try:
-        with urlopen(request_obj, timeout=300) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise RuntimeError(
-            f"Impossibile contattare Ollama su {endpoint}: {exc}. "
-            "Controlla che Ollama sia avviato e che il modello sia installato."
-        ) from exc
+    service_name = "OpenRouter" if is_openrouter else "Ollama"
+    result = request_llm_json(
+        request_obj, service_name, endpoint, retry_transient=is_openrouter
+    )
     if openai_compatible:
         content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
     else:
@@ -1791,9 +2293,10 @@ def main():
             print(json.dumps(points, indent=2))
             return 0
         if args.request:
-            planning_points = template_placeable_points(
+            template_catalog = template_placeable_catalog(
                 args.request, points, sim, args.objects_dir
             )
+            planning_points = union_template_points(template_catalog)
             # Lo schema JSON filtra la forma, ma non puo' verificare riferimenti
             # e ordine temporale. In caso di errore chiediamo correzioni mirate,
             # anziche' salvare uno script apparentemente valido ma rotto.
@@ -1803,8 +2306,14 @@ def main():
             for attempt in range(max_attempts):
                 plan = ask_llm_for_plan(
                     args.request, planning_points, args.objects_dir,
-                    correction=correction,
+                    correction=correction, template_catalog=template_catalog,
                 )
+                if normalize_empty_support_constraints(plan):
+                    print(
+                        "LLM diagnostic: riallineati automaticamente i vincoli "
+                        "di supporto vuoti con gli step spawn/move.",
+                        flush=True,
+                    )
                 print(
                     "LLM diagnostic attempt "
                     f"{attempt + 1}/{max_attempts}: "
@@ -1812,9 +2321,13 @@ def main():
                     flush=True,
                 )
                 try:
+                    validate_plan_intent(plan, args.request)
+                    assign_valid_placements(
+                        plan, planning_points, sim, args.objects_dir
+                    )
                     compiled = compile_plan(
                         plan, planning_points, sim, args.objects_dir,
-                        request_text=args.request,
+                        request_text=args.request, template_catalog=template_catalog,
                     )
                     break
                 except ValueError as exc:
@@ -1829,7 +2342,8 @@ def main():
                         # generiamo una variante minimale, interamente verificata.
                         try:
                             plan = fallback_plan(
-                                args.request, planning_points, sim, args.objects_dir
+                                args.request, planning_points, sim, args.objects_dir,
+                                template_catalog=template_catalog,
                             )
                         except (RuntimeError, ValueError) as fallback_exc:
                             raise ValueError(
@@ -1837,9 +2351,13 @@ def main():
                                 f"{max_attempts} tentativi: {correction}; "
                                 f"fallback fallito: {fallback_exc}"
                             ) from fallback_exc
+                        assign_valid_placements(
+                            plan, planning_points, sim, args.objects_dir
+                        )
+                        validate_plan_intent(plan, args.request)
                         compiled = compile_plan(
                             plan, planning_points, sim, args.objects_dir,
-                            request_text=args.request,
+                            request_text=args.request, template_catalog=template_catalog,
                         )
                         print(
                             "Piano LLM non valido dopo "

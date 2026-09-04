@@ -95,62 +95,103 @@ class HabitatScriptNode(Node):
             self._frame_condition.notify_all()
 
     def capture_frame(self, action: str, step_index: int, result):
-        """Richiede al viewer una vista centrata sull'oggetto e la salva."""
+        """Request and save an object view, retrying transient capture failures."""
         if not isinstance(result, dict):
-            return None
+            return {"success": False, "attempts": 0, "error": "risultato non valido"}
         # Dopo spawn o teletrasporto l'oggetto dinamico deve compiere qualche
         # frame di fisica prima che la foto descriva davvero la posa finale.
         # L'attesa e' deliberatamente qui, mai nel risultato dello spawn:
         # bloccare quel risultato rendeva l'intero script soggetto a timeout.
         if action in {"spawn", "move", "remove_after"}:
             time.sleep(1.50)
-        with self._frame_condition:
-            start_sequence = self._frame_sequence
         if action == "remove_after":
             position = result.get("position")
             if not isinstance(position, (list, tuple)) or len(position) != 3:
-                return None
-            payload = {"position": [float(value) for value in position]}
+                return {
+                    "success": False, "attempts": 0,
+                    "error": "posizione rimossa non disponibile",
+                }
+            base_payload = {"position": [float(value) for value in position]}
         elif result.get("object_id") is not None:
-            payload = {"object_id": int(result["object_id"])}
+            base_payload = {"object_id": int(result["object_id"])}
         else:
-            return None
-        request_id = uuid.uuid4().hex
-        payload["request_id"] = request_id
-        self.publish_command(self.capture_pub, payload)
-        capture_result = self.wait_result("capture", timeout=3.0, request_id=request_id)
-        if not capture_result.get("success"):
-            self.get_logger().warning(
-                "Cattura oggetto rifiutata dal viewer: "
-                + str(capture_result.get("message", "errore sconosciuto"))
+            return {"success": False, "attempts": 0, "error": "object_id mancante"}
+        capture_eye = result.get("capture_eye")
+        if isinstance(capture_eye, (list, tuple)) and len(capture_eye) == 3:
+            base_payload["capture_eye"] = [float(value) for value in capture_eye]
+
+        try:
+            max_attempts = int(os.environ.get("HABITAT_CAPTURE_ATTEMPTS", "3"))
+        except ValueError:
+            max_attempts = 3
+        max_attempts = min(max(max_attempts, 1), 5)
+        last_error = "errore di cattura sconosciuto"
+        for attempt in range(1, max_attempts + 1):
+            with self._frame_condition:
+                start_sequence = self._frame_sequence
+            request_id = uuid.uuid4().hex
+            payload = dict(base_payload)
+            payload["request_id"] = request_id
+            payload["capture_attempt"] = attempt
+            self.publish_command(self.capture_pub, payload)
+            capture_result = self.wait_result(
+                "capture", timeout=3.0, request_id=request_id
             )
-            return None
-        with self._frame_condition:
-            deadline = time.monotonic() + 2.0
-            while self._frame_sequence <= start_sequence:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self.get_logger().warning("Nessuna vista dell'oggetto ricevuta dal viewer")
-                    return None
-                self._frame_condition.wait(timeout=remaining)
-            frame = self._latest_rgb
-        if frame is None:
-            return None
-        width, height, channels, packed = frame
-        image = PILImage.frombytes("RGB" if channels == 3 else "RGBA", (width, height), packed)
-        if channels == 4:
-            image = image.convert("RGB")
-        # Un render target non inizializzato e' interamente nero: non lo
-        # salviamo come se fosse una foto valida dell'oggetto.
-        if max(channel_max for _, channel_max in image.getextrema()) <= 2:
-            self.get_logger().warning("Vista oggetto nera: frame non salvato")
-            return None
-        self.frames_dir.mkdir(parents=True, exist_ok=True)
-        object_id = result.get("object_id", "unknown") if isinstance(result, dict) else "unknown"
-        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S_%f")
-        output = self.frames_dir / f"step_{step_index:02d}_{action}_object_{object_id}_{timestamp}.jpg"
-        image.save(output, format="JPEG", quality=95, subsampling=0)
-        return str(output)
+            if not capture_result.get("success"):
+                last_error = str(
+                    capture_result.get("message", "cattura rifiutata dal viewer")
+                )
+            else:
+                with self._frame_condition:
+                    deadline = time.monotonic() + 2.0
+                    while self._frame_sequence <= start_sequence:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        self._frame_condition.wait(timeout=remaining)
+                    frame = (
+                        self._latest_rgb
+                        if self._frame_sequence > start_sequence else None
+                    )
+                if frame is None:
+                    last_error = "nessuna vista ricevuta dal viewer"
+                else:
+                    width, height, channels, packed = frame
+                    image = PILImage.frombytes(
+                        "RGB" if channels == 3 else "RGBA",
+                        (width, height), packed,
+                    )
+                    if channels == 4:
+                        image = image.convert("RGB")
+                    if max(channel_max for _, channel_max in image.getextrema()) <= 2:
+                        last_error = "vista oggetto interamente nera"
+                    else:
+                        self.frames_dir.mkdir(parents=True, exist_ok=True)
+                        object_id = result.get("object_id", "unknown")
+                        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S_%f")
+                        output = self.frames_dir / (
+                            f"step_{step_index:02d}_{action}_object_"
+                            f"{object_id}_{timestamp}.jpg"
+                        )
+                        image.save(output, format="JPEG", quality=95, subsampling=0)
+                        return {
+                            "success": True,
+                            "attempts": attempt,
+                            "image": str(output),
+                            "error": None,
+                        }
+            self.get_logger().warning(
+                f"Cattura step {step_index}, tentativo {attempt}/{max_attempts} "
+                f"fallito: {last_error}"
+            )
+            if attempt < max_attempts:
+                time.sleep(0.25)
+        return {
+            "success": False,
+            "attempts": max_attempts,
+            "image": None,
+            "error": last_error,
+        }
 
     def publish_command(self, publisher, payload):
         msg = String()

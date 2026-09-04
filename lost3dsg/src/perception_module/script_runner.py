@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 
+# scene_script accepts at most 64 logical actions and may insert one settling
+# wait between each pair. Keep the executor limit aligned with that expansion.
+MAX_COMPILED_STEPS = 127
+
+
 class HabitatScriptRunner:
     def __init__(
         self,
@@ -36,17 +41,44 @@ class HabitatScriptRunner:
         self.remove_publisher = remove_publisher
         self.capture_frame = capture_frame
         self.object_ids: Dict[str, int] = {}
+        self.created_object_ids: Dict[str, int] = {}
 
-    def _capture(self, action: str, step_index: int, result: Dict[str, Any]) -> Optional[str]:
-        """Salva un frame post-azione senza rendere il runner dipendente da ROS."""
+    def _capture(self, action: str, step_index: int, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Return an explicit, serializable capture outcome for every action."""
         if self.capture_frame is None:
-            return None
+            return {
+                "success": False, "attempts": 0,
+                "error": "capture disabilitata",
+            }
         try:
-            return self.capture_frame(action, step_index, result)
-        except Exception:
+            outcome = self.capture_frame(action, step_index, result)
+            if isinstance(outcome, dict):
+                return {
+                    "success": bool(outcome.get("success")),
+                    "attempts": int(outcome.get("attempts", 1)),
+                    "image": outcome.get("image"),
+                    "error": outcome.get("error"),
+                }
+            if outcome:
+                # Backward compatibility for custom callbacks returning a path.
+                return {
+                    "success": True, "attempts": 1,
+                    "image": str(outcome), "error": None,
+                }
+            return {"success": False, "attempts": 1, "error": "nessuna immagine"}
+        except Exception as exc:
             # La mancata acquisizione e' diagnostica, non deve annullare
             # un'azione Habitat gia' completata con successo.
-            return None
+            return {"success": False, "attempts": 1, "error": str(exc)}
+
+    @staticmethod
+    def _attach_capture(entry: Dict[str, Any], capture: Dict[str, Any]) -> None:
+        entry["capture_success"] = bool(capture.get("success"))
+        entry["capture_attempts"] = int(capture.get("attempts", 0))
+        if capture.get("image"):
+            entry["image"] = str(capture["image"])
+        if capture.get("error"):
+            entry["capture_error"] = str(capture["error"])
 
     def available_scripts(self) -> List[Dict[str, str]]:
         result = []
@@ -106,8 +138,10 @@ class HabitatScriptRunner:
         data = self.select(script_id)
         if not isinstance(data.get("steps"), list) or not data["steps"]:
             raise ValueError("Lo script deve contenere almeno uno step")
-        if len(data["steps"]) > 24:
-            raise ValueError("Lo script supera il limite di 24 step")
+        if len(data["steps"]) > MAX_COMPILED_STEPS:
+            raise ValueError(
+                f"Lo script supera il limite di {MAX_COMPILED_STEPS} step"
+            )
         object_scale = data.get("object_scale")
         if object_scale is not None:
             try:
@@ -117,6 +151,7 @@ class HabitatScriptRunner:
             if not math.isfinite(object_scale) or object_scale <= 0:
                 raise ValueError("object_scale deve essere un numero positivo")
         self.object_ids = {}
+        self.created_object_ids = {}
         results = []
 
         for index, step in enumerate(data["steps"]):
@@ -176,9 +211,7 @@ class HabitatScriptRunner:
                 name = step.get("name")
                 if name:
                     self.object_ids[str(name)] = int(result["object_id"])
-                template = step.get("template")
-                if template and template not in self.object_ids:
-                    self.object_ids[str(template)] = int(result["object_id"])
+                    self.created_object_ids[str(name)] = int(result["object_id"])
 
                 # Un nuovo oggetto può essere spawnato in una posizione visibile
                 # usando un pixel, come già fa l'assistente conversazionale.
@@ -187,10 +220,10 @@ class HabitatScriptRunner:
                     result["placement"] = move_result
                     if not move_result.get("success"):
                         return {"success": False, "failed_step": index, "results": results, "error": move_result}
-                image_path = self._capture(action, index, result)
+                if step.get("capture_eye") is not None:
+                    result["capture_eye"] = step["capture_eye"]
                 entry = {"step": index, "action": action, "result": result}
-                if image_path:
-                    entry["image"] = image_path
+                self._attach_capture(entry, self._capture(action, index, result))
                 results.append(entry)
                 continue
 
@@ -230,10 +263,10 @@ class HabitatScriptRunner:
                 if not result.get("success"):
                     results.append({"step": index, "action": action, "result": result})
                     return {"success": False, "failed_step": index, "results": results, "error": result}
-                image_path = self._capture(action, index, result)
+                if step.get("capture_eye") is not None:
+                    result["capture_eye"] = step["capture_eye"]
                 entry = {"step": index, "action": action, "result": result}
-                if image_path:
-                    entry["image"] = image_path
+                self._attach_capture(entry, self._capture(action, index, result))
                 results.append(entry)
                 continue
 
@@ -256,18 +289,34 @@ class HabitatScriptRunner:
                     if value != object_id
                 }
                 # Inquadra la posa appena svuotata, quindi dopo la rimozione.
-                after_image = self._capture("remove_after", index, result)
-                if after_image:
-                    entry["image"] = after_image
+                self._attach_capture(
+                    entry, self._capture("remove_after", index, result)
+                )
                 results.append(entry)
                 continue
 
             raise ValueError(f"Azione non supportata nello step {index}: {action}")
 
+        capture_entries = [
+            entry for entry in results if "capture_success" in entry
+        ]
+        capture_failures = [
+            {
+                "step": entry["step"],
+                "action": entry["action"],
+                "error": entry.get("capture_error", "cattura fallita"),
+            }
+            for entry in capture_entries if not entry["capture_success"]
+        ]
         return {
             "success": True,
+            "dataset_complete": not capture_failures if self.capture_frame is not None else None,
             "script_id": str(script_id),
             "object_ids": dict(self.object_ids),
+            "active_object_count": len(self.object_ids),
+            "created_object_ids": dict(self.created_object_ids),
+            "created_object_count": len(self.created_object_ids),
+            "capture_failures": capture_failures,
             "results": results,
         }
 

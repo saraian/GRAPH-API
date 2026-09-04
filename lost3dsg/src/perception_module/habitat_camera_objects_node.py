@@ -29,7 +29,7 @@ import habitat_sim
 from geometry_msgs.msg import TransformStamped
 from habitat_sim.utils.settings import default_sim_settings
 from magnum.platform.glfw import Application
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
@@ -53,7 +53,7 @@ DEFAULT_REALISTIC_PATTERNS = [
 ]
 
 DEFAULT_EXAMPLE_OBJECTS_DIR = os.path.expanduser(
-    "~/exchange/lost3dsg/data/objects/example_objects"
+    "~/exchange/lost3dsg/habitat/habitat_objects/configs"
 )
 
 
@@ -278,6 +278,15 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             "/habitat/object_command_result",
             qos_sensor,
         )
+        catalog_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+        )
+        self._object_catalog_pub = self._ros_node.create_publisher(
+            String, "/habitat/object_catalog", catalog_qos
+        )
 
         self._tf_broadcaster = TransformBroadcaster(self._ros_node)
         self._static_tf_broadcaster = StaticTransformBroadcaster(self._ros_node)
@@ -307,6 +316,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
         self._refresh_template_cache()
         self._load_optional_object_templates()
         self._refresh_template_cache()
+        self._publish_object_catalog()
 
         # Lo spawn dimostrativo è opt-in: un oggetto dinamico creato sempre
         # all'avvio cade sul pavimento e può essere confuso con quello richiesto.
@@ -354,8 +364,9 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             if not self._validate_position_support(
                 obj, target, require_elevated=require_elevated
             ):
-                raise ValueError(
-                    "la posa non ha un piano orizzontale compatibile sotto l'oggetto"
+                self._ros_node.get_logger().warn(
+                    "Move applicato con verifica supporto non concorde; "
+                    "la decisione della superficie appartiene al planner."
                 )
 
             # Gli oggetti creati dagli script restano cinematici; quelli
@@ -797,6 +808,13 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
         """Accoda la cattura: il render avviene nel timer del viewer."""
         try:
             command = json.loads(msg.data)
+            preferred_eye = command.get("capture_eye")
+            if preferred_eye is not None:
+                preferred_eye = np.asarray(preferred_eye, dtype=np.float32)
+                if preferred_eye.shape != (3,) or not np.all(np.isfinite(preferred_eye)):
+                    raise ValueError("capture_eye deve contenere tre numeri finiti")
+                preferred_eye = preferred_eye.tolist()
+            capture_attempt = max(1, int(command.get("capture_attempt", 1)))
             if "object_id" in command:
                 object_id = int(command["object_id"])
                 if self._rigid_object_mgr.get_object_by_id(object_id) is None:
@@ -804,6 +822,8 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                 self._pending_object_captures.append({
                     "object_id": object_id,
                     "request_id": command.get("request_id"),
+                    "preferred_eye": preferred_eye,
+                    "capture_attempt": capture_attempt,
                 })
             elif "position" in command:
                 position = np.asarray(command["position"], dtype=np.float32)
@@ -812,6 +832,8 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                 self._pending_object_captures.append({
                     "position": position.tolist(),
                     "request_id": command.get("request_id"),
+                    "preferred_eye": preferred_eye,
+                    "capture_attempt": capture_attempt,
                 })
             else:
                 raise ValueError("specificare object_id oppure position")
@@ -822,7 +844,10 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                 "message": str(exc),
             })
 
-    def _capture_object_view(self, object_id: Optional[int] = None, position=None, request_id=None) -> None:
+    def _capture_object_view(
+        self, object_id: Optional[int] = None, position=None, request_id=None,
+        preferred_eye=None, capture_attempt=1,
+    ) -> None:
         """Renderizza una vista ravvicinata al sicuro, tra due frame del viewer."""
         try:
             obj = self._rigid_object_mgr.get_object_by_id(object_id) if object_id is not None else None
@@ -849,9 +874,12 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             )
             size = obj.aabb.size() if obj is not None else mn.Vector3(0.5)
             radius = max(float(size.x), float(size.y), float(size.z)) * 0.5
-            eye = self._find_object_capture_eye(obj, target, radius)
+            eye = self._find_object_capture_eye(
+                obj, target, radius, preferred_eye=preferred_eye,
+                search_offset=max(0, int(capture_attempt) - 1),
+            )
             self._ros_node.get_logger().info(
-                "Object-capture v4: "
+                "Object-capture v5: "
                 f"id={object_id}, target=({target.x:.3f}, {target.y:.3f}, {target.z:.3f}), "
                 f"eye=({eye.x:.3f}, {eye.y:.3f}, {eye.z:.3f})"
             )
@@ -969,12 +997,23 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             return hits.hits[0].object_id == obj.object_id
         return float(hits.hits[0].ray_distance) >= direction.length()
 
-    def _find_object_capture_eye(self, obj, target, radius):
+    def _find_object_capture_eye(
+        self, obj, target, radius, preferred_eye=None, search_offset=0
+    ):
         """Trova una posa vicina e nella stessa stanza per la camera ausiliaria."""
+        if preferred_eye is not None:
+            compiled_eye = mn.Vector3(preferred_eye)
+            if (
+                self._same_semantic_room(compiled_eye, target)
+                and self._capture_eye_has_line_of_sight(obj, compiled_eye, target)
+            ):
+                return compiled_eye
         current_camera, _ = self._get_camera_state()
         current_eye = mn.Vector3(current_camera)
         current_distance = (target - current_eye).length()
-        max_current_distance = max(2.0, radius * 8.0)
+        # La cattura non deve fallire solo perché l'oggetto è oltre 2 m: una
+        # vista distante ma realmente libera è comunque una cattura valida.
+        max_current_distance = max(8.0, radius * 16.0)
         if (
             current_distance <= max_current_distance
             and self._same_semantic_room(current_eye, target)
@@ -988,7 +1027,16 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0),
             (0.707, 0.707), (0.707, -0.707), (-0.707, 0.707), (-0.707, -0.707),
         )
-        for distance in (max(0.8, radius * 4.0), max(1.25, radius * 6.0), 2.0):
+        offset = int(search_offset) % len(directions)
+        directions = directions[offset:] + directions[:offset]
+        eye_lifts = (
+            max(0.15, radius * 0.5),
+            max(0.35, radius),
+            max(0.80, radius * 1.5),
+        )
+        for distance in (
+            max(0.8, radius * 4.0), max(1.25, radius * 6.0), 2.0, 2.75
+        ):
             for dx, dz in directions:
                 candidate = target + mn.Vector3(distance * dx, 0.0, distance * dz)
                 floor = self.sim.pathfinder.snap_point(candidate)
@@ -1002,29 +1050,26 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                 snap_offset = math.hypot(
                     float(floor.x - candidate.x), float(floor.z - candidate.z)
                 )
-                if snap_offset > 0.35:
+                # La navmesh può essere leggermente arretrata rispetto alla
+                # proiezione X/Z del piano d'arredo; la linea di vista resta
+                # il controllo definitivo della posa della camera.
+                if snap_offset > 0.75:
                     continue
                 # Il punto navmesh stabilisce soltanto X/Z e la stanza. Per
                 # oggetti su tavoli o mensole il suo Y e' il pavimento, spesso
                 # oltre un metro sotto il target: la camera deve invece restare
                 # circa alla quota dell'oggetto per non essere occlusa dal tavolo.
-                eye = mn.Vector3(
-                    floor.x,
-                    # Una vista dall'alto rende verificabile il contatto con
-                    # il piano. Alla quota del centro dell'oggetto una banana
-                    # allineata in profondita' sembrava sospesa nell'immagine.
-                    target.y + max(0.80, radius * 1.5),
-                    floor.z,
-                )
-                if not self._same_semantic_room(eye, target):
-                    continue
-                ray_direction = target - eye
-                if ray_direction.length() < 0.05:
-                    continue
-                # Evita una posa navmesh valida ma con una parete tra camera
-                # e oggetto. Il primo hit deve essere l'oggetto richiesto.
-                if self._capture_eye_has_line_of_sight(obj, eye, target):
-                    return eye
+                for lift in eye_lifts:
+                    eye = mn.Vector3(floor.x, target.y + lift, floor.z)
+                    if not self._same_semantic_room(eye, target):
+                        continue
+                    ray_direction = target - eye
+                    if ray_direction.length() < 0.05:
+                        continue
+                    # Evita una posa navmesh valida ma con una parete tra camera
+                    # e oggetto. Il primo hit deve essere l'oggetto richiesto.
+                    if self._capture_eye_has_line_of_sight(obj, eye, target):
+                        return eye
 
         raise RuntimeError(
             "nessuna posa navigabile nella stessa stanza con linea di vista sul target"
@@ -1070,13 +1115,38 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
     def _load_optional_object_templates(self):
         """
         Carica i template del dataset example_objects.
+
+        HabitatSim ``load_configs`` legge i file object_config nella directory
+        indicata, ma non attraversa automaticamente le sottocartelle. Il
+        dataset HM3D invece separa normalmente ``configs/`` da ``meshes/``;
+        se l'utente indica la radice del dataset, selezioniamo quindi
+        automaticamente la cartella delle configurazioni.
         """
-        example_dir = os.environ.get(
+        requested_dir = os.environ.get(
             "HABITAT_EXAMPLE_OBJECTS_DIR", DEFAULT_EXAMPLE_OBJECTS_DIR
         ).strip()
+        example_dir = requested_dir
+        if os.path.isdir(example_dir) and not any(
+            name.endswith(".object_config.json")
+            for name in os.listdir(example_dir)
+        ):
+            configs_dir = os.path.join(example_dir, "configs")
+            if os.path.isdir(configs_dir):
+                example_dir = configs_dir
+
         if not os.path.isdir(example_dir):
             self._ros_node.get_logger().warn(
-                f"Directory example_objects non trovata: {example_dir}"
+                f"Directory template non trovata: {requested_dir}"
+            )
+            return
+
+        if not any(
+            name.endswith(".object_config.json")
+            for name in os.listdir(example_dir)
+        ):
+            self._ros_node.get_logger().warn(
+                f"Nessun file .object_config.json in {example_dir} "
+                f"(directory richiesta: {requested_dir})"
             )
             return
 
@@ -1109,6 +1179,24 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             self._ros_node.get_logger().warn(
                 "Nessun template oggetto disponibile in example_objects."
             )
+
+    def _publish_object_catalog(self):
+        """Pubblica i nomi brevi dei template realmente caricati da Habitat."""
+        names = set()
+        for handle in self._example_template_handles:
+            name = os.path.basename(str(handle)).lower()
+            if name.endswith(".object_config.json"):
+                name = name[:-len(".object_config.json")]
+            elif name.endswith(".json"):
+                name = name[:-len(".json")]
+            if name:
+                names.add(name)
+        message = String()
+        message.data = json.dumps({"templates": sorted(names)})
+        self._object_catalog_pub.publish(message)
+        self._ros_node.get_logger().info(
+            f"Catalogo oggetti pubblicato: {len(names)} template"
+        )
 
     def _pick_template_handle(
         self,
@@ -1265,20 +1353,15 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             if scripted else habitat_sim.physics.MotionType.DYNAMIC
         )
         obj.translation = np.array(spawn_point, dtype=np.float32)
-        # Non lasciamo mai alla gravita' il compito di trovare la stanza: la
-        # posa richiesta deve avere subito un appoggio sotto di se'. Questo
-        # evita che un punto al bordo della collision mesh faccia cadere
-        # l'oggetto fuori mappa prima dello snapshot.
-        # Anche i punti già controllati dal compilatore vengono verificati
-        # nella collision mesh effettivamente caricata dal viewer.
+        # Controllo diagnostico: la decisione sulla superficie target
+        # appartiene al planner/LLM, non a questo executor.
         if not self._validate_position_support(
             obj, spawn_point, require_elevated=scripted
         ):
-            self._rigid_object_mgr.remove_object_by_id(obj.object_id)
             self._ros_node.get_logger().warn(
-                "Spawn rifiutato: nessuna superficie orizzontale valida sotto la posa richiesta."
+                "Spawn applicato con verifica supporto non concorde; "
+                "la decisione della superficie appartiene al planner."
             )
-            return False
         obj.rotation = (
             mn.Quaternion.rotation(mn.Deg(0.0), mn.Vector3(0.0, 1.0, 0.0))
             if scripted else mn.Quaternion.rotation(
@@ -1697,7 +1780,9 @@ Object editing:
             capture = self._pending_object_captures.pop(0)
             self._capture_object_view(
                 object_id=capture.get("object_id"), position=capture.get("position"),
-                request_id=capture.get("request_id")
+                request_id=capture.get("request_id"),
+                preferred_eye=capture.get("preferred_eye"),
+                capture_attempt=capture.get("capture_attempt", 1),
             )
 
     def _publish_camera_tf(self, stamp, agent_state):
