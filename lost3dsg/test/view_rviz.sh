@@ -20,6 +20,6 @@ docker run --rm --name graphapi_rviz --network=host \
   -e DISPLAY="${DISPLAY:-:1}" -e QT_X11_NO_MITSHM=1 \
   -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
   -v "$REPO":/graph_api:ro \
-  --entrypoint bash graphapi-run:humble -c \
+  --entrypoint bash "${IMAGE_TAG:-graphapi-run:humble-ga290}" -c \
   'source /opt/ros/humble/setup.bash && rviz2 -d /graph_api/lost3dsg/test/live.rviz' 2>&1 | tee "$LOG"
 echo ">>> rviz exited (rc=${PIPESTATUS[0]}) — last lines of $LOG:"; tail -5 "$LOG"

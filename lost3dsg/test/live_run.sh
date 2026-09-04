@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Live demo on this machine: habitat renders on the host (conda habitat_env),
-# the ROS 2 stack runs in the graphapi-run:humble container over a TCP feed.
+# the ROS 2 stack runs in the graphapi-run:humble-ga290 container (patched rtabmap, GA-290)
+# over a TCP feed.
 # Watch: web viewer at http://localhost:8081 and snapshots in $OUT_DIR.
 #   ./live_run.sh [scene]  # foreground; ctrl-C stops everything
 # scene: hm3d_00861 (default) | hm3d_00337 | hm3d_00770 | mp3d_17DRP
@@ -552,7 +553,14 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # exports HF_HOME=/found/.hf_cache, so weights come from a host cache at runtime and two runs
 # on one image digest can load different weights. Resolved through refs/main, a floating tag —
 # recording them pins going forward and proves nothing about any earlier run.
-IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble}
+# DEFAULT IS THE PATCHED IMAGE, graphapi-run:humble-ga290: the rtabmap.cpp:4090 guard (GA-290,
+# owner ruling "patch locally", 4 Sep; patch + build provenance in
+# lost3dsg/test/patches/rtabmap-0.23.7-ga290-guard.patch). The pristine apt-built
+# graphapi-run:humble stays on the machine for comparison; runs must NOT launch on it.
+# The docker run line at the bottom now uses "$IMAGE_TAG" — until this change it hardcoded
+# graphapi-run:humble, so IMAGE_TAG only ever stamped metadata and an override would have
+# launched the pristine image while recording itself as the patched one.
+IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble-ga290}
 IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
 HF_CACHE=${HF_CACHE:-$FOUND_ROOT/.hf_cache}
 # >>> TEST-EXTRACT _enc_rev  (test_env_stamp.sh sources the block between these markers.
@@ -826,7 +834,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
   -v "${HF_SHARED_CACHE:-/DATA/huggingface_cache}":/models/hf \
   -v "$OUT_DIR":/out \
-  graphapi-run:humble /graph_api/lost3dsg/test/live_stack_container.sh
+  "$IMAGE_TAG" /graph_api/lost3dsg/test/live_stack_container.sh
 
 # Post-run archive
 cp "$OUT_DIR"/*.log "$RUN_DIR/logs/" 2>/dev/null || true
