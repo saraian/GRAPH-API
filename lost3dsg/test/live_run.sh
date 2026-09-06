@@ -17,6 +17,16 @@ REPO=$(cd "$HERE/../.." && pwd)
 # local-backend run needs none of this, and client.py already fails loudly and by name when the
 # backend is "modal" and neither the config nor the environment supplies an endpoint.
 [ -f "$HERE/env.local.sh" ] && . "$HERE/env.local.sh"
+# Local setup is REQUIRED for a modal-backend run: the default configs ship with an empty
+# modal_endpoint on purpose, so without env.local.sh there is no endpoint, the perception node
+# would take zero detections and die on GA-94b ~4 min in, after the simulator was spent. Refuse
+# here instead, and say what to do.
+if [ -z "${MODAL_PERCEPTION_URL:-}" ] && [ "$(python3 -c "import sys,yaml;c=yaml.safe_load(open(sys.argv[1])) or {};print((c.get('perception') or {}).get('backend','local'))" "$HERE/${CFG_NAME:-regolo_config.yaml}" 2>/dev/null)" = "modal" ]; then
+  echo "!! perception.backend is 'modal' but MODAL_PERCEPTION_URL is unset."
+  echo "!! Local setup required: cp $HERE/env.local.sh.example $HERE/env.local.sh && chmod 600 $HERE/env.local.sh, then fill in the URL."
+  echo "!! (env.local.sh is gitignored on purpose -- the URL is a credential, GA-319.)"
+  exit 1
+fi
 # WHERE FOUND IS. Derived from this script's own location, not hardcoded: the submodule sits at
 # <FOUND>/vendor/graph-api, so two levels above $REPO is the FOUND checkout whatever it is called
 # and wherever it lives. $FOUND_ROOT was written into ten places and a clone anywhere else could
