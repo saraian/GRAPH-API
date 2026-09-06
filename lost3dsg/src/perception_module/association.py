@@ -696,8 +696,16 @@ class PairScore:
 
     @property
     def evidence_count(self):
-        """How many channels actually measured something. Zero means: decide nothing."""
-        return len(self.channels)
+        """How many channels actually measured something. Zero means: decide nothing.
+
+        GA-310. This used to be `len(self.channels)`, and a channel that wrote 0.0 -- "consulted,
+        likelihood ratio 1" -- is IN that dictionary. Measured over 437 rows of run 192014, all five
+        merges had evidence_count >= 3 with only ONE channel non-zero, so `merge_min_evidence`, which
+        exists to refuse a merge on overlap alone, could never refuse anything. A veto counts: it is
+        the strongest measurement a channel can make. An Abstain never reaches `channels` at all, so
+        the abstain / 0.0 / not-consulted distinction the Abstain class carries is untouched here.
+        """
+        return sum(1 for c in self.channels.values() if c.get("veto") or c.get("log_odds"))
 
     @property
     def containment_unchecked(self):

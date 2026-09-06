@@ -131,6 +131,14 @@ class Store:
     def on_uncertain_added(self, obj, step=0):
         pass
 
+    def on_object_room_changed(self, obj, old_room, new_room, step=0):
+        """GA-45. The shipped SQLite store defined this fifth event and the object manager calls
+        it on whatever store is configured (object_manager_6.py, the room-change loop), so a
+        store built to THIS blueprint -- four events, as advertised -- crashed the run with an
+        AttributeError the first time an object changed room. The blueprint now declares every
+        event the manager fires; a store that does not care overrides nothing."""
+        pass
+
     def objects(self, only_active=True):
         """-> [{id, label, color, material, description, bbox, room_id, is_active,
         is_uncertain, first_seen, last_seen, last_event}]"""
