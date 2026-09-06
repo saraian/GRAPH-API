@@ -1,5 +1,6 @@
 import base64
 import binascii
+import collections
 import hashlib
 import json
 import math
@@ -165,6 +166,11 @@ class BridgeNode(Node):
         }
         self.latest_jpeg = None       # /image_with_bb: one frame per perception cycle
         self.last_frame_time = 0.0
+        # Arrival times of the last 24 annotated frames, for the MEASURED frame period. The
+        # Metrics tab's "total perception cycle" is compute time; frames reach the page less
+        # often than that because the agent walks between cycles (6.1 s median vs 3.1 s on
+        # 20260906_223701). Two different numbers, so two rows -- and this one is measured.
+        self.frame_times = collections.deque(maxlen=24)
         self.raw_jpeg = None          # /camera/rgb: every sim frame, kept separate so a
         self.last_raw_time = 0.0      # stale annotated frame can never masquerade as live
         # the raw feed publishes /camera/rgb (habitat_feed_node.py:126). The old
@@ -220,6 +226,7 @@ class BridgeNode(Node):
         if jpeg:
             self.latest_jpeg = jpeg
             self.last_frame_time = time.time()
+            self.frame_times.append(self.last_frame_time)
 
     def _on_walls(self, msg):
         """Keep the newest wall segments. A decode failure is counted, not swallowed."""
@@ -1670,6 +1677,14 @@ def proxy_bev_data(floor_y: str = None):
             data["latencies"] = json.loads(lat_file.read_text())
         except (OSError, json.JSONDecodeError) as exc:
             bev_errors.append(f"{lat_file}: {type(exc).__name__}: {exc}")
+    # The measured frame period, median of the gaps between the last annotated frames. None
+    # until two frames have arrived; the page prints a dash, never a guess.
+    times = list(getattr(_node, "frame_times", []) or [])
+    if len(times) >= 2:
+        gaps = sorted(b - a for a, b in zip(times, times[1:]))
+        lat = data.setdefault("latencies", {})
+        lat["frame_period_s"] = round(gaps[len(gaps) // 2], 2)
+        lat["frame_period_n"] = len(gaps)
 
     # Attach step & navigation stats
     if "stats" not in data or not data["stats"]:

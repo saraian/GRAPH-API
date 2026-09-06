@@ -1017,8 +1017,12 @@
                     <td id="latProj" style="padding: 5px 8px; text-align: right; font-family: monospace; font-weight: bold; color: #38bdf8;">— ms</td>
                   </tr>
                   <tr style="background: rgba(56, 189, 248, 0.08); font-weight: bold;">
-                    <td style="padding: 5px 8px; color: #38bdf8;">TOTAL PERCEPTION CYCLE</td>
+                    <td style="padding: 5px 8px; color: #38bdf8;">PERCEPTION COMPUTE, ONE CYCLE</td>
                     <td id="latTotal" style="padding: 5px 8px; text-align: right; font-family: monospace; font-weight: bold; color: #10b981;">— ms</td>
+                  </tr>
+                  <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);" title="Wall-clock between consecutive frames reaching the dashboard: compute plus the walk between cycles. Measured from the frames' own stamps, not from a setting.">
+                    <td style="padding: 5px 8px; color: #94a3b8;">FRAME PERIOD, MEASURED</td>
+                    <td id="latPeriod" style="padding: 5px 8px; text-align: right; font-family: monospace; font-weight: bold; color: #94a3b8;">— s</td>
                   </tr>
                 </tbody>
               </table>
@@ -1508,6 +1512,12 @@
             setL('latSam', l.sam_ms);
             setL('latProj', l.projection_ms);
             setL('latTotal', l.total_ms);
+            {
+              const el = document.getElementById('latPeriod');
+              if (el) el.textContent = (l.frame_period_s != null)
+                ? l.frame_period_s.toFixed(1) + ' s' + (l.frame_period_n ? ' (n=' + l.frame_period_n + ')' : '')
+                : '— s';
+            }
 
             setL('latVlmPill', l.vlm_ms);
             setL('latOwlPill', l.owlv2_ms);
