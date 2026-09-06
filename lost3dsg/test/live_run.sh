@@ -569,7 +569,7 @@ export PREFLIGHT_EXPECT_CYCLE_S
 # endpoint and model. Exported once here; the prefixes below stay as harmless restatements.
 export GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}"
 MERGED_SHA=$(GRAPH_API_CONFIG="$HERE/$CFG_NAME" python3 "$HERE/preflight_gate.py" --print-merged-sha)   || { echo "!! cannot compute the merged-config sha — aborting rather than passing an empty expectation"; exit 1; }
-echo "    sources: graph-api $SRC_SHA ($SRC_N)  found $FOUND_SHA ($FOUND_N)  kb $KB_SHA ($KB_N)"
+echo "    sources: graph-api $SRC_SHA ($SRC_N)  found $FOUND_SHA ($FOUND_N)"
 echo "    config:  file $CFG_SHA  merged $MERGED_SHA"
 
 # Handed to the gate, which recomputes them INSIDE the container after the source copy. A
@@ -645,8 +645,9 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 : "${SRC_N:?not set at run_metadata.json}"
 : "${FOUND_SHA:?not set at run_metadata.json}"
 : "${FOUND_N:?not set at run_metadata.json}"
-: "${KB_SHA:?not set at run_metadata.json}"
-: "${KB_N:?not set at run_metadata.json}"
+# GA-306: KB_SHA/KB_N are NOT asserted. e5294a2 removed the only code that set them, and these
+# two assertions then aborted every launch at 5 s, before the container existed. The bundle keeps
+# kb_src_sha256_16 / kb_files / kb_root as explicit nulls below; no variable is left to assert.
 : "${CFG_SHA:?not set at run_metadata.json}"
 : "${MERGED_SHA:?not set at run_metadata.json}"
 
