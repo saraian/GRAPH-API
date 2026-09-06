@@ -1614,18 +1614,21 @@
             edges: edgesCount
           },
           perception_latencies_ms: {
-            vlm_ms: lat.vlm_ms || null,
-            owlv2_ms: lat.owlv2_ms || null,
-            nms_ms: lat.nms_ms || null,
-            sam_ms: lat.sam_ms || null,
-            projection_ms: lat.projection_ms || null,
-            total_ms: lat.total_ms || null
+            vlm_ms: lat.vlm_ms ?? null,
+            owlv2_ms: lat.owlv2_ms ?? null,
+            nms_ms: lat.nms_ms ?? null,
+            sam_ms: lat.sam_ms ?? null,
+            projection_ms: lat.projection_ms ?? null,
+            total_ms: lat.total_ms ?? null,
+            // GA-19: `??` not `||` -- a measured 0.0 ms is a number, not "not reported";
+            // and the file's own stamp travels, so a stale table cannot pass as current.
+            last_updated: lat.last_updated ?? null
           }
         };
         content = JSON.stringify(payload, null, 2);
       } else if (format === 'csv') {
         mimeType = 'text/csv';
-        const headers = ['Timestamp', 'MET', 'Phase', 'TotalSteps', 'Distance_m', 'Objects', 'Edges', 'VLM_ms', 'OWLv2_ms', 'NMS_ms', 'SAM_ms', 'Proj_ms', 'TotalCycle_ms'];
+        const headers = ['Timestamp', 'MET', 'Phase', 'TotalSteps', 'Distance_m', 'Objects', 'Edges', 'VLM_ms', 'OWLv2_ms', 'NMS_ms', 'SAM_ms', 'Proj_ms', 'TotalCycle_ms', 'LatenciesUpdated'];
         const row = [
           new Date().toISOString(),
           `"${document.getElementById('statMET')?.textContent || '00:00:00'}"`,
@@ -1634,12 +1637,13 @@
           st.total_distance_m || 0.0,
           nodesCount,
           edgesCount,
-          lat.vlm_ms || '',
-          lat.owlv2_ms || '',
-          lat.nms_ms || '',
-          lat.sam_ms || '',
-          lat.projection_ms || '',
-          lat.total_ms || ''
+          lat.vlm_ms ?? '',
+          lat.owlv2_ms ?? '',
+          lat.nms_ms ?? '',
+          lat.sam_ms ?? '',
+          lat.projection_ms ?? '',
+          lat.total_ms ?? '',
+          lat.last_updated ?? ''
         ];
         content = headers.join(',') + '\n' + row.join(',');
       }

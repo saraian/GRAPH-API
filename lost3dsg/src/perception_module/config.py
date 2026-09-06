@@ -357,13 +357,16 @@ _DEFAULTS = {
         # The backlog itself is fixed by QoS depth=1 (see utils.py); this stays 1.0 so the
         # freshness guarantee is unchanged, and is now a knob rather than a literal.
         "max_frame_age_s": 1.0,
+        # GA-42. Far edge of the visible volume used for "seen but gone" removal. Was the
+        # literal `min(depth_threshold, 1.8)` in perception_utils.py, so the 4.0 m default
+        # never applied and objects beyond 1.8 m were never marked as gone. Same value, now
+        # a knob.
+        "fov_max_depth_m": 1.8,
         "backend": "local",  # "modal", "managed", "local"
         "modal_endpoint": "",  # e.g. "https://<user>--lost3dsg-perception-predict.modal.run"
         "score_threshold": 0.15,
         "nms_threshold": 0.50,
-        "reachability_strict": False,
-        # allow detection passes while moving, proposals marked as unconfirmed
-        "detect_while_moving": False,
+        # GA-19: `reachability_strict` and `detect_while_moving` stood here; no code read either.
         # Socket timeout for a remote perception call, seconds. Was hardcoded at
         # 25.0 at one call site; the testing lane measured seven Modal cold starts
         # on 2026-08-30/31 at 25.3, 42.3, 45.8, 41.1, 26.6, 47.7 and 45.6 s, so

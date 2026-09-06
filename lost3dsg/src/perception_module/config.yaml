@@ -9,8 +9,6 @@ vlm:
   api_key: ""          # empty -> OPENAI_API_KEY env, else legacy api.txt, else "ollama"
   timeout: 30.0        # seconds per request
   retries: 2           # extra attempts on timeout/malformed response, then raise
-  fallback_labels: []  # non-empty -> use this static label list (with a warning)
-                       # when the VLM is unreachable, instead of failing the cycle
 
 embedding:
   word2vec_path: "/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz"

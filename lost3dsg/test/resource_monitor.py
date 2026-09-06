@@ -119,9 +119,10 @@ def build_inventory():
                        "location": "endpoint", "endpoint": vlm["base_url"],
                        "runs_in": "perception"})
     else:
-        models.append({"model": "static fallback labels", "role": "open-vocab labels",
-                       "location": "none (no endpoint configured)",
-                       "labels": len(vlm.get("fallback_labels", [])),
+        # GA-53: the static fallback list is gone; without an endpoint the VLM call fails
+        # and the cycle is skipped, so no model produces labels at all.
+        models.append({"model": "none", "role": "open-vocab labels",
+                       "location": "none (no endpoint configured; cycles skip)",
                        "runs_in": "perception"})
     paths = cfg.get("paths", {}) or {}
     for key, name, role in (("vitsam_encoder", "EfficientViT-SAM encoder", "segmentation"),
