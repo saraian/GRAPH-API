@@ -243,7 +243,7 @@ trap container_exit_cleanup EXIT
 # base_link, which sits on the floor; the camera is 1.5 m up, ceilings ~2.7 m.
 RTABMAP_GRID_ARGS=${RTABMAP_GRID_ARGS:-"--Grid/NormalsSegmentation false --Grid/MaxGroundHeight 0.25 --Grid/MaxObstacleHeight 1.8 --Grid/RangeMax 4.0 --Grid/RayTracing true --Grid/NoiseFilteringRadius 0.1 --Grid/NoiseFilteringMinNeighbors 5 --Grid/CellSize 0.05"}
 
-echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> web viewer :${BRIDGE_PORT:-8081})"
+echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> web viewer :8081)"
 ros2 run lost3dsg habitat_feed_node.py > /tmp/feed_node.log 2>&1 &
 
 # ---- Class A pre-flight gate -------------------------------------------------------------

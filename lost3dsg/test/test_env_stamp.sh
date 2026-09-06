@@ -120,6 +120,9 @@ grep -q '"mapping_seconds": 150' "$TMP/meta.json" || fail "mapping_seconds not s
 # a detection run that found nothing are the same artefact -- the indistinguishability that cost
 # run 19 its merge question.
 grep -q '"mapping_only": false' "$TMP/meta.json" || fail "mapping_only not stamped for a normal run"
+# GA-33 residual: the container reads FOUND_KG_TOP / FOUND_KG_Z (found/kg_align.py); the bundle must say what they were.
+grep -q '"kg_top": 0.87' "$TMP/meta.json" || fail "kg_top not stamped (code default 0.87 when FOUND_KG_TOP is empty)"
+grep -q '"kg_z": 3.0'    "$TMP/meta.json" || fail "kg_z not stamped (code default 3.0 when FOUND_KG_Z is empty)"
 grep -q 'export OUT_DIR=' "$SRC" || fail "GA-99: OUT_DIR must be EXPORTED or the feed host never sees it and writes its stats outside the bundle"
 grep -q 'export FEED_DWELL="\${FEED_DWELL:-0}"' "$SRC" \
   || fail "FEED_DWELL must default to 0 (owner ruling 2026-08-31). A 60 here silently re-bases the family."

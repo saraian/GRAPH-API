@@ -1017,8 +1017,12 @@
                     <td id="latProj" style="padding: 5px 8px; text-align: right; font-family: monospace; font-weight: bold; color: #38bdf8;">— ms</td>
                   </tr>
                   <tr style="background: rgba(56, 189, 248, 0.08); font-weight: bold;">
-                    <td style="padding: 5px 8px; color: #38bdf8;">PERCEPTION COMPUTE, ONE CYCLE</td>
+                    <td style="padding: 5px 8px; color: #38bdf8;" title="run_detection only (detector, NMS, masks, projection): total_ms">DETECTION SPAN, ONE CYCLE</td>
                     <td id="latTotal" style="padding: 5px 8px; text-align: right; font-family: monospace; font-weight: bold; color: #10b981;">— ms</td>
+                  </tr>
+                  <tr style="background: rgba(56, 189, 248, 0.08); font-weight: bold;" title="Wall time of the whole cycle: detection span plus 3D geometry, crops, archive and publish: cycle_ms">
+                    <td style="padding: 5px 8px; color: #38bdf8;">PERCEPTION CYCLE, WALL</td>
+                    <td id="latCycle" style="padding: 5px 8px; text-align: right; font-family: monospace; font-weight: bold; color: #10b981;">— ms</td>
                   </tr>
                   <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);" title="Wall-clock between consecutive frames reaching the dashboard: compute plus the walk between cycles. Measured from the frames' own stamps, not from a setting.">
                     <td style="padding: 5px 8px; color: #94a3b8;">FRAME PERIOD, MEASURED</td>
@@ -1512,6 +1516,7 @@
             setL('latSam', l.sam_ms);
             setL('latProj', l.projection_ms);
             setL('latTotal', l.total_ms);
+            setL('latCycle', l.cycle_ms);
             {
               const el = document.getElementById('latPeriod');
               if (el) el.textContent = (l.frame_period_s != null)
@@ -1605,10 +1610,12 @@
         mimeType = 'application/json';
         const payload = {
           timestamp: new Date().toISOString(),
-          mission_elapsed_time: document.getElementById('statMET')?.textContent || '00:00:00',
-          active_phase: st.phase || 'MAPPING',
-          total_steps: st.total_steps || 0,
-          total_distance_m: st.total_distance_m || 0.0,
+          // GA-40 (export-defaults-fabricate). Absent is null, never a plausible value:
+          // 'MAPPING', 0 and the DOM's static 00:00:00 were exported as measurements.
+          mission_elapsed_sec: st.elapsed_sec ?? null,
+          active_phase: st.phase ?? null,
+          total_steps: st.total_steps ?? null,
+          total_distance_m: st.total_distance_m ?? null,
           graph_counters: {
             objects: nodesCount,
             edges: edgesCount
@@ -1628,13 +1635,13 @@
         content = JSON.stringify(payload, null, 2);
       } else if (format === 'csv') {
         mimeType = 'text/csv';
-        const headers = ['Timestamp', 'MET', 'Phase', 'TotalSteps', 'Distance_m', 'Objects', 'Edges', 'VLM_ms', 'OWLv2_ms', 'NMS_ms', 'SAM_ms', 'Proj_ms', 'TotalCycle_ms', 'LatenciesUpdated'];
+        const headers = ['Timestamp', 'MET_sec', 'Phase', 'TotalSteps', 'Distance_m', 'Objects', 'Edges', 'VLM_ms', 'OWLv2_ms', 'NMS_ms', 'SAM_ms', 'Proj_ms', 'TotalCycle_ms', 'LatenciesUpdated'];
         const row = [
           new Date().toISOString(),
-          `"${document.getElementById('statMET')?.textContent || '00:00:00'}"`,
-          `"${st.phase || 'MAPPING'}"`,
-          st.total_steps || 0,
-          st.total_distance_m || 0.0,
+          st.elapsed_sec ?? '',
+          `"${st.phase ?? ''}"`,
+          st.total_steps ?? '',
+          st.total_distance_m ?? '',
           nodesCount,
           edgesCount,
           lat.vlm_ms ?? '',
@@ -3874,8 +3881,8 @@
             <div style="background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px;">
               <div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase; margin-bottom:4px;">Ontological Admission (FOUND)</div>
               <div style="font-size:0.72rem; color:#f8fafc; display:flex; justify-content:space-between;">
-                <span>Filter: <b style="color:#38bdf8;">${data.decision.filter || 'passthrough'}</b></span>
-                <span style="color:${data.decision.outcome === 'admit' ? '#10b981' : '#ef4444'}; font-weight:bold; text-transform:uppercase;">${data.decision.outcome || 'ADMIT'}</span>
+                <span>Filter: <b style="color:#38bdf8;">${data.decision.filter ?? '—'}</b></span>
+                <span style="color:${VERDICTS[gradeOfRecord(data.decision)].color}; font-weight:bold;">${VERDICTS[gradeOfRecord(data.decision)].text}</span>
               </div>
             </div>
             ` : ''}
@@ -3967,29 +3974,15 @@
               const edgesList = [...(data.elements.edges || [])];
               const knownNodeIds = new Set(nodesList.map(n => n.data && n.data.id).filter(Boolean));
 
-              // Auto-synthesize any missing endpoint nodes so Cytoscape never throws
-              edgesList.forEach(e => {
-                if (e.data && e.data.target && !knownNodeIds.has(e.data.target)) {
-                  nodesList.push({
-                    data: {
-                      id: e.data.target,
-                      label: String(e.data.target).replace(/^n_/, '').replace(/_/g, ' ').toUpperCase(),
-                      type: 'room'
-                    }
-                  });
-                  knownNodeIds.add(e.data.target);
-                }
-                if (e.data && e.data.source && !knownNodeIds.has(e.data.source)) {
-                  nodesList.push({
-                    data: {
-                      id: e.data.source,
-                      label: String(e.data.source).replace(/^n_/, '').replace(/_/g, ' '),
-                      type: 'object'
-                    }
-                  });
-                  knownNodeIds.add(e.data.source);
-                }
-              });
+              // GA-40 (synthesized-endpoint-nodes). An edge whose endpoint is not a node
+              // is a producer defect; it used to be hidden by inventing a node typed
+              // room/object that the canvas and the export counted as detected. Drop the
+              // edge, keep the count visible.
+              const dangling = edgesList.filter(e => !(e.data && knownNodeIds.has(e.data.source) && knownNodeIds.has(e.data.target)));
+              if (dangling.length) {
+                console.warn(`[graph] ${dangling.length} edge(s) with an unknown endpoint dropped`, dangling.map(e => e.data));
+                edgesList.splice(0, edgesList.length, ...edgesList.filter(e => !dangling.includes(e)));
+              }
 
               // Optional: Inject Concept Hierarchy Nodes
               if (showOntologyConcepts) {
@@ -4162,7 +4155,8 @@
 
           const objectNodes = rawNodes.filter(n => n && n.type !== 'room');
           lastAdmittedNodes = objectNodes;
-          const nodeCount = objectNodes.length || rawNodes.length;
+          // GA-40 (nodecount-falsy-zero). Zero objects is a count, not a cue to show the room count.
+          const nodeCount = objectNodes.length;
           const edgeCount = rawEdges.length;
 
           if (nodesEl) nodesEl.textContent = nodeCount;
@@ -4176,7 +4170,13 @@
           // does not then show.
           indexRoomLabels(rawNodes);
           renderObjectsTable();
-          if (statusEl) statusEl.textContent = 'LIVE';
+          // GA-40 (graphdata-no-timestamp). LIVE names a successful fetch, not a live
+          // producer; the age of the newest source file is what says whether anything
+          // is still writing.
+          if (statusEl) {
+            const age = (typeof data.sources_mtime === 'number') ? Math.round(Date.now() / 1000 - data.sources_mtime) : null;
+            statusEl.textContent = age === null ? 'LIVE (no source stamp)' : `LIVE · sources ${age}s old`;
+          }
         })
         .catch(err => {
           console.warn('[Graph fetch error]', err);

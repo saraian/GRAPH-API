@@ -18,6 +18,7 @@ import json
 import os
 import pathlib
 import sys
+import types
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -519,13 +520,19 @@ def cycle_ms_recorded():
 
     node = perception_2.DetectObjectsNode.__new__(perception_2.DetectObjectsNode)
     node.latest_latencies = {"total_ms": 100.0}
+    node._cycle_count = 0          # what __init__ sets; GA-334 series
+    node._io_executor = types.SimpleNamespace(submit=lambda fn, *a: fn(*a))
     with tempfile.TemporaryDirectory() as tmp:
-        saved = perception_2.LATENCY_JSON_PATHS
+        saved = perception_2.LATENCY_JSON_PATHS, perception_2.LATENCY_JSONL_PATHS
         perception_2.LATENCY_JSON_PATHS = (os.path.join(tmp, "perception_latencies.json"),)
+        perception_2.LATENCY_JSONL_PATHS = (os.path.join(tmp, "perception_latencies.jsonl"),)
         try:
-            perception_2.DetectObjectsNode._record_cycle_ms(node, 13.7)
+            perception_2.DetectObjectsNode._record_cycle_ms(node, 13.7, frame_id="f1", n_detections=2)
         finally:
-            perception_2.LATENCY_JSON_PATHS = saved
+            perception_2.LATENCY_JSON_PATHS, perception_2.LATENCY_JSONL_PATHS = saved
+        with open(os.path.join(tmp, "perception_latencies.jsonl")) as fh:
+            rows = [_json.loads(line) for line in fh]
+        assert [(r["cycle"], r["frame_id"], r["n_detections"]) for r in rows] == [(1, "f1", 2)], rows
         assert node.latest_latencies["cycle_ms"] == 13700.0, node.latest_latencies
         assert node.latest_latencies["total_ms"] == 100.0, "the detection span must survive"
         with open(os.path.join(tmp, "perception_latencies.json")) as fh:

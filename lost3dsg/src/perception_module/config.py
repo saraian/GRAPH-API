@@ -40,6 +40,9 @@ _DEFAULTS = {
         "timeout": 30.0,
         "retries": 2,
         "crop_concurrency": 4,
+        # GA-303: seconds per describer call (single crop and crop grid). Declared since
+        # the first crop_grid measurements but read by nothing until 2026-09-07: the bound
+        # actually in force was `timeout` above (30 s here, 60 s in regolo_config.yaml).
         "crop_timeout": 15.0,
         # GA-53: `fallback_labels` stood here. Non-empty, it replaced an unreachable
         # VLM with a static open-vocabulary list and let the cycle continue — working

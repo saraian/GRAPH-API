@@ -855,11 +855,14 @@ def _vlm_client():
     return _client
 
 
-def vlm_call(prompt, encoded_image):
+def vlm_call(prompt, encoded_image, timeout=None):
     """One VLM round-trip. Transport failures (timeout, malformed envelope)
     retry up to cfg vlm.retries times, then raise — never silently degraded.
     A well-formed response is returned as-is (may be empty: a semantic outcome
-    the callers already handle)."""
+    the callers already handle).
+
+    `timeout` (seconds) bounds THIS call; None keeps the client's cfg vlm.timeout.
+    GA-303: the crop describer passes cfg vlm.crop_timeout here."""
     last_err = None
     for attempt in range(CFG["vlm"]["retries"] + 1):
         # GA-288. BACKOFF, because there was none. Run 20260903_135823 died at 18 cycles on
@@ -883,7 +886,8 @@ def vlm_call(prompt, encoded_image):
                             }
                         ],
                     }
-                ]
+                ],
+                **({"timeout": timeout} if timeout is not None else {}),
             )
             if not getattr(agent, "choices", None) or agent.choices[0].message is None:
                 raise RuntimeError(f"malformed VLM response: {agent!r:.200}")

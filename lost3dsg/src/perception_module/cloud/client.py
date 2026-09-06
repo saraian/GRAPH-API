@@ -410,43 +410,28 @@ class ManagedPerceptionBackend(PerceptionBackend):
         if not self.api_key:
             raise RuntimeError(f"Missing API key for managed provider '{self.provider}'")
 
-        if self.provider == "fal":
-            # Example Fal.ai SAM2 / Florence-2 call
-            try:
-                import fal_client
-            except ImportError:
-                raise ImportError("Please install fal-client: pip install fal-client")
-
-            # Encode image to JPEG base64
-            _, buffer = cv2.imencode(".jpg", rgb_image)   # GA-13: already BGR, see above
-            data_uri = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
-
-            # 1. Florence-2 / Grounding DINO object detection
-            _res = fal_client.subscribe(
-                "fal-ai/florence-2-large/grounding",
-                arguments={"image_url": data_uri, "text_input": ", ".join(labels)},
-            )
-            # Parse detections and SAM masks
-            # (Stubbed adapter format for managed providers)
-            detections = []
-            return detections, {"total": round((time.time() - t_start) * 1000, 1)}
-
-        raise NotImplementedError(f"Provider '{self.provider}' not implemented yet")
+        # GA-19. The `fal` branch used to pay for a real Florence-2 grounding call
+        # (`fal_client.subscribe`), bind the answer to `_res` and return `[]` -- a paid
+        # request whose result was thrown away, read downstream as an empty scene. No
+        # provider has a parser yet, so no provider may place a call: refuse before the
+        # network, not after. Wiring one needs the provider's box/label envelope parsed
+        # into `Detection` AND a mask source (Florence-2 grounding returns boxes only).
+        del t_start
+        raise NotImplementedError(
+            f"managed perception provider '{self.provider}' has no response parser; "
+            "set perception.backend to 'modal' or 'local'"
+        )
 
 
 class LocalPerceptionBackend(PerceptionBackend):
     """Wraps local onboard PyTorch models (OWLv2 + VitSam)."""
 
-    def __init__(self, detector=None, vitsam=None):
-        self.detector = detector
-        self.vitsam = vitsam
-
     def health(self) -> Dict[str, Any]:
-        return {
-            "reachable": True,
-            "type": "local",
-            "models_loaded": (self.detector is not None and self.vitsam is not None),
-        }
+        # GA-19. `models_loaded` was computed from constructor arguments the only
+        # construction site (get_perception_backend) never passed, so it read False by
+        # accident. It IS False: this backend holds no models -- detect_and_segment is a
+        # stub, and test/preflight_gate.py refuses it by class name.
+        return {"reachable": True, "type": "local", "models_loaded": False}
 
     def detect_and_segment(
         self,
@@ -483,5 +468,12 @@ def get_perception_backend(cfg: Dict[str, Any]) -> PerceptionBackend:
     elif backend_type in ("managed", "fal", "replicate"):
         provider = p_cfg.get("provider", "fal")
         return ManagedPerceptionBackend(provider=provider)
-    else:
+    elif backend_type == "local":
         return LocalPerceptionBackend()
+    # GA-19. Any other string used to fall through to the local stub, whose
+    # detect_and_segment is `return [], {}` -- so a typo in perception.backend produced
+    # an empty scene that read as "nothing was there". Working rule 14: refuse.
+    raise ValueError(
+        f"perception.backend={backend_type!r} is not one of "
+        "'modal', 'local', 'managed', 'fal', 'replicate'"
+    )

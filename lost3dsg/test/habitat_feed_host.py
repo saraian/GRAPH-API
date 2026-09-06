@@ -1343,6 +1343,15 @@ def main():
     t_start_sim = t_start
     total_steps = 0
     frame_seq = 0          # GA-121: ordinal of each published frame; see the frame dict
+    # GA-37. Two counts with two names. total_steps is RENDERED frames; frames_sent_ok is
+    # frames sendall() accepted for the ROS side (the socket is reliable, so a frame the
+    # peer never read is one that was in flight when it dropped the connection); the
+    # peer's own count is in feed_node_stats.json. A coverage denominator built from
+    # rendered frames counts viewpoints perception never saw (21-34% of frames in the
+    # two old bundles that carried a viewpoint file).
+    frames_sent_ok = 0
+    frames_send_failed = 0
+    frame_poses_path = STATS_DIR / "frame_poses.jsonl"
     total_distance_m = 0.0
     last_pos = np.asarray(ag_state.position, dtype=np.float64)
 
@@ -1420,6 +1429,9 @@ def main():
             feed_stats = {
                 "elapsed_sec": round(time.time() - t_start_sim, 1),
                 "total_steps": total_steps,
+                "frames_rendered": total_steps,
+                "frames_sent_ok": frames_sent_ok,
+                "frames_send_failed": frames_send_failed,
                 "total_distance_m": round(total_distance_m, 2),
                 "phase": label,
                 "phase_walk_frames": walk_frames,
@@ -1647,7 +1659,22 @@ def main():
         blob = pickle.dumps(frame, protocol=4)
         try:
             conn.sendall(struct.pack("!I", len(blob)) + blob)
+            frames_sent_ok += 1
+            # GA-37. The viewpoint line is appended AFTER the send succeeds, so the series
+            # holds only frames the ROS side was handed; it carries frame_id so a reader can
+            # join it to feed_node_stats.json. CAMERA pose (1.5 m above the base), which is
+            # what rendered the frame; base_z for reference. Consumed by tools/frustum_gt.py.
+            _cp, _cq = habitat_pose_to_ros(frame["cam_pos"], frame["cam_quat"])
+            _yaw = math.atan2(2.0 * (_cq[3] * _cq[2] + _cq[0] * _cq[1]), 1.0 - 2.0 * (_cq[1] ** 2 + _cq[2] ** 2))
+            with open(frame_poses_path, "a") as fp:
+                fp.write(json.dumps({
+                    "frame_id": frame["frame_id"], "stamp": frame["t"],
+                    "x": float(_cp[0]), "y": float(_cp[1]), "z": float(_cp[2]), "yaw": float(_yaw),
+                    "qx": float(_cq[0]), "qy": float(_cq[1]), "qz": float(_cq[2]), "qw": float(_cq[3]),
+                    "base_z": float(ros_agent_pos[2]), "phase": label,
+                }) + "\n")
         except (BrokenPipeError, ConnectionResetError, socket.error, OSError) as exc:
+            frames_send_failed += 1
             print(f"[feed] client disconnected ({exc}), waiting for reconnect...")
             try:
                 conn.close()

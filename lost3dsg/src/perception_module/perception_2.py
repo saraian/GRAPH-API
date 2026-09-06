@@ -8,6 +8,7 @@ import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import partial
 from threading import Lock
 
 # Ensure local sibling packages and directories (e.g. cloud/) are on sys.path
@@ -111,6 +112,32 @@ DESCRIPTION_FIELDS = ("description", "color", "material", "shape")
 # WN1. Where the latency record lives -- the same two paths detection_pipeline writes, kept
 # as one constant so the cycle-time stamp and the detection-span stamp land in one file.
 LATENCY_JSON_PATHS = ("/tmp/perception_latencies.json", "/ws/output/perception_latencies.json")
+# GA-334. The per-cycle series beside the snapshot: one JSON line per completed cycle, the
+# snapshot's keys plus `t`, `cycle`, `frame_id`, `n_detections`. graph_api_bridge._cycle_seq
+# counts its lines as the cycle number; until 2026-09-07 nothing wrote it.
+LATENCY_JSONL_PATHS = tuple(p[:-len(".json")] + ".jsonl" for p in LATENCY_JSON_PATHS)
+
+
+def _truncate_cycle_series():
+    """GA-334. A fresh series per node start: the bridge counts lines, and /tmp outlives
+    the run, so an earlier run's rows would otherwise inflate this one's cycle number
+    (the bridge also resets its tally when the file shrinks)."""
+    for target_path in LATENCY_JSONL_PATHS:
+        try:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            open(target_path, "w").close()
+        except OSError:
+            pass
+
+
+def _append_cycle_row(row):
+    line = json.dumps(row) + "\n"
+    for target_path in LATENCY_JSONL_PATHS:
+        try:
+            with open(target_path, "a") as f:
+                f.write(line)
+        except OSError:
+            pass
 
 # ponytail: fixed cap for images sent to the VLM; make it a CFG["vlm"] knob if a
 # model ever needs finer input. The base64 payload dominates vlm_ms, not the answer.
@@ -198,7 +225,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.detector = None
             self.vitsam = None
             self.file_logger.info(f"Using Cloud Perception Backend: {backend_type}")
-        self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=_encode_for_vlm)
+        self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=_encode_for_vlm,
+                             crop_call_fn=partial(vlm_call, timeout=CFG["vlm"]["crop_timeout"]))
         # GA-215. DEBUG OVERLAY: publish the annotated frame at every perception stage, as
         # each result appears, rather than once at the end of the cycle. Off by default --
         # it costs an encode and a publish per stage, and a measured run should not pay for
@@ -242,6 +270,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._init_state()
 
         self._io_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="perception_io")
+        self._cycle_count = 0
+        _truncate_cycle_series()
         self._undeliverable_fields = set()
         self.clear_accumulated_markers()
         self._create_timers()
@@ -687,16 +717,20 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._queue_perceptions_json()
         self._publish_agent_pose(cycle_stamp)
         _mark("publish")
-        self._record_cycle_ms(time.time() - t_cycle, stages=stages)
+        self._record_cycle_ms(time.time() - t_cycle, stages=stages,
+                              frame_id=frame_id_from_stamp(cycle_stamp),
+                              n_detections=len(detections))
         self.waiting_for_input = False
         self.log_both("info", "publish_objects completed")
 
-    def _record_cycle_ms(self, cycle_seconds, stages=None):
+    def _record_cycle_ms(self, cycle_seconds, stages=None, frame_id=None, n_detections=None):
         """WN1. Stamp the completed cycle's wall time into the latency record.
 
         `total_ms` (run_detection's own span) stays for its existing readers; `cycle_ms`
         is the number any latency claim must quote. Same two paths the detection
-        pipeline writes, so one file carries both.
+        pipeline writes, so one file carries both. GA-334: the same record, plus the
+        cycle's identity, is also appended as one line to the `.jsonl` series beside it,
+        on the io executor so the cycle does not pay for the write.
         """
         lat = getattr(self, "latest_latencies", None)
         if not isinstance(lat, dict):
@@ -706,17 +740,17 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         if stages:
             lat["stages_ms"] = dict(stages)
         lat["last_updated"] = time.time()
-        try:
-            import json
-            for target_path in LATENCY_JSON_PATHS:
-                try:
-                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                    with open(target_path, "w") as f:
-                        json.dump(lat, f, indent=2)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        for target_path in LATENCY_JSON_PATHS:
+            try:
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                with open(target_path, "w") as f:
+                    json.dump(lat, f, indent=2)
+            except Exception:
+                pass
+        self._cycle_count = getattr(self, "_cycle_count", 0) + 1
+        row = dict(lat, t=lat["last_updated"], cycle=self._cycle_count,
+                   frame_id=frame_id, n_detections=n_detections)
+        self._io_executor.submit(_append_cycle_row, row)
 
     # last /get_config answer and when it was fetched; rebound per instance on use
     _vis_live = {}

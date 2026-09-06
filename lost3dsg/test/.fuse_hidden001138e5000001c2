@@ -2,7 +2,7 @@
 # Live demo on this machine: habitat renders on the host (conda habitat_env),
 # the ROS 2 stack runs in the graphapi-run:humble-ga290 container (patched rtabmap, GA-290)
 # over a TCP feed.
-# Watch: web viewer at http://localhost:${BRIDGE_PORT:-8081} and snapshots in $OUT_DIR.
+# Watch: web viewer at http://localhost:8081 and snapshots in $OUT_DIR.
 #   ./live_run.sh [scene]  # foreground; ctrl-C stops everything
 # scene: hm3d_00861 (default) | hm3d_00337 | hm3d_00770 | mp3d_17DRP
 # HABITAT_SCENE/HABITAT_DATASET env vars still override everything.
@@ -701,8 +701,6 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
              "aligner": "$FOUND_ALIGNER", "ontology_ext": "$FOUND_ONTOLOGY_EXT",
              "corpus_order": "${FOUND_CORPUS_ORDER:-<code default: standard,hssd,metrictree,abo,procthor>}",
              "kg_aliases": ${FOUND_KG_ALIASES:-1},
-             "kg_top": ${FOUND_KG_TOP:-0.87}, "kg_z": ${FOUND_KG_Z:-3.0},
-             "kg_thresholds_note": "GA-33: the aligner's placement rule (found/kg_align.py: top >= kg_top AND z >= kg_z). The defaults here are the code defaults kg_align applies when the variable is empty. ABSENT from every bundle before 2026-09-07; an older run's thresholds are 0.87 / 3.0 unless its notes say otherwise.",
              "policy_note": "corpus_order and kg_aliases were added 2026-09-01 (owner rulings 13, 15). ABSENT from every earlier bundle, so an older run's corpus order is metrictree,abo and its alias count is 0 -- read, never guessed from the date."},
   "provenance_intent": {
     "note": "host-side, taken BEFORE docker run. provenance_confirmed in preflight.json is taken after the container copies its sources, and is the authoritative record of what executed.",
@@ -821,7 +819,7 @@ echo "    feed host up"
 ) &
 MON_PID=$!
 
-echo ">>> ROS stack in container (web viewer -> http://localhost:${BRIDGE_PORT:-8081})"
+echo ">>> ROS stack in container (web viewer -> http://localhost:8081)"
 # OWNER RULING 22, 2026-09-01: fifteen settings looked adjustable from the host and reached
 # nothing. Every -e below is a variable some container-side module actually reads; docker passes
 # an `-e NAME` only when NAME is set in the environment, so listing one costs nothing while it is

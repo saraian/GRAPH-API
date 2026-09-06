@@ -29,7 +29,7 @@ WHAT THE PREVIOUS VERSION DID, AND ALL FOUR REASONS IT NEVER DELIVERED A WALL (G
    perception_2. No launch file, script or yaml names this one.
 2. It subscribed to `/scan_raw` as a LaserScan. Nothing publishes `/scan_raw`; the feed
    publishes no LaserScan at all. The stack is RGB-D.
-3. It was written for `object_manager_3.py`, which is in `old/`.
+3. It was written for `object_manager_3.py`, superseded and deleted (GA-27).
 4. It emitted `[x1, y1, x2, y2]` while `object_manager_6.walls_callback` reads
    `w["start"]["x"]`. A list indexed by a string raises TypeError, and the callback wraps its
    body in `except Exception: print(...)` -- so it would have failed silently on the first

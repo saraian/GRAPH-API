@@ -534,6 +534,19 @@ def _graph_version(out):
     return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
 
 
+def _sources_mtime(out: Path):
+    """Newest mtime over the files /graph_data is built from, or None when none exists."""
+    mts = []
+    for name in ("persistent_perception.json", "room.json", "hook_decisions.jsonl", "uncertain_objects.txt"):
+        for base in (out, out.parent):
+            try:
+                mts.append((base / name).stat().st_mtime)
+                break
+            except OSError:
+                continue
+    return max(mts) if mts else None
+
+
 @app.get("/graph_data")
 def graph_data(request: Request = None):
     """Format persistent_perception.json + room.json into Cytoscape elements.
@@ -825,6 +838,11 @@ def graph_data(request: Request = None):
         # Bumps only when a file the graph is built from changes, so the viewer can
         # skip an identical re-sync (which re-ran layout and re-fetched every crop).
         "version": version,
+        # GA-40 (graphdata-no-timestamp). When this response was built and when the
+        # newest source file was last written, so a reader can tell LIVE from "the
+        # producer died and this is the last thing it wrote".
+        "produced_at": time.time(),
+        "sources_mtime": _sources_mtime(out),
         "elements": {
             "nodes": [{"data": n} for n in nodes],
             "edges": [{"data": e} for e in edges],
@@ -1193,17 +1211,11 @@ def get_walls():
 def get_crop_image(target: str, request: Request = None):
     path = _crop_file(target)
     if path is None:
-        # Placeholder, explicitly not-a-photo and explicitly not cached: the crop
-        # for a real object appears mid-run, and a cached placeholder would outlive it.
-        shown = str(_crop_label(target))[:28]
-        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120">'
-               f'<rect width="100%" height="100%" fill="#0b1329"/>'
-               f'<text x="50%" y="45%" fill="#38bdf8" font-size="12" font-weight="bold" '
-               f'text-anchor="middle">{shown.upper()}</text>'
-               f'<text x="50%" y="65%" fill="#64748b" font-size="9" text-anchor="middle">'
-               f'no crop captured yet</text></svg>')
-        return Response(content=svg, media_type="image/svg+xml",
-                        headers={"Cache-Control": "no-store"})
+        # GA-40 (crop-substring-mtime). No crop is a 404, not a 200 with a synthesised
+        # SVG: the viewer's <img onerror> renders "Crop pending" only when the request
+        # fails, so the placeholder made "no evidence" look like a styled card. Not
+        # cached: the crop for a real object appears mid-run.
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
     try:
         st = path.stat()
     except OSError:
@@ -2213,4 +2225,8 @@ if __name__ == "__main__":
     threading.Thread(target=rclpy.spin, args=(_node,), daemon=True).start()
     # 8081: host port 8080 belongs to the FOUND dashboard server; the object
     # manager's GRAPH_API_BASE_URL default must match this.
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("BRIDGE_PORT", "8081")))
+    # GA-291. Loopback, not 0.0.0.0. The container runs --network=host, and another program
+    # on this host holds <tailnet-ip>:8081; a wildcard bind collides with that (EADDRINUSE,
+    # measured 2026-09-03, run 20260903_223859 stored nothing) while 127.0.0.1:8081 binds
+    # beside it. Every client (om6, the feed host, the browser on this host) uses 127.0.0.1.
+    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("BRIDGE_PORT", "8081")))
