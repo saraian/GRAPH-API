@@ -553,6 +553,11 @@ export PREFLIGHT_EXPECT_CYCLE_S
 [ -n "$PREFLIGHT_EXPECT_CYCLE_S" ] && \
   echo "    last run REJECTED a frame at ${PREFLIGHT_EXPECT_CYCLE_S}s (a10 checks max_frame_age_s against it)"
 
+# GA-36. GRAPH_API_CONFIG used to be set only as a one-off prefix on three commands and never
+# exported, so the health-monitor subshell below inherited nothing, resource_monitor.build_inventory
+# read no config, and every bundle recorded "no endpoint configured" for runs that used a real
+# endpoint and model. Exported once here; the prefixes below stay as harmless restatements.
+export GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}"
 MERGED_SHA=$(GRAPH_API_CONFIG="$HERE/$CFG_NAME" python3 "$HERE/preflight_gate.py" --print-merged-sha)   || { echo "!! cannot compute the merged-config sha — aborting rather than passing an empty expectation"; exit 1; }
 echo "    sources: graph-api $SRC_SHA ($SRC_N)  found $FOUND_SHA ($FOUND_N)  kb $KB_SHA ($KB_N)"
 echo "    config:  file $CFG_SHA  merged $MERGED_SHA"

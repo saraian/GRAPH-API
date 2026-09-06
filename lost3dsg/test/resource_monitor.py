@@ -96,13 +96,23 @@ def build_inventory():
     cfg_path = os.environ.get("GRAPH_API_CONFIG", "")
     models = []
     cfg = {}
+    cfg_read = False
     if cfg_path and os.path.isfile(cfg_path):
         try:
             import yaml
             with open(cfg_path) as f:
                 cfg = yaml.safe_load(f) or {}
+            cfg_read = True
         except Exception:
             cfg = {}
+    if not cfg_read:
+        # GA-36. "No endpoint configured" is a MEASUREMENT of the config; a config that could not
+        # be read yields no measurement at all, and writing the fallback row here made an unread
+        # file indistinguishable from a deliberately endpoint-less run in every bundle.
+        return [{"model": "unknown", "role": "open-vocab labels", "location": "unknown",
+                 "reason": ("GRAPH_API_CONFIG not set" if not cfg_path else
+                            f"config not readable: {cfg_path}"),
+                 "runs_in": "perception"}]
     vlm = cfg.get("vlm", {}) or {}
     if vlm.get("base_url"):
         models.append({"model": vlm.get("model", "?"), "role": "open-vocab labels",
