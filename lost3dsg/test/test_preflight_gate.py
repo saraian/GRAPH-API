@@ -492,8 +492,7 @@ def test_run_output_lives_outside_every_hashed_root():
     the stack moved the frozen root and "frozen" was unachievable while being reported achieved.
     A path ruling that quietly put run artefacts back inside a root would restore that, so it is
     asserted rather than assumed."""
-    roots = ("/DATA/FOUND/vendor/graph-api/lost3dsg", "/DATA/FOUND/found",
-             "/DATA/ASPIRE/knowledge_bridge")
+    roots = ("/DATA/FOUND/vendor/graph-api/lost3dsg", "/DATA/FOUND/found")
     # $FOUND_ROOT, not /DATA/FOUND. The launcher derives its root from its own location so a
     # clone anywhere can run; this assertion used to encode the one machine the code was written
     # on, and it failed the moment the hardcoding it was guarding against was removed.

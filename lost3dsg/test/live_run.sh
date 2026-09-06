@@ -517,8 +517,9 @@ corpus_order=${FOUND_CORPUS_ORDER:-<code default>} kg_aliases=${FOUND_KG_ALIASES
 # plausible sixteen-hex provenance stamp for a hash that covered zero files.
 #
 # The roots are typed. Only $REPO/lost3dsg is copied into the container at startup, so only it
-# has a freeze point; $FOUND_ROOT/found and knowledge_bridge are live on the path for the whole
-# run and are SAMPLED, never asserted frozen.
+# has a freeze point; $FOUND_ROOT/found is live on the path for the whole run and is SAMPLED,
+# never asserted frozen. knowledge_bridge was a third root until GA-306 vendored the one class
+# FOUND used into found/concept_embedder.py; it is no longer read, mounted or sampled.
 _tree_sha() {
   local out
   out=$(python3 "$HERE/preflight_gate.py" --print-tree-sha "$1")     || { echo "!! cannot hash $1 — aborting rather than stamping an unrecorded run"; exit 1; }
@@ -526,8 +527,6 @@ _tree_sha() {
 }
 read -r SRC_SHA SRC_N   <<<"$(_tree_sha "$REPO/lost3dsg")"
 read -r FOUND_SHA FOUND_N <<<"$(_tree_sha $FOUND_ROOT/found)"
-KB_SRC=${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}
-read -r KB_SHA KB_N     <<<"$(_tree_sha "$KB_SRC")"
 CFG_SHA=$(sha256sum "$HERE/$CFG_NAME" | cut -c1-16)
 # GA-283. The worst frame age the PREVIOUS RUN REJECTED, read HOST-SIDE: preflight_gate.py
 # runs INSIDE the container, where /ws/output is the current bundle and previous ones are not
@@ -677,10 +676,11 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "note": "host-side, taken BEFORE docker run. provenance_confirmed in preflight.json is taken after the container copies its sources, and is the authoritative record of what executed.",
     "graph_api_src_sha256_16": "$SRC_SHA", "graph_api_files": $SRC_N,
     "found_src_sha256_16": "$FOUND_SHA", "found_files": $FOUND_N,
-    "kb_src_sha256_16": "$KB_SHA", "kb_files": $KB_N,
-    "kb_root": "$KB_SRC",
+    "kb_src_sha256_16": null, "kb_files": null,
+    "kb_root": null,
+    "kb_note": "GA-306, 2026-09-06: FOUND no longer imports knowledge_bridge -- the e5 ConceptEmbedder it used is vendored at found/concept_embedder.py. Nothing is mounted at /kb and KB_SRC is read nowhere. Explicit nulls, not removed keys: bundles before this date carry real digests here, and a reader joining across them must be able to tell 'not applicable' from 'never stamped'.",
     "frozen_roots": ["graph_api"],
-    "live_roots": ["found", "kb"],
+    "live_roots": ["found"],
     "live_root_note": "not copied into the container; on sys.path for the whole run, so sampled rather than asserted frozen"
   },
   "resolved_config": {
@@ -836,7 +836,6 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
    # claim that the geometry changed -- it is a claim that a published artefact is not immutable.
    # The deeper mount wins, so runs still read the library and can no longer write it.` \
   -v "$FOUND_ROOT/maps":/found/maps:ro \
-  -v "${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}":/kb:ro \
   -v "$RUN_DIR":/ws/output \
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
   -v "${HF_SHARED_CACHE:-/DATA/huggingface_cache}":/models/hf \

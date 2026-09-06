@@ -84,15 +84,13 @@ kv.add_vectors(words, np.random.default_rng(0).normal(size=(len(words), 32)).ast
 kv.save_word2vec_format("/tmp/smoke_w2v.bin", binary=True)
 PY
 
-# The KG aligner's bridge, and the model cache. found/kg_align.py inserts KG_BRIDGE_SRC
-# (default /DATA/ASPIRE/knowledge_bridge, a HOST path that does not exist in here) and then
-# imports knowledge_bridge.alignment.embedder. Without /kb on the path that raises, and the
-# perception node dies when it loads the hook. Without HF_HOME the in-container default points
-# at a host path that does not exist here, so MiniLM is re-fetched from the hub every run.
+# The model cache. Without HF_HOME the in-container default points at a host path that does not
+# exist here, so the encoder is re-fetched from the hub every run.
 #
-# This hunk was marked "port" in the lane's own plan and was not ported. The first gated run
-# found it: a1 could not import `found` and reported it as a probe fault.
-export PYTHONPATH=/kb:${PYTHONPATH}
+# This line used to be preceded by `export PYTHONPATH=/kb:...`, which put ASPIRE's knowledge_bridge
+# on the path because kg_align.py imported ConceptEmbedder from it. GA-306 vendored that class into
+# found/concept_embedder.py, so there is nothing to mount and nothing to add to the path. `found`
+# itself never came from PYTHONPATH -- the hook config carries its path.
 export HF_HOME=/found/.hf_cache
 
 # CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).

@@ -66,8 +66,7 @@ ORDER
 #    downstream analysis tool fail on a bundle that otherwise looks complete.
 RUN_ID=t SCENE_ARG=s CFG_NAME=c.yaml CFG_SHA=0f9e8d7c6b5a4938 MERGED_SHA=44c1d0aa9b3e2f57 \
 FEED_SEED=7 RUN_DIR=/x HERE=/here \
-SRC_SHA=aaaa1111 SRC_N=122 FOUND_SHA=bbbb2222 FOUND_N=40 KB_SHA=cccc3333 KB_N=17 \
-KB_SRC=/DATA/ASPIRE/knowledge_bridge \
+SRC_SHA=aaaa1111 SRC_N=122 FOUND_SHA=bbbb2222 FOUND_N=40 \
 IMAGE_TAG=img IMAGE_DIGEST=sha256:dead ENC_E5=e5 ENC_MINILM=mini \
 GT_PATH=/gt/hm3d_00861.json GT_SHA=beef1234 GT_N=870 \
 FOUND_ENFORCE=1 FOUND_HOLD_BAND=0.05 FOUND_MIN_SUPPORT=30 FOUND_ROOM_ENFORCE=0 \
@@ -86,7 +85,7 @@ done
 
 # 6. The new provenance keys are present and carry the values they were given.
 grep -q '"graph_api_src_sha256_16": "aaaa1111"' "$TMP/meta.json" || fail "graph-api tree digest not stamped"
-grep -q '"kb_src_sha256_16": "cccc3333"'        "$TMP/meta.json" || fail "knowledge_bridge digest not stamped — it is on PYTHONPATH and was unhashed"
+grep -q '"kb_src_sha256_16": null'              "$TMP/meta.json" || fail "kb_src_sha256_16 must be an explicit null since GA-306 — the key stays so a reader can tell 'not applicable' from 'never stamped'"
 grep -q '"graph_api_files": 122'                "$TMP/meta.json" || fail "file count not stamped; a count is what makes an empty root visible"
 grep -q '"image_digest": "sha256:dead"'         "$TMP/meta.json" || fail "image digest not stamped"
 grep -q '"intfloat/e5-small-v2": "e5"'          "$TMP/meta.json" || fail "encoder revision not stamped"
