@@ -9,6 +9,14 @@
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
+
+# GA-319. The Modal endpoint URL is a CREDENTIAL -- the deployed app exposes fastapi_endpoint with
+# no proxy auth, so the URL alone buys GPU time on this account. It used to live in config.yaml and
+# was therefore committed. It now lives in an untracked, gitignored file beside this script, and is
+# forwarded into the container by the existing `-e MODAL_PERCEPTION_URL`. Sourced, not required: a
+# local-backend run needs none of this, and client.py already fails loudly and by name when the
+# backend is "modal" and neither the config nor the environment supplies an endpoint.
+[ -f "$HERE/env.local.sh" ] && . "$HERE/env.local.sh"
 # WHERE FOUND IS. Derived from this script's own location, not hardcoded: the submodule sits at
 # <FOUND>/vendor/graph-api, so two levels above $REPO is the FOUND checkout whatever it is called
 # and wherever it lives. $FOUND_ROOT was written into ten places and a clone anywhere else could
