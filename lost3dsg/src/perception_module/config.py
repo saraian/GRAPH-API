@@ -93,6 +93,9 @@ _DEFAULTS = {
         # and consecutive silent checks before the node ends the run.
         "input_silence_timeout_s": 60.0,
         "input_silence_max_strikes": 3,
+        # GA-09: consecutive FAILED Graph API calls (unreachable, 5xx, unreadable body)
+        # before om6 ends the run, as the VLM strike counter does. 0 = count and log only.
+        "graph_api_max_strikes": 5,
         # GA-94b. Robot STOPS that must pass with no detection before the producer is called
         # dead. Detection is gated on the robot stopping, so with dwell=0 a two-minute
         # silence is a normal gap between incidental halts -- run 042828 had 4 cycles and 3

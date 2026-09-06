@@ -67,6 +67,7 @@ SIM_THRESHOLD = CFG["association"]["sim_threshold"]
 TRACKING_IOU_THRESHOLD = CFG["association"]["tracking_iou_threshold"]
 VOLUME_EXPANSION_RATIO = CFG["association"]["volume_expansion_ratio"]
 EXPLORATION_FRAME_LIMIT = CFG["association"]["exploration_frame_limit"]
+GRAPH_API_MAX_STRIKES = int(CFG["association"].get("graph_api_max_strikes", 5))   # GA-09
 OBJECT_STABILITY_TIMEOUT = CFG["association"]["object_stability_timeout"]
 POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
 MAX_VOLUME_THRESHOLD = CFG["association"]["max_volume_threshold"]
@@ -650,6 +651,7 @@ class ObjectManagerService(Node):
             cloud_map_topic='/rtabmap/cloud_map',
         )
         self.object_services = ObjectServices(self.room_manager)
+        self.object_services.on_object_removed = self._note_removed   # GA-47
         self.last_room_check_time = time.time()
 
         # Extension seam (config `hooks`, see hooks.py): admission filter, node
@@ -708,6 +710,7 @@ class ObjectManagerService(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.graph_api_base_url = GRAPH_API_BASE_URL.rstrip('/')
         self.graph_api_timeout = GRAPH_API_TIMEOUT
+        self._graph_api_strikes = 0        # GA-09: consecutive failed calls, reset by any answer
         self._graph_api_process = None
         self.get_logger().info(f"Graph API base URL: {self.graph_api_base_url}")
         self.get_logger().info('Object Tracking Service ready')
@@ -1061,6 +1064,10 @@ class ObjectManagerService(Node):
                 if new and new.lower() != "unknown" and (not cur or cur == "unknown"):
                     setattr(obj, field, new)
                     changed.append(field)
+            if "description" in changed:
+                # GA-26: the vector was refreshed only when missing, so a description that
+                # arrived late kept the stale (or absent) embedding of the old text.
+                obj.embedding = get_embedding(world2vec, obj.description)
             if changed:
                 self._n_late_applied += 1
                 self.object_services.log_both(
@@ -1335,16 +1342,9 @@ class ObjectManagerService(Node):
                 )
 
                 if transition:
-                    self.object_services.log_both('warn', "[TRANSITION] Switching from EXPLORATION to TRACKING mode")
-                    self.exploration_mode = False
-                    self.tracking_step_counter = 1
+                    self._enter_tracking("a stable object moved")
                     tracking_activated = True
                     in_exploration = False
-                    self.exploration_frame_counter = 0
-
-                    msg = Bool()
-                    msg.data = True
-                    self.tracking_activated_pub.publish(msg)
 
                     update_response = self.modify_existing_object(obj, bbox, description_embedding)
                     if update_response.success:
@@ -1598,6 +1598,18 @@ class ObjectManagerService(Node):
             # observed together. Recorded here rather than in each match branch because
             # there are four of those and a sighting missed in one of them is invisible.
             self._record_sighting(obj, perception_timestamp)
+
+        # GA-08. `association.exploration_frame_limit` was read, the counter incremented and
+        # reset, and the two never compared, so a static scene stayed in exploration for the
+        # whole run and neither delete path ever ran. The rule of the module this one
+        # replaced: after N exploration frames that carried detections, tracking starts.
+        # 0 = off (only a moved object starts tracking, as before).
+        if (in_exploration and EXPLORATION_FRAME_LIMIT > 0
+                and self.exploration_frame_counter >= EXPLORATION_FRAME_LIMIT
+                and len(request.descriptions.descriptions) > 0):
+            self._enter_tracking(f"exploration_frame_limit={EXPLORATION_FRAME_LIMIT} frames reached")
+            tracking_activated = True
+            in_exploration = False
         pov_volume = getattr(self, 'latest_fov_volume', None)
 
         if not in_exploration:
@@ -1710,6 +1722,7 @@ class ObjectManagerService(Node):
         try:
             response = requests.request(method=method, url=url, json=json_body, timeout=self.graph_api_timeout)
         except requests.RequestException as e:
+            self._graph_api_strike(f"unreachable ({method} {url}): {e}")
             raise RuntimeError(f"Graph API non raggiungibile ({method} {url}): {e}")
 
         if expected_status is None:
@@ -1727,12 +1740,34 @@ class ObjectManagerService(Node):
                     detail = payload.get('detail') or payload.get('message') or payload
             except Exception:
                 pass
+            if response.status_code >= 500:
+                self._graph_api_strike(f"{response.status_code} on {method} {path}: {detail}")
+            else:
+                self._graph_api_strikes = 0     # a refusal is the service ALIVE and answering
             raise RuntimeError(f"Graph API error {response.status_code} on {method} {path}: {detail}")
 
         try:
-            return response.json()
-        except Exception:
-            return {}
+            body = response.json()
+        except ValueError as e:
+            # GA-01: this returned {} and the caller then filed the object under its LABEL.
+            # A success reply nobody can read is a failed call, not an empty result.
+            self._graph_api_strike(f"unreadable {response.status_code} body on {method} {path}: {e}")
+            raise RuntimeError(f"Graph API {method} {path}: {response.status_code} with an unreadable body: {e}")
+        self._graph_api_strikes = 0
+        return body
+
+    def _graph_api_strike(self, what):
+        """GA-09. Every caller caught the RuntimeError and carried on, so a run whose bridge
+        died looked exactly like a static scene. Counted here, once for all callers:
+        `association.graph_api_max_strikes` CONSECUTIVE failures end the run the way
+        detection_pipeline's VLM strikes do. 0 = count and log only."""
+        self._graph_api_strikes += 1
+        self.get_logger().error(f"[GRAPH-API] call FAILED: {what}; strike "
+                                f"{self._graph_api_strikes}/{GRAPH_API_MAX_STRIKES}")
+        if 0 < GRAPH_API_MAX_STRIKES <= self._graph_api_strikes:
+            self.get_logger().error(f"[GRAPH-API] ENDING THE RUN: {self._graph_api_strikes} consecutive "
+                                    f"Graph API failures; nothing this node sees is being recorded.")
+            self._flush_and_exit()
 
     def add_new_object(self, label, bbox, description, color, material,
                        description_embedding=None, in_exploration=False, room_id=None):
@@ -1765,7 +1800,11 @@ class ObjectManagerService(Node):
             self.get_logger().error(f"Add object failed via Graph API: {e}")
             return None
 
-        object_id = result.get("object_id", label)
+        object_id = result.get("object_id")
+        if not object_id:
+            # GA-01: the label was the fallback identity, so two beds filed this way became one.
+            self.get_logger().error(f"Add object refused: the Graph API reply for {label} carries no object_id: {result}")
+            return None
 
         for obj in reversed(wm.persistent_perceptions):
             if getattr(obj, "object_id", None) == object_id or (obj.label == label and obj.bbox == bbox):
@@ -1848,7 +1887,7 @@ class ObjectManagerService(Node):
                                or (keeper.get("object_id") if isinstance(keeper, dict) else None))
                         if kid:
                             self._note_update(kid, reason="merged")
-                except (TypeError, ValueError) as exc:
+                except (TypeError, ValueError, AttributeError) as exc:
                     self.get_logger().warn(f"GA-11: merge log unreadable, survivors not queued: {exc}")
             return merged
         except RuntimeError as e:
@@ -1997,17 +2036,31 @@ class ObjectManagerService(Node):
                     self.room_manager.finalize_current_room(wm.persistent_perceptions)
             except Exception as exc:
                 self.object_services.log_both('error', f"[INPUT] room finalize failed on exit: {exc}")
-            for h in list(logging.getLogger().handlers):
-                try:
-                    h.flush()
-                except Exception:
-                    pass
-            sys.stdout.flush()
-            sys.stderr.flush()
-            # os._exit, not sys.exit: this runs on a MultiThreadedExecutor WORKER thread,
-            # where SystemExit unwinds that thread only and leaves the process spinning --
-            # which is the exact failure being fixed. The log is flushed above first.
-            os._exit(1)
+            self._flush_and_exit()
+
+    def _flush_and_exit(self):
+        for h in list(logging.getLogger().handlers):
+            try:
+                h.flush()
+            except Exception:
+                pass
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # os._exit, not sys.exit: this runs on a MultiThreadedExecutor WORKER thread,
+        # where SystemExit unwinds that thread only and leaves the process spinning --
+        # which is the exact failure being fixed. The log is flushed above first.
+        os._exit(1)
+
+    def _enter_tracking(self, why):
+        """The one exit from EXPLORATION (GA-08): the transition branch and the frame limit
+        both come through here, so the counters cannot drift apart again."""
+        self.object_services.log_both('warn', f"[TRANSITION] Switching from EXPLORATION to TRACKING mode: {why}")
+        self.exploration_mode = False
+        self.tracking_step_counter = 1
+        self.exploration_frame_counter = 0
+        msg = Bool()
+        msg.data = True
+        self.tracking_activated_pub.publish(msg)
 
     def _bboxes_callback(self, msg):
         self._n_bbox_msgs += 1
@@ -2162,6 +2215,19 @@ class ObjectManagerService(Node):
             self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
             neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
         self.reeval.on_update(object_id, neighbours)
+
+    def _note_removed(self, obj):
+        """GA-47. A deleted object cannot be re-examined, but what stood around its last
+        position can. object_services calls this for every persistent object it removes."""
+        if getattr(obj, "bbox", None) is None:
+            return
+        oid = getattr(obj, "object_id", None) or obj.label
+        neighbours = [self._node_dict(o)["object_id"] for o in self._neighbours(obj, REEVALUATION_RADIUS)]
+        if len(neighbours) > REEVALUATION_MAX_FANOUT:
+            self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
+            neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
+        for n in neighbours:
+            self.reeval.mark(n, f"neighbour {oid} deleted")
 
     def _drain_reevaluations(self):
         """Periodic: hand every queued node, with its neighbours, to the Refiner and log

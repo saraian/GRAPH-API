@@ -722,6 +722,15 @@ class ObjectServices(Node):
                     if obj in wm.persistent_perceptions:
                         wm.persistent_perceptions.remove(obj)
 
+                    # GA-47: the neighbours of a deleted object get a second look. om6 sets
+                    # this to its trigger; the removed object itself cannot be queued.
+                    hook = getattr(self, "on_object_removed", None)
+                    if hook:
+                        try:
+                            hook(obj)
+                        except Exception as e:
+                            self.get_logger().error(f"on_object_removed failed for {obj.label}: {e}")
+
                     room_id = getattr(obj, 'room_id', None)
                     if room_id and room_id in self.room_manager.scene_graph:
                         objs = self.room_manager.scene_graph[room_id]["objects"]
@@ -1939,6 +1948,11 @@ class ObjectServices(Node):
             # a mis-associated detection whose box was refused still left its description,
             # colour and material on the object. Applied here, past every refusal.
             if hasattr(request, "description") and request.description:
+                if request.description != updated_obj.description:
+                    # GA-26: the vector was refreshed only when missing, so a new description
+                    # kept the old text's embedding. (The request's own embedding is the
+                    # DETECTION's, not this text's -- om6 sends the stored description back.)
+                    updated_obj.embedding = get_embedding(world2vec, request.description)
                 updated_obj.description = request.description
             if hasattr(request, "color") and request.color:
                 updated_obj.color = request.color
