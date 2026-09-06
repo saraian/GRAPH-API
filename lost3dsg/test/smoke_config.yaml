@@ -62,7 +62,7 @@ hooks:
 
 perception:
   backend: "modal"
-  modal_endpoint: "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
+  modal_endpoint: ""   # GA-319: the endpoint URL is a credential; supply it via MODAL_PERCEPTION_URL (lost3dsg/test/env.local.sh)
   # seconds; a remote perception call. 25.0 was hardcoded and sat below all
   # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
   # INTERIM, NOT MEASURED. 180 was not derived from a distribution and must not be cited as

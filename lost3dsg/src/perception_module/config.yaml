@@ -74,7 +74,7 @@ hooks:
 
 perception:
   backend: "local"        # "modal" | "managed" | "local"
-  modal_endpoint: "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
+  modal_endpoint: ""   # GA-319: the endpoint URL is a credential; supply it via MODAL_PERCEPTION_URL (lost3dsg/test/env.local.sh)
   score_threshold: 0.15
   nms_threshold: 0.50
   # seconds; a remote perception call. 25.0 was hardcoded and sat below all

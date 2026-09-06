@@ -31,7 +31,7 @@ def test_modal_client_mock():
 
 def test_modal_client_live():
     # Test client calling live deployed Modal endpoint
-    endpoint = "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
+    endpoint = ""
     client = ModalPerceptionBackend(endpoint_url=endpoint)
     h = client.health()
     assert h["reachable"] is True, f"Health check failed: {h}"
