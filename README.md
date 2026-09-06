@@ -69,7 +69,7 @@ VLM                    regolo    any OpenAI-compatible endpoint; vlm.base_url / 
    | var | used for |
    |---|---|
    | `REGOLO_API_KEY` | the VLM. Copied into `OPENAI_API_KEY`, which the OpenAI-compatible client reads. |
-   | `MODAL_PERCEPTION_URL` | the detector service when `perception.backend: "modal"`. |
+   | `MODAL_PERCEPTION_URL` | the detector service when `perception.backend: "modal"`. **Local setup required:** `cp lost3dsg/test/env.local.sh.example lost3dsg/test/env.local.sh`, fill in the `-predict` URL the deploy prints, `chmod 600`. Every shipped config carries an empty `modal_endpoint` on purpose and the launcher refuses a modal run without this file; the URL is a credential and a pre-commit guard refuses to commit one. |
    | `OPENROUTER_API_KEY` | only if `vlm.base_url` points at OpenRouter. |
 
 5. **The Modal detector service** (once per account):
