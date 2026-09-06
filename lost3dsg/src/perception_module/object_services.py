@@ -1432,6 +1432,7 @@ class ObjectServices(Node):
                     })
                     merge_log.append({
                         "keeper":      keeper.label,
+                        "keeper_id":   getattr(keeper, "object_id", None),
                         "discarded":   discard.label,
                         # GA-25's room gate refuses a pair only when BOTH rooms are known
                         # and differ. Recording both -- including None for "geometry cannot

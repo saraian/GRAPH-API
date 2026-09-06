@@ -1838,7 +1838,14 @@ class ObjectManagerService(Node):
                     # The bridge returns the parsed list as "merge_log"; "merge_log_json" is the
                     # ROS field name and never reached this dict, so no survivor was ever queued.
                     for pair in result.get("merge_log") or json.loads(result.get("merge_log_json") or "[]"):
-                        kid = (pair.get("keeper") or {}).get("object_id") or pair.get("keeper_id")
+                        # The service's entry names the keeper by LABEL ("keeper": keeper.label)
+                        # and carries its id as `keeper_id` / `bbox_from_object_id`. Reading the
+                        # label as a dict killed run 20260907_002814 on the first merge.
+                        if not isinstance(pair, dict):
+                            continue
+                        keeper = pair.get("keeper")
+                        kid = (pair.get("keeper_id") or pair.get("bbox_from_object_id")
+                               or (keeper.get("object_id") if isinstance(keeper, dict) else None))
                         if kid:
                             self._note_update(kid, reason="merged")
                 except (TypeError, ValueError) as exc:
