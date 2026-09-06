@@ -298,6 +298,20 @@ def _set_description_embedding(req, body):
     return req.has_description_embedding
 
 
+def _set_orientation(req, body: dict):
+    """GA-312. Carry the oriented box across the service boundary when the caller sent one.
+    `has_orientation` is set from the presence of ALL THREE keys, never from a default, so an
+    axis-aligned caller stays axis-aligned and a yaw of 0.0 is a measurement, not an absence."""
+    keys = ("yaw", "oriented_center", "oriented_extents")
+    if all(body.get(k) is not None for k in keys):
+        req.has_orientation = True
+        req.yaw = float(body["yaw"])
+        req.oriented_center = [float(v) for v in body["oriented_center"]][:3]
+        req.oriented_extents = [float(v) for v in body["oriented_extents"]][:3]
+    else:
+        req.has_orientation = False
+
+
 @app.post("/objects")
 def add_object(body: dict):
     req = AddObject.Request()
@@ -312,6 +326,7 @@ def add_object(body: dict):
     req.y_max = float(body.get("y_max", 0.0))
     req.z_min = float(body.get("z_min", 0.0))
     req.z_max = float(body.get("z_max", 0.0))
+    _set_orientation(req, body)
     _set_description_embedding(req, body)
     res = require_node().call('add', req)
     if not res.success:
@@ -374,6 +389,7 @@ def update_object(object_id: str, body: dict):
         req.y_max = float(body.get("y_max", 0.0))
         req.z_min = float(body.get("z_min", 0.0))
         req.z_max = float(body.get("z_max", 0.0))
+        _set_orientation(req, body)
 
     _set_description_embedding(req, body)
 

@@ -133,6 +133,20 @@ os.makedirs(log_dir, exist_ok=True)
 SYNTHETIC_LOG_FILE = os.path.join(log_dir, "operations.txt")
 
 
+def _apply_orientation(bbox, request):
+    """GA-312. Both service handlers used to rebuild a six-key box, so an object written through
+    the API lost its tilt while one written in-process kept it, and the persisted map could not
+    say which geometry a stored box was. Every stored box now carries `has_orientation`
+    explicitly -- False is a statement, not an absence -- and the tilt when there is one."""
+    if getattr(request, "has_orientation", False):
+        bbox["has_orientation"] = True
+        bbox["yaw"] = float(request.yaw)
+        bbox["oriented_center"] = [float(v) for v in request.oriented_center]
+        bbox["oriented_extents"] = [float(v) for v in request.oriented_extents]
+    else:
+        bbox["has_orientation"] = False
+
+
 def _centroid_from_bbox(bbox):
     """GA-296. The centroid a world-model Object is created WITHOUT.
 
@@ -1528,6 +1542,7 @@ class ObjectServices(Node):
                 "y_min": request.y_min, "y_max": request.y_max,
                 "z_min": request.z_min, "z_max": request.z_max,
             }
+            _apply_orientation(bbox, request)   # GA-312
             label       = request.label
             description = request.description
             color       = request.color
@@ -1727,6 +1742,7 @@ class ObjectServices(Node):
                 "z_min": request.z_min,
                 "z_max": request.z_max,
             }
+            _apply_orientation(bbox, request)   # GA-312
 
             if hasattr(request, "description") and request.description:
                 best_match.description = request.description

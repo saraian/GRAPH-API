@@ -11,6 +11,15 @@ float32 y_min
 float32 y_max
 float32 z_min
 float32 z_max
+# GA-312. The oriented (PCA, yaw-about-z) box that Bbox3d.msg already carries stopped HERE: this
+# service took the six axis-aligned limits only, so every object written through the API lost its
+# tilt and the persisted map became a mixture of two geometries with nothing saying which. Same
+# shape as Bbox3d.msg, for the same reason: has_orientation is not redundant -- a yaw of 0.0 from
+# a real measurement must not be confused with "never measured".
+bool has_orientation
+float32 yaw
+float32[3] oriented_center
+float32[3] oriented_extents
 
 float32[] description_embedding
 # GA-184. Whether `description_embedding` above carries a MEASUREMENT or nothing at all.

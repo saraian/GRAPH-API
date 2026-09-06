@@ -1634,6 +1634,9 @@ class ObjectManagerService(Node):
             "y_max": bbox["y_max"],
             "z_min": bbox["z_min"],
             "z_max": bbox["z_max"],
+            **({"yaw": bbox["yaw"], "oriented_center": list(bbox["oriented_center"]),
+                "oriented_extents": list(bbox["oriented_extents"])}
+               if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "in_exploration": in_exploration,
             "description_embedding": serialized_embedding,
         }
@@ -1664,6 +1667,9 @@ class ObjectManagerService(Node):
             "y_max": bbox["y_max"],
             "z_min": bbox["z_min"],
             "z_max": bbox["z_max"],
+            **({"yaw": bbox["yaw"], "oriented_center": list(bbox["oriented_center"]),
+                "oriented_extents": list(bbox["oriented_extents"])}
+               if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "description_embedding": self._serialize_embedding(description_embedding),
         }
 
