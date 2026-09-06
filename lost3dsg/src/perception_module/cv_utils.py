@@ -588,15 +588,17 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                 "y_min": float(mins_map[1]), "y_max": float(maxs_map[1]),
                 "z_min": float(mins_map[2]), "z_max": float(maxs_map[2]),
             }
-            bboxes_3d.append(bbox_dict)
-            # Appended HERE, beside the box, not before the two raises above: on an empty or
-            # degenerate box the except path appends None as well, so the early append gave
-            # centroids_3d TWO entries for one mask and every later centroid was read against
-            # the wrong detection by _archive_detections (positional). Found by agent1 in
-            # review 2026-09-06, shown red-first on a one-pixel-row mask, GA-327.
-            centroids_3d.append(tuple(float(v) for v in centroid_map))
-
             corners_map = np.array(list(itertools.product(*zip(mins_map, maxs_map))))
+
+            # ALL THREE appends together, as the LAST statements of the try. The centroid used
+            # to be appended before the two raises above, so on an empty or degenerate box
+            # the except path's None made it TWO entries for one mask and every later
+            # centroid was read against the wrong detection by _archive_detections
+            # (positional). Found by agent1 in review 2026-09-06, shown red-first on a
+            # one-pixel-row mask, GA-327. Kept adjacent so that nothing inserted above them
+            # can ever leave the three lists at different lengths.
+            centroids_3d.append(tuple(float(v) for v in centroid_map))
+            bboxes_3d.append(bbox_dict)
             if points_out is not None:
                 points_out.append(pts_map)
 
