@@ -8,30 +8,43 @@ Includes Topological Semantic Mapping (Room Manager) with Scene Graph generation
 Room changes are handled by the Room Manager using detected wall segments and
 its normal scene-evaluation logic.
 """
-import rclpy, json, os, time, threading, subprocess, sys
+import hashlib
+import json
 import logging
+import os
+import subprocess
+import sys
+import threading
+import time
 import urllib.parse
 from collections import deque
-from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy
+from datetime import datetime, timezone
+
 import numpy as np
+import rclpy
 import requests
-from lost3dsg.msg import ObjectDescriptionArray, Bbox3dArray
-from lost3dsg.srv import (
-    ObjectTrackingService,
-    UpdateObject,
-)
+from association import AssocObject, Observation, search_radius
+from builtin_interfaces.msg import Time as TimeMsg
+from config import CFG
+from cv_utils import publish_persistent_bboxes
+from geometry_msgs.msg import PoseStamped
+from hooks import DecisionLog, load_hooks
+from nav_msgs.msg import Path
+from nlp_utils import get_embedding, lost_similarity, lost_similarity_detailed, world2vec
 from object_services import (
     ObjectServices,
-    save_persistent_perceptions,
-    save_uncertain_objects,
     ensure_relations,
     infer_spatial_relations,
+    save_persistent_perceptions,
+    save_uncertain_objects,
     synchronized_world_model,
 )
-from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import Bool
-from world_model import wm
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy
+from room_manager import RoomManager
+from std_msgs.msg import Bool, String
+from tf2_ros import Buffer, TransformListener
+
 # Explicit, not `import *`. Only the names this file does NOT define itself:
 # publish_persistent_centroids, publish_pov_volume and publish_uncertain_* are defined
 # BELOW and also in cv_utils with different bodies, so importing them here would swap a
@@ -39,20 +52,14 @@ from world_model import wm
 # ruff's F family was blind on this file -- which is why GA-22's two crashes read as
 # `F405 may be undefined` instead of `F821 undefined name`.
 from utils import compute_iou_3d
-from room_manager import RoomManager
-from nlp_utils import get_embedding, lost_similarity, lost_similarity_detailed, world2vec
-from datetime import datetime
-from cv_utils import publish_persistent_bboxes
-from config import CFG
-from association import AssocObject, Observation, search_radius
-from hooks import DecisionLog, load_hooks
-from std_msgs.msg import String
-from tf2_ros import Buffer, TransformListener
-import hashlib
-from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Path
-from builtin_interfaces.msg import Time as TimeMsg
-from datetime import timezone
+from visualization_msgs.msg import Marker, MarkerArray
+from world_model import wm
+
+from lost3dsg.msg import Bbox3dArray, ObjectDescriptionArray
+from lost3dsg.srv import (
+    ObjectTrackingService,
+    UpdateObject,
+)
 
 # ============= EXPLORATION PARAMETERS (config.yaml: association) =============
 EXPLORATION_IOU_THRESHOLD = CFG["association"]["exploration_iou_threshold"]
@@ -69,6 +76,8 @@ BBOX_REDUCTION_RATIO = CFG["association"]["bbox_reduction_ratio"]
 # 0.0 -- so the key that appeared to govern the neighbour radius never did. It is its own
 # value and now has its own key, default 2.0 to reproduce that behaviour exactly.
 REEVALUATION_RADIUS = CFG["association"].get("reevaluation_radius_m", 2.0)
+REEVALUATION_DEBOUNCE_S = float(CFG["association"].get("reevaluation_debounce_s", 2.0))
+REEVALUATION_MAX_FANOUT = int(CFG["association"].get("reevaluation_max_fanout", 12))
 # GA-289. The tracking path (check_tracking_transition) ran `lost_similarity` over EVERY stable
 # object with no geometry consulted at all, and a win needed no evidence: two identical labels
 # score exactly 1.000 on nothing else measurable, and `>` keeps the FIRST such object at a tie.
@@ -643,6 +652,9 @@ class ObjectManagerService(Node):
         # Extension seam (config `hooks`, see hooks.py): admission filter, node
         # refiner and the re-evaluation queue. Blueprints unless configured.
         self.filter_hook, self.refiner_hook, self.reeval = load_hooks(CFG)
+        self._reeval_last = {}            # object_id -> monotonic time of its last queueing (GA-11)
+        self._reeval_debounced = 0        # counters, so a run can report how often the bounds bit
+        self._reeval_fanout_capped = 0
         self.decision_log = DecisionLog(CFG["hooks"]["decisions_log"] or os.path.join(log_dir, "hook_decisions.jsonl"))
         self.get_logger().info(f"hooks: filter={self.filter_hook.name} refiner={self.refiner_hook.name} "
                                f"log={self.decision_log.path}")
@@ -653,7 +665,7 @@ class ObjectManagerService(Node):
             self.walls_callback,
             10
         )
-        from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+        from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
         qos_poly = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT, # o BEST_EFFORT se la rete è lenta
@@ -721,6 +733,8 @@ class ObjectManagerService(Node):
             self.object_services.db.on_object_room_changed(
                 obj, old_room, new_room, step=self.object_services.tracking_step_counter
             )
+            # GA-11: a room change is a change to this object; queue it for a second look.
+            self._note_update(getattr(obj, "object_id", None) or obj.label, reason="room_changed")
             self.get_logger().info(
                 f"Object '{obj.label}' riassegnato: {old_room} -> {new_room}"
             )
@@ -1303,6 +1317,8 @@ class ObjectManagerService(Node):
                         # is a different change from this one.
                         obj.bbox = bbox
                         objects_modified = True
+                        # GA-11: an in-place box write is a change to THIS object; queue it.
+                        self._note_update(getattr(obj, "object_id", None) or obj.label, reason="box_written")
                         break
 
             else:
@@ -1686,7 +1702,18 @@ class ObjectManagerService(Node):
 
         try:
             result = self._call_graph_api("POST", "/merge", json_body=payload)
-            return int(result.get("merged_count", 0)) > 0
+            merged = int(result.get("merged_count", 0)) > 0
+            if merged:
+                # GA-11. A merge changes the survivor more than anything else does; it never
+                # triggered a second look. The service already reports each pair's keeper.
+                try:
+                    for pair in json.loads(result.get("merge_log_json") or "[]"):
+                        kid = (pair.get("keeper") or {}).get("object_id") or pair.get("keeper_id")
+                        if kid:
+                            self._note_update(kid, reason="merged")
+                except (TypeError, ValueError) as exc:
+                    self.get_logger().warn(f"GA-11: merge log unreadable, survivors not queued: {exc}")
+            return merged
         except RuntimeError as e:
             self.get_logger().error(f"Merge objects failed via Graph API: {e}")
             return False
@@ -1955,13 +1982,30 @@ class ObjectManagerService(Node):
                 if o is not node and o.bbox is not None and node.bbox is not None
                 and bbox_center_distance(node.bbox, o.bbox) <= radius]
 
-    def _note_update(self, object_id):
-        """A node changed: its spatial neighbours (within the association gate, 2 m when
-        the gate is off) deserve a second look. The trigger policy — which neighbours,
-        graph-distance instead of metres — is the queue subclass's to refine."""
+    def _note_update(self, object_id, reason="updated", now=None):
+        """A node changed: it and its spatial neighbours (within the association gate, 2 m
+        when the gate is off) deserve a second look. The trigger policy — which neighbours,
+        graph-distance instead of metres — is the queue subclass's to refine.
+
+        GA-11, the three missing triggers: this is now also called after a MERGE (for each
+        surviving object), after an IN-PLACE BOX WRITE, and after a ROOM CHANGE. `reason` is
+        recorded so the drain log can say which event caused the second look.
+
+        Debounce and fan-out bound, both config knobs with stated costs (config.py, GA-11):
+        an object re-queued inside `reevaluation_debounce_s` of its last queueing is skipped,
+        and at most `reevaluation_max_fanout` neighbours are queued per event, so one churning
+        object cannot flood the queue and one update cannot re-examine a whole room.
+        """
+        import time as _t
+        now = _t.monotonic() if now is None else now
+        last = self._reeval_last.get(object_id)
+        if last is not None and now - last < REEVALUATION_DEBOUNCE_S:
+            self._reeval_debounced += 1
+            return
         node = self._find_node(object_id)
         if node is None:
             return
+        self._reeval_last[object_id] = now
         radius = REEVALUATION_RADIUS
         # GA-11: queue the node that CHANGED, not only its neighbours. `on_update` adds
         # the neighbour ids and never the subject -- hooks.py's own self-test pins that
@@ -1973,8 +2017,12 @@ class ObjectManagerService(Node):
         # blueprint that FOUND extends; widening on_update's contract would change it
         # for every subclass and break the blueprint's self-test. WHICH nodes deserve a
         # second look is the caller's trigger policy, which is what this method is.
-        self.reeval.mark(object_id, "updated")
-        self.reeval.on_update(object_id, [self._node_dict(o)["object_id"] for o in self._neighbours(node, radius)])
+        self.reeval.mark(object_id, reason)
+        neighbours = [self._node_dict(o)["object_id"] for o in self._neighbours(node, radius)]
+        if len(neighbours) > REEVALUATION_MAX_FANOUT:
+            self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
+            neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
+        self.reeval.on_update(object_id, neighbours)
 
     def _drain_reevaluations(self):
         """Periodic: hand every queued node, with its neighbours, to the Refiner and log
@@ -2029,7 +2077,8 @@ class ObjectManagerService(Node):
         #if hasattr(self, 'room_area_pub'):
         #    self.room_area_pub.publish(msg)
 
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor  # noqa: E402, I001  (late on purpose: used by main() only, and the module must import under rosstub on the host)
+
 
 def main(args=None):
     rclpy.init(args=args)

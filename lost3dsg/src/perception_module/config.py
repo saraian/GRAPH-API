@@ -114,6 +114,13 @@ _DEFAULTS = {
         # Radius, in metres, within which a changed object triggers re-evaluation of
         # its neighbours.
         "reevaluation_radius_m": 2.0,
+        # GA-11. One object churning must not flood the second-look queue, and one update must not
+        # fan out to the whole room. Debounce: an object re-queued within this many seconds of its
+        # last queueing is skipped (cost: a genuine second change inside the window is examined
+        # once, not twice). Fan-out: at most this many neighbours are queued per update (cost: in a
+        # dense room the farthest neighbours are not re-examined on that event).
+        "reevaluation_debounce_s": 2.0,
+        "reevaluation_max_fanout": 12,
     },
     # GA-270. SERVICE ADDRESSES BELONG IN CONFIG, not in module literals.
     #
