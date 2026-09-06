@@ -152,6 +152,10 @@ for _v in $(grep -o '\${[A-Z_][A-Z0-9_]*[:-]*[^}]*}' "$HERE/live_stack_container
   grep -q -- "-e ${_v}\b" "$SRC" || _missing="$_missing $_v"
 done
 [ -z "$_missing" ] || fail "read inside the container but never passed by docker run -e:$_missing"
+# GA-33: the same rule for CONTAINER-SIDE PYTHON (os.environ reads), which the shell grep above
+#        cannot see. check_env_passthrough.py existed and nothing ran it; now this does.
+python3 "$HERE/check_env_passthrough.py" "$HERE/.." >/dev/null \
+  || fail "check_env_passthrough.py: a container-side python os.environ read is not on the docker run -e list"
 
 # Stamped: a test result is true at a time, not simply true.
 # 8. The run's live output path. RESULTS/, never /tmp — owner ruling, relayed. The path needs

@@ -698,7 +698,7 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
              "min_support": $FOUND_MIN_SUPPORT, "rooms_enforced": $FOUND_ROOM_ENFORCE,
     "corpus_order_note": "empty FOUND_CORPUS_ORDER means the code default in found/dims.py, standard,hssd,metrictree,abo,procthor as of GA-266, and the field then says so rather than naming an order. GA-282: this note claimed the hardcoded abo,metrictree fallback was PAST while line 638 still carried it, so every bundle up to and including 20260903_110622 records corpus_order abo,metrictree for a run that used standard(125) hssd(63) metrictree(56) abo(56) by its own decision records. The note outlived the fix it described. Read the corpus cited in each decision's margins, never this field, for any bundle stamped before 2026-09-03.",
     "merge_min_consecutive": ${MERGE_MIN_CONSECUTIVE:-2},
-             "aligner": "$FOUND_ALIGNER", "ontology_ext": "${FOUND_ONTOLOGY_EXT:-default}",
+             "aligner": "$FOUND_ALIGNER", "ontology_ext": "$FOUND_ONTOLOGY_EXT",
              "corpus_order": "${FOUND_CORPUS_ORDER:-<code default: standard,hssd,metrictree,abo,procthor>}",
              "kg_aliases": ${FOUND_KG_ALIASES:-1},
              "policy_note": "corpus_order and kg_aliases were added 2026-09-01 (owner rulings 13, 15). ABSENT from every earlier bundle, so an older run's corpus order is metrictree,abo and its alias count is 0 -- read, never guessed from the date."},
@@ -853,6 +853,10 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e HABITAT_EXAMPLE_OBJECTS_DIR -e DISPLAY \
   -e PREFLIGHT_EXPECT_CFG_SHA -e PREFLIGHT_EXPECT_MERGED_SHA -e PREFLIGHT_EXPECT_SRC_SHA \
   -e PREFLIGHT_EXPECT_CYCLE_S \
+  -e ARCHIVE_DEPTH -e FEED_HFOV -e BRIDGE_OVERLAY -e BRIDGE_OVERLAY_CAM_FRAME -e BRIDGE_OVERLAY_MAP_FRAME \
+  -e BRIDGE_OVERLAY_FAR -e BRIDGE_OVERLAY_MAX -e FOUND_ADJUDICATE_API_KEY -e FOUND_ADJUDICATE_MIN_CONF \
+  -e FOUND_ADJUDICATE_TIMEOUT -e FOUND_FLATNESS_CACHE -e FOUND_FLATNESS_MIN_CONF -e FOUND_STORE_DB \
+  -e FOUND_STORE_DUMP_SEC -e FOUND_WORDNET_DIR -e OPENAI_BASE_URL \
   -v "$REPO":/graph_api:ro \
   -v graphapi_ws:/ws \
   -v $FOUND_ROOT:/found \

@@ -36,6 +36,18 @@ from lost3dsg.srv import (
 
 app = FastAPI(title="Graph API")
 
+
+class DispatchedTimeout(RuntimeError):
+    """GA-183: the ROS request was sent and our wait expired. The work may still land
+    (89 merges did, reported as 500, in run 20260901_055513), so it is not a failure."""
+
+
+@app.exception_handler(DispatchedTimeout)
+def _dispatched_timeout(request, exc):
+    # 202: accepted, outcome unknown. The client (object_manager_6) treats 2xx as a reply
+    # with no counts, logs the message, and re-reads the world model on the next cycle.
+    return JSONResponse(status_code=202, content={"success": False, "pending": True, "message": str(exc)})
+
 _MODULE_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = Path(
     _MODULE_DIR.parent.parent
@@ -130,9 +142,19 @@ def persistent_perception():
     if not path.exists():
         return []
     try:
-        return json.loads(path.read_text())
+        objects = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return []
+    # GA-102. Each object carries its admission grade (admit / hold / decline / no_grounds),
+    # so the feed host's grade toggles have something to count and filter. None when no
+    # admission row links to the object: absent, not a default.
+    if isinstance(objects, list):
+        by_oid = _admissions_by_oid()
+        for o in objects:
+            if isinstance(o, dict):
+                dec = by_oid.get(str(o.get("object_id")))
+                o["grade"] = (((dec or {}).get("annotation") or {}).get("verdict") or {}).get("grade")
+    return objects
 
 
 @app.get("/rooms")
@@ -260,7 +282,7 @@ class BridgeNode(Node):
             # The request WAS dispatched by call_async above; only our wait expired. Say so,
             # because the caller's next move differs: a retry here re-runs work that is still
             # in flight, and for `merge` that means merging an object twice (GA-183).
-            raise RuntimeError(
+            raise DispatchedTimeout(
                 f"Timeout dopo {SERVICE_CALL_TIMEOUT_SEC:.0f}s in attesa del servizio '{key}'; "
                 f"la richiesta E' STATA INVIATA e puo' ancora completarsi -- non ritentare "
                 f"senza verificare lo stato (BRIDGE_SERVICE_TIMEOUT per allungare l'attesa)")
@@ -557,6 +579,10 @@ def graph_data(request: Request = None):
         obj_name = rec.get("object")
         if obj_name:
             decisions[obj_name] = rec
+    # GA-40 (decision-keyed-by-label). The label key above is a per-frame ordinal
+    # ('picture frame#2'), so two objects with one label shared one record. The object-id
+    # key wins; the label stays as the fallback for logs written before `link` rows.
+    decisions.update(_admissions_by_oid())
 
     # room_manager seeds every new room with these until the VLM names it
     def _room_label(room, rid):
@@ -658,7 +684,7 @@ def graph_data(request: Request = None):
                 (bbox.get("y_min", 0.0) + bbox.get("y_max", 0.0)) / 2.0,
                 (bbox.get("z_min", 0.0) + bbox.get("z_max", 0.0)) / 2.0,
             ]
-        decision = decisions.get(label) or decisions.get(o.get("object_id"))
+        decision = decisions.get(o.get("object_id")) or decisions.get(label)
         # Key the crop on the object identity when there is one. The label joined
         # 9 of 11 objects on the 26 Aug run; /crop resolves an object_id back to
         # its label through the `link` records in hook_decisions.jsonl.
@@ -810,6 +836,8 @@ def graph_data(request: Request = None):
             # An error here is rendered by the viewer as an error, never as zero.
             "error": decisions_error,
             "unreadable_records": unreadable_records,
+            # GA-221: rows of other kinds (merge_refused, ...) the byte filter never parsed.
+            "skipped_records": _DECISIONS_CACHE["skipped"],
             "admitted_count": len([n for n in nodes if n.get("type") == "object"]),
             "on_hold_error": on_hold_error,
             "on_hold_count": len(on_hold),
@@ -940,7 +968,12 @@ def _pick_run_file(dirs, name, errors=None):
     return None
 
 
-_DECISIONS_CACHE = {"key": None, "records": [], "unreadable": 0, "error": None}
+_DECISIONS_CACHE = {"key": None, "records": [], "unreadable": 0, "error": None,
+                    "path": None, "offset": 0, "skipped": 0}
+
+# The record kinds anyone reads: `admission` (or a kind-less row from an old log) and `link`.
+# Same byte filter as replay_server._install_decision_reader.
+_DECISION_KEEP = (b'"kind": "admission"', b'"kind":"admission"', b'"kind": "link"', b'"kind":"link"')
 
 
 def _decision_log():
@@ -955,18 +988,22 @@ def _decision_log():
 
 
 def _decision_records():
-    """Every parsed record from hook_decisions.jsonl, cached on the file's identity.
+    """The admission and link records of hook_decisions.jsonl, cached and read incrementally.
 
     This file was being parsed THREE TIMES per /graph_data: once to build the decisions
-    map, once by _link_index for crop labels, and once for the admission summary. At
-    4080 records that was ~13,200 json.loads calls and about a second of the 1.5 s the
-    request took -- and the viewer polls it every 3 s, so the server never caught up and
-    every other endpoint queued behind it. /health looked like it was hanging when it
-    was simply waiting its turn.
+    map, once by _link_index for crop labels, and once for the admission summary. Cached
+    on (path, mtime, size), the same key _link_index already used.
 
-    Cached on (path, mtime, size), the same key _link_index already used, so a rewritten
-    file is still picked up immediately.
+    GA-221. The whole file was then re-read and re-parsed on every change -- 2.4 s for a
+    41 MB / 29,847-row live log, of which the three consumers read 548 rows; on an archived
+    1.8 GB log /graph_data never returned. Two changes: a line is filtered AS BYTES before
+    json.loads (only `admission`, kind-less and `link` rows are parsed; the rest are counted
+    in `skipped`), and the log is read from the offset the last call reached, so a live poll
+    costs the bytes appended since, not the file. A new path or a shrunken file starts over.
+    A trailing line with no newline is a write in progress and is left for the next call,
+    unless the file has been quiet for 5 s.
     """
+    c = _DECISIONS_CACHE
     for base in (_active_output_dir(), _active_output_dir().parent):
         path = base / "hook_decisions.jsonl"
         if not path.exists():
@@ -976,32 +1013,57 @@ def _decision_records():
         except OSError:
             continue
         key = (str(path), st.st_mtime, st.st_size)
-        if _DECISIONS_CACHE["key"] == key:
-            return _DECISIONS_CACHE["records"]
-        records, unreadable, error = [], 0, None
+        if c["key"] == key:
+            return c["records"]
+        if c["path"] != str(path) or st.st_size < c["offset"]:
+            c.update(records=[], unreadable=0, skipped=0, offset=0, path=str(path))
+        records, unreadable, skipped, offset = c["records"], c["unreadable"], c["skipped"], c["offset"]
+        quiet = (time.time() - st.st_mtime) > 5.0
         try:
-            raw = path.read_text()
+            with path.open("rb") as f:
+                f.seek(offset)
+                for line in f:
+                    if not line.endswith(b"\n") and not quiet:
+                        break
+                    offset += len(line)
+                    if b'"kind"' in line and not any(k in line for k in _DECISION_KEEP):
+                        skipped += 1
+                        continue
+                    if not line.strip():
+                        continue
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        # Counted and surfaced, never swallowed: a truncated log must not read
+                        # as a complete one.
+                        unreadable += 1
         except OSError as exc:
             # The panel must not render zero counts from a log we could not open: an
             # empty admission panel is indistinguishable from a clean run.
-            _DECISIONS_CACHE.update(
-                key=key, records=[], unreadable=0,
-                error=f"could not read the decision log: {exc}")
+            c.update(key=key, records=[], unreadable=0, skipped=0, offset=0, path=None,
+                     error=f"could not read the decision log: {exc}")
             return []
-        for line in raw.splitlines():
-            if not line.strip():
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                # Counted and surfaced, never swallowed: a truncated log must not read
-                # as a complete one.
-                unreadable += 1
-        _DECISIONS_CACHE.update(key=key, records=records, unreadable=unreadable,
-                                error=error)
+        c.update(key=key, records=records, unreadable=unreadable, skipped=skipped,
+                 offset=offset, error=None)
         return records
-    _DECISIONS_CACHE.update(key=None, records=[], unreadable=0, error=None)
+    c.update(key=None, records=[], unreadable=0, error=None, path=None, offset=0, skipped=0)
     return []
+
+
+def _admissions_by_oid():
+    """Admission records keyed by OBJECT ID, joined through the `link` rows
+    (object_id -> decision_id -> annotation.decision_id). GA-40 / GA-102: the admission
+    row's own `object` field is the per-frame label, which is not an identity."""
+    records = _decision_records()
+    by_decision = {}
+    for rec in records:
+        if rec.get("kind") in (None, "admission"):
+            did = (rec.get("annotation") or {}).get("decision_id")
+            if did:
+                by_decision[did] = rec
+    return {str(rec["object"]): by_decision[rec["decision_id"]] for rec in records
+            if rec.get("kind") == "link" and rec.get("object")
+            and rec.get("decision_id") in by_decision}
 
 
 def _crop_dirs():
@@ -2009,7 +2071,11 @@ def get_pipeline_health():
         "details": "Active & Streaming" if feed_active else "Offline"
     }
 
-    components["bridge"] = {"name": "ROS2 Bridge", "active": True, "details": "Bridge Active"}
+    # GA-40. Served any way other than __main__ there is no node and every ROS endpoint
+    # 503s; the panel used to show green regardless.
+    bridge_up = get_node() is not None
+    components["bridge"] = {"name": "ROS2 Bridge", "active": bridge_up,
+                            "details": "Bridge Active" if bridge_up else "no ROS node"}
 
     try:
         p_file = Path("/tmp/perception.log")

@@ -47,6 +47,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "perception_module"))
 from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  (ROS-free)
 from config import CFG, CFG_PATH  # noqa: E402
+import gt_codec as _gt_codec  # noqa: E402
 
 _print = functools.partial(print, flush=True)  # nohup/file logs must not buffer
 _log_ring = collections.deque(maxlen=400)      # served by the control server's /logs
@@ -364,7 +365,38 @@ def draw_walls(bgr, walls, cam_pos, cam_quat):
         cv2.polylines(bgr, [poly], True, (200, 160, 90), 1, cv2.LINE_AA)
 
 
-def draw_belief(bgr, belief, cam_pos, cam_quat, depth=None):
+# GA-102. The bridge's /persistent_perception stamps each object with its admission grade;
+# this maps the four-valued grade onto the LAYERS keys the window and the dashboard toggle.
+GRADE_LAYER = {"admit": "admitted", "hold": "held", "decline": "declined", "reject": "declined",
+               "no_grounds": "nogrounds", "abstain": "nogrounds"}
+
+
+def grade_layer(obj):
+    """The LAYERS key an object's grade falls under, or None when it carries no grade (an
+    older bridge, or an object no admission row links to)."""
+    return GRADE_LAYER.get(str(obj.get("grade") or "").lower())
+
+
+def visible_belief(belief, layers=None):
+    """The objects the grade toggles leave on. An ungraded object is never filtered: hiding
+    it would claim a grade nobody recorded."""
+    layers = LAYERS if layers is None else layers
+    return [o for o in belief if not (grade_layer(o) and not layers[grade_layer(o)])]
+
+
+def grade_counts(belief):
+    """Objects per grade layer for the HUD, or None when no object carries a grade at all --
+    "n/a" on the HUD rather than 0, which would claim there are none of that grade."""
+    if not any("grade" in o for o in belief):
+        return None
+    counts = {k: 0 for k in ("admitted", "held", "declined", "nogrounds")}
+    for o in belief:
+        if grade_layer(o):
+            counts[grade_layer(o)] += 1
+    return counts
+
+
+def draw_belief(bgr, belief, cam_pos, cam_quat, depth=None, labels=True):
     """Draw the belief boxes that are in view: skipped when no test point is visible
     (occluded or outside the frame), thin when fewer than 5 of 9 are, full otherwise."""
     import cv2
@@ -383,6 +415,8 @@ def draw_belief(bgr, belief, cam_pos, cam_quat, depth=None):
         thick = 2 if n_vis >= 5 else 1
         for i, j in BOX_EDGES:
             cv2.line(bgr, pts[i], pts[j], color, thick, cv2.LINE_AA)
+        if not labels:
+            continue
         top = min(pts, key=lambda p: p[1])
         cv2.putText(bgr, str(obj.get("label", "?")), (top[0], max(12, top[1] - 4)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, thick, cv2.LINE_AA)
@@ -1392,6 +1426,10 @@ def main():
                 "phase_dwell_frames": dwell_frames,
                 "phase_remaining_frames": max(0, phase_rem),
                 "mapping_seconds": MAPPING_SECONDS,
+                # GA-219: the walk radius was a measurement nobody could reproduce because no
+                # artefact recorded it. 0 in test mode means turn-in-place.
+                "test_mode": TEST_MODE,
+                "test_walk_radius_m": TEST_WALK_RADIUS,
                 # What the guard did. A run whose map is one storey because nothing drifted and
                 # a run whose map is one storey because it was teleported back forty times are
                 # different runs, and the map alone cannot tell them apart.
@@ -1509,7 +1547,9 @@ def main():
             # path may read it: a detector that can see the ground truth is not being measured,
             # it is being told. The key is absent entirely when the sensor is off, so a consumer
             # cannot read a zeros array as "no objects present".
-            **({"gt_semantic_instance": np.ascontiguousarray(obs["semantic_sensor"], dtype=np.uint32)}
+            # Sent PNG-encoded (gt_codec, lossless, ~1% of the raw 4.9 MB): the raw uint32 array
+            # cut the feed to 0.10 frames/s and dropped the socket twice in run 20260906_234050.
+            **({"gt_semantic_png": _gt_codec.encode(obs["semantic_sensor"])}
                if GT_SEMANTIC and "semantic_sensor" in obs else {}),
             "w": W, "h": H, "hfov": HFOV,
         }
@@ -1533,7 +1573,8 @@ def main():
                     # Under the boxes: a wall is context for the objects, not a peer of them.
                     draw_walls(bgr, poller.walls, frame["cam_pos"], cam_quat)
                 if LAYERS["boxes"] and poller is not None and poller.objects:
-                    draw_belief(bgr, poller.objects, frame["cam_pos"], cam_quat, frame["depth"])
+                    draw_belief(bgr, visible_belief(poller.objects), frame["cam_pos"], cam_quat,
+                                frame["depth"], labels=LAYERS["labels"])
                 if LAYERS["hud"]:
                     cv2.putText(bgr, label, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                                 (0, 255, 0), 2)
@@ -1550,6 +1591,7 @@ def main():
                     # state this run was in for an hour, and the HUD looked healthy.
                     _objs = (poller.objects if poller is not None else []) or []
                     _n_total = len(_objs)
+                    _counts = grade_counts(_objs)
                     for key, name in sorted(LAYER_KEYS.items(), key=lambda kv: kv[1]):
                         on = LAYERS[name]
                         col = (120, 255, 140) if on else (110, 110, 130)
@@ -1561,11 +1603,9 @@ def main():
                         elif name == "hud":
                             cnt = ""
                         else:
-                            # The belief the bridge serves carries no per-object verdict, so
-                            # the grade filters have nothing to count. "n/a" rather than 0:
-                            # zero would claim there are none of that grade, which is a
-                            # different statement from having no data.
-                            cnt = "n/a"
+                            # None when the bridge sent no grade at all (GA-102): "n/a"
+                            # rather than 0, which is a different statement from no data.
+                            cnt = "n/a" if _counts is None else str(_counts[name])
                         cv2.putText(bgr,
                                     f"{chr(key)}  {name:<10s} {'ON' if on else 'off':<3s} {cnt}",
                                     (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.44, col, 1,
