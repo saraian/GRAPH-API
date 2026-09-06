@@ -270,7 +270,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # acquire a ground-truth channel as a side effect of anything else. Keyed by
             # exact stamp: a GT label from a neighbouring frame would be worse than none.
             self._gt_semantic = {}
-            self.create_subscription(Image, "/gt/semantic_instance",
+            from sensor_msgs.msg import CompressedImage as _CompressedImage
+            self.create_subscription(_CompressedImage, "/gt/semantic_instance",
                                      self._gt_semantic_callback, 10)
 
     def _on_cloud_map(self, msg):
@@ -681,6 +682,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         _mark("describer_queue")
         self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp)
         self._publish_description_array(detections, descriptions, cycle_stamp)
+        self._publish_late_descriptions(cycle_stamp)
         self._update_world_model(detections, centroids_3d, bboxes_3d, descriptions)
         self._queue_perceptions_json()
         self._publish_agent_pose(cycle_stamp)
@@ -1032,15 +1034,24 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 by_label[c["label"]] = c["path"]
         min_iou = float(CFG.get("vlm", {}).get("stale_result_min_iou", 0.1))
         descriptions = []
+        # GA-108. A deferred answer that does not belong to this cycle's namesake is not
+        # dropped any more: it is delivered to the object it was taken FROM, by origin frame
+        # and box, on /object_descriptions_late (see _publish_late_descriptions). Measured on
+        # run 20260906_223701: 496 answers landed, 163 were refused here, and 204 of 212
+        # objects ended "unknown" -- the answer for an object never reached that object.
+        self._late_descriptions = []
+        seen = set()
         for det in detections:
+            seen.add(det.instance_label)
             res = (vlm_results.get(det.instance_label, {}) or {})
             origin = res.get("origin")
             if origin is not None and _bbox_iou(det.bbox, origin["bbox"]) < min_iou:
                 self.log_both(
-                    "warn",
-                    f"[VLM] refusing deferred description for {det.instance_label}: taken in "
-                    f"frame {origin['frame']} for a box that does not overlap this detection "
-                    f"(< {min_iou} IoU) -- the label string names a different object now (W2)")
+                    "info",
+                    f"[VLM] deferred description for {det.instance_label} was taken in frame "
+                    f"{origin['frame']} for a box that does not overlap this detection "
+                    f"(< {min_iou} IoU); delivered to its origin object instead (GA-108)")
+                self._late_descriptions.append((det.instance_label, origin, res))
                 res = {}
             d = {field: res.get(field, "unknown") for field in DESCRIPTION_FIELDS}
             # W6. The route this description took, so a run can split the "unknown"
@@ -1054,7 +1065,36 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             if "provenance" in res:
                 d["provenance"] = res["provenance"]
             descriptions.append(d)
+        # Answers whose label is not in this cycle at all (the object left the view): the
+        # old code never looked at them. Same delivery.
+        for label, res in vlm_results.items():
+            if label in seen or not isinstance(res, dict) or res.get("origin") is None:
+                continue
+            self._late_descriptions.append((label, res["origin"], res))
         return descriptions
+
+    def _publish_late_descriptions(self, cycle_stamp):
+        """GA-108. Deferred describer answers, addressed by the crop's origin frame and box."""
+        late = getattr(self, "_late_descriptions", None) or []
+        if not late:
+            return
+        pub = getattr(self, "pub_object_descriptions_late", None)
+        if pub is None:
+            self.pub_object_descriptions_late = pub = self.create_publisher(
+                ObjectDescriptionArray, "/object_descriptions_late", 10)
+        arr = self.make_header_msg(ObjectDescriptionArray, stamp=cycle_stamp, frame_id="map")
+        for label, origin, res in late:
+            m = ObjectDescription()
+            m.label = label
+            for field in DESCRIPTION_FIELDS:
+                setattr(m, field, str(res.get(field, "unknown")))
+            m.status = _description_status(res)
+            m.origin_frame = str(origin.get("frame") or "")
+            m.origin_bbox_2d = [float(v) for v in origin.get("bbox") or (0.0, 0.0, 0.0, 0.0)]
+            arr.descriptions.append(m)
+        pub.publish(arr)
+        self.log_both("info", f"[VLM] {len(late)} late description(s) delivered by origin (GA-108)")
+        self._late_descriptions = []
 
     def _gt_semantic_callback(self, msg):
         """Cache habitat's per-pixel instance frame, keyed by its EXACT stamp.
@@ -1068,12 +1108,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         key = frame_id_from_stamp(msg.header.stamp)
         if key is None:
             return
-        arr = np.frombuffer(msg.data, dtype="<i4")
-        if arr.size != msg.height * msg.width:
-            self.log_both("warn", f"[GT] semantic frame {key} has {arr.size} values for "
-                                  f"{msg.height}x{msg.width}; ignored")
+        # GA-330 follow-up: the frame arrives as gt_codec's lossless PNG (CompressedImage),
+        # not a raw 32SC1 Image; see habitat_feed_node.py for why.
+        import gt_codec
+        arr = gt_codec.decode(bytes(msg.data))
+        if arr is None:
+            self.log_both("warn", f"[GT] semantic frame {key} could not be decoded; ignored")
             return
-        self._gt_semantic[key] = arr.reshape(msg.height, msg.width)
+        self._gt_semantic[key] = arr
         while len(self._gt_semantic) > 8:
             self._gt_semantic.pop(next(iter(self._gt_semantic)))
 

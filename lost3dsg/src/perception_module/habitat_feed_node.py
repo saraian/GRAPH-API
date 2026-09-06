@@ -21,7 +21,7 @@ from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 FRAME_MAP = "map"
@@ -136,7 +136,11 @@ class HabitatFeedNode(Node):
         # The topic name says what it is so no runtime consumer can pick it up by accident:
         # nothing in the perception or association path subscribes to it, and the only
         # consumer is the per-detection archive, which is validation output.
-        self.pub_gt_semantic = self.create_publisher(Image, "/gt/semantic_instance", qos)
+        # GA-330 follow-up: a COMPRESSED message. The raw 32SC1 Image (4.9 MB at 1280x960)
+        # over reliable DDS stalled this node's receive loop and cut the feed to 0.10 frames/s
+        # in run 20260906_234050. The payload is gt_codec's lossless PNG (~1% of raw); the
+        # perception node decodes it with the same module.
+        self.pub_gt_semantic = self.create_publisher(CompressedImage, "/gt/semantic_instance", qos)
         self.tf = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
 
@@ -273,17 +277,21 @@ class HabitatFeedNode(Node):
         depth.data = frame["depth"].tobytes()
         self.pub_depth.publish(depth)
 
-        sem = frame.get("gt_semantic_instance")
-        if sem is not None:
-            # int32, not uint32: uint32 has no ROS image encoding, and habitat's instance
-            # ids are small positives so the reinterpretation is lossless. Published with
-            # THE SAME STAMP as rgb and depth -- the join is by stamp and must be exact,
-            # because a GT label taken from a neighbouring frame is worse than no label.
-            sem_msg = Image(height=h, width=w, encoding="32SC1", is_bigendian=False,
-                            step=w * 4)
+        # Published with THE SAME STAMP as rgb and depth -- the join is by stamp and must be
+        # exact, because a GT label taken from a neighbouring frame is worse than no label.
+        # The host sends the frame already PNG-encoded (`gt_semantic_png`); a host still
+        # sending the raw array (`gt_semantic_instance`) is encoded here, so either side can
+        # be updated first.
+        png = frame.get("gt_semantic_png")
+        if png is None and frame.get("gt_semantic_instance") is not None:
+            import gt_codec
+            png = gt_codec.encode(frame["gt_semantic_instance"])
+        if png is not None:
+            sem_msg = CompressedImage()
             sem_msg.header.stamp = stamp
             sem_msg.header.frame_id = FRAME_OPTICAL
-            sem_msg.data = sem.astype("<i4").tobytes()
+            sem_msg.format = "png; uint32 instance id as 16-bit lo/hi/0 planes (gt_codec)"
+            sem_msg.data = bytes(png)
             self.pub_gt_semantic.publish(sem_msg)
 
         fx = (w / 2.0) / math.tan(math.radians(frame["hfov"]) / 2.0)
