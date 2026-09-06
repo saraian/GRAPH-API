@@ -812,6 +812,10 @@ class ObjectServices(Node):
             blob = {
                 "t": time.time(),
                 "sweep": self._merge_sweep,
+                # Additive, NOT a rename: found/dashboard/replay_server.py:1297 renders
+                # `d.threshold` from this blob, and a renamed key reads as undefined there
+                # with no error. Same log-odds unit as the evidence engine's row.
+                "threshold_log_odds": round(float(thr), 3),
                 "threshold": round(float(thr), 3),
                 "min_consecutive": MERGE_MIN_CONSECUTIVE,
                 "live_hypotheses": len(self._hypotheses),
@@ -1180,6 +1184,13 @@ class ObjectServices(Node):
                         rec.update(distance=pair_meta.get("distance_m"),
                                    reach_m=pair_meta.get("reach_m"),
                                    room_a=room_a, room_b=room_b, engine="evidence",
+                                   # The THIRD unit of a key called `threshold`: log-odds,
+                                   # not the similarity or the metres the 2026-09-06 rename
+                                   # split apart. Named rather than retired -- this is the
+                                   # arm that actually runs, so every existing reader of
+                                   # `threshold` on a merge_refused row is reading THIS,
+                                   # and the legacy key stays until those readers move.
+                                   threshold_log_odds=round(threshold, 4),
                                    threshold=round(threshold, 4),
                                    hypothesis_total=(None if h.vetoed_by else round(h.total, 4)),
                                    updates=len(h.history), decision_reason=why)
@@ -1258,16 +1269,19 @@ class ObjectServices(Node):
                     # destroys an identity.
                     if MERGE_ENGINE == "legacy" and sim < MIN_SIMILARITY:
                         print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {MIN_SIMILARITY})")
-                        # Unit-typed keys (joint rename with the ontology lane, their
-                        # inbox 00002/00004): `threshold` was unit-polymorphic -- 0.925
+                        # Unit-typed key (joint rename with the ontology lane, their
+                        # inbox 00002/00004/00005): `threshold` was unit-polymorphic -- 0.925
                         # cosine here, 0.8 METRES on the distance path below -- and was
-                        # misread once by a reader and once by a test. The legacy key
-                        # stays through one transition so old rows stay readable; the
-                        # readers prefer the typed keys.
+                        # misread once by a reader and once by a test. TRANSITION CLOSED
+                        # 2026-09-06 on the owner's authorisation: the legacy key is retired
+                        # here, ontology's reader prefers the typed key and keeps a fallback
+                        # for rows written before d76f997. Rows from the EVIDENCE engine still
+                        # carry `threshold` -- a third unit, log-odds -- and are named by
+                        # `threshold_log_odds` beside it rather than swept into this rename.
                         _refused(a, b, "similarity", sim,
                                  evidence_count=ev["optional_count"],
                                  threshold_similarity=MIN_SIMILARITY,
-                                 threshold=MIN_SIMILARITY, room_a=room_a, room_b=room_b)
+                                 room_a=room_a, room_b=room_b)
                         continue
 
                     # GA-101: a score that passed the gate on NOTHING must not merge.
@@ -1297,12 +1311,11 @@ class ObjectServices(Node):
                     if MERGE_ENGINE == "legacy" and dist > MAX_DISTANCE:
                         print(f"   ❌ TOO FAR APART ({dist:.2f}m > {MAX_DISTANCE}m)")
                         # Same joint rename: this path's threshold is METRES, the
-                        # similarity path's is unitless -- the typed key says which, the
-                        # legacy `threshold` stays for one transition.
+                        # similarity path's is unitless -- the typed key says which.
+                        # Legacy key retired 2026-09-06 with the similarity arm above.
                         _refused(a, b, "distance", sim,
                                  evidence_count=ev["optional_count"],
                                  distance=dist, threshold_distance_m=MAX_DISTANCE,
-                                 threshold=MAX_DISTANCE,
                                  room_a=room_a, room_b=room_b)
                         continue
 

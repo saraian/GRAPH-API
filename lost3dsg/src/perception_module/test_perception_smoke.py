@@ -142,14 +142,17 @@ def merge_path():
     resp = rosstub.Any()
     object_services.ObjectServices._cb_merge_objects(svc, req, resp)
 
-    # Joint rename with the ontology lane (their inbox 00004): the typed key says the
-    # UNIT -- metres here, unitless on the similarity arm -- and the legacy `threshold`
-    # stays through one transition. Both must be present and equal on their arm.
+    # Joint rename with the ontology lane (their inbox 00004/00005). The typed key says the
+    # UNIT -- metres here, unitless on the similarity arm. TRANSITION CLOSED 2026-09-06 on the
+    # owner's authorisation: the legacy `threshold` is RETIRED on both arms, so its ABSENCE is
+    # now the assertion. Retired only here: the evidence engine's rows keep `threshold` (a
+    # third unit, log-odds) beside the new `threshold_log_odds`, because that is the arm that
+    # actually runs and every existing reader of the word is reading it.
     dist_rows = [r for r in refused_rows if r.get("reason") == "distance"]
     assert dist_rows, f"the far pair must be refused on distance: {[r.get('reason') for r in refused_rows]}"
     dr = dist_rows[0]
     assert dr.get("threshold_distance_m") == 0.8, dr          # from request.max_distance
-    assert dr.get("threshold") == 0.8, "legacy key stays one transition"
+    assert "threshold" not in dr, "the legacy key is retired on the distance arm"
     assert "threshold_similarity" not in dr, "the distance arm must not carry the similarity key"
 
     # The similarity arm: same position, disagreeing attributes -> refused on similarity,
@@ -165,7 +168,7 @@ def merge_path():
     assert sim_rows, f"the disagreeing pair must be refused on similarity: {[r.get('reason') for r in refused_rows]}"
     sr = sim_rows[0]
     assert sr.get("threshold_similarity") == 0.75, sr         # from request.min_similarity
-    assert sr.get("threshold") == 0.75, "legacy key stays one transition"
+    assert "threshold" not in sr, "the legacy key is retired on the similarity arm"
     assert "threshold_distance_m" not in sr, "the similarity arm must not carry the distance key"
 
 
