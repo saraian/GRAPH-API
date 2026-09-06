@@ -1,34 +1,43 @@
 #!/usr/bin/env python3
 
-import rclpy, json, os, time
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, DurabilityPolicy
-import numpy as np
-from lost3dsg.srv import (
-    AddObject, RemoveObject, UpdateObject, MergeObjects, DeleteObjects, QueryObjects,
-)
+import hashlib
+import json
+import os
+import time
 import uuid
+from datetime import datetime, timezone
 from functools import wraps
-from visualization_msgs.msg import Marker, MarkerArray
-from room_manager import RoomManager
+
+import association as assoc
+import numpy as np
+import rclpy
+from builtin_interfaces.msg import Time as TimeMsg
+from config import CFG
+from cv_utils import publish_persistent_centroids, publish_pov_volume
+from hooks import DecisionLog, load_store
+from map_database import MapDatabase
+from nlp_utils import _known, get_embedding, lost_similarity_detailed, world2vec
 from object_info import Object
-from world_model import wm
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
+from room_manager import RoomManager
+from tf2_ros import Buffer, TransformListener
+
 # Explicit, not `import *`. Only the names this file does NOT define itself:
 # publish_persistent_bboxes is defined BELOW and also in cv_utils with a different body,
 # so importing it here would swap a 34-line implementation for a 5-line wrapper (GA-77).
 from utils import compute_iou_3d
-import association as assoc
-from nlp_utils import _known, get_embedding, lost_similarity_detailed, world2vec
-from datetime import datetime
-from cv_utils import publish_persistent_centroids, publish_pov_volume
-from map_database import MapDatabase
-from hooks import DecisionLog, load_store
-from config import CFG
-from tf2_ros import Buffer, TransformListener
-import hashlib
-from datetime import timezone
-from builtin_interfaces.msg import Time as TimeMsg
+from visualization_msgs.msg import Marker, MarkerArray
+from world_model import wm
 
+from lost3dsg.srv import (
+    AddObject,
+    DeleteObjects,
+    MergeObjects,
+    QueryObjects,
+    RemoveObject,
+    UpdateObject,
+)
 
 # =============  EXPLORATION PARAMETERS (config.yaml: association) =============
 EXPLORATION_IOU_THRESHOLD = CFG["association"]["exploration_iou_threshold"]
@@ -998,13 +1007,25 @@ class ObjectServices(Node):
         try:
             import json
 
-            # `<= 0` means "unset by the caller, use the configured value". Note this is
-            # the OPPOSITE of config.py's `0 = off` convention, which is load-bearing there
-            # (max_match_distance_m). Two conventions inside one config block; the reading
-            # is spelled out here because a caller sending 0 to disable the similarity
-            # requirement would otherwise get the loosest live gate in the system.
-            MAX_DISTANCE   = request.max_distance   if request.max_distance   > 0.0 else MERGE_MAX_DISTANCE
-            MIN_SIMILARITY = request.min_similarity if request.min_similarity > 0.0 else MERGE_MIN_SIMILARITY
+            # GA-25, first residual. This used to read `<= 0` as "use the configured value",
+            # the OPPOSITE of config.py's `0 = off`, so a caller sending 0 to DISABLE the
+            # similarity requirement silently got the loosest live gate in the system. A
+            # request can no longer configure zero at all: both gates must be positive, and
+            # a zero or negative value is refused with the value the caller must send. Every
+            # in-tree caller (the bridge, merge_duplicate_objects) already sends explicit
+            # positive values, so nothing relies on the old default-by-zero.
+            if request.max_distance <= 0.0 or request.min_similarity <= 0.0:
+                response.success = False
+                response.merged_count = 0
+                response.merge_log_json = "[]"
+                response.message = (
+                    f"refused: max_distance={request.max_distance} min_similarity="
+                    f"{request.min_similarity}; both must be > 0. A merge request cannot "
+                    f"disable a gate -- send the values you mean (config defaults are "
+                    f"{MERGE_MAX_DISTANCE} m and {MERGE_MIN_SIMILARITY}).")
+                return response
+            MAX_DISTANCE   = request.max_distance
+            MIN_SIMILARITY = request.min_similarity
             dry_run        = getattr(request, 'dry_run', False)
 
             objects = list(wm.persistent_perceptions)
@@ -1247,6 +1268,26 @@ class ObjectServices(Node):
                     print(f"   Pos B: ({bx:.2f}, {by:.2f}, {bz:.2f})")
 
                     if MERGE_ENGINE == "legacy":
+                        dist = np.sqrt((ax - bx)**2 + (ay - by)**2 + (az - bz)**2)
+                    print(f"   Distance: {dist:.3f}m (threshold: {MAX_DISTANCE}m)")
+
+                    if MERGE_ENGINE == "legacy" and dist > MAX_DISTANCE:
+                        # GA-25, second residual. This gate used to run LAST, after
+                        # `_pair_similarity` had already embedded both descriptions -- the
+                        # expensive comparison on every pair the cheap one was about to
+                        # reject. On the legacy engine every pair is offered, so that was
+                        # every pair in the map. It now runs first, and the refusal record
+                        # carries no similarity because none was measured.
+                        print(f"   ❌ TOO FAR APART ({dist:.2f}m > {MAX_DISTANCE}m)")
+                        # Same joint rename: this path's threshold is METRES, the
+                        # similarity path's is unitless -- the typed key says which.
+                        _refused(a, b, "distance", None,
+                                 evidence_count=None,
+                                 distance=dist, threshold_distance_m=MAX_DISTANCE,
+                                 room_a=room_a, room_b=room_b)
+                        continue
+
+                    if MERGE_ENGINE == "legacy":
                         # Embedding lazy; missing description embeddings are absent evidence,
                         # not a reason to skip the pair (lost_similarity renormalises).
                         # GUARDED: in evidence mode `sim` and `ev` are already the fused
@@ -1302,21 +1343,6 @@ class ObjectServices(Node):
                         _refused(a, b, "evidence_absent", sim,
                                  evidence_count=ev["optional_count"],
                                  required=MERGE_MIN_EVIDENCE, room_a=room_a, room_b=room_b)
-                        continue
-
-                    if MERGE_ENGINE == "legacy":
-                        dist = np.sqrt((ax - bx)**2 + (ay - by)**2 + (az - bz)**2)
-                    print(f"   Distance: {dist:.3f}m (threshold: {MAX_DISTANCE}m)")
-
-                    if MERGE_ENGINE == "legacy" and dist > MAX_DISTANCE:
-                        print(f"   ❌ TOO FAR APART ({dist:.2f}m > {MAX_DISTANCE}m)")
-                        # Same joint rename: this path's threshold is METRES, the
-                        # similarity path's is unitless -- the typed key says which.
-                        # Legacy key retired 2026-09-06 with the similarity arm above.
-                        _refused(a, b, "distance", sim,
-                                 evidence_count=ev["optional_count"],
-                                 distance=dist, threshold_distance_m=MAX_DISTANCE,
-                                 room_a=room_a, room_b=room_b)
                         continue
 
                     # GA-25: which identity survives must follow the evidence, not list
