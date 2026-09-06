@@ -48,6 +48,10 @@ VLM                    regolo    any OpenAI-compatible endpoint; vlm.base_url / 
    renamed between versions, so a mismatched tree fails at import. Read the pair with
    `python -c "import habitat_sim; print(habitat_sim.__version__)"`,
    `conda list -n habitat_env habitat-sim` and `git -C <checkout> log -1 --format=%H`.
+   The pair our runs use (read on the runner host 2026-09-06): `habitat_sim` **0.3.2**, PyPI wheel,
+   conda env `habitat_env` (py3.9, `habitat-sim-mutex 1.0 headless_bullet`, channel `aihabitat`).
+   No source checkout exists on the runner and the live path never needs one; for the two older
+   host nodes, check out tag **`v0.3.2`**, not a nightly.
 
 3. **Scene data.** Public example scenes, no token:
 
