@@ -77,7 +77,12 @@ def rle_encode(mask_binary: np.ndarray) -> Dict[str, Any]:
 
 @app.cls(
     gpu="T4",               # T4 GPU tier ($0.000164/sec)
-    scaledown_window=20,    # Scale-to-zero after 20s idle
+    # 600 s, not 20. GA-207 measured what a short window does: one cycle that idles past
+    # it pays a ~40 s cold start, which makes the next cycle idle past it too, and the run
+    # settles at 54 s/cycle (20260901_151714: wire_ms 38,695 of 54,404). A warm cycle is
+    # 3-5 s, so 20 s held only while nothing hiccupped. 600 s costs nothing while the
+    # robot is not running and closes the trap.
+    scaledown_window=600,
     max_containers=1,       # Guardrail: strictly 1 GPU instance
     timeout=45,             # Timeout after 45s
 )
@@ -117,6 +122,23 @@ class PerceptionService:
             round(torch.cuda.memory_allocated() / 1048576, 1) if torch.cuda.is_available() else 0.0
         )
         print(f"[Modal Perception] VRAM after load: {self.vram_weights_mb} MB")
+
+        # First-inference warmup. MEASURED 2026-09-06 on a fresh container: the first
+        # predict reported server total 2,766 ms against 285 ms warm -- CUDA kernel
+        # selection and the first SAM 2.1 image encode, paid by the run's first cycle.
+        # Paying it here moves it into the cold start, where the launcher's health probe
+        # already waits. A blank image with one box exercises both models end to end.
+        try:
+            blank = np.zeros((256, 256, 3), dtype=np.uint8)
+            self.detector.predict(Image.fromarray(blank), conf=0.15, iou=0.5, verbose=False,
+                                  device=self.device)
+            with torch.inference_mode():
+                self.sam2.set_image(blank)
+                self.sam2.predict(box=np.array([[64.0, 64.0, 192.0, 192.0]]), multimask_output=False)
+            print("[Modal Perception] warmup inference done ✅")
+        except Exception as exc:   # warmup is an optimisation; a failure must not stop the service
+            print(f"[Modal Perception] warmup skipped: {type(exc).__name__}: {exc}")
+        self._classes_set = ["chair"]   # matches the set_classes() above; predict() compares against it
 
     # GA-319 follow-up (2026-09-06). Explicit labels: Modal derives the subdomain from
     # "<workspace>--<app>-<class>-<method>" and truncates it past 63 characters with a hash. The
@@ -171,7 +193,12 @@ class PerceptionService:
         # 1. YOLO-World-L Detection
         t0 = time.time()
         clean_labels = [lbl.strip().lower() for lbl in req.labels if lbl.strip()]
-        self.detector.set_classes(clean_labels)
+        # set_classes re-encodes the label list with the CLIP text tower on every call.
+        # The same list yields the same class embeddings, so it is skipped when the
+        # request repeats the previous list (consecutive cycles at one waypoint often do).
+        if clean_labels != getattr(self, "_classes_set", None):
+            self.detector.set_classes(clean_labels)
+            self._classes_set = list(clean_labels)
         
         results = self.detector.predict(
             pil_image,

@@ -402,11 +402,8 @@ class DetectionPipelineMixin:
 
     def _add_pca_orientation(self, detections, bboxes_3d, depth, camera_info, transform):
         """Add the optional PCA keys to each valid bbox dict, in place.
-        # ponytail: re-lifts the object's points per mask instead of editing
-        # cv_utils (outside the Agent-1 boundary); fold into
-        # mask_list_to_centroid_and_bbox if projection_ms ever hurts -- the points
-        # computed here are IDENTICAL to the AABB pass's (W8), so the lift is pure
-        # duplication."""
+        Reads the points the geometry stage kept on each detection (2026-09-06); the
+        re-lift it used to do per mask was pure duplication of the AABB pass (W8)."""
         if transform is None:
             return
         fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
@@ -414,23 +411,30 @@ class DetectionPipelineMixin:
             if not bbox:
                 continue
             try:
-                pts = _filter_object_points(
-                    det.mask[:, :, 0], depth, fx, fy, cx, cy,
-                    # W8. The SAME parameters `mask_list_to_centroid_and_bbox` (the AABB
-                    # pass) uses. The previous 2k-point remove_outliers=False subsample
-                    # did NOT "already have validated points" -- it re-lifted a FRESH
-                    # subsample with no SOR, so a mask bleeding onto the wall/floor kept
-                    # its far points in `oriented_extents` while the AABB dropped them:
-                    # two extents for one object, and the size gate PREFERS the oriented
-                    # one, so the bleed could flip admit/hold/decline. With the same
-                    # arguments the subsample is deterministic, so this is literally the
-                    # same kept point set the AABB was built from.
-                    max_points_per_obj=20000, remove_outliers=True,
-                    sor_k=30, sor_std=1.5,
-                )
-                if pts is None:
-                    continue
-                obb = pca_oriented_box(_apply_transform(pts, transform))
+                # The geometry stage now keeps the map-frame points it measured the box
+                # from on the detection (cv_utils points_out), and this reads them. The
+                # re-lift below is IDENTICAL work (W8, same mask, same parameters, same
+                # transform) and runs only for a caller that skipped _compute_3d_geometry.
+                pts_map = getattr(det, "points_map", None)
+                if pts_map is None:
+                    pts = _filter_object_points(
+                        det.mask[:, :, 0], depth, fx, fy, cx, cy,
+                        # W8. The SAME parameters `mask_list_to_centroid_and_bbox` (the AABB
+                        # pass) uses. The previous 2k-point remove_outliers=False subsample
+                        # did NOT "already have validated points" -- it re-lifted a FRESH
+                        # subsample with no SOR, so a mask bleeding onto the wall/floor kept
+                        # its far points in `oriented_extents` while the AABB dropped them:
+                        # two extents for one object, and the size gate PREFERS the oriented
+                        # one, so the bleed could flip admit/hold/decline. With the same
+                        # arguments the subsample is deterministic, so this is literally the
+                        # same kept point set the AABB was built from.
+                        max_points_per_obj=20000, remove_outliers=True,
+                        sor_k=30, sor_std=1.5,
+                    )
+                    if pts is None:
+                        continue
+                    pts_map = _apply_transform(pts, transform)
+                obb = pca_oriented_box(pts_map)
                 if obb:
                     bbox.update(obb)
             except Exception as exc:

@@ -278,7 +278,9 @@ def statistical_outlier_removal(points_xyz, k=20, std_ratio=2.0):
         return np.ones(len(points_xyz), dtype=bool)
 
     tree = KDTree(points_xyz)
-    distances, _ = tree.query(points_xyz, k=k+1)  # +1 because it includes the point itself
+    # workers=-1: the same query on every core. kNN distances are deterministic, so the
+    # kept set is identical; only the wall time changes (22 cores in the run container).
+    distances, _ = tree.query(points_xyz, k=k+1, workers=-1)  # +1 because it includes the point itself
     mean_distances = distances[:, 1:].mean(axis=1)  # Exclude the point itself (distance 0)
 
     global_mean = mean_distances.mean()

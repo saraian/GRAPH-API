@@ -522,7 +522,10 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                                     bbox_marker_pub=None, centroid_marker_pub=None,
                                     max_points_per_obj=20000, remove_outliers=True,
                                     sor_k=30, sor_std=1.5, transform=None,
-                                    output_frame="map"):
+                                    output_frame="map", points_out=None):
+    """`points_out`, when a list, receives one entry per mask: the map-frame points the
+    box was measured from, or None where no box was produced. The PCA stage reads them
+    instead of re-running the projection and the outlier removal on the same mask."""
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
     camera_frame = CFG["frames"]["camera"]
     centroids_3d, bboxes_3d, all_markers = [], [], []
@@ -545,6 +548,8 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
             node.get_logger().warn(f"{label}: no valid points after filtering")
             centroids_3d.append(None)
             bboxes_3d.append(None)
+            if points_out is not None:
+                points_out.append(None)
             continue
 
         try:
@@ -587,11 +592,15 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
             bboxes_3d.append(bbox_dict)
 
             corners_map = np.array(list(itertools.product(*zip(mins_map, maxs_map))))
+            if points_out is not None:
+                points_out.append(pts_map)
 
         except Exception as e:
             node.get_logger().warn(f"{label}: transform to map failed: {e}")
             centroids_3d.append(None)
             bboxes_3d.append(None)
+            if points_out is not None:
+                points_out.append(None)
             continue
 
         if bbox_marker_pub is not None:

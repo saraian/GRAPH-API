@@ -633,20 +633,37 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # bundle root the crops and the per-cycle JSON use.
         self._io_executor.submit(self.save_visualizations, image_raw.copy(), depth.copy(), list(detections))
 
+        # Per-stage wall time of everything after run_detection, written into the latency
+        # record as `stages_ms`. Until 2026-09-06 the cycle had ONE number for this half
+        # (cycle_ms - total_ms) and the log's timestamps were the only way to split it.
+        stages = {}
+        t_stage = time.time()
+
+        def _mark(name):
+            nonlocal t_stage
+            now = time.time()
+            stages[name] = round((now - t_stage) * 1000.0, 1)
+            t_stage = now
+
         # GA-215: the detector has answered and the masks exist. Show them NOW -- everything
         # below takes time, and until today none of it was visible until all of it finished.
         self._debug_stage("detector+masks", image_raw, detections, camera_info, cycle_stamp)
         self._assign_instance_labels(detections)
         self._debug_stage("labelled", image_raw, detections, camera_info, cycle_stamp)
+        _mark("labels")
         centroids_3d, bboxes_3d = self._compute_3d_geometry(detections, depth, camera_info, camera_data["transform"])
         self._debug_stage("3d-geometry", image_raw, detections, camera_info, cycle_stamp,
                           bboxes_3d=bboxes_3d, transform=camera_data["transform"], depth=depth)
+        _mark("geometry")
         self._add_pca_orientation(detections, bboxes_3d, depth, camera_info, camera_data["transform"])
+        _mark("pca")
         self._publish_image_with_bb(image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth)
+        _mark("image_with_bb")
         # H12: prepare_crops resolves the bundle root itself; PROJECT_ROOT is no longer
         # threaded through. W2: the frame key is mandatory provenance.
         crops_data = self.prepare_crops(detections, image_raw,
                                         frame_id_from_stamp(cycle_stamp))
+        _mark("crops")
         # GA-172: archived AFTER prepare_crops so the row can carry `crop_meta`, and still
         # BEFORE the VLM batch so a describer failure cannot cost the record of what was
         # detected. It used to run before prepare_crops, so crop_meta DID NOT YET EXIST when
@@ -656,19 +673,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._archive_detections(detections, bboxes_3d, centroids_3d, image_raw,
                                  camera_data.get("transform"), cycle_stamp,
                                  crops_data=crops_data, depth=depth)
+        _mark("archive")
         self._attach_crop_embeddings(detections, crops_data)
+        _mark("embeddings")
         vlm_results = self._run_crop_vlm_batch(crops_data)
         descriptions = self._build_descriptions(detections, vlm_results, crops_data)
+        _mark("describer_queue")
         self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp)
         self._publish_description_array(detections, descriptions, cycle_stamp)
         self._update_world_model(detections, centroids_3d, bboxes_3d, descriptions)
         self._queue_perceptions_json()
         self._publish_agent_pose(cycle_stamp)
-        self._record_cycle_ms(time.time() - t_cycle)
+        _mark("publish")
+        self._record_cycle_ms(time.time() - t_cycle, stages=stages)
         self.waiting_for_input = False
         self.log_both("info", "publish_objects completed")
 
-    def _record_cycle_ms(self, cycle_seconds):
+    def _record_cycle_ms(self, cycle_seconds, stages=None):
         """WN1. Stamp the completed cycle's wall time into the latency record.
 
         `total_ms` (run_detection's own span) stays for its existing readers; `cycle_ms`
@@ -680,6 +701,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             lat = {}
             self.latest_latencies = lat
         lat["cycle_ms"] = round(cycle_seconds * 1000.0, 1)
+        if stages:
+            lat["stages_ms"] = dict(stages)
         lat["last_updated"] = time.time()
         try:
             import json
@@ -813,13 +836,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.clear_accumulated_markers()
         all_masks = [det.mask[:, :, 0] for det in detections]
         instance_labels = [det.instance_label for det in detections]
-        return mask_list_to_centroid_and_bbox(
+        points = []
+        centroids_3d, bboxes_3d = mask_list_to_centroid_and_bbox(
             all_masks, instance_labels, depth, camera_info,
             node=self,
             bbox_marker_pub=self.bbox_marker_pub,
             centroid_marker_pub=self.centroid_marker_pub,
             transform=transform,
+            points_out=points,
         )
+        # The map-frame points each box came from, kept for _add_pca_orientation. It used
+        # to re-run _filter_object_points (projection + k=30 outlier removal on up to
+        # 20,000 points) per detection -- the same call on the same mask with the same
+        # parameters, so the same points. Measured on 20260906_203744: the two stages
+        # were 1.19 s and the bulk of 1.85 s in a 14-detection cycle.
+        for det, pts_map in zip(detections, points):
+            det.points_map = pts_map
+        return centroids_3d, bboxes_3d
 
     def _attach_crop_embeddings(self, detections, crops_data):
         """CLIP image embedding per object, reusing the OWLv2 backbone already on
