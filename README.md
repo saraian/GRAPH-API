@@ -39,6 +39,16 @@ VLM                    regolo    any OpenAI-compatible endpoint; vlm.base_url / 
    https://github.com/facebookresearch/habitat-sim; the renderer needs the GPU and an X
    display (`DISPLAY`, default `:1`).
 
+   The installed package is all `habitat_feed_host.py` needs. The two older host nodes,
+   `habitat_camera_node.py` and `habitat_camera_objects_node.py`, also need a habitat-sim
+   **source checkout**: each inserts the hardcoded `/root/exchange/habitat-sim/examples`
+   into `sys.path` and imports `HabitatSimInteractiveViewer` from `viewer` there. Mount or
+   symlink a checkout at that path, at the commit the installed package was built from —
+   `examples/viewer.py` calls the Magnum bindings, whose event and renderer classes are
+   renamed between versions, so a mismatched tree fails at import. Read the pair with
+   `python -c "import habitat_sim; print(habitat_sim.__version__)"`,
+   `conda list -n habitat_env habitat-sim` and `git -C <checkout> log -1 --format=%H`.
+
 3. **Scene data.** Public example scenes, no token:
 
    | var | default | holds |
