@@ -466,7 +466,19 @@ def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30):
         return Abstain("observations carry no frame ids")
     shared = frames_a & frames_b
     if not shared:
-        return 0.0, {"covisible_frames": [], "n_covisible": 0}
+        # GA-328. This used to return 0.0 -- a MEASUREMENT saying "consulted, nothing either
+        # way". But two objects that were never in one frame together were never COMPARED:
+        # the hard negative this channel exists to deliver (co-visible and disjoint) was not
+        # collected for this pair, and 0.0 told `containment_unchecked` that it had been.
+        # Measured on run 20260906_220046, the first live-store run after sightings began to
+        # be recorded (GA-296): 340 of 759 over-threshold pairs carried this 0.0, the guard
+        # stood down on every one of them, and the overlap channel merged 184 objects in 15
+        # minutes, a third across kinds (vanity+bath mat, cabinet+shelving unit). Replayed
+        # over 13 bundles with this line as an abstention: run B 210 -> 62 merges, cross-kind
+        # 92 -> 15; 174810's 120 correct merges all kept; 192014 8 -> 3. An absent shared
+        # frame is absence of evidence, and the abstention says so.
+        return Abstain("never observed in one frame: no shared frame in which the two could "
+                       "have been compared")
 
     detail = {"covisible_frames": sorted(shared)[:8], "n_covisible": len(shared),
               "overlap_2d": overlap_2d}
@@ -1166,9 +1178,14 @@ def demo():
     # --- 6. accumulation: weak-but-repeated crosses; one lucky frame does not -------------
     weak = AssocObject("w1", bbox=_box(0, 0, 0, 0.30, 0.30, 0.30), room_id="kitchen",
                        observations=[_obs(1, [2, 0, 0], [0, 0, 0])])
+    # GA-328: the persistence pair is the DUPLICATE-DETECTION shape -- both seen in frame 1,
+    # 2D boxes overlapping -- so co-visibility is a measured abstention and the containment
+    # guard stands down. A pair never seen in one frame is the separate case below.
     weak2 = AssocObject("w2", bbox=_box(0.06, 0, 0, 0.30, 0.30, 0.30), room_id="kitchen",
-                        observations=[_obs(2, [2, 0, 0], [0.06, 0, 0])])
-    sw = score_pair(weak, weak2, ctx)
+                        observations=[_obs(1, [2, 0, 0], [0.06, 0, 0])])
+    ctx_dup = AssocContext(map_volume_m3=300.0, n_rooms=6, n_types=40, cost_ratio=20.0,
+                           overlap_2d_fn=lambda a, b: 0.95)
+    sw = score_pair(weak, weak2, ctx_dup)
     # THE REGRESSION TEST FOR MY OWN BUG: re-scoring identical state must NOT grow the
     # total. The first version of Hypothesis summed per frame and turned one measurement
     # repeated five times into +47 log-odds of false confidence.
@@ -1191,6 +1208,22 @@ def demo():
           f"(was +47.11 when summed)")
     print(f"  persistence : 1 update -> {d_one[0]}; 3 consecutive -> {d_persist[0]}")
     assert d_one[0] == "hold" and d_persist[0] == "merge", (d_one, d_persist)
+
+    # GA-328: the same geometry, but the two were NEVER in one frame together. Co-visibility
+    # abstains (uncollected, not 0.0), overlap carries the decision, and the guard holds
+    # however many updates repeat it. Run 20260906_220046 merged 184 objects in 15 minutes
+    # because this case returned 0.0 and read as "checked".
+    apart = AssocObject("w3", bbox=_box(0.06, 0, 0, 0.30, 0.30, 0.30), room_id="kitchen",
+                        observations=[_obs(2, [2, 0, 0], [0.06, 0, 0])])
+    s_apart = score_pair(weak, apart, ctx)
+    assert "covisibility" in s_apart.abstentions and "covisibility" not in s_apart._measured_abstentions
+    held = Hypothesis(("w1", "w3"))
+    for f in range(1, 4):
+        held.update(s_apart, frame_id=f)
+        d_apart = held.decide(thr, min_consecutive=3)
+    assert d_apart[0] == "hold" and d_apart[1].startswith("containment carries"), d_apart
+    print(f"  never co-observed : 3 consecutive -> {d_apart[0]} (GA-328; was a merge when the "
+          f"channel answered 0.0)")
 
     # --- 7. reversibility: the record outlives the objects --------------------------------
     prov = many.provenance()
