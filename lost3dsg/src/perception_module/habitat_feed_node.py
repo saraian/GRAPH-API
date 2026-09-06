@@ -138,8 +138,8 @@ class HabitatFeedNode(Node):
         # consumer is the per-detection archive, which is validation output.
         # GA-330 follow-up: a COMPRESSED message. The raw 32SC1 Image (4.9 MB at 1280x960)
         # over reliable DDS stalled this node's receive loop and cut the feed to 0.10 frames/s
-        # in run 20260906_234050. The payload is gt_codec's lossless PNG (~1% of raw); the
-        # perception node decodes it with the same module.
+        # in run 20260906_234050. The payload is gt_codec's lossless run-length form (~3% of
+        # raw, milliseconds each way); the perception node decodes it with the same module.
         self.pub_gt_semantic = self.create_publisher(CompressedImage, "/gt/semantic_instance", qos)
         self.tf = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
@@ -279,19 +279,19 @@ class HabitatFeedNode(Node):
 
         # Published with THE SAME STAMP as rgb and depth -- the join is by stamp and must be
         # exact, because a GT label taken from a neighbouring frame is worse than no label.
-        # The host sends the frame already PNG-encoded (`gt_semantic_png`); a host still
-        # sending the raw array (`gt_semantic_instance`) is encoded here, so either side can
-        # be updated first.
-        png = frame.get("gt_semantic_png")
-        if png is None and frame.get("gt_semantic_instance") is not None:
+        # The host sends the frame already encoded (`gt_semantic_rle`, gt_codec's run-length
+        # form); a host still sending the raw array (`gt_semantic_instance`) is encoded here,
+        # so either side can be updated first.
+        blob = frame.get("gt_semantic_rle")
+        if blob is None and frame.get("gt_semantic_instance") is not None:
             import gt_codec
-            png = gt_codec.encode(frame["gt_semantic_instance"])
-        if png is not None:
+            blob = gt_codec.encode(frame["gt_semantic_instance"])
+        if blob is not None:
             sem_msg = CompressedImage()
             sem_msg.header.stamp = stamp
             sem_msg.header.frame_id = FRAME_OPTICAL
-            sem_msg.format = "png; uint32 instance id as 16-bit lo/hi/0 planes (gt_codec)"
-            sem_msg.data = bytes(png)
+            sem_msg.format = "gt_codec run-length uint32 instance ids (GTRL)"
+            sem_msg.data = bytes(blob)
             self.pub_gt_semantic.publish(sem_msg)
 
         fx = (w / 2.0) / math.tan(math.radians(frame["hfov"]) / 2.0)

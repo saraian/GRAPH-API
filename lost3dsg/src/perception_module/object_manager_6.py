@@ -1041,7 +1041,10 @@ class ObjectManagerService(Node):
             origin_frame = str(getattr(d, "origin_frame", "") or "")
             if not origin_frame:
                 continue
-            obj = self._object_for_sighting(origin_frame, list(getattr(d, "origin_bbox_2d", []) or []),
+            # rclpy hands float32[4] back as a numpy array: never `or []` on it (bool() of a
+            # 4-element array raises, and did -- run 20260907_001120 died on the first box).
+            _bb = getattr(d, "origin_bbox_2d", None)
+            obj = self._object_for_sighting(origin_frame, [float(v) for v in _bb] if _bb is not None else [],
                                             str(getattr(d, "label", "") or ""))
             if obj is None:
                 self._n_late_unmatched += 1

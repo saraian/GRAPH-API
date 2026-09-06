@@ -30,6 +30,8 @@ class Log:
 
 
 def msg(label, frame, bbox, **fields):
+    import numpy as np
+    bbox = np.asarray(bbox, dtype=np.float32) if bbox else bbox   # rclpy hands float32[4] back as an array
     d = types.SimpleNamespace(label=label, origin_frame=frame, origin_bbox_2d=bbox,
                               description="unknown", color="unknown", material="unknown", shape="unknown")
     d.__dict__.update(fields)

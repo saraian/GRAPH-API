@@ -1108,8 +1108,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         key = frame_id_from_stamp(msg.header.stamp)
         if key is None:
             return
-        # GA-330 follow-up: the frame arrives as gt_codec's lossless PNG (CompressedImage),
-        # not a raw 32SC1 Image; see habitat_feed_node.py for why.
+        # GA-330 follow-up: the frame arrives as gt_codec's lossless run-length form
+        # (CompressedImage), not a raw 32SC1 Image; see habitat_feed_node.py for why.
         import gt_codec
         arr = gt_codec.decode(bytes(msg.data))
         if arr is None:

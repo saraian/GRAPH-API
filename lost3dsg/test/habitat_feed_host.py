@@ -1547,9 +1547,10 @@ def main():
             # path may read it: a detector that can see the ground truth is not being measured,
             # it is being told. The key is absent entirely when the sensor is off, so a consumer
             # cannot read a zeros array as "no objects present".
-            # Sent PNG-encoded (gt_codec, lossless, ~1% of the raw 4.9 MB): the raw uint32 array
-            # cut the feed to 0.10 frames/s and dropped the socket twice in run 20260906_234050.
-            **({"gt_semantic_png": _gt_codec.encode(obs["semantic_sensor"])}
+            # Sent run-length encoded (gt_codec, exact, ~3% of the raw 4.9 MB, ~15 ms): the raw
+            # uint32 array cut the feed to 0.10 frames/s and dropped the socket twice in run
+            # 20260906_234050; a PNG was exact but cost 245 ms a frame (run 20260907_001120).
+            **({"gt_semantic_rle": _gt_codec.encode(obs["semantic_sensor"])}
                if GT_SEMANTIC and "semantic_sensor" in obs else {}),
             "w": W, "h": H, "hfov": HFOV,
         }
