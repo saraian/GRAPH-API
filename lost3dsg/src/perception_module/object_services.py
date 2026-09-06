@@ -1258,8 +1258,15 @@ class ObjectServices(Node):
                     # destroys an identity.
                     if MERGE_ENGINE == "legacy" and sim < MIN_SIMILARITY:
                         print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {MIN_SIMILARITY})")
+                        # Unit-typed keys (joint rename with the ontology lane, their
+                        # inbox 00002/00004): `threshold` was unit-polymorphic -- 0.925
+                        # cosine here, 0.8 METRES on the distance path below -- and was
+                        # misread once by a reader and once by a test. The legacy key
+                        # stays through one transition so old rows stay readable; the
+                        # readers prefer the typed keys.
                         _refused(a, b, "similarity", sim,
                                  evidence_count=ev["optional_count"],
+                                 threshold_similarity=MIN_SIMILARITY,
                                  threshold=MIN_SIMILARITY, room_a=room_a, room_b=room_b)
                         continue
 
@@ -1289,9 +1296,13 @@ class ObjectServices(Node):
 
                     if MERGE_ENGINE == "legacy" and dist > MAX_DISTANCE:
                         print(f"   ❌ TOO FAR APART ({dist:.2f}m > {MAX_DISTANCE}m)")
+                        # Same joint rename: this path's threshold is METRES, the
+                        # similarity path's is unitless -- the typed key says which, the
+                        # legacy `threshold` stays for one transition.
                         _refused(a, b, "distance", sim,
                                  evidence_count=ev["optional_count"],
-                                 distance=dist, threshold=MAX_DISTANCE,
+                                 distance=dist, threshold_distance_m=MAX_DISTANCE,
+                                 threshold=MAX_DISTANCE,
                                  room_a=room_a, room_b=room_b)
                         continue
 

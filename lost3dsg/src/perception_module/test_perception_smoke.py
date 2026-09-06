@@ -121,7 +121,14 @@ def merge_path():
     svc.room_manager.scene_graph = {}
     svc.room_manager.current_room_id = "room_1"
     svc.room_manager.room_at_bbox = lambda bbox: None
-    svc.decision_log = rosstub.Any()
+    refused_rows = []
+
+    class _Log:
+        def write(self, kind, oid, **kw):
+            if kind == "merge_refused":
+                refused_rows.append(kw)
+
+    svc.decision_log = _Log()
 
     a = object_info.Object("chair", None, BOX, description="a chair", color="red", material="wood")
     b = object_info.Object("chair", None, FAR, description="a chair", color="red", material="wood")
@@ -134,6 +141,32 @@ def merge_path():
     req.max_distance, req.min_similarity, req.dry_run = 0.8, 0.75, True
     resp = rosstub.Any()
     object_services.ObjectServices._cb_merge_objects(svc, req, resp)
+
+    # Joint rename with the ontology lane (their inbox 00004): the typed key says the
+    # UNIT -- metres here, unitless on the similarity arm -- and the legacy `threshold`
+    # stays through one transition. Both must be present and equal on their arm.
+    dist_rows = [r for r in refused_rows if r.get("reason") == "distance"]
+    assert dist_rows, f"the far pair must be refused on distance: {[r.get('reason') for r in refused_rows]}"
+    dr = dist_rows[0]
+    assert dr.get("threshold_distance_m") == 0.8, dr          # from request.max_distance
+    assert dr.get("threshold") == 0.8, "legacy key stays one transition"
+    assert "threshold_similarity" not in dr, "the distance arm must not carry the similarity key"
+
+    # The similarity arm: same position, disagreeing attributes -> refused on similarity,
+    # with the UNTYPED quantity on its own typed key.
+    c = object_info.Object("chair", None, BOX, description="a chair", color="red", material="wood")
+    d = object_info.Object("desk", None, BOX, description="a desk", color="blue", material="metal")
+    c.object_id, d.object_id = "obj_c", "obj_d"
+    c.creation_time, d.creation_time = 100.0, 200.0
+    wm.persistent_perceptions.clear()
+    wm.persistent_perceptions.extend([c, d])
+    object_services.ObjectServices._cb_merge_objects(svc, req, resp)
+    sim_rows = [r for r in refused_rows if r.get("reason") == "similarity"]
+    assert sim_rows, f"the disagreeing pair must be refused on similarity: {[r.get('reason') for r in refused_rows]}"
+    sr = sim_rows[0]
+    assert sr.get("threshold_similarity") == 0.75, sr         # from request.min_similarity
+    assert sr.get("threshold") == 0.75, "legacy key stays one transition"
+    assert "threshold_distance_m" not in sr, "the similarity arm must not carry the distance key"
 
 
 def scan_summary():
