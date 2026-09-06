@@ -71,6 +71,9 @@ OBJECT_STABILITY_TIMEOUT = CFG["association"]["object_stability_timeout"]
 POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
 MAX_VOLUME_THRESHOLD = CFG["association"]["max_volume_threshold"]
 BBOX_REDUCTION_RATIO = CFG["association"]["bbox_reduction_ratio"]
+# GA-12: the exploration->tracking move distance was the literal 0.35 at its one use site,
+# the only destructive threshold in this block with no config key.
+TRANSITION_MOVE_DISTANCE_M = CFG["association"].get("transition_move_distance_m", 0.35)
 # GA-48: the re-evaluation radius was ALWAYS this literal. `MAX_MATCH_DISTANCE or 2.0`
 # evaluated to 2.0 for every shipped run, because max_match_distance_m has always been
 # 0.0 -- so the key that appeared to govern the neighbour radius never did. It is its own
@@ -713,6 +716,13 @@ class ObjectManagerService(Node):
         self.create_subscription(Bool, "/robot_movement_detected", self.movement_callback, qos_poly)
 
         self.create_subscription(ObjectDescriptionArray, '/object_descriptions', self._descriptions_callback, qos_standard)
+        # GA-108: describer answers that arrived after their cycle, addressed by the crop's
+        # origin frame and 2D box. They go to the object whose SIGHTING matches, not to the
+        # next cycle's namesake (run 20260906_223701: 204 of 212 objects ended "unknown").
+        self.create_subscription(ObjectDescriptionArray, '/object_descriptions_late',
+                                 self._late_descriptions_callback, qos_standard)
+        self._n_late_applied = 0
+        self._n_late_unmatched = 0
         self.create_subscription(Bbox3dArray, '/bbox_3d', self._bboxes_callback, qos_standard)
         self.create_subscription(PoseStamped, '/agent_camera_pose', self._agent_pose_callback, qos_standard)
         self.get_logger().info("Subscribing to /object_descriptions, /bbox_3d and /agent_camera_pose")
@@ -914,7 +924,9 @@ class ObjectManagerService(Node):
         # as it was when the pass began.
         for obj in wm.snapshot():
             _scan["visited"] += 1
-            if (time.time() - getattr(obj, 'creation_time', 0)) < OBJECT_STABILITY_TIMEOUT:
+            # GA-12: default is NOW, not the epoch -- an unstamped object is not yet stable.
+            _ct = getattr(obj, 'creation_time', None)
+            if (time.time() - (time.time() if _ct is None else _ct)) < OBJECT_STABILITY_TIMEOUT:
                 # Skipped INSIDE the loop, so it is visited to be discarded: it belongs
                 # outside the candidate set, and the count says how often that costs a visit.
                 _scan["skipped_unstable"] += 1
@@ -982,7 +994,7 @@ class ObjectManagerService(Node):
             distance = np.sqrt((new_x - old_x)**2 + (new_y - old_y)**2 + (new_z - old_z)**2)
             iou = compute_iou_3d(bbox, best_match.bbox)
             
-            if distance > 0.35 and iou < EXPLORATION_IOU_THRESHOLD:
+            if distance > TRANSITION_MOVE_DISTANCE_M and iou < EXPLORATION_IOU_THRESHOLD:
                 self.object_services.log_both('warn', f"[TRACKING TRANSITION] Object '{best_match.label}' is the best match but moved! (Dist: {distance:.2f}m), the iou was {iou}")
                 return True, best_match, distance
         
@@ -1023,6 +1035,102 @@ class ObjectManagerService(Node):
 
         return facts
 
+    def _late_descriptions_callback(self, msg):
+        """GA-108. Hand each late description to the object seen in its origin frame."""
+        for d in getattr(msg, "descriptions", []) or []:
+            origin_frame = str(getattr(d, "origin_frame", "") or "")
+            if not origin_frame:
+                continue
+            obj = self._object_for_sighting(origin_frame, list(getattr(d, "origin_bbox_2d", []) or []),
+                                            str(getattr(d, "label", "") or ""))
+            if obj is None:
+                self._n_late_unmatched += 1
+                self.object_services.log_both(
+                    'info', f"[VLM-late] no object sighted in frame {origin_frame} matches "
+                            f"{d.label}; dropped ({self._n_late_unmatched} unmatched so far)")
+                continue
+            changed = []
+            for field in ("description", "color", "material", "shape"):
+                new = str(getattr(d, field, "") or "").strip()
+                cur = str(getattr(obj, field, "") or "").strip().lower()
+                # Only fill what is still unknown: a late answer must never overwrite a
+                # description that a later, better-overlapping sighting already supplied.
+                if new and new.lower() != "unknown" and (not cur or cur == "unknown"):
+                    setattr(obj, field, new)
+                    changed.append(field)
+            if changed:
+                self._n_late_applied += 1
+                self.object_services.log_both(
+                    'info', f"[VLM-late] {obj.label} ({getattr(obj, 'object_id', '?')}) described from "
+                            f"frame {origin_frame}: {', '.join(changed)} ({self._n_late_applied} applied)")
+                try:
+                    self._note_update(getattr(obj, "object_id", None), reason="described")
+                except Exception as exc:   # a re-evaluation trigger must not lose the description
+                    self.object_services.log_both('warn', f"[VLM-late] re-evaluation not queued: {exc}")
+
+    def _cycle_bbox_2d_for(self, obj):
+        """This cycle's detector box for `obj`, from the object's own bbox dict when the
+        update path kept it, else from the cycle's incoming boxes by label (GA-316 residual:
+        194 of 212 run C objects had no 2D box on any sighting, so co-visibility could not
+        conclude even where a shared frame existed)."""
+        box = (getattr(obj, "bbox", None) or {}).get("bbox_2d")
+        if box is not None:
+            return box
+        label = getattr(obj, "label", None)
+        for entry in (getattr(self, "latest_bboxes", None) or {}).values():
+            if entry.get("label") == label and (entry.get("bbox") or {}).get("bbox_2d") is not None:
+                return entry["bbox"]["bbox_2d"]
+        return None
+
+    @staticmethod
+    def _frame_seconds(frame_id):
+        """perception's frame id ("<sec>_<nanosec>") or om6's float seconds -> float seconds."""
+        if isinstance(frame_id, (int, float)):
+            return float(frame_id)
+        txt = str(frame_id)
+        if "_" in txt:
+            sec, _, nsec = txt.partition("_")
+            try:
+                return int(sec) + int(nsec) * 1e-9
+            except ValueError:
+                return None
+        try:
+            return float(txt)
+        except ValueError:
+            return None
+
+    def _object_for_sighting(self, origin_frame, origin_bbox_2d, label):
+        """The world-model object whose sighting in `origin_frame` has `origin_bbox_2d`.
+
+        Frame match is by time (1 ms), because perception keys frames as "<sec>_<nanosec>" and
+        this node stores float seconds. Within the frame the 2D box decides (IoU >= 0.3); a
+        sighting with no 2D box falls back to the label base, and only if it is the sole
+        candidate -- two same-label objects in one frame with no box stay unmatched.
+        """
+        from association import _iou_2d
+        t = self._frame_seconds(origin_frame)
+        if t is None:
+            return None
+        base = label.split('#')[0].strip().lower()
+        best, best_iou, by_label = None, 0.0, []
+        for obj in list(wm.persistent_perceptions):
+            for obs in getattr(obj, "observations", None) or []:
+                ft = self._frame_seconds(getattr(obs, "frame_id", None))
+                if ft is None or abs(ft - t) > 1e-3:
+                    continue
+                box = getattr(obs, "bbox_2d", None)
+                if box is not None and origin_bbox_2d and len(origin_bbox_2d) == 4:
+                    iou = _iou_2d(box, origin_bbox_2d)
+                    if iou > best_iou:
+                        best, best_iou = obj, iou
+                elif str(getattr(obj, "label", "")).split('#')[0].strip().lower() == base:
+                    by_label.append(obj)
+        if best is not None and best_iou >= 0.3:
+            return best
+        if len(by_label) == 1:
+            return by_label[0]
+        return None
+
     def _record_sighting(self, obj, perception_timestamp):
         """Append one Observation to `obj`, or none at all. GA-186.
 
@@ -1053,7 +1161,7 @@ class ObjectManagerService(Node):
                 # GA-186: this frame's DETECTOR box, carried in the bbox dict since the
                 # message grew `has_bbox_2d`. Absent stays None -- co-visibility abstains
                 # on a missing box and vetoes only on a measured disjoint one.
-                bbox_2d=(getattr(obj, "bbox", None) or {}).get("bbox_2d"),
+                bbox_2d=self._cycle_bbox_2d_for(obj),
                 # GA-190: this view's appearance embedding, so the appearance channel
                 # compares MEASURED crops rather than a shape descriptor derived from the
                 # box the two objects already agree on.
@@ -1216,6 +1324,7 @@ class ObjectManagerService(Node):
             }
 
             already_seen = False
+            transition = False
 
             if in_exploration:
                 transition, obj, distance = self.check_tracking_transition(
@@ -1250,10 +1359,16 @@ class ObjectManagerService(Node):
                         # decision row was written. A refused move (GA-24) arrives here, so
                         # the failure is now a visible proposal rather than a lost object.
                         already_seen = True
+                        continue
                     else:
                         self.object_services.log_both('warn', f"Update failed for {obj.label}: {update_response.message}")
-                    continue
+                    # GA-10, transition branch: the `continue` stood HERE, after the if/else,
+                    # so a refused update still skipped the admission seam below and the
+                    # comment above it was true of the other branch only. `in_exploration`
+                    # is already False, which skips the exploration loop; `transition` skips
+                    # the tracking loop (it would re-run the update that just failed).
 
+            if in_exploration:
                 for obj in wm.snapshot():
                     # GA-04: locality first. Previously the overlap test was conjoined with the
                     # similarity test below, so attributes were compared against every object in
@@ -1321,7 +1436,7 @@ class ObjectManagerService(Node):
                         self._note_update(getattr(obj, "object_id", None) or obj.label, reason="box_written")
                         break
 
-            else:
+            elif not transition:
                 best_match = None
                 best_score = 0
 
@@ -1708,12 +1823,18 @@ class ObjectManagerService(Node):
 
         try:
             result = self._call_graph_api("POST", "/merge", json_body=payload)
+            if result.get("pending"):
+                # GA-183: HTTP 202 -- the bridge dispatched the request and stopped waiting.
+                # The merge may still land; the next cycle re-reads the world model.
+                self.get_logger().warn(f"Merge dispatched, not confirmed: {result.get('message')}")
             merged = int(result.get("merged_count", 0)) > 0
             if merged:
                 # GA-11. A merge changes the survivor more than anything else does; it never
                 # triggered a second look. The service already reports each pair's keeper.
                 try:
-                    for pair in json.loads(result.get("merge_log_json") or "[]"):
+                    # The bridge returns the parsed list as "merge_log"; "merge_log_json" is the
+                    # ROS field name and never reached this dict, so no survivor was ever queued.
+                    for pair in result.get("merge_log") or json.loads(result.get("merge_log_json") or "[]"):
                         kid = (pair.get("keeper") or {}).get("object_id") or pair.get("keeper_id")
                         if kid:
                             self._note_update(kid, reason="merged")
@@ -1740,7 +1861,9 @@ class ObjectManagerService(Node):
                 pov_volume['y_min'], pov_volume['y_max'],
                 pov_volume['z_min'], pov_volume['z_max'],
             ] if pov_volume else [],
-            "current_labels": [o.label for o in current_perception_objects],
+            # GA-26: identity, not label -- seeing one chair must not clear every chair's
+            # tally. The srv field keeps its name; it carries the object_id when there is one.
+            "current_labels": [getattr(o, "object_id", None) or o.label for o in current_perception_objects],
             "check_uncertain": False,
         }
 
@@ -1772,7 +1895,7 @@ class ObjectManagerService(Node):
         now = time.time()
         expiry = 120.0 # secondi
         to_remove = [obj for obj in self.uncertain_objects
-                     if now - getattr(obj, 'creation_time', 0) > expiry]
+                     if now - (now if getattr(obj, 'creation_time', None) is None else obj.creation_time) > expiry]  # GA-12: unstamped = not expired
         if to_remove:
             for obj in to_remove:
                 self.uncertain_objects.remove(obj)

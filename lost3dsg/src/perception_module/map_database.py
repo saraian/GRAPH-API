@@ -128,23 +128,20 @@ class MapDatabase(Store):
         )
 
     def _find_active(self, conn, obj):
-        """Find an active row by immutable object ID, with legacy fallback."""
+        """Find an active row by immutable object ID. GA-44: the label+colour+material
+        fallback that stood here is gone -- colour and material are "unknown" on every
+        shipped row, so it matched on label alone and filed one object's move under
+        whichever same-label object was touched last. A miss is now a skip (the callers
+        print and return), never a wrong join."""
         conn.row_factory = sqlite3.Row
         object_uuid = getattr(obj, 'object_id', None)
-        if object_uuid:
-            row = conn.execute(
-                """SELECT * FROM objects
-                   WHERE object_uuid=? AND is_active=1
-                   ORDER BY last_seen DESC LIMIT 1""",
-                (object_uuid,)
-            ).fetchone()
-            if row:
-                return row
+        if not object_uuid:
+            return None
         return conn.execute(
             """SELECT * FROM objects
-               WHERE label=? AND color=? AND material=? AND is_active=1
+               WHERE object_uuid=? AND is_active=1
                ORDER BY last_seen DESC LIMIT 1""",
-            (obj.label, obj.color or "", obj.material or "")
+            (object_uuid,)
         ).fetchone()
 
     # ------------------------------------------------------------------ #
@@ -271,20 +268,45 @@ class MapDatabase(Store):
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM objects" + (" WHERE is_active=1" if only_active else "")).fetchall()
-        return [{"id": r["id"], "label": r["label"], "color": r["color"], "material": r["material"],
+        return [{"id": r["id"], "object_uuid": r["object_uuid"], "label": r["label"], "color": r["color"], "material": r["material"],
                  "description": r["description"], "bbox": json.loads(r["bbox_json"]) if r["bbox_json"] else None,
                  "room_id": r["room_id"], "is_active": bool(r["is_active"]), "is_uncertain": bool(r["is_uncertain"]),
                  "first_seen": r["first_seen"], "last_seen": r["last_seen"], "last_event": r["last_event"]}
                 for r in rows]
 
     def history(self, object_id):
+        """GA-44: `object_id` is the durable object_uuid OR the row number; the rowid readers
+        (tests/test_store.py, hooks.py) keep working and a world-model id now resolves."""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT * FROM object_history WHERE object_id=? ORDER BY timestamp", (object_id,)).fetchall()
+            rows = conn.execute("SELECT * FROM object_history WHERE object_uuid=? OR object_id=? ORDER BY timestamp",
+                                (str(object_id), object_id)).fetchall()
         return [{"timestamp": r["timestamp"], "event_type": r["event_type"], "phase": r["phase"], "step": r["step"],
                  "bbox_old": json.loads(r["bbox_old"]) if r["bbox_old"] else None,
                  "bbox_new": json.loads(r["bbox_new"]) if r["bbox_new"] else None,
                  "distance": r["distance"], "iou": r["iou"], "notes": r["notes"]} for r in rows]
+
+    def on_object_merged(self, keeper, discard, step: int = 0):
+        """GA-26. Called from _cb_merge_objects: `discard` is absorbed into `keeper`."""
+        now = datetime.now().isoformat()
+        keeper_uuid = getattr(keeper, 'object_id', None)
+        with sqlite3.connect(self.db_path) as conn:
+            row = self._find_active(conn, discard)
+            if not row:
+                print(f"[MapDB] ⚠️  on_object_merged: '{discard.label}' not found in the DB, skipping.")
+                return
+            conn.execute(
+                "UPDATE objects SET is_active=0,last_seen=?,last_event='merged' WHERE id=?",
+                (now, row["id"])
+            )
+            conn.execute(
+                """INSERT INTO object_history
+                   (object_id,object_uuid,label,color,timestamp,event_type,phase,step,notes,room_id)
+                   VALUES (?,?,?,?,?,'merged','tracking',?,?,?)""",
+                (row["id"], row["object_uuid"], discard.label, discard.color or "", now, step,
+                 f"merged into {keeper_uuid}", getattr(discard, 'room_id', 'unknown'))
+            )
+        print(f"[MapDB] 🔀 MERGED '{discard.label}' -> {keeper_uuid}")
 
     def on_uncertain_added(self, obj, step: int = 0):
         """Called when adding to uncertain_objects in modify_existing_object()."""

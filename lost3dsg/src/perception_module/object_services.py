@@ -51,6 +51,12 @@ POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
 # literal 5 at the one site that used it -- a destructive threshold that could not be
 # changed without editing source, in a file whose other six thresholds are config.
 MAX_MISSES_BEFORE_DELETE = CFG["association"].get("max_misses_before_delete", 5)
+# GA-26: the remaining literals of the destructive branches. A scene with wardrobes could
+# not be run without editing source: every wardrobe box was "suspicious" forever.
+SUSPICIOUS_MAX_EXTENT_M = CFG["association"].get("suspicious_max_extent_m", 3.0)
+SUSPICIOUS_MAX_VOLUME_M3 = CFG["association"].get("suspicious_max_volume_m3", 1.5)
+UPDATE_IN_PLACE_DISTANCE_M = CFG["association"].get("update_in_place_distance_m", 0.5)
+UNCERTAIN_MOVE_DISTANCE_M = CFG["association"].get("uncertain_move_distance_m", 0.8)
 
 # GA-06. Merge is the most destructive operation in the system -- it ends one object's
 # identity -- and it ran on the LOOSEST gate: two hardcoded literals, 0.8 m and 0.75,
@@ -264,11 +270,11 @@ def bbox_is_suspicious(bbox, reference_bbox=None):
     if any(size <= 0.0 for size in sizes):
         return True
 
-    if max(sizes) > 3.0:
+    if max(sizes) > SUSPICIOUS_MAX_EXTENT_M:
         return True
 
     volume = bbox_volume(bbox)
-    if volume > 1.5:
+    if volume > SUSPICIOUS_MAX_VOLUME_M3:
         return True
 
     if reference_bbox:
@@ -684,8 +690,10 @@ class ObjectServices(Node):
 
                 for obj in list(wm.persistent_perceptions):
 
-                    # Visto in questo frame → azzera contatore
-                    if obj.label in current_labels:
+                    # Visto in questo frame → azzera contatore. GA-26: keyed on identity --
+                    # the caller sends object_id (label only when there is none), so one
+                    # chair in view no longer clears every chair's tally.
+                    if (getattr(obj, 'object_id', None) or obj.label) in current_labels:
                         obj.not_seen_in_pov_frames = 0
                         continue
 
@@ -1479,6 +1487,13 @@ class ObjectServices(Node):
                         cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
                         print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
                         wm.persistent_perceptions.remove(discard)
+                        # GA-26: the store learns about the merge, or its row stays active
+                        # forever and the database disagrees with the map by one object.
+                        if hasattr(self, 'db'):
+                            try:
+                                self.db.on_object_merged(keeper, discard, step=self.tracking_step_counter)
+                            except Exception as e:
+                                self.get_logger().error(f"db.on_object_merged failed: {e}")
 
                     discard_room = getattr(discard, 'room_id', None)
                     if discard_room and discard_room in self.room_manager.scene_graph:
@@ -1744,13 +1759,6 @@ class ObjectServices(Node):
             }
             _apply_orientation(bbox, request)   # GA-312
 
-            if hasattr(request, "description") and request.description:
-                best_match.description = request.description
-            if hasattr(request, "color") and request.color:
-                best_match.color = request.color
-            if hasattr(request, "material") and request.material:
-                best_match.material = request.material
-
             description_embedding = getattr(request, "description_embedding", None)
 
             updated_obj = best_match
@@ -1759,164 +1767,182 @@ class ObjectServices(Node):
             iou = 0.0
 
             if getattr(request, "update_bbox", False):
+                old_bbox = best_match.bbox
+                if old_bbox is None:
+                    best_match.bbox = bbox
+                    save_persistent_perceptions(self)
+                    response.success = True
+                    response.message = "bbox initialized"
+                    response.object_id = best_match.object_id
+                    response.distance = 0.0
+                    response.iou = 0.0
+                    response.replaced = False
+                    return response
+                iou = compute_iou_3d(bbox, old_bbox)
+
+                old_x = (old_bbox["x_min"] + old_bbox["x_max"]) / 2.0
+                old_y = (old_bbox["y_min"] + old_bbox["y_max"]) / 2.0
+                old_z = (old_bbox["z_min"] + old_bbox["z_max"]) / 2.0
+                new_x = (bbox["x_min"] + bbox["x_max"]) / 2.0
+                new_y = (bbox["y_min"] + bbox["y_max"]) / 2.0
+                new_z = (bbox["z_min"] + bbox["z_max"]) / 2.0
+                distance = np.sqrt((new_x - old_x) ** 2 + (new_y - old_y) ** 2 + (new_z - old_z) ** 2)
+
                 if "door" in best_match.label.lower():
+                    # Doors bypass the plausibility gate (flat and tall). GA-26: they
+                    # used to be ASSIGNED distance=0.0, iou=1.0 -- two measurements
+                    # replaced by constants, so every door read as stationary.
                     best_match.bbox = bbox
                     updated_obj = best_match
-                    distance = 0.0
-                    iou = 1.0
+
+                elif bbox_is_suspicious(bbox, old_bbox):
+                    # GA-26: this used to set a rejection message and fall through to
+                    # the success tail, which overwrote it with success=True -- byte-
+                    # identical to an attribute-only update. The detection was NOT
+                    # absorbed; per GA-10 the caller offers it to admission instead.
+                    self.get_logger().warn(
+                        f"[UPDATE] Bbox sospetta per '{best_match.label}', mantengo quella precedente"
+                    )
+                    response.success = False
+                    response.message = f"bbox rejected as implausible for {obj_id}"
+                    response.object_id = getattr(best_match, "object_id", "") or ""
+                    response.distance = float(distance)
+                    response.iou = float(iou)
+                    response.replaced = False
+                    return response
+
+                elif distance < UPDATE_IN_PLACE_DISTANCE_M or iou >= TRACKING_IOU_THRESHOLD:
+                    best_match.bbox = bbox
+                    self.room_manager.update_room_geometry(
+                        getattr(best_match, "room_id", self.room_manager.current_room_id),
+                        bbox
+                    )
+                    updated_obj = best_match
+
+                # GA-12: an unstamped object is of unknown age, which is NOT yet stable.
+                elif (time.time() - (time.time() if getattr(best_match, "creation_time", None) is None
+                                     else best_match.creation_time)) < OBJECT_STABILITY_TIMEOUT:
+                    best_match.bbox = bbox
+                    updated_obj = best_match
 
                 else:
-                    old_bbox = best_match.bbox
-                    if old_bbox is None:
-                        best_match.bbox = bbox
-                        save_persistent_perceptions(self)
-                        response.success = True
-                        response.message = "bbox initialized"
-                        response.object_id = best_match.object_id
-                        response.distance = 0.0
-                        response.iou = 0.0
+                    # GA-24: the room is resolved and the replacement is built COMPLETELY
+                    # before the object leaves the world model, and the swap has nothing
+                    # fallible between the remove and the append.
+                    #
+                    # Before, the object was removed first and re-appended only after
+                    # `scene_graph[new_room]` -- a bare dict index on a key that can be
+                    # None, because the old fallback was `current_room_id`, which is itself
+                    # None when the robot stands outside every room polygon. The KeyError
+                    # was caught by the handler's broad except, which returned success=False
+                    # and left the object gone from the map and from disk permanently.
+                    #
+                    # A move that cannot resolve a room is now REFUSED, not completed: the
+                    # object stays where it is. Per GA-10 the caller offers the refused
+                    # detection to admission rather than dropping it, so the failure mode
+                    # is a visible duplicate instead of a silently lost object -- D14's
+                    # direction. A clean move needs room identity to be trustworthy, which
+                    # is GA-28.
+                    new_room = self.room_manager.assign_room_by_geometry(bbox)
+                    if not new_room or new_room not in self.room_manager.scene_graph:
+                        self.log_both(
+                            "warn",
+                            f"[MOVE REFUSED] '{best_match.label}': no room "
+                            f"resolvable for the new position (room={new_room!r}); "
+                            f"the object stays where it was")
+                        response.success = False
+                        response.message = f"move refused: no resolvable room for {obj_id}"
+                        response.object_id = getattr(best_match, "object_id", "") or ""
+                        response.distance = float(distance)
+                        response.iou = float(iou)
                         response.replaced = False
                         return response
-                    iou = compute_iou_3d(bbox, old_bbox)
 
-                    old_x = (old_bbox["x_min"] + old_bbox["x_max"]) / 2.0
-                    old_y = (old_bbox["y_min"] + old_bbox["y_max"]) / 2.0
-                    old_z = (old_bbox["z_min"] + old_bbox["z_max"]) / 2.0
-                    new_x = (bbox["x_min"] + bbox["x_max"]) / 2.0
-                    new_y = (bbox["y_min"] + bbox["y_max"]) / 2.0
-                    new_z = (bbox["z_min"] + bbox["z_max"]) / 2.0
-                    distance = np.sqrt((new_x - old_x) ** 2 + (new_y - old_y) ** 2 + (new_z - old_z) ** 2)
+                    updated_obj = Object(
+                        best_match.label,
+                        _centroid_from_bbox(bbox),
+                        bbox,
+                        best_match.description,
+                        best_match.color,
+                        best_match.material
+                    )
+                    updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
+                    # GA-171: normalised, exactly as the add path does. This line used
+                    # to assign the raw request value, so a replaced object could carry
+                    # an empty array that every `is not None` guard downstream accepted.
+                    updated_obj.embedding = normalise_embedding(description_embedding)
+                    updated_obj.relations = getattr(best_match, "relations", {
+                        "isIn": set(),
+                        "isOn": set(),
+                        "isNextTo": set(),
+                        "isAbove": set(),
+                        "isUnder": set(),
+                    })
+                    # GA-12: creation_time is written at exactly ONE site in this module --
+                    # the add path -- and was NOT carried across here, so every object that
+                    # had ever moved read as ~1.8 billion seconds old. That made the
+                    # stability branch above unreachable for it (once moved, always
+                    # replaced), removed check_tracking_transition's stability protection,
+                    # and armed the uncertain-cleanup expiry. Absence of a timestamp is
+                    # unknown age, never maximal age.
+                    updated_obj.creation_time = getattr(best_match, "creation_time", None) or time.time()
+                    updated_obj.room_id = new_room
 
-                    if bbox_is_suspicious(bbox, old_bbox):
-                        self.get_logger().warn(
-                            f"[UPDATE] Bbox sospetta per '{best_match.label}', mantengo quella precedente"
-                        )
-                        best_match.bbox = old_bbox
-                        updated_obj = best_match
-                        distance = 0.0
-                        iou = 0.0
-                        response.message = "bbox rejected as implausible"
-
-                    elif distance < 0.5 or iou >= TRACKING_IOU_THRESHOLD:
-                        best_match.bbox = bbox
-                        self.room_manager.update_room_geometry(
-                            getattr(best_match, "room_id", self.room_manager.current_room_id),
-                            bbox
-                        )
-                        updated_obj = best_match
-
-                    elif (time.time() - getattr(best_match, "creation_time", 0)) < OBJECT_STABILITY_TIMEOUT:
-                        best_match.bbox = bbox
-                        updated_obj = best_match
-
+                    # The swap itself: two list operations, nothing between them that can
+                    # raise. Every fallible call -- the two db events, the room geometry
+                    # update, the scene-graph append -- happens AFTER the world model is
+                    # whole again, so a failure in any of them leaves the object present
+                    # rather than deleted. That is the whole point of GA-24; leaving the
+                    # db calls inside the window would have reproduced it with a smaller
+                    # aperture.
+                    if best_match in wm.persistent_perceptions:
+                        wm.persistent_perceptions.remove(best_match)
+                        wm.persistent_perceptions.append(updated_obj)
+                        moved_from_map = True
                     else:
-                        # GA-24: the room is resolved and the replacement is built COMPLETELY
-                        # before the object leaves the world model, and the swap has nothing
-                        # fallible between the remove and the append.
-                        #
-                        # Before, the object was removed first and re-appended only after
-                        # `scene_graph[new_room]` -- a bare dict index on a key that can be
-                        # None, because the old fallback was `current_room_id`, which is itself
-                        # None when the robot stands outside every room polygon. The KeyError
-                        # was caught by the handler's broad except, which returned success=False
-                        # and left the object gone from the map and from disk permanently.
-                        #
-                        # A move that cannot resolve a room is now REFUSED, not completed: the
-                        # object stays where it is. Per GA-10 the caller offers the refused
-                        # detection to admission rather than dropping it, so the failure mode
-                        # is a visible duplicate instead of a silently lost object -- D14's
-                        # direction. A clean move needs room identity to be trustworthy, which
-                        # is GA-28.
-                        new_room = self.room_manager.assign_room_by_geometry(bbox)
-                        if not new_room or new_room not in self.room_manager.scene_graph:
-                            self.log_both(
-                                "warn",
-                                f"[MOVE REFUSED] '{best_match.label}': no room "
-                                f"resolvable for the new position (room={new_room!r}); "
-                                f"the object stays where it was")
-                            response.success = False
-                            response.message = f"move refused: no resolvable room for {obj_id}"
-                            response.object_id = getattr(best_match, "object_id", "") or ""
-                            response.distance = float(distance)
-                            response.iou = float(iou)
-                            response.replaced = False
-                            return response
+                        wm.persistent_perceptions.append(updated_obj)
+                        moved_from_map = False
 
-                        updated_obj = Object(
-                            best_match.label,
-                            _centroid_from_bbox(bbox),
-                            bbox,
-                            best_match.description,
-                            best_match.color,
-                            best_match.material
+                    if moved_from_map:
+                        self.db.on_object_moved(
+                            best_match,
+                            old_bbox=best_match.bbox,
+                            new_bbox=bbox,
+                            distance=distance,
+                            iou=iou,
+                            step=self.tracking_step_counter
                         )
-                        updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
-                        # GA-171: normalised, exactly as the add path does. This line used
-                        # to assign the raw request value, so a replaced object could carry
-                        # an empty array that every `is not None` guard downstream accepted.
-                        updated_obj.embedding = normalise_embedding(description_embedding)
-                        updated_obj.relations = getattr(best_match, "relations", {
-                            "isIn": set(),
-                            "isOn": set(),
-                            "isNextTo": set(),
-                            "isAbove": set(),
-                            "isUnder": set(),
-                        })
-                        # GA-12: creation_time is written at exactly ONE site in this module --
-                        # the add path -- and was NOT carried across here, so every object that
-                        # had ever moved read as ~1.8 billion seconds old. That made the
-                        # stability branch above unreachable for it (once moved, always
-                        # replaced), removed check_tracking_transition's stability protection,
-                        # and armed the uncertain-cleanup expiry. Absence of a timestamp is
-                        # unknown age, never maximal age.
-                        updated_obj.creation_time = getattr(best_match, "creation_time", None) or time.time()
-                        updated_obj.room_id = new_room
 
-                        # The swap itself: two list operations, nothing between them that can
-                        # raise. Every fallible call -- the two db events, the room geometry
-                        # update, the scene-graph append -- happens AFTER the world model is
-                        # whole again, so a failure in any of them leaves the object present
-                        # rather than deleted. That is the whole point of GA-24; leaving the
-                        # db calls inside the window would have reproduced it with a smaller
-                        # aperture.
-                        if best_match in wm.persistent_perceptions:
-                            wm.persistent_perceptions.remove(best_match)
-                            wm.persistent_perceptions.append(updated_obj)
-                            moved_from_map = True
-                        else:
-                            wm.persistent_perceptions.append(updated_obj)
-                            moved_from_map = False
+                    if distance > UNCERTAIN_MOVE_DISTANCE_M:
+                        if best_match not in self.uncertain_objects:
+                            self.uncertain_objects.append(best_match)
+                            self.db.on_uncertain_added(best_match, step=self.tracking_step_counter)
 
-                        if moved_from_map:
-                            self.db.on_object_moved(
-                                best_match,
-                                old_bbox=best_match.bbox,
-                                new_bbox=bbox,
-                                distance=distance,
-                                iou=iou,
-                                step=self.tracking_step_counter
-                            )
+                    self.room_manager.update_room_geometry(new_room, bbox)
+                    if updated_obj.label not in self.room_manager.scene_graph[new_room]["objects"]:
+                        self.room_manager.scene_graph[new_room]["objects"].append(updated_obj.label)
+                    self.log_operation(f"[MOVED] '{best_match.label}' moved by {distance:.2f}m")
+                    # The same event, joinable. The prose line above names a label, carries no
+                    # identifier and no date, and cannot be joined to anything; it stays for
+                    # a human reading the console.
+                    try:
+                        self.decision_log.write(
+                            "update", getattr(best_match, "object_id", best_match.label),
+                            label=best_match.label, change="moved",
+                            distance_m=round(float(distance), 3),
+                            step=self.tracking_step_counter)
+                    except Exception as e:
+                        self.get_logger().error(f"decision_log update failed: {e}")
 
-                        if distance > 0.8:
-                            if best_match not in self.uncertain_objects:
-                                self.uncertain_objects.append(best_match)
-                                self.db.on_uncertain_added(best_match, step=self.tracking_step_counter)
-
-                        self.room_manager.update_room_geometry(new_room, bbox)
-                        if updated_obj.label not in self.room_manager.scene_graph[new_room]["objects"]:
-                            self.room_manager.scene_graph[new_room]["objects"].append(updated_obj.label)
-                        self.log_operation(f"[MOVED] '{best_match.label}' moved by {distance:.2f}m")
-                        # The same event, joinable. The prose line above names a label, carries no
-                        # identifier and no date, and cannot be joined to anything; it stays for
-                        # a human reading the console.
-                        try:
-                            self.decision_log.write(
-                                "update", getattr(best_match, "object_id", best_match.label),
-                                label=best_match.label, change="moved",
-                                distance_m=round(float(distance), 3),
-                                step=self.tracking_step_counter)
-                        except Exception as e:
-                            self.get_logger().error(f"decision_log update failed: {e}")
+            # GA-26: attributes were written BEFORE the box check and never rolled back, so
+            # a mis-associated detection whose box was refused still left its description,
+            # colour and material on the object. Applied here, past every refusal.
+            if hasattr(request, "description") and request.description:
+                updated_obj.description = request.description
+            if hasattr(request, "color") and request.color:
+                updated_obj.color = request.color
+            if hasattr(request, "material") and request.material:
+                updated_obj.material = request.material
 
             save_persistent_perceptions(self)
 
