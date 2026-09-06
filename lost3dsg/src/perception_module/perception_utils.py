@@ -23,7 +23,7 @@ def compute_fov_volume_from_depth(
             return None
 
         depth_m = depth_image.astype(np.float32) / 1000.0 if depth_image.dtype == np.uint16 else depth_image.astype(np.float32)
-        max_depth = min(depth_threshold, 1.8)
+        max_depth = min(depth_threshold, float(CFG['perception'].get('fov_max_depth_m', 1.8)))
         sampled_depth = depth_m[::stride, ::stride]
         valid_mask = (sampled_depth > 0.1) & (sampled_depth < max_depth) & np.isfinite(sampled_depth)
 
