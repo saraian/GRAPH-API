@@ -62,7 +62,11 @@ hooks:
 
 perception:
   backend: "modal"
-  modal_endpoint: "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
+  # The deployed endpoint URL is a CREDENTIAL: the Modal app exposes fastapi_endpoint
+  # with no proxy auth, so anyone holding this URL can spend the account's GPU budget.
+  # It is read from MODAL_PERCEPTION_URL in the launcher's environment and must never be
+  # committed again. Empty here on purpose.
+  modal_endpoint: ""
   # seconds; a remote perception call. 25.0 was hardcoded and sat below all
   # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
   # INTERIM, NOT MEASURED. 180 was not derived from a distribution and must not be cited as

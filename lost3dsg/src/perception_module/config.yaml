@@ -74,7 +74,11 @@ hooks:
 
 perception:
   backend: "local"        # "modal" | "managed" | "local"
-  modal_endpoint: "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
+  # The deployed endpoint URL is a CREDENTIAL: the Modal app exposes fastapi_endpoint
+  # with no proxy auth, so anyone holding this URL can spend the account's GPU budget.
+  # It is read from MODAL_PERCEPTION_URL in the launcher's environment and must never be
+  # committed again. Empty here on purpose.
+  modal_endpoint: ""
   score_threshold: 0.15
   nms_threshold: 0.50
   # seconds; a remote perception call. 25.0 was hardcoded and sat below all
