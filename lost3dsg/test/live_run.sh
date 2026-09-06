@@ -445,6 +445,12 @@ export FEED_SEED="${FEED_SEED:-7}"
 export FEED_FPS="${FEED_FPS:-3}"
 export FEED_WALK="${FEED_WALK:-6}"
 export FEED_DWELL="${FEED_DWELL:-0}"
+# GA-330. Ground truth ON by default. The scene ships its semantic mesh, the feed host renders
+# it, the feed node publishes /gt/semantic_instance and the archive joins it per detection --
+# and the switch below was 0 in every one of the first 12 bundles, so not one row was ever
+# labelled ("no semantic frame" on 100% of rows). The cost is a third render per frame on the
+# host; the archive refuses on any shape mismatch rather than guessing. Set 0 to opt out.
+export FEED_GT_SEMANTIC="${FEED_GT_SEMANTIC:-1}"
 # MAPPING_ONLY builds a localization map and runs no detector. 900 s is a STARTING POINT AND
 # NOT A MEASUREMENT: the only dwell=0 coverage figure that exists is run A's 7.5 m in 636 s, and
 # run A did not achieve full coverage -- it is the run that died. hm3d_00861's navmesh has FOUR
