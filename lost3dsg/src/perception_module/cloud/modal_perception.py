@@ -337,6 +337,12 @@ class PerceptionService:
                 pixel_values = pixel_values.half()
             with torch.inference_mode():
                 feats = self.clip.get_image_features(pixel_values=pixel_values)
+                # transformers returns a tensor or a BaseModelOutputWithPooling depending on
+                # the version (measured: this image's version returns the latter; the first
+                # deploy of this file 500'd on `.float()`). The pooled projection is the
+                # 512-d vector either way.
+                if not torch.is_tensor(feats):
+                    feats = feats.pooler_output
                 feats = torch.nn.functional.normalize(feats.float(), dim=-1).cpu().numpy()
             for k, (box_i, _) in enumerate(regions):
                 crop_embeddings[box_i] = [round(float(v), 5) for v in feats[k]]
