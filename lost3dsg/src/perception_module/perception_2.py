@@ -391,8 +391,16 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.cycles_skipped_unlocalised = 0
         if self.pose_source == "rtabmap":
             from geometry_msgs.msg import PoseWithCovarianceStamped as _PoseCov
-            self.create_subscription(_PoseCov, "/localization_pose", self._localization_pose_callback, 10)
-            self.log_both("info", f"[POSE] pose_source=rtabmap: cycles run only with a /localization_pose "
+            # rtabmap's nodes run in the `rtabmap` namespace (om6 reads /rtabmap/map the same
+            # way); the absolute /localization_pose name would never receive a message (rule 49,
+            # simulator lane, 2026-09-07). NB: with rtabmap's default
+            # pub_loc_pose_only_when_localizing=false the pose is published every frame whether
+            # localised or not, and this AGE gate cannot trip -- it is live only when the launch
+            # sets that parameter true (simulator's line); a run must report which.
+            self.localization_pose_topic = str(
+                (CFG.get("frames", {}) or {}).get("localization_pose_topic", "/rtabmap/localization_pose"))
+            self.create_subscription(_PoseCov, self.localization_pose_topic, self._localization_pose_callback, 10)
+            self.log_both("info", f"[POSE] pose_source=rtabmap: cycles run only with a {self.localization_pose_topic} "
                                   f"younger than {self.localization_max_age_s:.1f} s")
         self.last_joint_positions = {}
         self.is_stationary = True
@@ -813,6 +821,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                    frame_id=frame_id, n_detections=n_detections,
                    gt_semantic_hit=(hit if isinstance(hit, bool) else None),
                    pose_source=getattr(self, "pose_source", None) if isinstance(getattr(self, "pose_source", None), str) else None,
+                   localization_pose_topic=(getattr(self, "localization_pose_topic", None)
+                                            if isinstance(getattr(self, "localization_pose_topic", None), str) else None),
                    cycles_skipped_unlocalised=(skipped if isinstance(skipped, int) else None))
         self._io_executor.submit(_append_cycle_row, row)
 
