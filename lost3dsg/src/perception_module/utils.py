@@ -280,7 +280,10 @@ def statistical_outlier_removal(points_xyz, k=20, std_ratio=2.0):
         mask: Boolean array (N,) where True = valid point
     """
 
-    if len(points_xyz) < k:
+    # <= k, not < k (reviewed 2026-09-07): with exactly k points the k+1 query pads a
+    # neighbour with inf, every mean distance is inf, the threshold is nan and NOTHING is
+    # kept -- the detection lost its 3D box. Measured: n=30, k=30 -> kept 0/30.
+    if len(points_xyz) <= k:
         return np.ones(len(points_xyz), dtype=bool)
 
     tree = KDTree(points_xyz)

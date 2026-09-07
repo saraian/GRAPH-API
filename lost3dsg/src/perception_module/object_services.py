@@ -1877,6 +1877,14 @@ class ObjectServices(Node):
                         best_match.material
                     )
                     updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
+                    # Reviewed 2026-09-07: a moved object was rebuilt WITHOUT its sightings, so
+                    # co-visibility and the late-description join (GA-108) lost every object
+                    # that ever moved. Carry the identity-bearing state across.
+                    for _attr in ("observations", "shape", "provisional", "ontologically_usable",
+                                  "onto_aligned", "onto_type", "not_seen_in_pov_frames", "creation_time",
+                                  "clip_embedding", "_cycle_bbox_2d"):
+                        if hasattr(best_match, _attr):
+                            setattr(updated_obj, _attr, getattr(best_match, _attr))
                     # GA-171: normalised, exactly as the add path does. This line used
                     # to assign the raw request value, so a replaced object could carry
                     # an empty array that every `is not None` guard downstream accepted.

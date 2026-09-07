@@ -162,6 +162,10 @@ def _description_status(res):
     provenance, so they fall to the content test, same vocabulary. An empty record is
     `unanswered`, never `model_abstained`: a description that never arrived is not a refusal.
     """
+    # Reviewed 2026-09-07: a harvested result that carries ONLY the origin stamp is a call
+    # that produced nothing (a failed grid cell), not a model abstention.
+    if not res or set(res) <= {"origin"}:
+        return "unanswered"
     if not res:
         return "unanswered"
     prov = res.get("provenance") or {}

@@ -57,6 +57,11 @@ node._late_descriptions_callback(msg("pillow#1", "1788727156_528010731", [105, 1
 assert a.description == "a white pillow", "a filled field is never overwritten"
 node._late_descriptions_callback(msg("pillow#1", "9999999999_000000000", [105, 102, 198, 205], description="wrong frame"))
 assert node._n_late_unmatched == 2 and node._n_late_applied == 2
+# Review 2026-09-07: only the box stashed on the object THIS cycle is trusted -- never the
+# object's older bbox dict, never another same-label detection's box from latest_bboxes.
 node.latest_bboxes = {"k": {"label": "bed#1", "bbox": {"bbox_2d": [1, 2, 3, 4]}}}
-assert node._cycle_bbox_2d_for(c) == [1, 2, 3, 4], "GA-316: the cycle's box reaches the sighting"
+c.bbox = {"bbox_2d": [9, 9, 9, 9]}
+assert node._cycle_bbox_2d_for(c) is None, "no stash -> None, not a stale or foreign box"
+c._cycle_bbox_2d = [5, 6, 7, 8]
+assert node._cycle_bbox_2d_for(c) == [5, 6, 7, 8], "the stash is the cycle's box"
 print("OK GA-108/GA-316: late answers reach their origin object; unknown-only fill; unmatched counted; cycle box recovered")

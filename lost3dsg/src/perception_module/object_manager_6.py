@@ -1079,18 +1079,13 @@ class ObjectManagerService(Node):
                     self.object_services.log_both('warn', f"[VLM-late] re-evaluation not queued: {exc}")
 
     def _cycle_bbox_2d_for(self, obj):
-        """This cycle's detector box for `obj`, from the object's own bbox dict when the
-        update path kept it, else from the cycle's incoming boxes by label (GA-316 residual:
-        194 of 212 run C objects had no 2D box on any sighting, so co-visibility could not
-        conclude even where a shared frame existed)."""
-        box = (getattr(obj, "bbox", None) or {}).get("bbox_2d")
-        if box is not None:
-            return box
-        label = getattr(obj, "label", None)
-        for entry in (getattr(self, "latest_bboxes", None) or {}).values():
-            if entry.get("label") == label and (entry.get("bbox") or {}).get("bbox_2d") is not None:
-                return entry["bbox"]["bbox_2d"]
-        return None
+        """THIS cycle's detector box for `obj`, stashed on the object at the four sites that add
+        it to the cycle (`_cycle_bbox_2d`). Reviewed 2026-09-07: reading the object's own bbox
+        dict returned a box from an EARLIER cycle, and a fallback by label returned ANOTHER
+        detection's box -- `obj.label` is the ordinal frozen at admission, and run C holds ten
+        objects labelled "picture frame#2". Only the stash is trusted; absent means None, and
+        co-visibility abstains rather than reading a wrong box."""
+        return getattr(obj, "_cycle_bbox_2d", None)
 
     @staticmethod
     def _frame_seconds(frame_id):
@@ -1353,6 +1348,7 @@ class ObjectManagerService(Node):
                              if getattr(o, "object_id", None) == update_response.object_id),
                             obj,
                         )
+                        matching_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
                         self._note_update(update_response.object_id)
@@ -1417,6 +1413,7 @@ class ObjectManagerService(Node):
                     # re-evaluation path (D15), not the association loop.
                     if similarity > SIM_THRESHOLD:
                         already_seen = True
+                        obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                         current_perception_objects.append(obj)
                         # GA-07: the confirm_stationary guard that stood here is DELETED,
                         # with its twin below and the config key. It read
@@ -1503,6 +1500,7 @@ class ObjectManagerService(Node):
                              if getattr(o, "object_id", None) == update_response.object_id),
                             best_match,
                         )
+                        matching_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
                         self._note_update(update_response.object_id)
@@ -1588,6 +1586,7 @@ class ObjectManagerService(Node):
                     new_obj.onto_aligned = bool(aligned and new_obj.onto_type
                                                 and new_obj.ontologically_usable)
 
+                    new_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                     current_perception_objects.append(new_obj)
                     objects_modified = True
 
