@@ -708,6 +708,10 @@ def graph_data(request: Request = None):
             "label": label,
             "type": "object",
             "room": o.get("room_id") or "",
+            # GA-361: when this object entered the store and when it was last seen (epoch s),
+            # so a replay can show the graph AS IT WAS at a frame. Absent stays absent.
+            "created_at": o.get("creation_time"),
+            "last_seen": o.get("last_perception_timestamp"),
             # No default: a missing confidence rendered as 1.0 showed every object
             # at a confident 100%. Absent stays absent; the viewer renders "—".
             #
