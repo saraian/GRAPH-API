@@ -24,6 +24,7 @@ described a previous copy while the file beside it moved would be worse than non
 import datetime
 import hashlib
 import json
+import os
 import pathlib
 import re
 import sys
@@ -72,6 +73,33 @@ def main():
 
     params_sha = params_file.read_text(errors="replace").strip() if (
         params_file and params_file.is_file()) else ""
+    # GA-359 / owner 2026-09-07 ("rebuild the map at the correct resolution"). The camera model a map
+    # was BUILT with decides whether a run can localise against it, and nothing recorded it: the
+    # 31 Aug map was found to be 640x480 / fx 320 only by parsing its Data.calibration blob while
+    # runs streamed 1280x960 / fx 640. Two instruments, both stamped: the source run's own
+    # calibration.json (beside the integrity marker) and the width/height the db itself stores.
+    camera = None
+    calib = marker_path.parent / "calibration.json"
+    if calib.is_file():
+        try:
+            c = json.loads(calib.read_text())
+            camera = {"resolution": c.get("resolution"), "intrinsics": c.get("intrinsics"),
+                      "hfov_deg": c.get("hfov_deg"), "source": str(calib)}
+        except (OSError, ValueError) as exc:
+            camera = {"error": f"calibration.json unreadable: {exc}"}
+    db_camera = None
+    try:
+        import sqlite3
+        import struct
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        blob = con.execute("select calibration from Data limit 1").fetchone()
+        con.close()
+        if blob and blob[0]:
+            ints = struct.unpack("<12i", bytes(blob[0])[:48])
+            db_camera = {"width": ints[4], "height": ints[5],
+                         "note": "Data.calibration header ints [4],[5] of the first node (rtabmap CameraModel serialisation)"}
+    except Exception as exc:  # a stamp must not fail the publish over a blob it cannot parse; the null says so (rule 5)
+        db_camera = {"error": f"{type(exc).__name__}: {exc}"}
     sidecar = {
         "scene": scene,
         "source_run": source_run,
@@ -92,6 +120,15 @@ def main():
         "drift_check": "bytes and sha256_db are of the PUBLISHED copy as measured at publish "
                        "time. Compare against the file as found — a mismatch is drift (GA-295).",
         "container_path": container_path,
+        "camera": camera,
+        "camera_db": db_camera,
+        "pose_source": os.environ.get("FEED_POSE_SOURCE") or None,
+        "pose_source_note": ("the odometry the map was BUILT with: simulator = Habitat's true pose as /odom "
+                             "(the 31 Aug map was built the same way, undeclared). Declared, not hidden (GA-359)."),
+        "camera_note": ("camera = the source run's calibration.json (what the feed rendered); camera_db = "
+                        "the model stored in the db's first node. A localisation run at another resolution "
+                        "matches features but verifies few closures (measured 2026-09-07: 640x480 map, 1280x960 "
+                        "runs, 1-17 accepted vs 1-78 rejected per run)."),
     }
     out = db.parent / (db.name + ".provenance.json")
     out.write_text(json.dumps(sidecar, indent=2) + "\n")
