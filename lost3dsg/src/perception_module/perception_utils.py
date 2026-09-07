@@ -2,6 +2,43 @@ import os
 import numpy as np
 
 
+def room_frame_due(frames, xy, stride_m, cap, stamp=None):
+    """Is another tagged view of this room due? (GA-350, ported verbatim from GRAPH-API 3a5a818.)
+
+    One frame on entry, then one per `stride_m` of in-room travel, at most `cap`.
+    `frames` is the list already captured (each with an optional "pose"), `xy` the
+    robot's current ground position or None, `stamp` the current image's timestamp.
+
+    The same image is never a new view: the camera stream and the pose stream tick at
+    different rates, so a travel-triggered capture can arrive while the latest frame is
+    still the one already saved. Frames are named by image stamp, so saving it again
+    silently overwrote the earlier view and left the list pointing two entries at one
+    file (run 20260826_0849: 4 captures, 3 files).
+
+    Travel is measured from the last frame that HAS a pose, not simply the last frame.
+    The entry view is often saved before the first agent pose reaches this node (the
+    pose is published at the end of a detection cycle, the descriptions that trigger
+    the entry frame during it), so it is stored unposed; anchoring on it would leave
+    the room stuck at one view forever.
+
+    Without a current pose only the entry frame is taken: we cannot tell travel from
+    standing still, and a burst of near-identical views from one spot would bias a
+    majority vote over them rather than sampling the room.
+    """
+    if cap <= 0 or len(frames) >= cap:
+        return False
+    if not frames:
+        return True
+    if stamp is not None and frames[-1].get("stamp") == stamp:
+        return False
+    if xy is None:
+        return False
+    posed = [frame["pose"] for frame in frames if frame.get("pose")]
+    if not posed:
+        return True          # every view so far is unposed and we have a pose now
+    return float(np.hypot(xy[0] - posed[-1]["x"], xy[1] - posed[-1]["y"])) >= stride_m
+
+
 def compute_fov_volume_from_depth(
     depth_image,
     camera_info,
