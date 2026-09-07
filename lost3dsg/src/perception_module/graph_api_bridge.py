@@ -2055,6 +2055,35 @@ def get_overlay_pose(width: int = 0, height: int = 0, max_age: float = 90.0):
     return JSONResponse(out)
 
 
+@app.get("/cycle_series")
+def get_cycle_series(limit: int = 400):
+    """The per-cycle perception series (GA-334's `perception_latencies.jsonl`), newest last.
+
+    One row per completed cycle: `cycle`, `t`, `frame_id`, `n_detections`, `cycle_ms` (the
+    whole cycle, the number to quote), `total_ms` (the detection sub-span) and `stages_ms`.
+    `n` is the row count in the file, `rows` the last `limit` of them. Absent series -> rows
+    [] and `path` null, never a fabricated series. Same file in live (the run's output dir) and
+    in replay (the bundle), so the Metrics graph is one reader for both.
+    """
+    picked = _pick_run_file(
+        (_active_output_dir(), _active_output_dir().parent, Path("/tmp")),
+        "perception_latencies.jsonl")
+    rows, n = [], 0
+    if picked is not None and picked.exists():
+        keep = ("cycle", "t", "frame_id", "n_detections", "cycle_ms", "total_ms", "stages_ms")
+        with open(picked, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                n += 1
+                rows.append({k: r.get(k) for k in keep})
+        rows = rows[-max(1, limit):]
+    return JSONResponse(content={"rows": rows, "n": n,
+                                 "path": str(picked) if picked is not None else None})
+
+
 @app.get("/health")
 def get_pipeline_health():
     components = {}

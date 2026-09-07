@@ -1558,7 +1558,10 @@
             const phaseText = document.getElementById('perceptionStatusText');
             if (phaseBadge && phaseText && s.phase) {
               const isMoving = s.phase === 'WALK' || s.phase === 'MAPPING';
-              const countdown = (s.phase_remaining_frames !== undefined) ? ` (${s.phase_remaining_frames}f)` : '';
+              // phase_remaining_frames < 0 is the feed host's "unknown by construction" sentinel
+              // (adaptive HOLD, a6a928b); it is not a count and must not read as one.
+              const countdown = (s.phase_remaining_frames === undefined) ? ''
+                : (s.phase_remaining_frames < 0 ? ' (remaining: unknown)' : ` (${s.phase_remaining_frames}f)`);
               phaseBadge.className = isMoving ? 'perception-state-badge' : 'perception-state-badge dwell';
               phaseText.textContent = isMoving ? `${s.phase} (MOTION PAUSE${countdown})` : `${s.phase} (DETECTING 3D${countdown})`;
               // compStatusBadge had no writer anywhere in this file, so it read
