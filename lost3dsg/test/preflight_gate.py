@@ -992,6 +992,78 @@ def a11_tf_buffer_outlasts_frame_window():
     }
 
 
+
+# GA-355 (owner, 2026-09-07: "a preflight rule that checks that ground-truth does not contaminate
+# the inference process"). Design: .handoff/plan/4-preflight-gate/1-a12-gt-isolation-GA-355.md.
+GT_TOKENS = r"FEED_GT_|GT_SEMANTIC|gt_semantic|habitat_gt|/gt/semantic_instance|semantic_sensor|gt_codec|_gt_"
+# Files that may name a GT token, each with the reason it is allowed. Anything else FAILS.
+A12_ALLOWED_FILES = {
+    "test/habitat_feed_host.py": "renders the semantic sensor (producer)",
+    "test/live_run.sh": "exports FEED_GT_SEMANTIC and stamps gt_semantic",
+    "test/preflight_gate.py": "this probe names the tokens",
+    "test/test_preflight_gate.py": "the negative test names the tokens",
+    "src/perception_module/habitat_feed_node.py": "relays the blob to /gt/semantic_instance (transport)",
+    "src/perception_module/gt_codec.py": "the run-length codec",
+    "src/perception_module/detection_archive.py": "the archive join: habitat_gt_* row keys, validation only",
+    "src/perception_module/perception_2.py": "subscription + cache + hand-off to the archive; functions audited below",
+    "src/perception_module/test_perception_smoke.py": "smoke test",
+    "src/perception_module/habitat_camera_node.py": "NOT installed (GA-299); host-side node",
+    "src/perception_module/habitat_camera_objects_node.py": "NOT installed (GA-299); host-side node",
+}
+# Inside perception_2.py a GT token may occur only in these functions (AST, not grep).
+# _record_cycle_ms carries the gt_semantic_hit latency key: MEASURED by this probe's first run on the
+# clean tree, which named it in place of the two names I had guessed (rule 26: run it).
+A12_ALLOWED_FUNCTIONS = {"__init__", "_gt_semantic_callback", "_gt_semantic_for",
+                         "_archive_detections", "_record_cycle_ms"}
+
+
+def a12_gt_isolation(root=None):
+    """No file outside the allow-list, and no function of perception_2.py outside its allow-list,
+    may name a ground-truth token. Static, over the copied tree the gate runs from -- the same
+    root a7 hashes. A reader added to the association loop, the labeler or the describer path
+    would show up here as a file or a function not on the list, which is the reading this probe
+    exists to produce (rule 18: the answer differs when contamination exists).
+
+    What it does NOT assert: the pose channel. habitat_feed_node publishes /odom and the
+    odom->base_link TF from the simulator's exact pose, and rtabmap supplies map->odom only, so
+    "pose_source is never habitat GT" fails by construction on the odometry axis. Recorded as a
+    stamp until the owner rules (design note, question 1).
+    """
+    import ast
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.abspath(root or os.path.dirname(here))
+    if not os.path.isdir(os.path.join(root, "src")) or not os.path.exists("/bin/grep"):
+        return SKIPPED, {"reason": f"no src/ under {root} or /bin/grep absent"}
+    dirs = [d for d in ("src", "test", "launch") if os.path.isdir(os.path.join(root, d))]
+    cmd = ["/bin/grep", "-rlE", GT_TOKENS, "--include=*.py", "--include=*.sh", "--include=*.yaml",
+           "--exclude-dir=__pycache__", "--exclude-dir=.ruff_cache"] + dirs
+    out = subprocess.run(cmd, cwd=root, capture_output=True, text=True).stdout.split()
+    files = sorted(f.replace(os.sep, "/") for f in out)
+    not_allowed = [f for f in files if f not in A12_ALLOWED_FILES]
+    bad_functions = {}
+    p2 = os.path.join(root, "src", "perception_module", "perception_2.py")
+    if os.path.isfile(p2):
+        import re
+        src = open(p2).read()
+        tree = ast.parse(src)
+        lines = src.splitlines()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                body = "\n".join(lines[node.lineno - 1:node.end_lineno])
+                if re.search(GT_TOKENS, body) and node.name not in A12_ALLOWED_FUNCTIONS:
+                    bad_functions[node.name] = node.lineno
+    ok = not not_allowed and not bad_functions
+    return ok, {
+        "root": root,
+        "files_with_gt_tokens": files,
+        "not_allowed_files": not_allowed,
+        "perception_2_functions_not_allowed": bad_functions,
+        "pose_source": "simulator odometry (habitat_feed_node /odom + TF) re-anchored by rtabmap map->odom; NOT asserted (design question 1)",
+        "reason": "" if ok else (f"ground-truth tokens outside the allow-list: files {not_allowed}, "
+                                 f"perception_2 functions {bad_functions}"),
+    }
+
 PROBES = {
     "a1": ("aligner_identity", a1_aligner_identity),
     "a2": ("config_identity", a2_config_identity),
@@ -1003,6 +1075,7 @@ PROBES = {
     "a8": ("stack_imports", a8_stack_imports),
     "a10": ("frame_age_vs_rejected", a10_frame_age_rejected_frames),
     "a11": ("tf_buffer_outlasts_frames", a11_tf_buffer_outlasts_frame_window),
+    "a12": ("gt_isolation", a12_gt_isolation),
 }
 
 # PROBES THAT ONLY MAKE SENSE AFTER THE STACK IS UP, kept in a SEPARATE dict on purpose.
@@ -1134,6 +1207,7 @@ def main(argv=None):
         # 20260903_105431 before it started -- which is the gate working, not failing.
         "a10": lambda: a10_frame_age_rejected_frames(args.expect_cycle_s),
         "a11": a11_tf_buffer_outlasts_frame_window,
+        "a12": a12_gt_isolation,
     }
 
     bound.update({pid: fn for pid, (_n, fn, _s) in external.items()})
