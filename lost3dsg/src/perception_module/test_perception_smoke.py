@@ -952,6 +952,70 @@ def gt_semantic_cache_depth():
     assert n >= 100, "the depth must cover 11 f/s x a 9.4 s p95 lookup latency"
 
 
+def oriented_boxes_are_yaw_only():
+    """GA-360: an emitted orientation is a yaw about map z and nothing else. The PCA output
+    carries exactly yaw / oriented_center / oriented_extents (no roll, pitch or quaternion),
+    and the corner builder every renderer uses yields a box whose eight corners sit on two z
+    levels with vertical edges parallel to z -- for ANY yaw. A rotation about another axis
+    breaks both assertions."""
+    import math
+
+    import detection_pipeline as dp
+    import numpy as _np
+    from box_view import box_corners_map
+
+    rng = _np.random.default_rng(360)
+    pts = rng.normal(size=(400, 3)) * _np.array([1.5, 0.3, 0.4]) + _np.array([2.0, 1.0, 0.7])
+    ob = dp.pca_oriented_box(pts)
+    assert ob is not None and set(ob) == {"yaw", "oriented_center", "oriented_extents"}, ob
+    assert isinstance(ob["yaw"], float) and -math.pi / 2 <= ob["yaw"] < math.pi / 2, ob["yaw"]
+    for yaw_deg in (0.0, 17.0, -45.0, 89.0, 123.0):
+        box = {"oriented_center": [2.0, 1.0, 0.7], "oriented_extents": [3.0, 0.6, 0.8],
+               "yaw": math.radians(yaw_deg)}
+        corners, oriented = box_corners_map(box)
+        assert oriented and len(corners) == 8
+        zs = sorted({round(float(c[2]), 9) for c in corners})
+        assert zs == [round(0.7 - 0.4, 9), round(0.7 + 0.4, 9)], f"yaw {yaw_deg}: z levels {zs}"
+        # the corner list pairs (sx, sy, -ez) with (sx, sy, +ez): each vertical edge is pure z
+        for lo, hi in zip(corners[0::2], corners[1::2]):
+            assert abs(lo[0] - hi[0]) < 1e-9 and abs(lo[1] - hi[1]) < 1e-9, f"yaw {yaw_deg}: tilted edge"
+    for forbidden in ("roll", "pitch", "quat", "quaternion", "rotation"):
+        assert forbidden not in ob, forbidden
+
+
+def localisation_gate():
+    """GA-359: under pose_source rtabmap a cycle runs only with a /localization_pose younger
+    than localization_max_age_s; a stale or absent pose skips the cycle and counts it; under
+    simulator the gate is open and the counter stays a measured 0; the latency row carries both."""
+    import time as _t
+
+    node = perception_2.DetectObjectsNode.__new__(perception_2.DetectObjectsNode)
+    node.log_both = lambda *a, **k: None
+    node.pose_source = "rtabmap"
+    node.localization_max_age_s = 5.0
+    node._last_localization_time = None
+    node.cycles_skipped_unlocalised = 0
+    ran = []
+    node.publish_objects = lambda: ran.append(1)
+    node._perception_lock = __import__("threading").Lock()
+    node.get_clock = lambda: rosstub.Any()
+    node.first_detection_done = False
+    node.is_stationary = True
+    node.manual_trigger_requested = False
+    perception_2.DetectObjectsNode._run_perception_cycle(node)          # no pose ever: skip
+    assert ran == [] and node.cycles_skipped_unlocalised == 1
+    node._last_localization_time = _t.monotonic() - 6.0                 # stale: skip
+    perception_2.DetectObjectsNode._run_perception_cycle(node)
+    assert ran == [] and node.cycles_skipped_unlocalised == 2
+    node._last_localization_time = _t.monotonic() - 1.0                 # fresh: run
+    perception_2.DetectObjectsNode._run_perception_cycle(node)
+    assert ran == [1] and node.cycles_skipped_unlocalised == 2
+    node.pose_source = "simulator"
+    node._last_localization_time = None
+    perception_2.DetectObjectsNode._run_perception_cycle(node)           # gate off
+    assert ran == [1, 1] and node.cycles_skipped_unlocalised == 2
+
+
 for name, fn in [("description chain (build -> publish -> world model)", description_chain),
                  ("install list covers every import (GA-128)", install_list),
                  ("empty embedding is absent, not a crash (GA-171)", empty_embedding),
@@ -975,6 +1039,8 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("ontology veto reaches the channel and names its source (GA-309)", ontology_veto_seam),
                  ("overlap null charges the larger box, not the sliver (GA-307)", overlap_null_uses_larger_box),
                  ("GT semantic cache: 120 compressed frames, exact lookup (GA-353)", gt_semantic_cache_depth),
+                 ("oriented boxes are yaw-only: two z levels, vertical edges (GA-360)", oriented_boxes_are_yaw_only),
+                 ("localisation gate: stale pose skips and counts, simulator arm open (GA-359)", localisation_gate),
                  ("merge_pending carries needs_max; a bad blob raises (GA-339)", merge_pending_blob),
                  ("merge path (dry run)", merge_path)]:
     check(name, fn)

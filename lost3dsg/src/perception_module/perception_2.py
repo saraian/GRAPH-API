@@ -375,6 +375,25 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.base_joints = list(_frames_cfg.get("motion_watch_base") or [])
         self._motion_absent_logged = False
         self.position_threshold = 0.05
+        # GA-359. The pose source, and the gate that refuses to place a box on a stale
+        # localisation. Under `rtabmap` the localiser publishes /localization_pose ONLY while
+        # localised; a cycle with no pose newer than `localization_max_age_s` is SKIPPED and
+        # COUNTED (`cycles_skipped_unlocalised` in the latency row). Never a GT fallback: a box
+        # placed with the simulator's true pose in an rtabmap run is the contamination a12
+        # exists to refuse (rule 14, rule 11: hold, do not invent). Under `simulator` the gate
+        # is off and the counter stays 0 -- measured, not absent.
+        self.pose_source = os.environ.get("FEED_POSE_SOURCE", "simulator").strip().lower()
+        if self.pose_source not in ("simulator", "rtabmap"):
+            raise ValueError(f"FEED_POSE_SOURCE must be 'simulator' or 'rtabmap', got {self.pose_source!r}")
+        self.localization_max_age_s = float(
+            (CFG.get("frames", {}) or {}).get("localization_max_age_s", 5.0))
+        self._last_localization_time = None      # monotonic seconds of the newest /localization_pose
+        self.cycles_skipped_unlocalised = 0
+        if self.pose_source == "rtabmap":
+            from geometry_msgs.msg import PoseWithCovarianceStamped as _PoseCov
+            self.create_subscription(_PoseCov, "/localization_pose", self._localization_pose_callback, 10)
+            self.log_both("info", f"[POSE] pose_source=rtabmap: cycles run only with a /localization_pose "
+                                  f"younger than {self.localization_max_age_s:.1f} s")
         self.last_joint_positions = {}
         self.is_stationary = True
         self.time_stationary_start = None
@@ -444,7 +463,26 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             return True
         return False
 
+    def _localization_pose_callback(self, _msg):
+        self._last_localization_time = time.monotonic()
+
+    def _localised(self):
+        """GA-359. True when a cycle may place boxes: always under `simulator`; under `rtabmap`
+        only while a /localization_pose younger than localization_max_age_s has arrived."""
+        if getattr(self, "pose_source", "simulator") != "rtabmap":
+            return True
+        t = getattr(self, "_last_localization_time", None)
+        return t is not None and (time.monotonic() - t) <= self.localization_max_age_s
+
     def _run_perception_cycle(self, reason=""):
+        if not self._localised():
+            # Skipped, not deferred with a stale pose. Logged at info once per skip because the
+            # count is the evidence (rule 5); the hold continues on the feed side by itself.
+            self.cycles_skipped_unlocalised += 1
+            self.log_both("info", f"[POSE] cycle skipped: not localised (no /localization_pose within "
+                                  f"{self.localization_max_age_s:.1f} s); skipped so far "
+                                  f"{self.cycles_skipped_unlocalised}")
+            return
         if not self._perception_lock.acquire(blocking=False):
             self.log_both("debug", "Perception cycle skipped: previous cycle is still running")
             return
@@ -768,9 +806,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # semantic frame was still cached when the archive looked. Only a real bool is a
         # measurement; anything else reads as "not measured".
         hit = getattr(self, "_last_gt_semantic_hit", None)
+        # GA-359: which authority placed this cycle's boxes, and how many cycles were refused
+        # for want of a fresh localisation up to now. Both additive keys.
+        skipped = getattr(self, "cycles_skipped_unlocalised", None)
         row = dict(lat, t=lat["last_updated"], cycle=self._cycle_count,
                    frame_id=frame_id, n_detections=n_detections,
-                   gt_semantic_hit=(hit if isinstance(hit, bool) else None))
+                   gt_semantic_hit=(hit if isinstance(hit, bool) else None),
+                   pose_source=getattr(self, "pose_source", None) if isinstance(getattr(self, "pose_source", None), str) else None,
+                   cycles_skipped_unlocalised=(skipped if isinstance(skipped, int) else None))
         self._io_executor.submit(_append_cycle_row, row)
 
     # last /get_config answer and when it was fetched; rebound per instance on use

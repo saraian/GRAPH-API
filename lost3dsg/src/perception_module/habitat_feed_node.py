@@ -157,11 +157,22 @@ class HabitatFeedNode(Node):
         self.static_tf = StaticTransformBroadcaster(self)
 
         now = self.get_clock().now().to_msg()
-        # same static links as habitat_camera_node: map->odom identity, camera->optical
-        self.static_tf.sendTransform([
-            _tf(now, FRAME_MAP, FRAME_ODOM, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
-            _tf(now, FRAME_CAMERA, FRAME_OPTICAL, (0.0, 0.0, 0.0), (-0.5, 0.5, -0.5, 0.5)),
-        ])
+        # GA-359. ONE authority for map -> odom. Under FEED_POSE_SOURCE=simulator (the A arm,
+        # the default) this node publishes the static identity, so every box is placed with
+        # Habitat's true pose. Under rtabmap it publishes NOTHING for that link: rtabmap's
+        # localiser owns it (publish_tf_map, simulator lane's launch flag). Two publishers for
+        # one transform was the state every run before this had (GA-362: publish_tf was
+        # undeclared and rtabmap published beside the identity; the identity won by luck).
+        # An unknown value raises: a pose source is not something to default silently.
+        self.pose_source = os.environ.get("FEED_POSE_SOURCE", "simulator").strip().lower()
+        if self.pose_source not in ("simulator", "rtabmap"):
+            raise ValueError(f"FEED_POSE_SOURCE must be 'simulator' or 'rtabmap', got {self.pose_source!r}")
+        static_links = [_tf(now, FRAME_CAMERA, FRAME_OPTICAL, (0.0, 0.0, 0.0), (-0.5, 0.5, -0.5, 0.5))]
+        if self.pose_source == "simulator":
+            static_links.insert(0, _tf(now, FRAME_MAP, FRAME_ODOM, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
+        self.static_tf.sendTransform(static_links)
+        self.get_logger().info(f"[feed] pose_source={self.pose_source}: map->odom "
+                               f"{'identity from this node' if self.pose_source == 'simulator' else 'left to rtabmap'}")
 
         self._host = os.environ.get("FEED_HOST", "127.0.0.1")
         self._port = int(os.environ.get("FEED_PORT", "7799"))
