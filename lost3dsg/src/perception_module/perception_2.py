@@ -143,6 +143,14 @@ def _append_cycle_row(row):
 # model ever needs finer input. The base64 payload dominates vlm_ms, not the answer.
 VLM_IMAGE_MAX_SIDE = 512
 
+# GA-353. Depth of the ground-truth semantic frame cache, in frames. Derived, not tuned:
+# the feed host renders at most ~11 f/s at 1280x960 (measured 89 ms/frame, config note) and
+# the archive looks the frame up after the detection span, p95 ~9.4 s on 192014, so the frame
+# must survive 11 x 9.4 = ~103 arrivals; 120 with margin. Compressed blobs (~130 KB each) make
+# that ~16 MB, where 8 DECODED frames were already 39 MB. Logged at startup and carried in the
+# per-cycle row as `gt_semantic_hit`, so a bundle can show whether the depth held.
+GT_SEMANTIC_CACHE_FRAMES = 120
+
 
 def _encode_for_vlm(img):
     h, w = img.shape[:2]
@@ -305,8 +313,12 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # exact stamp: a GT label from a neighbouring frame would be worse than none.
             self._gt_semantic = {}
             from sensor_msgs.msg import CompressedImage as _CompressedImage
+            # GA-353: the subscription queue must not be the shallow cache in disguise; the
+            # cache depth is the bound, the queue only has to keep up with the feed rate.
             self.create_subscription(_CompressedImage, "/gt/semantic_instance",
-                                     self._gt_semantic_callback, 10)
+                                     self._gt_semantic_callback, 30)
+            self.log_both("info", f"[GT] semantic frame cache: {GT_SEMANTIC_CACHE_FRAMES} frames "
+                                  f"(compressed, decoded at lookup)")
 
     def _on_cloud_map(self, msg):
         """Keep the newest cloud as an (N,3) array. GA-218.
@@ -752,8 +764,13 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             except Exception:
                 pass
         self._cycle_count = getattr(self, "_cycle_count", 0) + 1
+        # GA-353: None when archiving is off (not measured), else whether this cycle's exact
+        # semantic frame was still cached when the archive looked. Only a real bool is a
+        # measurement; anything else reads as "not measured".
+        hit = getattr(self, "_last_gt_semantic_hit", None)
         row = dict(lat, t=lat["last_updated"], cycle=self._cycle_count,
-                   frame_id=frame_id, n_detections=n_detections)
+                   frame_id=frame_id, n_detections=n_detections,
+                   gt_semantic_hit=(hit if isinstance(hit, bool) else None))
         self._io_executor.submit(_append_cycle_row, row)
 
     # last /get_config answer and when it was fetched; rebound per instance on use
@@ -1146,16 +1163,27 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         key = frame_id_from_stamp(msg.header.stamp)
         if key is None:
             return
-        # GA-330 follow-up: the frame arrives as gt_codec's lossless run-length form
-        # (CompressedImage), not a raw 32SC1 Image; see habitat_feed_node.py for why.
-        import gt_codec
-        arr = gt_codec.decode(bytes(msg.data))
-        if arr is None:
-            self.log_both("warn", f"[GT] semantic frame {key} could not be decoded; ignored")
-            return
-        self._gt_semantic[key] = arr
-        while len(self._gt_semantic) > 8:
+        # GA-353. The cache holds the COMPRESSED blob (gt_codec's run-length form, ~2.7% of the
+        # raw 32SC1 frame, ~130 KB at 1280x960) and decodes at lookup, so it can be deep. It
+        # held 8 DECODED frames, and the archive's exact-stamp lookup runs after the detection
+        # span (median 3.1 s): at run H's stalled 0.16 f/s the frame was still there (485/506
+        # joined); once GA-335 let the feed run at 3 f/s it was evicted 9 frames later, and run
+        # 152446 joined 33 of 770 ("no semantic frame" x735). Rule 15: the feed fix armed this.
+        self._gt_semantic[key] = bytes(msg.data)
+        while len(self._gt_semantic) > GT_SEMANTIC_CACHE_FRAMES:
             self._gt_semantic.pop(next(iter(self._gt_semantic)))
+
+    def _gt_semantic_for(self, frame_id):
+        """-> the decoded semantic frame for EXACTLY this frame_id, or None. Never a
+        neighbouring frame: a GT label from another frame is worse than none."""
+        blob = getattr(self, "_gt_semantic", {}).get(frame_id)
+        if blob is None:
+            return None
+        import gt_codec
+        arr = gt_codec.decode(blob)
+        if arr is None:
+            self.log_both("warn", f"[GT] semantic frame {frame_id} could not be decoded; ignored")
+        return arr
 
     def _archive_detections(self, detections, bboxes_3d, centroids_3d, image_raw,
                             transform, cycle_stamp, crops_data=None, depth=None):
@@ -1179,7 +1207,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         arch.record_depth(frame_id, depth)
         # EXACT stamp match only. If the semantic frame for THIS frame_id is not held, the
         # rows carry no GT and say why -- never the nearest available frame.
-        semantic = getattr(self, "_gt_semantic", {}).get(frame_id)
+        semantic = self._gt_semantic_for(frame_id)
+        # GA-353. Read by the per-cycle latency row so a bundle measures its own GT join per
+        # cycle instead of discovering it from the archive afterwards.
+        self._last_gt_semantic_hit = semantic is not None
         cam = None
         try:
             t = transform.transform.translation

@@ -914,6 +914,44 @@ def merge_pending_blob():
                 os.environ["GRAPH_API_OUTPUT_DIR"] = old
 
 
+def gt_semantic_cache_depth():
+    """GA-353: the GT semantic cache keeps the compressed blob for GT_SEMANTIC_CACHE_FRAMES
+    arrivals and decodes at lookup, so a frame looked up 100 arrivals later is still exact;
+    the 9th-oldest of 8 (the old depth) must NOT be the eviction point any more; a frame
+    beyond the depth is None, never a neighbour; and the cycle row says whether it hit."""
+    import gt_codec
+    import numpy as _np
+    from detection_archive import frame_id_from_stamp
+
+    node = perception_2.DetectObjectsNode.__new__(perception_2.DetectObjectsNode)
+    node.log_both = lambda *a, **k: None
+    node._gt_semantic = {}
+
+    class Stamp:
+        def __init__(self, i):
+            self.sec, self.nanosec = 1700000000 + i, 123
+    frames = {}
+    for i in range(perception_2.GT_SEMANTIC_CACHE_FRAMES + 30):
+        arr = _np.full((6, 8), i, dtype=_np.int32)
+        arr[0, 0] = 7
+        msg = rosstub.Any()
+        msg.header = rosstub.Any()
+        msg.header.stamp = Stamp(i)
+        msg.data = gt_codec.encode(arr)
+        perception_2.DetectObjectsNode._gt_semantic_callback(node, msg)
+        frames[i] = (frame_id_from_stamp(Stamp(i)), arr)
+    n = perception_2.GT_SEMANTIC_CACHE_FRAMES
+    assert len(node._gt_semantic) == n, len(node._gt_semantic)
+    newest = n + 30 - 1
+    fid, arr = frames[newest - 100]                      # 100 arrivals ago (9 was the old cliff)
+    got = perception_2.DetectObjectsNode._gt_semantic_for(node, fid)
+    assert got is not None and _np.array_equal(got, arr), "a frame 100 arrivals back must decode exactly"
+    assert isinstance(next(iter(node._gt_semantic.values())), bytes), "the cache holds blobs, not arrays"
+    fid_old, _ = frames[newest - n]                      # one past the depth
+    assert perception_2.DetectObjectsNode._gt_semantic_for(node, fid_old) is None, "beyond the depth is None, never a neighbour"
+    assert n >= 100, "the depth must cover 11 f/s x a 9.4 s p95 lookup latency"
+
+
 for name, fn in [("description chain (build -> publish -> world model)", description_chain),
                  ("install list covers every import (GA-128)", install_list),
                  ("empty embedding is absent, not a crash (GA-171)", empty_embedding),
@@ -936,6 +974,7 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("yaw fused over accepted views, extents from one (GA-315 part 2)", orientation_fusion),
                  ("ontology veto reaches the channel and names its source (GA-309)", ontology_veto_seam),
                  ("overlap null charges the larger box, not the sliver (GA-307)", overlap_null_uses_larger_box),
+                 ("GT semantic cache: 120 compressed frames, exact lookup (GA-353)", gt_semantic_cache_depth),
                  ("merge_pending carries needs_max; a bad blob raises (GA-339)", merge_pending_blob),
                  ("merge path (dry run)", merge_path)]:
     check(name, fn)
