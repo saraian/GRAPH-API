@@ -688,7 +688,7 @@ DWELL_MODE = os.environ.get("FEED_DWELL_MODE", "adaptive").strip().lower()
 if DWELL_MODE not in ("adaptive", "fixed"):
     raise SystemExit(f"[feed] FEED_DWELL_MODE={DWELL_MODE!r}; expected adaptive or fixed")
 DWELL_MIN = int(os.environ.get("FEED_DWELL_MIN", 18))
-DWELL_MAX = int(os.environ.get("FEED_DWELL_MAX", 45))
+DWELL_MAX = int(os.environ.get("FEED_DWELL_MAX", 90))
 DWELL_SIGNAL_MAX_AGE_S = float(os.environ.get("FEED_DWELL_SIGNAL_MAX_AGE_S", 10.0))
 
 
