@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import time
 import uuid
@@ -151,6 +152,110 @@ def _apply_orientation(bbox, request):
         bbox["oriented_extents"] = [float(v) for v in request.oriented_extents]
     else:
         bbox["has_orientation"] = False
+
+
+def _axial_delta(a, b):
+    """Smallest angle between two box AXES (period pi), radians, >= 0."""
+    d = (a - b) % math.pi
+    return min(d, math.pi - d)
+
+
+def _is_oriented(bbox):
+    return bool(bbox) and "yaw" in bbox and bool(bbox.get("oriented_extents"))
+
+
+def fuse_orientation(obj, bbox):
+    """GA-315 part 2. -> (the box to store, the accumulator to store beside it as `_yaw_acc`).
+
+    Replaces last-write-wins on the yaw. Measured over 20260903_230232: of 40 objects with an
+    early and a final yaw, 11 differed by more than 20 degrees, every one by whole-dict
+    replacement (`obj.bbox = bbox`), so the LAST close-range view -- the clipped wedge whose
+    PCA axis is its hypotenuse (GA-315) -- overwrote every good far view before it. With part 1
+    a clipped view arrives with NO yaw, and the same replacement then erased a good yaw with a
+    yaw-less dict instead of a 45-degree one (rule 15, named by the ontology lane).
+
+    The fused yaw is the AXIAL mean of every accepted view: the mean of (cos 2yaw, sin 2yaw),
+    halved. A box axis has period pi, and a scalar mean of yaws either side of +-90 degrees
+    lands on the wrong axis (53 degrees on the audit's synthetic sequence; 0 for views at +85
+    and -85). `oriented_center` / `oriented_extents` stay those of ONE measured view -- never a
+    synthesised box (GA-20's rule): the representative is replaced by an arriving view when
+    that view lies at least as close to the fused axis as the representative does AT THAT
+    MOMENT, so it is the view nearest the axis as the views came, not the nearest in
+    hindsight (on the audit's four far views it keeps the view 3.3 degrees off the axis while
+    a later one sits 1.2 degrees off). `yaw_view` is that view's own yaw, so a reader can see
+    by how many degrees the stored extents were measured off the stored axis; `yaw_views` is
+    the count fused.
+
+    A view without a yaw updates the AABB and leaves the axis where the accepted views put it.
+    `has_orientation` says whether ANY accepted view exists. Keys are added, never removed.
+    ponytail: one representative view is kept, greedily; keep every view's box if the
+    representative ever needs re-choosing after a merge. A merge keeps the keeper's accumulator
+    and drops the discard's views (the keeper's box is the one kept anyway, GA-20).
+    """
+    acc = getattr(obj, "_yaw_acc", None) if obj is not None else None
+    if acc is None:
+        acc = {"n": 0, "c": 0.0, "s": 0.0, "view": None}
+        prior = getattr(obj, "bbox", None) if obj is not None else None
+        if _is_oriented(prior):
+            acc = _acc_add(acc, prior)
+    out = dict(bbox)
+    if _is_oriented(bbox):
+        acc = _acc_add(acc, bbox)
+    else:
+        acc = dict(acc)
+    if acc["n"] == 0:
+        return out, acc
+    fused = 0.5 * math.atan2(acc["s"], acc["c"])
+    view = acc["view"]
+    if _is_oriented(bbox) and (view is None
+                               or _axial_delta(float(bbox["yaw"]), fused)
+                               <= _axial_delta(float(view["yaw"]), fused)):
+        view = {"yaw": float(bbox["yaw"]),
+                "oriented_center": [float(v) for v in bbox["oriented_center"]],
+                "oriented_extents": [float(v) for v in bbox["oriented_extents"]]}
+    acc["view"] = view
+    out["yaw"] = float(fused)
+    out["oriented_center"] = list(view["oriented_center"])
+    out["oriented_extents"] = list(view["oriented_extents"])
+    out["yaw_view"] = view["yaw"]
+    out["yaw_views"] = acc["n"]
+    out["has_orientation"] = True
+    return out, acc
+
+
+def _acc_add(acc, bbox):
+    th = 2.0 * float(bbox["yaw"])
+    return {"n": acc["n"] + 1, "c": acc["c"] + math.cos(th), "s": acc["s"] + math.sin(th),
+            "view": acc["view"]}
+
+
+# GA-314. Credibility order of the admission grades for the merge survivor rule. An ungraded
+# object (no hook wrote a verdict) ranks with no_grounds: both mean "nothing checked", and
+# inventing a fifth level for it would be a constant nobody measured.
+GRADE_RANK = {"admit": 0, "hold": 1, "no_grounds": 2, "decline": 3}
+
+
+def merge_rank(o):
+    """Which of two merging objects survives: the LOWER tuple is the keeper.
+
+    GA-314. Measured over 20260904_192014: in 3 of the 5 merges the DELETED side was graded
+    `admit` and the survivor `decline`, because the rank read only the description and the
+    age -- and the grade never reached the object at all. It does now (object_manager_6
+    copies it beside `entity`), and it ranks FIRST: a declined box is the one the envelope
+    says is not the object it claims to be, so it must not absorb a credible neighbour.
+
+    After the grade the pre-GA-314 rule stands unchanged (GA-25): a described object
+    outranks an undescribed one; then a KNOWN age ranks ahead of an unknown one, so an
+    unstamped object cannot claim seniority it has no evidence for (reading absent as 0 is
+    the GA-12 defect: the newcomer always wins); then the ESTABLISHED identity outlives the
+    newcomer, D14's prefer-strict reading; then object_id, so two objects created in the
+    same tick still resolve deterministically.
+    """
+    grade = GRADE_RANK.get(getattr(o, "admission_grade", None), GRADE_RANK["no_grounds"])
+    described = 0 if str(o.description).strip().lower() == 'unknown' else -1
+    ct = getattr(o, "creation_time", None)
+    return (grade, described, 1 if ct is None else 0, ct if ct is not None else 0.0,
+            str(getattr(o, "object_id", "") or o.label))
 
 
 def _centroid_from_bbox(bbox):
@@ -368,6 +473,9 @@ def save_persistent_perceptions(node):
             # a different question. Additive: a reader that does not look for this key
             # cannot break on it.
             "creation_time": getattr(obj, "creation_time", None),
+            # GA-314. The admission grade the survivor rule ranks on, so a bundle can show
+            # which side of a merge was the credible one. Additive; None when ungraded.
+            "admission_grade": getattr(obj, "admission_grade", None),
             "last_perception_timestamp": getattr(obj, "last_perception_time", None),
             "last_perception_datetime": (
                 datetime.fromtimestamp(obj.last_perception_time, tz=timezone.utc).isoformat()
@@ -852,6 +960,10 @@ class ObjectServices(Node):
             blob = {
                 "t": time.time(),
                 "sweep": self._merge_sweep,
+                # GA-339 (a). The most sweeps any pending pair still needs, so the feed host
+                # can bound a hold without scanning `pairs`, which is capped at 40 below.
+                # 0 when nothing is pending: measured, not absent.
+                "needs_max": max((d["needs"] - d["streak"] for d in pending), default=0),
                 # Additive, NOT a rename: found/dashboard/replay_server.py:1297 renders
                 # `d.threshold` from this blob, and a renamed key reads as undefined there
                 # with no error. Same log-odds unit as the evidence engine's row.
@@ -869,7 +981,12 @@ class ObjectServices(Node):
             with open(tmp, "w") as fh:
                 json.dump(blob, fh)
             os.replace(tmp, path)
-        except Exception as exc:
+        except OSError as exc:
+            # GA-339 (b), rule 14. Only the write itself may fail softly: the feed host reads
+            # an absent or stale file as UNKNOWN and holds to its cap, so a disk error costs
+            # frames, not a merge. A non-serialisable value (TypeError / ValueError from
+            # json.dump) is a bug in this function and crashes -- it used to be swallowed by
+            # `except Exception`, which made the feed hold to cap at every stop with no trace.
             self.get_logger().warn(f"[ASSOC] could not publish merge_pending: {exc}")
 
     def _hypothesis_gc(self, live_keys):
@@ -919,11 +1036,23 @@ class ObjectServices(Node):
                  if getattr(o, "onto_aligned", False)}
         types.discard(None)
         n_types = len(types) if len(types) >= 2 else None
+        # GA-309. The ontology veto is supplied by the admission hook, through ONE optional
+        # attribute: `disjoint(type_a, type_b) -> bool`. An absent attribute is "not supplied"
+        # -- exactly the arm every bundle before 2026-09-07 ran, where channel_ontology never
+        # vetoed -- and the record then carries no `disjoint_source`. The hook is the object
+        # manager's; it hands it over at startup (`self.object_services.filter_hook`). The
+        # callable raises on an unknown class name by contract (rule 14); nothing here
+        # substitutes a False for it.
+        hook = getattr(self, "filter_hook", None)
+        disjoint_fn = getattr(hook, "disjoint", None)
         ctx = assoc.AssocContext(
             map_volume_m3=map_volume,
             n_rooms=max(len(rooms), 1),
             n_types=n_types,
             cost_ratio=MERGE_COST_RATIO,
+            disjoint_fn=disjoint_fn,
+            disjoint_source=(getattr(hook, "name", type(hook).__name__)
+                             if disjoint_fn is not None else None),
             # GA-186: the detector's 2D boxes now reach the object through Bbox3d.msg, so
             # co-visibility can tell a duplicate detection of one object from two objects in
             # one frame -- and vetoes only on a MEASURED disjoint overlap. The function
@@ -1376,28 +1505,9 @@ class ObjectServices(Node):
                                  required=MERGE_MIN_EVIDENCE, room_a=room_a, room_b=room_b)
                         continue
 
-                    # GA-25: which identity survives must follow the evidence, not list
-                    # order. Three of the four cases used to fall through to `a` -- i.e.
-                    # whichever was inserted into the world model first.
-                    #
-                    # A described object outranks an undescribed one; then the ESTABLISHED
-                    # identity outlives the newcomer (earlier creation_time), which is D14's
-                    # prefer-strict reading; then object_id, so two objects created in the
-                    # same tick still resolve deterministically.
-                    #
-                    # An ABSENT field is unknown, never zero -- it must not rank. Before
-                    # GA-12 a moved object carried no creation_time, so reading a missing
-                    # value as 0 would have made it always look oldest and always win.
-                    def _rank(o):
-                        described = 0 if str(o.description).strip().lower() == 'unknown' else -1
-                        ct = getattr(o, "creation_time", None)
-                        # A KNOWN age ranks ahead of an unknown one (0 before 1), so an
-                        # unstamped object cannot claim seniority it has no evidence for.
-                        # Encoding it the other way round reproduces the very defect GA-12
-                        # fixed: absent read as "oldest", and the newcomer always wins.
-                        return (described, 1 if ct is None else 0, ct if ct is not None else 0.0,
-                                str(getattr(o, "object_id", "") or o.label))
-                    keeper, discard = (a, b) if _rank(a) <= _rank(b) else (b, a)
+                    # GA-25 / GA-314: which identity survives follows the evidence, not list
+                    # order -- credibility first, then the rule `merge_rank` documents.
+                    keeper, discard = (a, b) if merge_rank(a) <= merge_rank(b) else (b, a)
 
                     # GA-20: the surviving box is the keeper's OWN OBSERVATION, not a
                     # synthesised one. It used to be six independent face-wise means, so two
@@ -1768,6 +1878,11 @@ class ObjectServices(Node):
                 "z_max": request.z_max,
             }
             _apply_orientation(bbox, request)   # GA-312
+            # GA-315 part 2. The view as it arrived, and the box to STORE for an in-place
+            # update: AABB from this view, axis fused over every accepted view. A real move
+            # (the rebuild branch below) starts from the raw view again.
+            raw_bbox = dict(bbox)
+            bbox, yaw_acc = fuse_orientation(best_match, raw_bbox)
 
             description_embedding = getattr(request, "description_embedding", None)
 
@@ -1780,6 +1895,7 @@ class ObjectServices(Node):
                 old_bbox = best_match.bbox
                 if old_bbox is None:
                     best_match.bbox = bbox
+                    best_match._yaw_acc = yaw_acc   # GA-315 part 2
                     save_persistent_perceptions(self)
                     response.success = True
                     response.message = "bbox initialized"
@@ -1803,6 +1919,7 @@ class ObjectServices(Node):
                     # used to be ASSIGNED distance=0.0, iou=1.0 -- two measurements
                     # replaced by constants, so every door read as stationary.
                     best_match.bbox = bbox
+                    best_match._yaw_acc = yaw_acc   # GA-315 part 2
                     updated_obj = best_match
 
                 elif bbox_is_suspicious(bbox, old_bbox):
@@ -1823,6 +1940,7 @@ class ObjectServices(Node):
 
                 elif distance < UPDATE_IN_PLACE_DISTANCE_M or iou >= TRACKING_IOU_THRESHOLD:
                     best_match.bbox = bbox
+                    best_match._yaw_acc = yaw_acc   # GA-315 part 2
                     self.room_manager.update_room_geometry(
                         getattr(best_match, "room_id", self.room_manager.current_room_id),
                         bbox
@@ -1833,6 +1951,7 @@ class ObjectServices(Node):
                 elif (time.time() - (time.time() if getattr(best_match, "creation_time", None) is None
                                      else best_match.creation_time)) < OBJECT_STABILITY_TIMEOUT:
                     best_match.bbox = bbox
+                    best_match._yaw_acc = yaw_acc   # GA-315 part 2
                     updated_obj = best_match
 
                 else:
@@ -1853,6 +1972,9 @@ class ObjectServices(Node):
                     # is a visible duplicate instead of a silently lost object -- D14's
                     # direction. A clean move needs room identity to be trustworthy, which
                     # is GA-28.
+                    # GA-315 part 2: a moved object is a fresh sighting; its axis restarts
+                    # from this view alone, not from views of where it used to stand.
+                    bbox = raw_bbox
                     new_room = self.room_manager.assign_room_by_geometry(bbox)
                     if not new_room or new_room not in self.room_manager.scene_graph:
                         self.log_both(
@@ -1877,12 +1999,13 @@ class ObjectServices(Node):
                         best_match.material
                     )
                     updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
+                    _, updated_obj._yaw_acc = fuse_orientation(None, raw_bbox)   # GA-315 part 2
                     # Reviewed 2026-09-07: a moved object was rebuilt WITHOUT its sightings, so
                     # co-visibility and the late-description join (GA-108) lost every object
                     # that ever moved. Carry the identity-bearing state across.
                     for _attr in ("observations", "shape", "provisional", "ontologically_usable",
                                   "onto_aligned", "onto_type", "not_seen_in_pov_frames", "creation_time",
-                                  "clip_embedding", "_cycle_bbox_2d"):
+                                  "clip_embedding", "_cycle_bbox_2d", "admission_grade"):
                         if hasattr(best_match, _attr):
                             setattr(updated_obj, _attr, getattr(best_match, _attr))
                     # GA-171: normalised, exactly as the add path does. This line used

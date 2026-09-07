@@ -331,14 +331,22 @@ def channel_overlap(bounds_a, bounds_b, map_volume_m3):
     """Log-odds from 3D containment and generalized IoU. The channel that catches fragments.
 
     THE NULL, and why this has no fitted constant. Under "different objects", the two boxes
-    are two independent objects in the mapped volume. The probability that an independent
-    object's box would land so as to produce an intersection of volume V is approximately
-    V / V_map -- the chance its centre falls in the overlap region. Under "same object" an
-    overlap of that size is unremarkable, probability ~1. So
+    are two independent objects in the mapped volume. For one box to overlap the other at
+    all, its centre must land inside the OTHER box, so the chance of any overlap is about
+    V_larger / V_map -- and under "same object" an overlap is unremarkable, probability ~1. So
 
-        log-odds  ~  log( 1 / (V_intersect / V_map) )  =  log(V_map / V_intersect)
+        log-odds  ~  log( 1 / (V_larger / V_map) )  =  log(V_map / V_larger)
 
-    V_map is MEASURED from the map (category b) and V_intersect from the boxes. Nothing is
+    GA-307 (owner ruling 2026-09-07, "ship it, quote no gain"). This used to read
+    log(V_map / V_intersect): the docstring derived one quantity and the code computed
+    another, and the error is unbounded as the contained object shrinks -- a ceiling light
+    sharing 61 cm3 with a door scored the 8.0 cap while two views of one bookshelf sharing
+    0.29 m3 scored 5.9 (5.5 to 11.4 excess nats on 192014). Replayed corpus-wide (17
+    evidence-engine bundles, real Hypothesis): 291 -> 296 merges, 0 net cross-kind -- the
+    GA-328 guard already holds the fragment regime, so this corrects the LOGGED NUMBER and
+    is not a merge-quality lever. Say nothing else about it.
+
+    V_map is MEASURED from the map (category b) and V_larger from the boxes. Nothing is
     tuned. The approximation is stated plainly: it treats object placement as uniform over
     the mapped volume, which is wrong in detail -- objects cluster on floors and against
     walls -- and wrong in the CONSERVATIVE direction, since real clustering makes chance
@@ -366,9 +374,11 @@ def channel_overlap(bounds_a, bounds_b, map_volume_m3):
         return max(-MAX_CHANNEL_LOG_ODDS, giou), {
             "containment": 0.0, "giou": giou, "intersection_m3": 0.0}
 
-    llr = math.log(map_volume_m3 / inter) * contain
+    larger = max(box_volume(bounds_a), box_volume(bounds_b), inter)
+    llr = math.log(map_volume_m3 / larger) * contain
     llr = float(np.clip(llr, -MAX_CHANNEL_LOG_ODDS, MAX_CHANNEL_LOG_ODDS))
-    return llr, {"containment": contain, "giou": giou, "intersection_m3": inter}
+    return llr, {"containment": contain, "giou": giou, "intersection_m3": inter,
+                 "larger_m3": larger}
 
 
 # ---------------------------------------------------------------------------------------
@@ -501,7 +511,8 @@ def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30):
 # ---------------------------------------------------------------------------------------
 
 
-def channel_ontology(type_a, type_b, aligned_a, aligned_b, disjoint_fn=None, n_types=None):
+def channel_ontology(type_a, type_b, aligned_a, aligned_b, disjoint_fn=None, n_types=None,
+                     disjoint_source=None):
     """Prior or veto when BOTH sides are aligned to the ontology; abstain otherwise.
 
     An unaligned label is a string somebody's detector emitted. Treating "pillow" == "pillow"
@@ -519,14 +530,21 @@ def channel_ontology(type_a, type_b, aligned_a, aligned_b, disjoint_fn=None, n_t
         return Abstain("one or both sides unaligned; alignment is required before use")
     if type_a is None or type_b is None:
         return Abstain("aligned but no type resolved")
+    # GA-309. `disjoint_source` names the component that answered when a function was
+    # supplied (rule 2). Absent from the record = nobody was asked, so the "disjoint": False
+    # below is the literal default -- which is what EVERY row before 2026-09-07 was
+    # (`disjoint_fn` was never supplied anywhere in either tree). The function may RAISE on a
+    # class name its ontology does not carry; that is its contract (rule 14) and it is not
+    # caught here.
+    src = {"disjoint_source": disjoint_source} if disjoint_fn is not None else {}
     if disjoint_fn is not None and disjoint_fn(type_a, type_b):
-        return VETO, {"type_a": type_a, "type_b": type_b, "disjoint": True}
+        return VETO, {"type_a": type_a, "type_b": type_b, "disjoint": True, **src}
     if type_a == type_b:
         if not n_types or n_types < 2:
             return Abstain("type count unknown, no null to compare against")
         return float(np.clip(math.log(n_types), 0.0, MAX_CHANNEL_LOG_ODDS)), {
-            "type_a": type_a, "type_b": type_b, "n_types": n_types}
-    return 0.0, {"type_a": type_a, "type_b": type_b, "disjoint": False}
+            "type_a": type_a, "type_b": type_b, "n_types": n_types, **src}
+    return 0.0, {"type_a": type_a, "type_b": type_b, "disjoint": False, **src}
 
 
 # ---------------------------------------------------------------------------------------
@@ -794,7 +812,8 @@ def score_pair(a, b, ctx):
 
     s.add("ontology", channel_ontology(
         a.onto_type, b.onto_type, a.onto_aligned, b.onto_aligned,
-        disjoint_fn=ctx.disjoint_fn, n_types=ctx.n_types))
+        disjoint_fn=ctx.disjoint_fn, n_types=ctx.n_types,
+        disjoint_source=getattr(ctx, "disjoint_source", None)))
     s.add("appearance", channel_appearance(
         a.descriptors, b.descriptors, ctx.cone_half_angle_rad,
         a.descriptor_spread, b.descriptor_spread))
@@ -1058,16 +1077,20 @@ class AssocObject:
 
 class AssocContext:
     __slots__ = ("map_volume_m3", "n_rooms", "n_types", "cone_half_angle_rad",
-                 "disjoint_fn", "cost_ratio", "overlap_2d_fn")
+                 "disjoint_fn", "disjoint_source", "cost_ratio", "overlap_2d_fn")
 
     def __init__(self, map_volume_m3=None, n_rooms=None, n_types=None,
                  cone_half_angle_rad=math.radians(45.0), disjoint_fn=None, cost_ratio=20.0,
-                 overlap_2d_fn=None):
+                 overlap_2d_fn=None, disjoint_source=None):
         self.map_volume_m3 = map_volume_m3
         self.n_rooms = n_rooms
         self.n_types = n_types
         self.cone_half_angle_rad = cone_half_angle_rad
         self.disjoint_fn = disjoint_fn
+        # GA-309. WHICH component answers the disjointness question (rule 2), recorded on
+        # every ontology-channel row where a function was supplied. None = not supplied,
+        # and then the channel's "disjoint": False is a default, not a statement.
+        self.disjoint_source = disjoint_source
         self.cost_ratio = cost_ratio
         # GA-181: supplied by the caller, which is the only place 2D boxes in a shared frame
         # are available. None -> co-visibility abstains instead of vetoing.

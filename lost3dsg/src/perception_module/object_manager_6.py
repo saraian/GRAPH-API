@@ -34,6 +34,7 @@ from nlp_utils import get_embedding, lost_similarity, lost_similarity_detailed, 
 from object_services import (
     ObjectServices,
     ensure_relations,
+    fuse_orientation,
     infer_spatial_relations,
     save_persistent_perceptions,
     save_uncertain_objects,
@@ -657,6 +658,9 @@ class ObjectManagerService(Node):
         # Extension seam (config `hooks`, see hooks.py): admission filter, node
         # refiner and the re-evaluation queue. Blueprints unless configured.
         self.filter_hook, self.refiner_hook, self.reeval = load_hooks(CFG)
+        # GA-309. The association layer asks the SAME hook for ontological disjointness
+        # (optional `disjoint` attribute, read in object_services._assoc_build).
+        self.object_services.filter_hook = self.filter_hook
         self._reeval_last = {}            # object_id -> monotonic time of its last queueing (GA-11)
         self._reeval_debounced = 0        # counters, so a run can report how often the bounds bit
         self._reeval_fanout_capped = 0
@@ -1430,7 +1434,9 @@ class ObjectManagerService(Node):
                         # an early return that fires when it is true, so it is provably False
                         # at this point. Real protection belongs ABOVE that early return and
                         # is a different change from this one.
-                        obj.bbox = bbox
+                        # GA-315 part 2: the AABB is this view's; the axis is fused over
+                        # every accepted view, never the last one's alone.
+                        obj.bbox, obj._yaw_acc = fuse_orientation(obj, bbox)
                         objects_modified = True
                         # GA-11: an in-place box write is a change to THIS object; queue it.
                         self._note_update(getattr(obj, "object_id", None) or obj.label, reason="box_written")
@@ -1585,6 +1591,10 @@ class ObjectManagerService(Node):
                     new_obj.ontologically_usable = not new_obj.provisional
                     new_obj.onto_aligned = bool(aligned and new_obj.onto_type
                                                 and new_obj.ontologically_usable)
+                    # GA-314. The admission grade rides beside `entity`, read out of the same
+                    # generic annotation, so the merge survivor rule (`merge_rank`) can put
+                    # credibility before age. None when the hook wrote no verdict.
+                    new_obj.admission_grade = (ann.get("verdict") or {}).get("grade")
 
                     new_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                     current_perception_objects.append(new_obj)

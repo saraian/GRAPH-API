@@ -586,20 +586,32 @@ def pca_gets_aabb_points():
         node = dp.DetectionPipelineMixin.__new__(dp.DetectionPipelineMixin)
         node.log_both = lambda *a, **k: None
         det = Det("chair")
-        det.mask = _np.zeros((4, 4, 1), dtype=_np.uint8)
-        det.mask[0, 0, 0] = 1
+        # GA-315 part 1: a mask pixel within 2 px of an image edge means "clipped" and gets
+        # no PCA at all, so the in-frame case needs an interior pixel (contract from the
+        # ontology lane, 2026-09-07). An 8x8 frame has an interior; a 4x4 one does not.
+        det.mask = _np.zeros((8, 8, 1), dtype=_np.uint8)
+        det.mask[4, 4, 0] = 1
         bbox = {"x_min": 0.0}
 
         class CI:
             k = [1.0, 0, 0, 0, 1.0, 0, 0, 0, 0]
 
         dp.DetectionPipelineMixin._add_pca_orientation(node, [det], [bbox], None, CI(), "map")
+        clipped = Det("chair")
+        clipped.mask = _np.zeros((8, 8, 1), dtype=_np.uint8)
+        clipped.mask[0, 0, 0] = 1
+        clipped_bbox = {"x_min": 0.0}
+        dp.DetectionPipelineMixin._add_pca_orientation(node, [clipped], [clipped_bbox], None, CI(), "map")
     finally:
         dp._filter_object_points, dp._apply_transform = saved_fop, saved_at
     assert seen.get("remove_outliers") is True, f"PCA must not lift un-SOR'd points: {seen}"
     assert seen.get("sor_k") == 30 and seen.get("sor_std") == 1.5, seen
     assert seen.get("max_points_per_obj") == 20000, seen
     assert "oriented_extents" in bbox, f"the stubbed point set must still yield a box: {bbox}"
+    if hasattr(dp, "mask_touches_border"):   # GA-315 part 1 landed
+        assert "oriented_extents" not in clipped_bbox and \
+            clipped_bbox.get("orientation_skipped") == "mask_clipped", \
+            f"a clipped mask must get no PCA keys and the skip marker: {clipped_bbox}"
 
 
 def crop_file_gets_describer_pixels():
@@ -688,6 +700,220 @@ def save_persistent_roundtrip():
             assert ids2 == {"obj_a"}, f"the removal must be the only change: {ids2}"
 
 
+def merge_survivor_by_grade():
+    """GA-314: the merge survivor ranks credibility BEFORE age. A declined older object
+    must not outlive an admitted newer one; with equal grades the GA-25 rule stands
+    (older wins); an ungraded object ranks with no_grounds; and the grade must survive
+    the persisted JSON so a bundle can show which side was the credible one."""
+    import tempfile
+
+    from object_services import merge_rank
+
+    class Stub:
+        description = "unknown"
+
+    old, new = Stub(), Stub()
+    old.label, old.object_id, old.creation_time, old.admission_grade = "doorway", "obj_old", 1.0, "decline"
+    new.label, new.object_id, new.creation_time, new.admission_grade = "bed", "obj_new", 2.0, "admit"
+    assert merge_rank(new) < merge_rank(old), "admit must outrank decline whatever the age"
+    old.admission_grade = "admit"
+    assert merge_rank(old) < merge_rank(new), "equal grades: the older identity survives (GA-25)"
+    ungraded = Stub()
+    ungraded.label, ungraded.object_id, ungraded.creation_time = "chair", "obj_u", 0.5
+    assert merge_rank(new) < merge_rank(ungraded), "admit outranks an ungraded object"
+    old.admission_grade = "decline"
+    assert merge_rank(ungraded) < merge_rank(old), "an ungraded object outranks a declined one"
+
+    original = object_services.PROJECT_ROOT
+    wm.persistent_perceptions.clear()
+    a = object_info.Object("chair", [0.0, 0.0, 0.0], BOX)
+    a.object_id, a.admission_grade = "obj_g", "hold"
+    wm.persistent_perceptions.append(a)
+    with tempfile.TemporaryDirectory() as tmp:
+        object_services.PROJECT_ROOT = tmp
+        try:
+            object_services.save_persistent_perceptions(rosstub.Any())
+            with open(os.path.join(tmp, "output", "persistent_perception.json")) as fh:
+                on_disk = json.load(fh)
+        finally:
+            object_services.PROJECT_ROOT = original
+    assert on_disk[0]["admission_grade"] == "hold", "the grade must reach the bundle"
+
+
+def orientation_fusion():
+    """GA-315 part 2: the stored yaw is the axial mean of the accepted views, the extents
+    come from ONE measured view (the one nearest that axis), a yaw-less view keeps the
+    axis and updates the AABB, and the +-90 wrap does not fold the axis to zero."""
+    import math
+
+    from object_services import fuse_orientation
+
+    def view(yaw_deg, x=0.0):
+        return {"x_min": x, "x_max": x + 2.0, "y_min": 0.0, "y_max": 1.0, "z_min": 0.0, "z_max": 0.5,
+                "yaw": math.radians(yaw_deg), "oriented_center": [x + 1.0, 0.5, 0.25],
+                "oriented_extents": [2.0, 1.0, 0.5]}
+
+    class Obj:
+        bbox = None
+
+    # the audit's real bed: four far views, then the clipped 45-degree wedge
+    o = Obj()
+    for deg in (-86.6, -82.2, -77.7, -68.7):
+        o.bbox, o._yaw_acc = fuse_orientation(o, view(deg))
+    fused = math.degrees(o.bbox["yaw"])
+    assert abs(fused - (-78.9)) < 1.0, f"axial mean of the four views: {fused}"
+    assert o.bbox["yaw_views"] == 4 and o.bbox["has_orientation"] is True
+    # the representative is chosen as the views arrive (greedy, documented): it is a REAL
+    # view, within a few degrees of the axis, and its extents are the ones stored
+    rep = math.degrees(o.bbox["yaw_view"])
+    assert rep in (-86.6, -82.2, -77.7, -68.7) or abs(rep - (-82.2)) < 1e-6, rep
+    assert abs(rep - fused) < 5.0, f"the representative must sit near the axis: {rep} vs {fused}"
+    o.bbox, o._yaw_acc = fuse_orientation(o, view(46.0))
+    pulled = math.degrees(o.bbox["yaw"])
+    assert abs(pulled - (-78.9)) < 10.0 and o.bbox["yaw_views"] == 5, \
+        f"one wedge view must not capture the axis: {pulled}"
+    assert abs(math.degrees(o.bbox["yaw_view"]) - 46.0) > 30.0, "the wedge is not the representative"
+
+    # a clipped (yaw-less) view: AABB moves, axis stays, count stays
+    unoriented = {k: v for k, v in view(0.0, x=0.3).items()
+                  if k not in ("yaw", "oriented_center", "oriented_extents")}
+    unoriented["has_orientation"] = False
+    o.bbox, o._yaw_acc = fuse_orientation(o, unoriented)
+    assert o.bbox["x_min"] == 0.3 and abs(math.degrees(o.bbox["yaw"]) - pulled) < 1e-9
+    assert o.bbox["yaw_views"] == 5 and o.bbox["has_orientation"] is True and "oriented_extents" in o.bbox
+
+    # the wrap: +85 and -85 are the SAME axis, 10 degrees apart; a scalar mean says 0
+    w = Obj()
+    for deg in (85.0, -85.0):
+        w.bbox, w._yaw_acc = fuse_orientation(w, view(deg))
+    d = (math.degrees(w.bbox["yaw"]) - 90.0) % 180.0
+    assert min(d, 180.0 - d) < 1e-6, f"the fused axis must sit at +-90, not 0: {math.degrees(w.bbox['yaw'])}"
+
+    # an object with no views and an unoriented arrival: nothing invented
+    n = Obj()
+    n.bbox, n._yaw_acc = fuse_orientation(n, dict(unoriented))
+    assert "yaw" not in n.bbox and n._yaw_acc["n"] == 0
+
+
+def ontology_veto_seam():
+    """GA-309: the hook's optional `disjoint` reaches the ontology channel and the record
+    names which component answered; an absent attribute reproduces today's record exactly
+    (no `disjoint_source`, "disjoint": False as the literal default); a raise is not caught."""
+    import association as assoc
+
+    def obj(oid, typ):
+        o = assoc.AssocObject(object_id=oid, bbox=dict(BOX), centroid=[0.5, 0.5, 0.5], label=oid,
+                              onto_type=typ)
+        o.onto_aligned = True
+        return o
+
+    a, b = obj("a", "Bed"), obj("b", "Pillow")
+
+    class Hook:
+        name = "kg-test"
+
+        def disjoint(self, x, y):
+            return {x, y} == {"Bed", "Pillow"}
+
+    svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
+    svc.filter_hook = Hook()
+    ctx, _built = object_services.ObjectServices._assoc_build(svc, [])
+    assert ctx.disjoint_fn is not None and ctx.disjoint_source == "kg-test", ctx.disjoint_source
+    ps = assoc.score_pair(a, b, ctx)
+    assert ps.vetoed and ps.vetoed_by == ["ontology"], ps.vetoed_by
+    assert ps.channels["ontology"]["disjoint_source"] == "kg-test", ps.channels["ontology"]
+
+    class NoAttr:
+        name = "exemplar"
+
+    svc.filter_hook = NoAttr()
+    ctx0, _ = object_services.ObjectServices._assoc_build(svc, [])
+    assert ctx0.disjoint_fn is None and ctx0.disjoint_source is None
+    ps0 = assoc.score_pair(a, b, ctx0)
+    # the record every bundle before 2026-09-07 carried, byte for byte: no disjoint_source
+    assert not ps0.vetoed and ps0.channels["ontology"] == {
+        "log_odds": 0.0, "type_a": "Bed", "type_b": "Pillow", "disjoint": False}, ps0.channels["ontology"]
+
+    class Raises:
+        name = "kg-strict"
+
+        def disjoint(self, x, y):
+            raise KeyError(x)
+
+    svc.filter_hook = Raises()
+    ctx1, _ = object_services.ObjectServices._assoc_build(svc, [])
+    try:
+        assoc.score_pair(a, b, ctx1)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("an unknown class name must raise through the channel (rule 14)")
+
+
+def overlap_null_uses_larger_box():
+    """GA-307: the overlap null is the LARGER box's share of the map, not the intersection's,
+    so a sliver of contact scores less than a real containment of a big fragment."""
+    import math
+
+    import association as assoc
+
+    vmap = 100.0
+    door = (0.0, 1.0, 0.0, 0.1, 0.0, 2.0)                  # 0.2 m3
+    light = (0.5, 0.55, 0.0, 0.05, 1.9, 2.0)               # ~250 cm3, fully inside the door
+    lo_sliver, d = assoc.channel_overlap(door, light, vmap)
+    assert abs(d["larger_m3"] - 0.2) < 1e-9, d
+    assert abs(lo_sliver - math.log(vmap / 0.2) * 1.0) < 1e-9, (lo_sliver, d)
+    big_a = (0.0, 2.0, 0.0, 1.0, 0.0, 1.0)                 # 2 m3
+    big_b = (0.1, 2.1, 0.0, 1.0, 0.0, 1.0)                 # 2 m3, 1.9 m3 shared
+    lo_same, _ = assoc.channel_overlap(big_a, big_b, vmap)
+    assert lo_same < lo_sliver, "two views of one large object score below a tiny fragment: the null says a small box is the likelier chance overlap"
+    # a genuine fragment/whole pair keeps a strong positive term
+    assert lo_sliver > 3.0 and lo_same > 3.0, (lo_sliver, lo_same)
+
+
+def merge_pending_blob():
+    """GA-339 (a)+(b): needs_max rides in merge_pending.json (0 when nothing is pending), and a
+    non-serialisable value RAISES instead of being warned away (rule 14)."""
+    import tempfile
+
+    import association as assoc
+
+    svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
+    svc.get_logger = lambda: rosstub.Any()
+    svc._merge_sweep = 7
+    h = assoc.Hypothesis(("a", "b"))
+    h.state = {"overlap": 5.0}
+    h._streak = 0
+    h2 = assoc.Hypothesis(("c", "d"))
+    h2.state = {"overlap": 4.0}
+    h2._streak = 1
+    svc._hypotheses = {("a", "b"): h, ("c", "d"): h2}
+    old = os.environ.get("GRAPH_API_OUTPUT_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["GRAPH_API_OUTPUT_DIR"] = tmp
+        try:
+            object_services.ObjectServices._publish_merge_pending(svc)
+            with open(os.path.join(tmp, "merge_pending.json")) as fh:
+                blob = json.load(fh)
+            assert blob["pending"] == 2 and blob["needs_max"] == object_services.MERGE_MIN_CONSECUTIVE, blob
+            svc._hypotheses = {}
+            object_services.ObjectServices._publish_merge_pending(svc)
+            with open(os.path.join(tmp, "merge_pending.json")) as fh:
+                assert json.load(fh)["needs_max"] == 0
+            svc._merge_sweep = object()   # not JSON-serialisable
+            try:
+                object_services.ObjectServices._publish_merge_pending(svc)
+            except TypeError:
+                pass
+            else:
+                raise AssertionError("a non-serialisable blob must raise, not warn")
+        finally:
+            if old is None:
+                os.environ.pop("GRAPH_API_OUTPUT_DIR", None)
+            else:
+                os.environ["GRAPH_API_OUTPUT_DIR"] = old
+
+
 for name, fn in [("description chain (build -> publish -> world model)", description_chain),
                  ("install list covers every import (GA-128)", install_list),
                  ("empty embedding is absent, not a crash (GA-171)", empty_embedding),
@@ -706,6 +932,11 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("inside_area", inside_area),
                  ("save_uncertain_objects", save_uncertain),
                  ("reassign_objects_by_geometry", reassign_rooms),
+                 ("merge survivor: credibility before age (GA-314)", merge_survivor_by_grade),
+                 ("yaw fused over accepted views, extents from one (GA-315 part 2)", orientation_fusion),
+                 ("ontology veto reaches the channel and names its source (GA-309)", ontology_veto_seam),
+                 ("overlap null charges the larger box, not the sliver (GA-307)", overlap_null_uses_larger_box),
+                 ("merge_pending carries needs_max; a bad blob raises (GA-339)", merge_pending_blob),
                  ("merge path (dry run)", merge_path)]:
     check(name, fn)
 
