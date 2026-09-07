@@ -401,6 +401,21 @@ export FOUND_KG_ALIASES="${FOUND_KG_ALIASES:-}"
 export FOUND_ONTOLOGY_EXT="${FOUND_ONTOLOGY_EXT:-}"
 export FOUND_STORE_PATH="${FOUND_STORE_PATH:-/ws/output/knowledge_graph.ttl}"
 export FOUND_SCENE="${FOUND_SCENE:-$SCENE_ARG}"
+# GA-350 (ontology; owner-authorised set C, 2026-09-07). ROOM TYPING (P_room): one room-view frame
+# -> a room type, asked of the same multimodal endpoint the describer uses (regolo_config.yaml `vlm`),
+# read by found/room_type.py's RoomTyper from ITS OWN keys. Ported from GRAPH-API 3a5a818's launcher:
+# without these the first tagged room frame raises "no room-typing model configured" and ends the run.
+# The container path is /ws/output (the bundle mount); the -e list below forwards all four.
+export FOUND_ROOM_VLM_BASE_URL="${FOUND_ROOM_VLM_BASE_URL:-https://api.regolo.ai/v1}"
+export FOUND_ROOM_VLM_MODEL="${FOUND_ROOM_VLM_MODEL:-gemma4-31b}"
+export FOUND_ROOM_VLM_API_KEY="${FOUND_ROOM_VLM_API_KEY:-${OPENAI_API_KEY:-}}"
+export FOUND_ROOM_TYPES_PATH="${FOUND_ROOM_TYPES_PATH:-/ws/output/room_types.json}"
+# Room VIEW frames (perception's half of GA-350, vendor 4c0e0dc): object_manager_6 saves a room view
+# on room entry and every ROOM_FRAME_STRIDE_M metres of travel, at most ROOM_FRAME_MAX per room, and
+# the typer reads those. Defaults here equal object_manager_6.py:85-86 so the stamp says what ran.
+export ROOM_FRAME_MAX="${ROOM_FRAME_MAX:-5}"
+export ROOM_FRAME_STRIDE_M="${ROOM_FRAME_STRIDE_M:-1.5}"
+echo "    room typing: $FOUND_ROOM_VLM_MODEL at $FOUND_ROOM_VLM_BASE_URL -> $FOUND_ROOM_TYPES_PATH (key $([ -n "$FOUND_ROOM_VLM_API_KEY" ] && echo set || echo UNSET))"
 
 # Feed geometry. These were interpolated ONLY into the launch line 160 lines below and appeared
 # NOWHERE in the bundle — a run recorded its seed and nothing else about how the agent moved.
@@ -750,6 +765,13 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
              "min_support": $FOUND_MIN_SUPPORT, "rooms_enforced": $FOUND_ROOM_ENFORCE,
     "corpus_order_note": "empty FOUND_CORPUS_ORDER means the code default in found/dims.py, standard,hssd,metrictree,abo,procthor as of GA-266, and the field then says so rather than naming an order. GA-282: this note claimed the hardcoded abo,metrictree fallback was PAST while line 638 still carried it, so every bundle up to and including 20260903_110622 records corpus_order abo,metrictree for a run that used standard(125) hssd(63) metrictree(56) abo(56) by its own decision records. The note outlived the fix it described. Read the corpus cited in each decision's margins, never this field, for any bundle stamped before 2026-09-03.",
     "merge_min_consecutive": ${MERGE_MIN_CONSECUTIVE:-2},
+    "room_vlm_base_url": "$FOUND_ROOM_VLM_BASE_URL",
+    "room_vlm_model": "$FOUND_ROOM_VLM_MODEL",
+    "room_vlm_key_set": $([ -n "${FOUND_ROOM_VLM_API_KEY:-}" ] && echo true || echo false),
+    "room_types_path": "$FOUND_ROOM_TYPES_PATH",
+    "room_typing_note": "GA-350: the room typer (found/room_type.py) reads these four names itself. The key is never stamped, only whether one was set. Ported from GRAPH-API 3a5a818.",
+    "room_frames": {"max": $ROOM_FRAME_MAX, "stride_m": $ROOM_FRAME_STRIDE_M,
+                    "seam": "GA-350: object_manager_6 saves a room view on room entry and per stride_m of travel (at most max per room); the proposal carries room_frames/room_frame to the typer (vendor 4c0e0dc)."},
              "aligner": "$FOUND_ALIGNER", "ontology_ext": "$FOUND_ONTOLOGY_EXT",
              "corpus_order": "${FOUND_CORPUS_ORDER:-<code default: standard,hssd,metrictree,abo,procthor>}",
              "kg_aliases": ${FOUND_KG_ALIASES:-1},
@@ -902,6 +924,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES -e FOUND_KG_DISJOINT -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
   -e FOUND_EMBED_MODEL -e FOUND_KG_TOP -e FOUND_KG_Z -e FOUND_LEXICAL -e FOUND_ONTOLOGY \
   -e FOUND_ROOM_TYPES_PATH -e FOUND_ROOM_VLM_API_KEY -e FOUND_ROOM_VLM_BASE_URL \
+  -e ROOM_FRAME_MAX -e ROOM_FRAME_STRIDE_M \
   -e FOUND_ROOM_VLM_MODEL -e FOUND_SCENE_INSTANCE -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \
   -e KG_BRIDGE_SRC \
   -e BRIDGE_PORT -e BRIDGE_RAW_MAX_AGE -e BRIDGE_ANNOTATED_MAX_AGE -e BRIDGE_FEED_PROBE_BACKOFF \
