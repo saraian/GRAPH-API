@@ -1,3 +1,4 @@
+import atexit
 import base64
 import binascii
 import collections
@@ -1466,7 +1467,42 @@ def _with_overlay(jpeg):
 _OVERLAY_FAILURES = {"n": 0, "last": None}
 
 
+# GA-354: how often each source actually answered. _last_frame_source was set on every pick and
+# read by nobody but the badge, so the owner's "why does the label alternate" had no number.
+# Counted PER SERVED PICK (one per /frame.jpg request or /feed part), not per camera frame;
+# written to the run's output dir every 30 s and at exit as feed_source_counts.json (a new
+# file, rule 6), and carried on /health.stamp.frame_source_counts.
+_FRAME_SOURCE_COUNTS = {"perception overlay": 0, "simulator host": 0, "raw camera": 0,
+                        "stale overlay": 0, "stale composite": 0, "none": 0}
+_FRAME_SOURCE_WRITE = {"at": 0.0, "lock": threading.Lock()}
+atexit.register(lambda: _write_frame_source_counts(force=True))
+
+
+def _write_frame_source_counts(force=False):
+    now = time.time()
+    if not force and now - _FRAME_SOURCE_WRITE["at"] < 30.0:
+        return
+    with _FRAME_SOURCE_WRITE["lock"]:
+        _FRAME_SOURCE_WRITE["at"] = now
+        try:
+            path = _active_output_dir() / "feed_source_counts.json"
+            path.write_text(json.dumps({"counts": dict(_FRAME_SOURCE_COUNTS),
+                                        "total_picks": sum(_FRAME_SOURCE_COUNTS.values()),
+                                        "unit": "served picks (one per /frame.jpg request or /feed part)",
+                                        "written_at": now}, indent=1))
+        except OSError:
+            pass                 # the output dir can vanish at run end; the counts stay in /health
+
+
 def _best_frame():
+    """`_best_frame_pick` plus the GA-354 tally; every caller goes through here."""
+    data = _best_frame_pick()
+    _FRAME_SOURCE_COUNTS[_last_frame_source or "none"] = _FRAME_SOURCE_COUNTS.get(_last_frame_source or "none", 0) + 1
+    _write_frame_source_counts()
+    return data
+
+
+def _best_frame_pick():
     """The freshest frame worth showing, newest source first.
 
     1. the current perception overlay (/image_with_bb) while it is still current
@@ -1838,6 +1874,7 @@ def _stamp():
     if node and getattr(node, "last_frame_time", 0):
         out["frame_at"] = node.last_frame_time
     out["frame_source"] = _last_frame_source
+    out["frame_source_counts"] = dict(_FRAME_SOURCE_COUNTS)
     out["overlay"] = {"on": OVERLAY_ON, "pose_source": _overlay_pose_source,
                       "objects": len(_OVERLAY_OBJ["objects"]),
                       "failures": _OVERLAY_FAILURES["n"], "last_error": _OVERLAY_FAILURES["last"]}
