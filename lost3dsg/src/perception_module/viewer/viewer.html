@@ -1032,6 +1032,18 @@
               </table>
             </div>
 
+            <div style="margin: 4px 0 14px;" title="cycle_ms per completed perception cycle (the number to quote) and total_ms, the detection sub-span inside it. Source: perception_latencies.jsonl, one row per cycle (GA-334).">
+              <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
+                <span style="font-size:0.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em;">Perception cycle latency, per cycle</span>
+                <span id="latSeriesNote" style="font-size:0.65rem; color:var(--muted); font-family:ui-monospace,monospace;">no series yet</span>
+              </div>
+              <canvas id="latSeriesCanvas" width="600" height="150" style="width:100%; height:150px; display:block; background:#090d16; border:1px solid var(--border); border-radius:6px;"></canvas>
+              <div style="font-size:0.62rem; color:var(--muted); margin-top:3px;">
+                <span style="color:#10b981;">&#9632;</span> PERCEPTION CYCLE, WALL (cycle_ms) &nbsp;
+                <span style="color:#38bdf8;">&#9632;</span> DETECTION SPAN (total_ms) &nbsp; x = cycle index
+              </div>
+            </div>
+
             <h3 style="font-size: 0.85rem; font-weight: 700; color: #38bdf8; margin-bottom: 10px; letter-spacing: 0.04em; text-transform: uppercase;">
               <i data-lucide="navigation" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:4px;"></i> STEP & TIME TELEMETRY
             </h3>
@@ -1480,6 +1492,64 @@
       }
     }
 
+    // ---- the per-cycle latency graph (owner, 2026-09-07) ----------------------------------
+    // /cycle_series is the bridge's reader of perception_latencies.jsonl, the same file in live
+    // and in replay. Inline canvas: no new dependency. Two lines kept apart on purpose:
+    // cycle_ms is the number to quote, total_ms the detection sub-span inside it.
+    let latSeriesAt = 0, latSeriesN = -1;
+    function refreshLatencySeries() {
+      const now = Date.now();
+      if (now - latSeriesAt < 3000) return;
+      latSeriesAt = now;
+      fetch('/cycle_series?limit=400').then(r => r.ok ? r.json() : null).then(d => {
+        if (!d) return;
+        const rows = d.rows || [];
+        const note = document.getElementById('latSeriesNote');
+        if (note) note.textContent = rows.length ? `${d.n} cycles` + (d.n > rows.length ? ` (last ${rows.length} shown)` : '') : 'no per-cycle series yet';
+        if (d.n === latSeriesN) return;
+        latSeriesN = d.n;
+        drawLatencySeries(rows);
+      }).catch(() => {});
+    }
+    function drawLatencySeries(rows) {
+      const cv = document.getElementById('latSeriesCanvas');
+      if (!cv) return;
+      const W = cv.width, H = cv.height, g = cv.getContext('2d');
+      g.clearRect(0, 0, W, H);
+      if (!rows.length) return;
+      const padL = 44, padR = 8, padT = 8, padB = 18;
+      const ys = rows.flatMap(r => [r.cycle_ms, r.total_ms]).filter(v => typeof v === 'number');
+      const ymax = Math.max(1000, ...ys) * 1.08;
+      const x = i => padL + (rows.length === 1 ? 0 : (i / (rows.length - 1)) * (W - padL - padR));
+      const y = v => H - padB - (v / ymax) * (H - padT - padB);
+      g.strokeStyle = 'rgba(255,255,255,0.08)'; g.fillStyle = '#64748b'; g.font = '10px ui-monospace, monospace';
+      g.textAlign = 'right'; g.textBaseline = 'middle';
+      for (let k = 0; k <= 4; k++) {
+        const v = (ymax / 4) * k, yy = y(v);
+        g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
+        g.fillText(v >= 1000 ? (v / 1000).toFixed(1) + 's' : Math.round(v) + 'ms', padL - 4, yy);
+      }
+      g.textAlign = 'center'; g.textBaseline = 'top';
+      const first = rows[0].cycle ?? 1, last = rows[rows.length - 1].cycle ?? rows.length;
+      g.fillText('cycle ' + first, x(0) + 18, H - padB + 3);
+      g.fillText('cycle ' + last, x(rows.length - 1) - 18, H - padB + 3);
+      const line = (key, colour) => {
+        g.strokeStyle = colour; g.lineWidth = 1.5; g.beginPath();
+        let pen = false;
+        rows.forEach((r, i) => {
+          const v = r[key];
+          if (typeof v !== 'number') { pen = false; return; }   // a gap stays a gap, never bridged
+          if (pen) g.lineTo(x(i), y(v)); else g.moveTo(x(i), y(v));
+          pen = true;
+        });
+        g.stroke();
+        g.fillStyle = colour;
+        rows.forEach((r, i) => { if (typeof r[key] === 'number') { g.beginPath(); g.arc(x(i), y(r[key]), 2, 0, 6.283); g.fill(); } });
+      };
+      line('total_ms', '#38bdf8');
+      line('cycle_ms', '#10b981');
+    }
+
     function updateBEV() {
       fetch('/bev_data?floor_y=' + encodeURIComponent(selectedFloorY))
         .then(r => {
@@ -1529,6 +1599,7 @@
             setL('latSamPill', l.sam_ms);
             setL('latProjPill', l.projection_ms);
           }
+          refreshLatencySeries();
           if (data && data.stats) {
             const s = data.stats;
             const elSteps = document.getElementById('statSteps');
@@ -2245,9 +2316,10 @@
 
     // Item 1: one header saying which moment each panel is from. Ages come from
     // /health's stamp (server clock), so a skewed browser clock cannot fake freshness.
-    let lastStamp = null;
+    let lastStamp = null, lastStampAt = 0;
     function renderCycleStamp(stamp) {
       lastStamp = stamp || null;
+      lastStampAt = Date.now();
       const el = document.getElementById('cycleStamp');
       if (!el || !stamp) return;
       const age = (t) => (t ? Math.max(0, stamp.now - t) : null);
@@ -2269,7 +2341,14 @@
     }
 
     function checkFeedHeartbeat() {
-      const elapsed = Date.now() - lastFrameTimestamp;
+      // An MJPEG <img> fires `load` ONCE, for its first part; every later frame repaints
+      // without an event. Measured 2026-09-07 (run 152446, :8082): 1 load event, then
+      // "FEED OFFLINE" at 6 s and a re-src every second while the stream was healthy. So the
+      // silence clock is the BRIDGE's own frame time from /health (server clock, GA-103's
+      // stamp), aged by the time since that poll; the load event is the fallback only.
+      const fromStamp = (lastStamp && typeof lastStamp.frame_at === 'number' && typeof lastStamp.now === 'number')
+        ? (lastStamp.now - lastStamp.frame_at) * 1000 + (Date.now() - lastStampAt) : null;
+      const elapsed = (fromStamp !== null) ? fromStamp : (Date.now() - lastFrameTimestamp);
       const badge = document.getElementById('feedStatusBadge');
       const textEl = document.getElementById('feedStatusText');
       // Item 4: source and age are ALWAYS on screen. _best_frame has four sources
@@ -2277,14 +2356,18 @@
       // looked the same, and the badge only spoke up after six seconds of silence.
       const src = (textEl && textEl.dataset.source) ? textEl.dataset.source : 'unknown source';
       const age = (elapsed / 1000).toFixed(1) + 's';
-      if (elapsed > 6000) {
+      // GA-344: frames arrive once per cycle, measured 6.2-6.7 s apart; a fixed 6 s threshold
+      // called a healthy feed OFFLINE between cycles. Twice the measured period, floor 6 s.
+      const periodS = (lastBEVData && lastBEVData.latencies) ? lastBEVData.latencies.frame_period_s : null;
+      const offlineMs = Math.max(6000, (typeof periodS === 'number' ? periodS * 2000 : 0));
+      if (elapsed > offlineMs) {
         if (badge) badge.className = 'feed-heartbeat-badge offline';
         if (textEl) textEl.textContent = `FEED OFFLINE · ${src} · ${age}`;
         const img = document.getElementById('habitatFeedImg');
         // Silent re-src: say it happened rather than looking like a spontaneous recovery.
         setStatusLine(`Feed silent ${age} — reconnecting`, 'warn');
         if (img) img.src = '/feed?t=' + Date.now();
-      } else if (elapsed > 2000) {
+      } else if (elapsed > offlineMs / 2) {
         if (badge) badge.className = 'feed-heartbeat-badge stalled';
         if (textEl) textEl.textContent = `FEED STALLED · ${src} · ${age}`;
       } else if (textEl && !textEl.textContent.startsWith('LIVE')) {
