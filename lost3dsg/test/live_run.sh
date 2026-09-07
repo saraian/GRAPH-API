@@ -182,6 +182,11 @@ cleanup() {
   if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
     cp "$OUT_DIR"/*.json "$OUT_DIR"/*.jsonl "$RUN_DIR/" 2>/dev/null || true
     cp "$OUT_DIR"/*.log "$RUN_DIR/logs/" 2>/dev/null || true
+    # GA-336. Delete the scratch localization copy (~1.2 GB). Here, not earlier: the container
+    # holds it open until rtabmap closes, and this trap runs after `docker run` has returned.
+    # Its identity is preserved in run_metadata.json (localize_db_source + sha), so deleting the
+    # bytes loses no evidence. Left behind, every run would cost 1.2 GB of results/ for nothing.
+    [ -n "${LOCALIZE_DB_COPY:-}" ] && rm -f "$LOCALIZE_DB_COPY" 2>/dev/null || true
     # GA-238. NO COPY IS NEEDED, and the first version of this block wrongly added one.
     # `-v "$RUN_DIR":/ws/output` (below) means the container's output directory IS the bundle,
     # and live_stack_container.sh exports GRAPH_API_OUTPUT_DIR=/ws/output. So once
@@ -503,10 +508,36 @@ sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2]
     fi
   fi
   if [ -f "$_mapdir/rtabmap.db" ]; then
-    export RTABMAP_LOCALIZE_DB="${_mapdir#$FOUND_ROOT}"
-    export RTABMAP_LOCALIZE_DB="/found${RTABMAP_LOCALIZE_DB}/rtabmap.db"
+    # GA-336. LOCALIZE AGAINST A WRITABLE COPY, NEVER THE CANONICAL FILE.
+    #
+    # GA-295 mounts maps/ :ro so a run can never mutate the published map — that rule stands and
+    # it caught a real mutation (§27). But in localization mode rtabmap is handed the map as its
+    # OWN database_path, and its close path writes the 2D occupancy grid back into it. Measured
+    # in run 20260907_004128, the first localization run ever to reach a graceful shutdown:
+    #   [FATAL] DBDriverSqlite3.cpp:5348::save2DMapQuery() Condition (rc == SQLITE_DONE) not met!
+    #           [DB error (0.23.7): attempt to write a readonly database]   -> UException, exit -6
+    # Every earlier run died in the map::at abort band before reaching close, which is why a
+    # read-only mount and a writing close path coexisted for days without anyone seeing it.
+    #
+    # SCRATCH, NOT THE BUNDLE: the copy is ~1.2 GB and it is not evidence — the canonical file's
+    # provenance sidecar is. $OUT_DIR is the live scratch mount (/out in the container) and the
+    # cleanup trap only archives *.json/*.jsonl/*.log from it, so a .db never reaches the bundle.
+    # The trap deletes it after the container has exited, i.e. after rtabmap has closed.
+    _canon_db="$_mapdir/rtabmap.db"
+    LOCALIZE_DB_COPY="$OUT_DIR/localize_db_copy.db"
+    cp "$_canon_db" "$LOCALIZE_DB_COPY" || { echo "!! could not copy the localization map to scratch — aborting rather than localizing against the read-only canonical file"; exit 1; }
+    # The container refuses a map without its .params-sha sidecar (live_stack_container.sh, the
+    # MAP PARAMETER MISMATCH check), so the copy must carry the sidecar too, or every localization
+    # run refuses to start. Measured cost of the copy on this host: 12 s for 1.2 GB (2026-09-07).
+    cp "$_canon_db.params-sha" "$LOCALIZE_DB_COPY.params-sha" || { echo "!! could not copy $_canon_db.params-sha — the container would refuse the map without it"; exit 1; }
+    # The bundle must still name EXACTLY which map ran. The sha is recomputed here, not read from
+    # the sidecar: the sidecar records the file at publish time, and this records the file that
+    # this run actually opened.
+    LOCALIZE_DB_SOURCE="$_canon_db"
+    LOCALIZE_DB_SHA=$(sha256sum "$_canon_db" | cut -c1-16)
+    export RTABMAP_LOCALIZE_DB="/out/localize_db_copy.db"
     export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-0}"
-    echo "    localizing against $_mapdir/rtabmap.db (mapping phase 0s)"
+    echo "    localizing against a scratch COPY of $_canon_db (sha $LOCALIZE_DB_SHA, mapping phase 0s)"
   else
     echo "    NO published map at $_mapdir — this run will MAP from scratch."
     echo "    That is the fallback, not the intent: publish a map for this scene and floor and"
@@ -722,6 +753,11 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
                "note": "raised from 640x480 by owner ruling 25. A gain measured here is a gain of the SYSTEM: resolution moves detector, segmentation, depth and describer together and cannot be attributed to one without a second arm."},
     "gt_semantic": ${FEED_GT_SEMANTIC:-0},
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
+    "localize_db_note": "GA-336: localize_db points at a SCRATCH COPY deleted at exit, so the path alone identifies nothing. localize_db_source + localize_db_sha256_16 name the canonical file this run actually opened.",
+    "localize_db_source": $([ -n "${LOCALIZE_DB_SOURCE:-}" ] && echo "\"$LOCALIZE_DB_SOURCE\"" || echo null),
+    "localize_db_sha256_16": $([ -n "${LOCALIZE_DB_SHA:-}" ] && echo "\"$LOCALIZE_DB_SHA\"" || echo null),
+    "bridge_port": ${BRIDGE_PORT:-null},
+    "bridge_port_note": "the port the bridge bound (BRIDGE_PORT); null means BRIDGE_PORT was unset and the bridge used its own default. Asked for by agent2-dashboard 2026-09-06 (their 00015): the dashboard used to have to grep logs/bridge.log for it.",
     "mapping_seconds_effective": $FEED_MAPPING_SECONDS,
     "effective_config": $(GRAPH_API_CONFIG="$HERE/$CFG_NAME" python3 -c "
 import json, sys

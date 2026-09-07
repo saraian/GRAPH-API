@@ -174,7 +174,7 @@ if [ -n "${RTABMAP_PID:-}" ] && kill -0 "$RTABMAP_PID" 2>/dev/null; then
 # `docker stop -t $((RTABMAP_CLOSE_TIMEOUT + 30))` OR LONGER.
 _CLOSE_T=${RTABMAP_CLOSE_TIMEOUT:-120}
 echo ">>> asking rtabmap to close its database (SIGINT to the node, up to ${_CLOSE_T}s)"
-echo "    NOTE: if this run is being capped, `docker stop` must allow at least $((_CLOSE_T + 30))s"
+echo "    NOTE: if this run is being capped, \`docker stop\` must allow at least $((_CLOSE_T + 30))s"
 echo "    (docker stop -t $((_CLOSE_T + 30))). A shorter grace SIGKILLs the close mid-write."
   kill -INT "$RTABMAP_PID" 2>/dev/null || true
   pkill -INT -f 'rtabmap_slam/rtabmap' 2>/dev/null || true
@@ -337,10 +337,16 @@ if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
   # the honest outcome: it is a fact about rtabmap worth discovering explicitly rather than one
   # papered over by a copy nobody had costed. Mem/IncrementalMemory false is set below.
   _RT_DB_PATH="$RTABMAP_LOCALIZE_DB"
-  if [ -w "$_RT_DB_PATH" ]; then
-    echo "!! WARNING: $_RT_DB_PATH is WRITABLE inside the container. Localization will not write"
-    echo "   to it, but nothing is enforcing that. Mount the map read-only (-v <host>:<path>:ro)"
-    echo "   so the canonical map cannot be modified by a run that is only reading it."
+  # GA-336 (2026-09-07). The sentence "localization will not write to it" was FALSE: rtabmap
+  # writes the 2D occupancy grid into its database at close (save2DMapQuery), and against the :ro
+  # canonical map that ended run 20260907_004128 with "attempt to write a readonly database",
+  # exit -6. live_run.sh now hands this script a WRITABLE SCRATCH COPY under /out, on purpose.
+  # So a writable path is expected there, and the warning fires only for a writable path under
+  # the canonical mount, which is the case the :ro mount exists to prevent.
+  if [ -w "$_RT_DB_PATH" ] && [[ "$_RT_DB_PATH" == /found/* ]]; then
+    echo "!! WARNING: $_RT_DB_PATH is the CANONICAL map and it is WRITABLE inside the container."
+    echo "   rtabmap writes its 2D grid into this file at close. Mount maps read-only"
+    echo "   (-v <host>:/found/maps:ro) and localize against the scratch copy (live_run.sh, GA-336)."
   fi
   # GA-290, REFUTED, AND THE FLAG IS GONE WITH IT. --RGBD/MaxOdomCacheSize 0 was the owner-approved
   # hypothesis for the Rtabmap.cpp:4090 (_optimizedPoses) SIGABRT that killed runs 20260903_110622
