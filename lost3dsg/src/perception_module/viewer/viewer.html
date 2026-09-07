@@ -4425,7 +4425,7 @@
         // name and says so on hover, rather than implying one it does not have.
         const conceptName = (onto && onto.entity)
           ? (onto.iri
-              ? `<a href="${escHtml(onto.iri)}" target="_blank" rel="noopener" title="${escHtml(onto.iri)}" style="color:#a78bfa; text-decoration:underline dotted;">${escHtml(onto.entity)}</a>`
+              ? `<a href="/concept?iri=${encodeURIComponent(onto.iri)}" target="_blank" rel="noopener" title="${escHtml(onto.iri)}" style="color:#a78bfa; text-decoration:underline dotted;">${escHtml(onto.entity)}</a>`
               : `<span title="no IRI recorded by the aligner">${escHtml(onto.entity)}</span>`)
           : '—';
         if (!matchesTextFilters(r, onto && onto.entity)) return;
