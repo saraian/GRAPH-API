@@ -11,16 +11,48 @@ from detection_types import Detection
 from utils import apply_nms
 
 
-def pca_oriented_box(pts_map, min_anisotropy=1.2):
+def mask_touches_border(mask, margin_px=2):
+    """True when the mask has a pixel within `margin_px` of any image edge — i.e. the
+    object very likely continues OUTSIDE the frame and the mask is a clipped wedge.
+
+    GA-315. PCA on a wedge returns its hypotenuse: a right isosceles triangle has an
+    eigenvalue ratio of 3.0 (anisotropy 1.73, past the 1.2 gate) and a principal axis at
+    45 degrees, whatever the object's real axis. Measured over 25 bundles' detections.jsonl
+    (2026-09-07): beds longer than 1.7 m whose mask touches a border are diagonal
+    (25-65 degrees mod 90) in 64 of 118; fully-in-frame beds in 9 of 43. No single-view
+    estimator can recover the axes from a wedge that holds one bed edge, so the honest
+    answer for a clipped mask is NO orientation, not a guessed one.
+
+    The 2D box could stand in for the mask, but the wedge is in the raw mask (re-lifts of
+    the depth PNGs reproduce the archived yaws to 1.8 degrees), so the mask is the instrument."""
+    m = np.asarray(mask)
+    if m.ndim == 3:
+        m = m[:, :, 0]
+    k = max(int(margin_px), 1)
+    return bool(m[:k].any() or m[-k:].any() or m[:, :k].any() or m[:, -k:].any())
+
+
+def pca_oriented_box(pts_map, min_anisotropy=1.2, top_fraction=0.2, top_min_points=30):
     """Yaw-about-z oriented box from object points in the map frame — the optional
     PCA keys (yaw / oriented_center / oriented_extents) that box_corners_map and
     the map store already consume. Returns None when the XY spread is too small or
-    too isotropic for a stable orientation (the AABB alone is then the honest box)."""
+    too isotropic for a stable orientation (the AABB alone is then the honest box).
+
+    GA-315: the yaw is fitted on the TOP-SURFACE points only — the slab within
+    `top_fraction` of the z range below the highest point, when it holds at least
+    `top_min_points` — because a camera sees one vertical side face densely and that
+    face drags the principal axis about 10 degrees off the object's own axis (measured by
+    the orchestrator on the yaw audit). The extents are still taken over ALL points in
+    that frame; only the axis choice comes from the top. ponytail: a fixed fraction, not a
+    plane fit; upgrade to RANSAC on the top plane if the 10 degrees do not go away."""
     pts = np.asarray(pts_map, dtype=np.float64)
     if pts.shape[0] < 10:
         return None
     xy = pts[:, :2]
-    cov = np.cov(xy, rowvar=False)
+    z_all = pts[:, 2]
+    top = z_all >= z_all.max() - top_fraction * max(z_all.max() - z_all.min(), 1e-6)
+    fit_xy = xy[top] if int(top.sum()) >= top_min_points else xy
+    cov = np.cov(fit_xy, rowvar=False)
     if not np.all(np.isfinite(cov)):
         return None
     evals, evecs = np.linalg.eigh(cov)  # ascending
@@ -411,6 +443,13 @@ class DetectionPipelineMixin:
             if not bbox:
                 continue
             try:
+                # GA-315. A mask that runs off the image edge is a wedge of the object, and a
+                # wedge's principal axis is its hypotenuse. No PCA for it: the AABB stays,
+                # and the reason is written beside it (a key the msg builder ignores and the
+                # detections.jsonl archive keeps, so the skip count is readable per bundle).
+                if mask_touches_border(det.mask):
+                    bbox["orientation_skipped"] = "mask_clipped"
+                    continue
                 # The geometry stage now keeps the map-frame points it measured the box
                 # from on the detection (cv_utils points_out), and this reads them. The
                 # re-lift below is IDENTICAL work (W8, same mask, same parameters, same
@@ -485,4 +524,10 @@ if __name__ == "__main__":
     circle = np.stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)], axis=1)
     assert pca_oriented_box(circle) is None          # isotropic -> keep AABB
     assert pca_oriented_box(pts[:5]) is None         # too few points
+    # GA-315: a mask running off the bottom edge is clipped; an interior one is not.
+    m = np.zeros((960, 1280, 1), dtype=np.uint8)
+    m[300:600, 400:900] = 1
+    assert not mask_touches_border(m)
+    m[958:, 400:900] = 1
+    assert mask_touches_border(m)
     print("detection_pipeline PCA self-check OK")
