@@ -378,13 +378,37 @@ esac
 echo ">>> pose source: ${FEED_POSE_SOURCE:-simulator} (rtabmap publish_tf_map:=$_RT_PUBLISH_TF_MAP)"
 # The args are the first line of rtabmap.log so the bundle records them; before this they were
 # visible only in ros2 launch's death message, i.e. only when the node died.
-echo "rtabmap_args: $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS publish_tf_map:=$_RT_PUBLISH_TF_MAP" > /tmp/rtabmap.log
-ros2 launch rtabmap_launch rtabmap.launch.py visual_odometry:=false odom_topic:=/odom \
-  rgb_topic:=/camera/rgb depth_topic:=/camera/depth camera_info_topic:=/camera/camera_info \
-  approx_sync:=true rtabmap_viz:=false publish_tf_map:="$_RT_PUBLISH_TF_MAP" database_path:="$_RT_DB_PATH" \
-  rtabmap_args:="$_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS" \
+# GA-359 (2026-09-07 21:10). THE NODE IS LAUNCHED DIRECTLY, not through rtabmap.launch.py, for one
+# parameter the launch file cannot set: pub_loc_pose_only_when_localizing. Perception gates every
+# cycle under FEED_POSE_SOURCE=rtabmap on the AGE of /rtabmap/localization_pose; with the launch
+# file's default (false, echoed in every bundle's rtabmap.log) rtabmap publishes that pose on every
+# frame, localised or not, and the gate can never trip (rule 18). Passing the parameter inside
+# rtabmap_args was tried and measured: still false. Every other parameter below reproduces what
+# rtabmap.launch.py handed the node in run 20260907_152446, verified by diffing rtabmap's own
+# startup echo (36 lines; two differences: this parameter, and ground_truth_base_frame_id which the
+# node defaults to "base_link" where the launch pinned "" -- inert while ground_truth_frame_id is "",
+# and rcl refuses an empty -p value, so the node defaults stand: odom_frame_id "" from the /odom topic). Namespace /rtabmap and node name rtabmap are kept, so /rtabmap/map and
+# /rtabmap/cloud_map (read by object_manager_6) do not move. The library args stay positional and
+# override any node parameter, as before ("Update ... from arguments" in the log).
+echo "rtabmap_args: $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS | node: publish_tf=$_RT_PUBLISH_TF_MAP pub_loc_pose_only_when_localizing=true direct-launch" > /tmp/rtabmap.log
+ros2 run rtabmap_slam rtabmap $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS --ros-args \
+  -r __ns:=/rtabmap -r __node:=rtabmap \
+  -p subscribe_depth:=true -p subscribe_rgb:=true -p approx_sync:=true \
+  -p frame_id:=base_link -p map_frame_id:=map \
+  -p publish_tf:="$_RT_PUBLISH_TF_MAP" -p pub_loc_pose_only_when_localizing:=true \
+  -p database_path:="$_RT_DB_PATH" \
+  -p topic_queue_size:=10 -p sync_queue_size:=10 -p wait_for_transform:=0.2 \
+  -p qos_image:=0 -p qos_odom:=0 -p qos_camera_info:=0 \
+  -r rgb/image:=/camera/rgb -r depth/image:=/camera/depth -r rgb/camera_info:=/camera/camera_info -r odom:=/odom \
   >> /tmp/rtabmap.log 2>&1 &
-RTABMAP_PID=$!
+RTABMAP_PID=$!   # now the node itself, not a launcher: the close path's SIGINT reaches it directly
+# GA-359 (C): RECORD /rtabmap/localization_pose FOR THE WHOLE RUN, so perception's covariance gate
+# gets a MEASURED threshold from the first rtabmap-mode bundle instead of an invented one. CSV, one
+# line per message, no header (ros2 topic echo --csv): header.stamp.sec, header.stamp.nanosec,
+# header.frame_id, pose.pose.position x y z, pose.pose.orientation x y z w, then the 36 covariance
+# values (row-major x y z roll pitch yaw). Named .log so the exit copy carries it into logs/.
+# With pub_loc_pose_only_when_localizing=true the file's GAPS are the not-localised intervals.
+ros2 topic echo --csv --full-length /rtabmap/localization_pose > /tmp/localization_pose.log 2>&1 &
 ros2 run lost3dsg object_manager_6.py > /tmp/om6.log 2>&1 &
 OM6_PID=$!
 python3 /ws/install/lost3dsg/lib/lost3dsg/graph_api_bridge.py > /tmp/bridge.log 2>&1 &
