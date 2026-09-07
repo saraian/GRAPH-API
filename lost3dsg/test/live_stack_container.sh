@@ -408,7 +408,10 @@ RTABMAP_PID=$!   # now the node itself, not a launcher: the close path's SIGINT 
 # header.frame_id, pose.pose.position x y z, pose.pose.orientation x y z w, then the 36 covariance
 # values (row-major x y z roll pitch yaw). Named .log so the exit copy carries it into logs/.
 # With pub_loc_pose_only_when_localizing=true the file's GAPS are the not-localised intervals.
-ros2 topic echo --csv --full-length /rtabmap/localization_pose > /tmp/localization_pose.log 2>&1 &
+# The TYPE IS GIVEN: without it `ros2 topic echo` exits at once when the topic is not yet advertised
+# ("Could not determine the type", run 20260907_170421, 2 lines, nothing recorded) -- rtabmap starts
+# ~120 s after this line. With the type it subscribes now and waits.
+ros2 topic echo --csv --full-length /rtabmap/localization_pose geometry_msgs/msg/PoseWithCovarianceStamped > /tmp/localization_pose.log 2>&1 &
 ros2 run lost3dsg object_manager_6.py > /tmp/om6.log 2>&1 &
 OM6_PID=$!
 python3 /ws/install/lost3dsg/lib/lost3dsg/graph_api_bridge.py > /tmp/bridge.log 2>&1 &
@@ -477,8 +480,18 @@ ros2 run image_view image_saver --ros-args -r image:=/image_with_bb \
 # rtabmap publishing map->odom (publish_tf_map defaulted true; publish_tf was never a launch
 # argument) AND the feed node's static identity, tf2 served rtabmap's correction for 108 s and
 # 54 of 747 detections landed 2-4 m from their true pose. BLOCKING: a run with two authorities
-# measures that defect, so it ends here. Foreground, after the nodes are up; samples 5 s.
-sleep 15
+# measures that defect, so it ends here. Foreground; samples 5 s ONLY AFTER RTABMAP IS UP: rtabmap
+# starts last and loads the 1.2 GB map first -- "Localization mode" came 119 s after the feed node's
+# first line in run 20260907_170421, and a13 sampled at 15 s, saw no map->odom from anyone, and ended
+# a healthy run (my probe's false positive; rule 24's asymmetry, paid once). So: wait for rtabmap's
+# own readiness line (localization or mapping), up to 300 s, then sample. No line by then is itself
+# a finding, and a13 then reports whatever the TF tree holds.
+_a13_deadline=$(( $(date +%s) + 300 ))
+until grep -q "Localization mode\|Mapping mode\|rtabmap: subscribe_odom" /tmp/rtabmap.log 2>/dev/null; do
+  [ "$(date +%s)" -ge "$_a13_deadline" ] && { echo "!! a13: rtabmap printed no readiness line in 300 s; sampling anyway"; break; }
+  sleep 3
+done
+sleep 10
 if python3 /graph_api/lost3dsg/test/preflight_gate.py --only a13 \
      --pose-source "${FEED_POSE_SOURCE:-simulator}" --out /tmp/preflight_a13.json \
      >> /tmp/a13.log 2>&1; then
