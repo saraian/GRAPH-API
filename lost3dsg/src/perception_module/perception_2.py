@@ -8,6 +8,7 @@ import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import partial
 from threading import Lock
 
 # Ensure local sibling packages and directories (e.g. cloud/) are on sys.path
@@ -111,6 +112,32 @@ DESCRIPTION_FIELDS = ("description", "color", "material", "shape")
 # WN1. Where the latency record lives -- the same two paths detection_pipeline writes, kept
 # as one constant so the cycle-time stamp and the detection-span stamp land in one file.
 LATENCY_JSON_PATHS = ("/tmp/perception_latencies.json", "/ws/output/perception_latencies.json")
+# GA-334. The per-cycle series beside the snapshot: one JSON line per completed cycle, the
+# snapshot's keys plus `t`, `cycle`, `frame_id`, `n_detections`. graph_api_bridge._cycle_seq
+# counts its lines as the cycle number; until 2026-09-07 nothing wrote it.
+LATENCY_JSONL_PATHS = tuple(p[:-len(".json")] + ".jsonl" for p in LATENCY_JSON_PATHS)
+
+
+def _truncate_cycle_series():
+    """GA-334. A fresh series per node start: the bridge counts lines, and /tmp outlives
+    the run, so an earlier run's rows would otherwise inflate this one's cycle number
+    (the bridge also resets its tally when the file shrinks)."""
+    for target_path in LATENCY_JSONL_PATHS:
+        try:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            open(target_path, "w").close()
+        except OSError:
+            pass
+
+
+def _append_cycle_row(row):
+    line = json.dumps(row) + "\n"
+    for target_path in LATENCY_JSONL_PATHS:
+        try:
+            with open(target_path, "a") as f:
+                f.write(line)
+        except OSError:
+            pass
 
 # ponytail: fixed cap for images sent to the VLM; make it a CFG["vlm"] knob if a
 # model ever needs finer input. The base64 payload dominates vlm_ms, not the answer.
@@ -135,6 +162,10 @@ def _description_status(res):
     provenance, so they fall to the content test, same vocabulary. An empty record is
     `unanswered`, never `model_abstained`: a description that never arrived is not a refusal.
     """
+    # Reviewed 2026-09-07: a harvested result that carries ONLY the origin stamp is a call
+    # that produced nothing (a failed grid cell), not a model abstention.
+    if not res or set(res) <= {"origin"}:
+        return "unanswered"
     if not res:
         return "unanswered"
     prov = res.get("provenance") or {}
@@ -198,7 +229,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.detector = None
             self.vitsam = None
             self.file_logger.info(f"Using Cloud Perception Backend: {backend_type}")
-        self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=_encode_for_vlm)
+        self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=_encode_for_vlm,
+                             crop_call_fn=partial(vlm_call, timeout=CFG["vlm"]["crop_timeout"]))
         # GA-215. DEBUG OVERLAY: publish the annotated frame at every perception stage, as
         # each result appears, rather than once at the end of the cycle. Off by default --
         # it costs an encode and a publish per stage, and a measured run should not pay for
@@ -242,6 +274,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._init_state()
 
         self._io_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="perception_io")
+        self._cycle_count = 0
+        _truncate_cycle_series()
         self._undeliverable_fields = set()
         self.clear_accumulated_markers()
         self._create_timers()
@@ -270,7 +304,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # acquire a ground-truth channel as a side effect of anything else. Keyed by
             # exact stamp: a GT label from a neighbouring frame would be worse than none.
             self._gt_semantic = {}
-            self.create_subscription(Image, "/gt/semantic_instance",
+            from sensor_msgs.msg import CompressedImage as _CompressedImage
+            self.create_subscription(_CompressedImage, "/gt/semantic_instance",
                                      self._gt_semantic_callback, 10)
 
     def _on_cloud_map(self, msg):
@@ -633,20 +668,37 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # bundle root the crops and the per-cycle JSON use.
         self._io_executor.submit(self.save_visualizations, image_raw.copy(), depth.copy(), list(detections))
 
+        # Per-stage wall time of everything after run_detection, written into the latency
+        # record as `stages_ms`. Until 2026-09-06 the cycle had ONE number for this half
+        # (cycle_ms - total_ms) and the log's timestamps were the only way to split it.
+        stages = {}
+        t_stage = time.time()
+
+        def _mark(name):
+            nonlocal t_stage
+            now = time.time()
+            stages[name] = round((now - t_stage) * 1000.0, 1)
+            t_stage = now
+
         # GA-215: the detector has answered and the masks exist. Show them NOW -- everything
         # below takes time, and until today none of it was visible until all of it finished.
         self._debug_stage("detector+masks", image_raw, detections, camera_info, cycle_stamp)
         self._assign_instance_labels(detections)
         self._debug_stage("labelled", image_raw, detections, camera_info, cycle_stamp)
+        _mark("labels")
         centroids_3d, bboxes_3d = self._compute_3d_geometry(detections, depth, camera_info, camera_data["transform"])
         self._debug_stage("3d-geometry", image_raw, detections, camera_info, cycle_stamp,
                           bboxes_3d=bboxes_3d, transform=camera_data["transform"], depth=depth)
+        _mark("geometry")
         self._add_pca_orientation(detections, bboxes_3d, depth, camera_info, camera_data["transform"])
+        _mark("pca")
         self._publish_image_with_bb(image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth)
+        _mark("image_with_bb")
         # H12: prepare_crops resolves the bundle root itself; PROJECT_ROOT is no longer
         # threaded through. W2: the frame key is mandatory provenance.
         crops_data = self.prepare_crops(detections, image_raw,
                                         frame_id_from_stamp(cycle_stamp))
+        _mark("crops")
         # GA-172: archived AFTER prepare_crops so the row can carry `crop_meta`, and still
         # BEFORE the VLM batch so a describer failure cannot cost the record of what was
         # detected. It used to run before prepare_crops, so crop_meta DID NOT YET EXIST when
@@ -656,42 +708,53 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._archive_detections(detections, bboxes_3d, centroids_3d, image_raw,
                                  camera_data.get("transform"), cycle_stamp,
                                  crops_data=crops_data, depth=depth)
+        _mark("archive")
         self._attach_crop_embeddings(detections, crops_data)
+        _mark("embeddings")
         vlm_results = self._run_crop_vlm_batch(crops_data)
         descriptions = self._build_descriptions(detections, vlm_results, crops_data)
+        _mark("describer_queue")
         self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp)
         self._publish_description_array(detections, descriptions, cycle_stamp)
+        self._publish_late_descriptions(cycle_stamp)
         self._update_world_model(detections, centroids_3d, bboxes_3d, descriptions)
         self._queue_perceptions_json()
         self._publish_agent_pose(cycle_stamp)
-        self._record_cycle_ms(time.time() - t_cycle)
+        _mark("publish")
+        self._record_cycle_ms(time.time() - t_cycle, stages=stages,
+                              frame_id=frame_id_from_stamp(cycle_stamp),
+                              n_detections=len(detections))
         self.waiting_for_input = False
         self.log_both("info", "publish_objects completed")
 
-    def _record_cycle_ms(self, cycle_seconds):
+    def _record_cycle_ms(self, cycle_seconds, stages=None, frame_id=None, n_detections=None):
         """WN1. Stamp the completed cycle's wall time into the latency record.
 
         `total_ms` (run_detection's own span) stays for its existing readers; `cycle_ms`
         is the number any latency claim must quote. Same two paths the detection
-        pipeline writes, so one file carries both.
+        pipeline writes, so one file carries both. GA-334: the same record, plus the
+        cycle's identity, is also appended as one line to the `.jsonl` series beside it,
+        on the io executor so the cycle does not pay for the write.
         """
         lat = getattr(self, "latest_latencies", None)
         if not isinstance(lat, dict):
             lat = {}
             self.latest_latencies = lat
         lat["cycle_ms"] = round(cycle_seconds * 1000.0, 1)
+        if stages:
+            lat["stages_ms"] = dict(stages)
         lat["last_updated"] = time.time()
-        try:
-            import json
-            for target_path in LATENCY_JSON_PATHS:
-                try:
-                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                    with open(target_path, "w") as f:
-                        json.dump(lat, f, indent=2)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        for target_path in LATENCY_JSON_PATHS:
+            try:
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                with open(target_path, "w") as f:
+                    json.dump(lat, f, indent=2)
+            except Exception:
+                pass
+        self._cycle_count = getattr(self, "_cycle_count", 0) + 1
+        row = dict(lat, t=lat["last_updated"], cycle=self._cycle_count,
+                   frame_id=frame_id, n_detections=n_detections)
+        self._io_executor.submit(_append_cycle_row, row)
 
     # last /get_config answer and when it was fetched; rebound per instance on use
     _vis_live = {}
@@ -813,13 +876,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.clear_accumulated_markers()
         all_masks = [det.mask[:, :, 0] for det in detections]
         instance_labels = [det.instance_label for det in detections]
-        return mask_list_to_centroid_and_bbox(
+        points = []
+        centroids_3d, bboxes_3d = mask_list_to_centroid_and_bbox(
             all_masks, instance_labels, depth, camera_info,
             node=self,
             bbox_marker_pub=self.bbox_marker_pub,
             centroid_marker_pub=self.centroid_marker_pub,
             transform=transform,
+            points_out=points,
         )
+        # The map-frame points each box came from, kept for _add_pca_orientation. It used
+        # to re-run _filter_object_points (projection + k=30 outlier removal on up to
+        # 20,000 points) per detection -- the same call on the same mask with the same
+        # parameters, so the same points. Measured on 20260906_203744: the two stages
+        # were 1.19 s and the bulk of 1.85 s in a 14-detection cycle.
+        for det, pts_map in zip(detections, points):
+            det.points_map = pts_map
+        return centroids_3d, bboxes_3d
 
     def _attach_crop_embeddings(self, detections, crops_data):
         """CLIP image embedding per object, reusing the OWLv2 backbone already on
@@ -999,15 +1072,24 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 by_label[c["label"]] = c["path"]
         min_iou = float(CFG.get("vlm", {}).get("stale_result_min_iou", 0.1))
         descriptions = []
+        # GA-108. A deferred answer that does not belong to this cycle's namesake is not
+        # dropped any more: it is delivered to the object it was taken FROM, by origin frame
+        # and box, on /object_descriptions_late (see _publish_late_descriptions). Measured on
+        # run 20260906_223701: 496 answers landed, 163 were refused here, and 204 of 212
+        # objects ended "unknown" -- the answer for an object never reached that object.
+        self._late_descriptions = []
+        seen = set()
         for det in detections:
+            seen.add(det.instance_label)
             res = (vlm_results.get(det.instance_label, {}) or {})
             origin = res.get("origin")
             if origin is not None and _bbox_iou(det.bbox, origin["bbox"]) < min_iou:
                 self.log_both(
-                    "warn",
-                    f"[VLM] refusing deferred description for {det.instance_label}: taken in "
-                    f"frame {origin['frame']} for a box that does not overlap this detection "
-                    f"(< {min_iou} IoU) -- the label string names a different object now (W2)")
+                    "info",
+                    f"[VLM] deferred description for {det.instance_label} was taken in frame "
+                    f"{origin['frame']} for a box that does not overlap this detection "
+                    f"(< {min_iou} IoU); delivered to its origin object instead (GA-108)")
+                self._late_descriptions.append((det.instance_label, origin, res))
                 res = {}
             d = {field: res.get(field, "unknown") for field in DESCRIPTION_FIELDS}
             # W6. The route this description took, so a run can split the "unknown"
@@ -1021,7 +1103,36 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             if "provenance" in res:
                 d["provenance"] = res["provenance"]
             descriptions.append(d)
+        # Answers whose label is not in this cycle at all (the object left the view): the
+        # old code never looked at them. Same delivery.
+        for label, res in vlm_results.items():
+            if label in seen or not isinstance(res, dict) or res.get("origin") is None:
+                continue
+            self._late_descriptions.append((label, res["origin"], res))
         return descriptions
+
+    def _publish_late_descriptions(self, cycle_stamp):
+        """GA-108. Deferred describer answers, addressed by the crop's origin frame and box."""
+        late = getattr(self, "_late_descriptions", None) or []
+        if not late:
+            return
+        pub = getattr(self, "pub_object_descriptions_late", None)
+        if pub is None:
+            self.pub_object_descriptions_late = pub = self.create_publisher(
+                ObjectDescriptionArray, "/object_descriptions_late", 10)
+        arr = self.make_header_msg(ObjectDescriptionArray, stamp=cycle_stamp, frame_id="map")
+        for label, origin, res in late:
+            m = ObjectDescription()
+            m.label = label
+            for field in DESCRIPTION_FIELDS:
+                setattr(m, field, str(res.get(field, "unknown")))
+            m.status = _description_status(res)
+            m.origin_frame = str(origin.get("frame") or "")
+            m.origin_bbox_2d = [float(v) for v in origin.get("bbox") or (0.0, 0.0, 0.0, 0.0)]
+            arr.descriptions.append(m)
+        pub.publish(arr)
+        self.log_both("info", f"[VLM] {len(late)} late description(s) delivered by origin (GA-108)")
+        self._late_descriptions = []
 
     def _gt_semantic_callback(self, msg):
         """Cache habitat's per-pixel instance frame, keyed by its EXACT stamp.
@@ -1035,12 +1146,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         key = frame_id_from_stamp(msg.header.stamp)
         if key is None:
             return
-        arr = np.frombuffer(msg.data, dtype="<i4")
-        if arr.size != msg.height * msg.width:
-            self.log_both("warn", f"[GT] semantic frame {key} has {arr.size} values for "
-                                  f"{msg.height}x{msg.width}; ignored")
+        # GA-330 follow-up: the frame arrives as gt_codec's lossless run-length form
+        # (CompressedImage), not a raw 32SC1 Image; see habitat_feed_node.py for why.
+        import gt_codec
+        arr = gt_codec.decode(bytes(msg.data))
+        if arr is None:
+            self.log_both("warn", f"[GT] semantic frame {key} could not be decoded; ignored")
             return
-        self._gt_semantic[key] = arr.reshape(msg.height, msg.width)
+        self._gt_semantic[key] = arr
         while len(self._gt_semantic) > 8:
             self._gt_semantic.pop(next(iter(self._gt_semantic)))
 

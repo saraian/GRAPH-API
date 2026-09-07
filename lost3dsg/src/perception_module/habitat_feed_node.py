@@ -9,11 +9,14 @@ of a frame shares one stamp, so TF-at-image-stamp lookups resolve exactly.
 
   FEED_HOST=127.0.0.1 FEED_PORT=7799 ros2 run lost3dsg habitat_feed_node.py
 """
+import json
+import array
 import math
 import os
 import pickle
 import socket
 import struct
+import time
 
 import numpy as np
 import rclpy
@@ -21,7 +24,7 @@ from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 FRAME_MAP = "map"
@@ -34,6 +37,15 @@ FRAME_OPTICAL = "habitat_camera_optical"
 # --- habitat (y-up) -> ROS (z-up) pose conversion, copied verbatim from
 # habitat_camera_node.habitat_pose_to_ros (that module also imports habitat_sim
 # and the interactive viewer, so it cannot be imported here). ---
+def _u8(buf):
+    """bytes -> array('B') for a uint8[] message field. MEASURED in the run image
+    (2026-09-07, run H profile): assigning bytes makes the generated setter validate every
+    byte in Python -- 3.2 s for the 3.7 MB colour frame and 4.2 s for the 4.9 MB depth frame,
+    every frame -- and that is where this node's 100% core went. An array.array('B') takes the
+    setter's fast path: 16 ms and 5 ms. Same bytes on the wire."""
+    return array.array("B", buf)
+
+
 def habitat_pose_to_ros(position, quat_xyzw):
     hx, hy, hz = float(position[0]), float(position[1]), float(position[2])
     ros_position = np.array([-hz, -hx, hy], dtype=np.float64)
@@ -136,7 +148,11 @@ class HabitatFeedNode(Node):
         # The topic name says what it is so no runtime consumer can pick it up by accident:
         # nothing in the perception or association path subscribes to it, and the only
         # consumer is the per-detection archive, which is validation output.
-        self.pub_gt_semantic = self.create_publisher(Image, "/gt/semantic_instance", qos)
+        # GA-330 follow-up: a COMPRESSED message. The raw 32SC1 Image (4.9 MB at 1280x960)
+        # over reliable DDS stalled this node's receive loop and cut the feed to 0.10 frames/s
+        # in run 20260906_234050. The payload is gt_codec's lossless run-length form (~3% of
+        # raw, milliseconds each way); the perception node decodes it with the same module.
+        self.pub_gt_semantic = self.create_publisher(CompressedImage, "/gt/semantic_instance", qos)
         self.tf = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
 
@@ -152,6 +168,7 @@ class HabitatFeedNode(Node):
         self.sock = None
         self.buf = b""
         self.frames = 0
+        self._last_frame_id = None
         self._reconnects = 0
         self._connect()
         self.create_timer(0.01, self.poll)
@@ -174,6 +191,21 @@ class HabitatFeedNode(Node):
         self.get_logger().info(
             f"feed heartbeat: frames={self.frames} reconnects={self._reconnects} "
             f"connected={self.sock is not None}")
+        self._write_stats()
+
+    def _write_stats(self):
+        """GA-37. The receiving side's own count, in the bundle, beside the host's
+        frames_sent_ok (feed_stats.json). frames_received is what this node relayed to
+        ROS; last_frame_id is the host's ordinal of the newest one, so the two files join."""
+        out = os.environ.get("LOST3DSG_OUTPUT_DIR", "/ws/output")
+        if not os.path.isdir(out):
+            return
+        path = os.path.join(out, "feed_node_stats.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"frames_received": self.frames, "last_frame_id": self._last_frame_id,
+                       "reconnects": self._reconnects, "last_updated": time.time()}, f)
+        os.replace(tmp, path)
 
     def _reconnect(self, why):
         """Drop the dead socket and try again. NEVER spin silently.
@@ -264,26 +296,30 @@ class HabitatFeedNode(Node):
         rgb = Image(height=h, width=w, encoding="rgb8", is_bigendian=False, step=w * 3)
         rgb.header.stamp = stamp
         rgb.header.frame_id = FRAME_OPTICAL
-        rgb.data = frame["rgb"].tobytes()
+        rgb.data = _u8(frame["rgb"].tobytes())
         self.pub_rgb.publish(rgb)
 
         depth = Image(height=h, width=w, encoding="32FC1", is_bigendian=False, step=w * 4)
         depth.header.stamp = stamp
         depth.header.frame_id = FRAME_OPTICAL
-        depth.data = frame["depth"].tobytes()
+        depth.data = _u8(frame["depth"].tobytes())
         self.pub_depth.publish(depth)
 
-        sem = frame.get("gt_semantic_instance")
-        if sem is not None:
-            # int32, not uint32: uint32 has no ROS image encoding, and habitat's instance
-            # ids are small positives so the reinterpretation is lossless. Published with
-            # THE SAME STAMP as rgb and depth -- the join is by stamp and must be exact,
-            # because a GT label taken from a neighbouring frame is worse than no label.
-            sem_msg = Image(height=h, width=w, encoding="32SC1", is_bigendian=False,
-                            step=w * 4)
+        # Published with THE SAME STAMP as rgb and depth -- the join is by stamp and must be
+        # exact, because a GT label taken from a neighbouring frame is worse than no label.
+        # The host sends the frame already encoded (`gt_semantic_rle`, gt_codec's run-length
+        # form); a host still sending the raw array (`gt_semantic_instance`) is encoded here,
+        # so either side can be updated first.
+        blob = frame.get("gt_semantic_rle")
+        if blob is None and frame.get("gt_semantic_instance") is not None:
+            import gt_codec
+            blob = gt_codec.encode(frame["gt_semantic_instance"])
+        if blob is not None:
+            sem_msg = CompressedImage()
             sem_msg.header.stamp = stamp
             sem_msg.header.frame_id = FRAME_OPTICAL
-            sem_msg.data = sem.astype("<i4").tobytes()
+            sem_msg.format = "gt_codec run-length uint32 instance ids (GTRL)"
+            sem_msg.data = _u8(bytes(blob))
             self.pub_gt_semantic.publish(sem_msg)
 
         fx = (w / 2.0) / math.tan(math.radians(frame["hfov"]) / 2.0)
@@ -297,6 +333,7 @@ class HabitatFeedNode(Node):
         self.pub_info.publish(info)
 
         self.frames += 1
+        self._last_frame_id = frame.get("frame_id")
         if self.frames % 30 == 1:
             self.get_logger().info(f"frames relayed: {self.frames}")
 

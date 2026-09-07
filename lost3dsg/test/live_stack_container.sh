@@ -84,15 +84,13 @@ kv.add_vectors(words, np.random.default_rng(0).normal(size=(len(words), 32)).ast
 kv.save_word2vec_format("/tmp/smoke_w2v.bin", binary=True)
 PY
 
-# The KG aligner's bridge, and the model cache. found/kg_align.py inserts KG_BRIDGE_SRC
-# (default /DATA/ASPIRE/knowledge_bridge, a HOST path that does not exist in here) and then
-# imports knowledge_bridge.alignment.embedder. Without /kb on the path that raises, and the
-# perception node dies when it loads the hook. Without HF_HOME the in-container default points
-# at a host path that does not exist here, so MiniLM is re-fetched from the hub every run.
+# The model cache. Without HF_HOME the in-container default points at a host path that does not
+# exist here, so the encoder is re-fetched from the hub every run.
 #
-# This hunk was marked "port" in the lane's own plan and was not ported. The first gated run
-# found it: a1 could not import `found` and reported it as a probe fault.
-export PYTHONPATH=/kb:${PYTHONPATH}
+# This line used to be preceded by `export PYTHONPATH=/kb:...`, which put ASPIRE's knowledge_bridge
+# on the path because kg_align.py imported ConceptEmbedder from it. GA-306 vendored that class into
+# found/concept_embedder.py, so there is nothing to mount and nothing to add to the path. `found`
+# itself never came from PYTHONPATH -- the hook config carries its path.
 export HF_HOME=/found/.hf_cache
 
 # CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).
@@ -176,7 +174,7 @@ if [ -n "${RTABMAP_PID:-}" ] && kill -0 "$RTABMAP_PID" 2>/dev/null; then
 # `docker stop -t $((RTABMAP_CLOSE_TIMEOUT + 30))` OR LONGER.
 _CLOSE_T=${RTABMAP_CLOSE_TIMEOUT:-120}
 echo ">>> asking rtabmap to close its database (SIGINT to the node, up to ${_CLOSE_T}s)"
-echo "    NOTE: if this run is being capped, `docker stop` must allow at least $((_CLOSE_T + 30))s"
+echo "    NOTE: if this run is being capped, \`docker stop\` must allow at least $((_CLOSE_T + 30))s"
 echo "    (docker stop -t $((_CLOSE_T + 30))). A shorter grace SIGKILLs the close mid-write."
   kill -INT "$RTABMAP_PID" 2>/dev/null || true
   pkill -INT -f 'rtabmap_slam/rtabmap' 2>/dev/null || true
@@ -245,7 +243,7 @@ trap container_exit_cleanup EXIT
 # base_link, which sits on the floor; the camera is 1.5 m up, ceilings ~2.7 m.
 RTABMAP_GRID_ARGS=${RTABMAP_GRID_ARGS:-"--Grid/NormalsSegmentation false --Grid/MaxGroundHeight 0.25 --Grid/MaxObstacleHeight 1.8 --Grid/RangeMax 4.0 --Grid/RayTracing true --Grid/NoiseFilteringRadius 0.1 --Grid/NoiseFilteringMinNeighbors 5 --Grid/CellSize 0.05"}
 
-echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> web viewer :8081)"
+echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> web viewer :${BRIDGE_PORT:-8081})"
 ros2 run lost3dsg habitat_feed_node.py > /tmp/feed_node.log 2>&1 &
 
 # ---- Class A pre-flight gate -------------------------------------------------------------
@@ -339,10 +337,16 @@ if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
   # the honest outcome: it is a fact about rtabmap worth discovering explicitly rather than one
   # papered over by a copy nobody had costed. Mem/IncrementalMemory false is set below.
   _RT_DB_PATH="$RTABMAP_LOCALIZE_DB"
-  if [ -w "$_RT_DB_PATH" ]; then
-    echo "!! WARNING: $_RT_DB_PATH is WRITABLE inside the container. Localization will not write"
-    echo "   to it, but nothing is enforcing that. Mount the map read-only (-v <host>:<path>:ro)"
-    echo "   so the canonical map cannot be modified by a run that is only reading it."
+  # GA-336 (2026-09-07). The sentence "localization will not write to it" was FALSE: rtabmap
+  # writes the 2D occupancy grid into its database at close (save2DMapQuery), and against the :ro
+  # canonical map that ended run 20260907_004128 with "attempt to write a readonly database",
+  # exit -6. live_run.sh now hands this script a WRITABLE SCRATCH COPY under /out, on purpose.
+  # So a writable path is expected there, and the warning fires only for a writable path under
+  # the canonical mount, which is the case the :ro mount exists to prevent.
+  if [ -w "$_RT_DB_PATH" ] && [[ "$_RT_DB_PATH" == /found/* ]]; then
+    echo "!! WARNING: $_RT_DB_PATH is the CANONICAL map and it is WRITABLE inside the container."
+    echo "   rtabmap writes its 2D grid into this file at close. Mount maps read-only"
+    echo "   (-v <host>:/found/maps:ro) and localize against the scratch copy (live_run.sh, GA-336)."
   fi
   # GA-290, REFUTED, AND THE FLAG IS GONE WITH IT. --RGBD/MaxOdomCacheSize 0 was the owner-approved
   # hypothesis for the Rtabmap.cpp:4090 (_optimizedPoses) SIGABRT that killed runs 20260903_110622

@@ -1,5 +1,7 @@
 """Test harness for Cloud Perception Backend and RLE codec."""
 
+import os
+
 import numpy as np
 from client import ModalPerceptionBackend, rle_decode, rle_encode
 
@@ -31,7 +33,13 @@ def test_modal_client_mock():
 
 def test_modal_client_live():
     # Test client calling live deployed Modal endpoint
-    endpoint = "https://emanuelemusumeci--lost3dsg-perception-perceptionservice-predict.modal.run"
+    endpoint = os.environ.get("MODAL_PERCEPTION_URL", "")
+    if not endpoint:
+        # The URL is a credential (the endpoint has no proxy auth), so it is not
+        # written down here. Export MODAL_PERCEPTION_URL to run this against the
+        # real service.
+        print("SKIP: MODAL_PERCEPTION_URL is not set")
+        raise SystemExit(0)
     client = ModalPerceptionBackend(endpoint_url=endpoint)
     h = client.health()
     assert h["reachable"] is True, f"Health check failed: {h}"

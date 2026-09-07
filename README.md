@@ -39,6 +39,20 @@ VLM                    regolo    any OpenAI-compatible endpoint; vlm.base_url / 
    https://github.com/facebookresearch/habitat-sim; the renderer needs the GPU and an X
    display (`DISPLAY`, default `:1`).
 
+   The installed package is all `habitat_feed_host.py` needs. The two older host nodes,
+   `habitat_camera_node.py` and `habitat_camera_objects_node.py`, also need a habitat-sim
+   **source checkout**: each inserts the hardcoded `/root/exchange/habitat-sim/examples`
+   into `sys.path` and imports `HabitatSimInteractiveViewer` from `viewer` there. Mount or
+   symlink a checkout at that path, at the commit the installed package was built from —
+   `examples/viewer.py` calls the Magnum bindings, whose event and renderer classes are
+   renamed between versions, so a mismatched tree fails at import. Read the pair with
+   `python -c "import habitat_sim; print(habitat_sim.__version__)"`,
+   `conda list -n habitat_env habitat-sim` and `git -C <checkout> log -1 --format=%H`.
+   The pair our runs use (read on the runner host 2026-09-06): `habitat_sim` **0.3.2**, PyPI wheel,
+   conda env `habitat_env` (py3.9, `habitat-sim-mutex 1.0 headless_bullet`, channel `aihabitat`).
+   No source checkout exists on the runner and the live path never needs one; for the two older
+   host nodes, check out tag **`v0.3.2`**, not a nightly.
+
 3. **Scene data.** Public example scenes, no token:
 
    | var | default | holds |
@@ -55,7 +69,7 @@ VLM                    regolo    any OpenAI-compatible endpoint; vlm.base_url / 
    | var | used for |
    |---|---|
    | `REGOLO_API_KEY` | the VLM. Copied into `OPENAI_API_KEY`, which the OpenAI-compatible client reads. |
-   | `MODAL_PERCEPTION_URL` | the detector service when `perception.backend: "modal"`. |
+   | `MODAL_PERCEPTION_URL` | the detector service when `perception.backend: "modal"`. **Local setup required:** `cp lost3dsg/test/env.local.sh.example lost3dsg/test/env.local.sh`, fill in the `-predict` URL the deploy prints, `chmod 600`. Every shipped config carries an empty `modal_endpoint` on purpose and the launcher refuses a modal run without this file; the URL is a credential and a pre-commit guard refuses to commit one. |
    | `OPENROUTER_API_KEY` | only if `vlm.base_url` points at OpenRouter. |
 
 5. **The Modal detector service** (once per account):

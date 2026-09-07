@@ -8,30 +8,44 @@ Includes Topological Semantic Mapping (Room Manager) with Scene Graph generation
 Room changes are handled by the Room Manager using detected wall segments and
 its normal scene-evaluation logic.
 """
-import rclpy, json, os, time, threading, subprocess, sys
+import hashlib
+import json
 import logging
+import os
+import subprocess
+import sys
+import threading
+import time
 import urllib.parse
 from collections import deque
-from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy
+from datetime import datetime, timezone
+
 import numpy as np
+import rclpy
 import requests
-from lost3dsg.msg import ObjectDescriptionArray, Bbox3dArray
-from lost3dsg.srv import (
-    ObjectTrackingService,
-    UpdateObject,
-)
+from association import AssocObject, Observation, search_radius
+from builtin_interfaces.msg import Time as TimeMsg
+from config import CFG
+from cv_utils import publish_persistent_bboxes
+from geometry_msgs.msg import PoseStamped
+from hooks import DecisionLog, load_hooks
+from nav_msgs.msg import Path
+from nlp_utils import get_embedding, lost_similarity, lost_similarity_detailed, world2vec
 from object_services import (
     ObjectServices,
+    ensure_relations,
+    fuse_orientation,
+    infer_spatial_relations,
     save_persistent_perceptions,
     save_uncertain_objects,
-    ensure_relations,
-    infer_spatial_relations,
     synchronized_world_model,
 )
-from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import Bool
-from world_model import wm
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy
+from room_manager import RoomManager
+from std_msgs.msg import Bool, String
+from tf2_ros import Buffer, TransformListener
+
 # Explicit, not `import *`. Only the names this file does NOT define itself:
 # publish_persistent_centroids, publish_pov_volume and publish_uncertain_* are defined
 # BELOW and also in cv_utils with different bodies, so importing them here would swap a
@@ -39,20 +53,14 @@ from world_model import wm
 # ruff's F family was blind on this file -- which is why GA-22's two crashes read as
 # `F405 may be undefined` instead of `F821 undefined name`.
 from utils import compute_iou_3d
-from room_manager import RoomManager
-from nlp_utils import get_embedding, lost_similarity, lost_similarity_detailed, world2vec
-from datetime import datetime
-from cv_utils import publish_persistent_bboxes
-from config import CFG
-from association import AssocObject, Observation, search_radius
-from hooks import DecisionLog, load_hooks
-from std_msgs.msg import String
-from tf2_ros import Buffer, TransformListener
-import hashlib
-from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Path
-from builtin_interfaces.msg import Time as TimeMsg
-from datetime import timezone
+from visualization_msgs.msg import Marker, MarkerArray
+from world_model import wm
+
+from lost3dsg.msg import Bbox3dArray, ObjectDescriptionArray
+from lost3dsg.srv import (
+    ObjectTrackingService,
+    UpdateObject,
+)
 
 # ============= EXPLORATION PARAMETERS (config.yaml: association) =============
 EXPLORATION_IOU_THRESHOLD = CFG["association"]["exploration_iou_threshold"]
@@ -60,15 +68,21 @@ SIM_THRESHOLD = CFG["association"]["sim_threshold"]
 TRACKING_IOU_THRESHOLD = CFG["association"]["tracking_iou_threshold"]
 VOLUME_EXPANSION_RATIO = CFG["association"]["volume_expansion_ratio"]
 EXPLORATION_FRAME_LIMIT = CFG["association"]["exploration_frame_limit"]
+GRAPH_API_MAX_STRIKES = int(CFG["association"].get("graph_api_max_strikes", 5))   # GA-09
 OBJECT_STABILITY_TIMEOUT = CFG["association"]["object_stability_timeout"]
 POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
 MAX_VOLUME_THRESHOLD = CFG["association"]["max_volume_threshold"]
 BBOX_REDUCTION_RATIO = CFG["association"]["bbox_reduction_ratio"]
+# GA-12: the exploration->tracking move distance was the literal 0.35 at its one use site,
+# the only destructive threshold in this block with no config key.
+TRANSITION_MOVE_DISTANCE_M = CFG["association"].get("transition_move_distance_m", 0.35)
 # GA-48: the re-evaluation radius was ALWAYS this literal. `MAX_MATCH_DISTANCE or 2.0`
 # evaluated to 2.0 for every shipped run, because max_match_distance_m has always been
 # 0.0 -- so the key that appeared to govern the neighbour radius never did. It is its own
 # value and now has its own key, default 2.0 to reproduce that behaviour exactly.
 REEVALUATION_RADIUS = CFG["association"].get("reevaluation_radius_m", 2.0)
+REEVALUATION_DEBOUNCE_S = float(CFG["association"].get("reevaluation_debounce_s", 2.0))
+REEVALUATION_MAX_FANOUT = int(CFG["association"].get("reevaluation_max_fanout", 12))
 # GA-289. The tracking path (check_tracking_transition) ran `lost_similarity` over EVERY stable
 # object with no geometry consulted at all, and a win needed no evidence: two identical labels
 # score exactly 1.000 on nothing else measurable, and `>` keeps the FIRST such object at a tie.
@@ -638,11 +652,18 @@ class ObjectManagerService(Node):
             cloud_map_topic='/rtabmap/cloud_map',
         )
         self.object_services = ObjectServices(self.room_manager)
+        self.object_services.on_object_removed = self._note_removed   # GA-47
         self.last_room_check_time = time.time()
 
         # Extension seam (config `hooks`, see hooks.py): admission filter, node
         # refiner and the re-evaluation queue. Blueprints unless configured.
         self.filter_hook, self.refiner_hook, self.reeval = load_hooks(CFG)
+        # GA-309. The association layer asks the SAME hook for ontological disjointness
+        # (optional `disjoint` attribute, read in object_services._assoc_build).
+        self.object_services.filter_hook = self.filter_hook
+        self._reeval_last = {}            # object_id -> monotonic time of its last queueing (GA-11)
+        self._reeval_debounced = 0        # counters, so a run can report how often the bounds bit
+        self._reeval_fanout_capped = 0
         self.decision_log = DecisionLog(CFG["hooks"]["decisions_log"] or os.path.join(log_dir, "hook_decisions.jsonl"))
         self.get_logger().info(f"hooks: filter={self.filter_hook.name} refiner={self.refiner_hook.name} "
                                f"log={self.decision_log.path}")
@@ -653,7 +674,7 @@ class ObjectManagerService(Node):
             self.walls_callback,
             10
         )
-        from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+        from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
         qos_poly = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT, # o BEST_EFFORT se la rete è lenta
@@ -693,6 +714,7 @@ class ObjectManagerService(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.graph_api_base_url = GRAPH_API_BASE_URL.rstrip('/')
         self.graph_api_timeout = GRAPH_API_TIMEOUT
+        self._graph_api_strikes = 0        # GA-09: consecutive failed calls, reset by any answer
         self._graph_api_process = None
         self.get_logger().info(f"Graph API base URL: {self.graph_api_base_url}")
         self.get_logger().info('Object Tracking Service ready')
@@ -701,6 +723,13 @@ class ObjectManagerService(Node):
         self.create_subscription(Bool, "/robot_movement_detected", self.movement_callback, qos_poly)
 
         self.create_subscription(ObjectDescriptionArray, '/object_descriptions', self._descriptions_callback, qos_standard)
+        # GA-108: describer answers that arrived after their cycle, addressed by the crop's
+        # origin frame and 2D box. They go to the object whose SIGHTING matches, not to the
+        # next cycle's namesake (run 20260906_223701: 204 of 212 objects ended "unknown").
+        self.create_subscription(ObjectDescriptionArray, '/object_descriptions_late',
+                                 self._late_descriptions_callback, qos_standard)
+        self._n_late_applied = 0
+        self._n_late_unmatched = 0
         self.create_subscription(Bbox3dArray, '/bbox_3d', self._bboxes_callback, qos_standard)
         self.create_subscription(PoseStamped, '/agent_camera_pose', self._agent_pose_callback, qos_standard)
         self.get_logger().info("Subscribing to /object_descriptions, /bbox_3d and /agent_camera_pose")
@@ -721,6 +750,8 @@ class ObjectManagerService(Node):
             self.object_services.db.on_object_room_changed(
                 obj, old_room, new_room, step=self.object_services.tracking_step_counter
             )
+            # GA-11: a room change is a change to this object; queue it for a second look.
+            self._note_update(getattr(obj, "object_id", None) or obj.label, reason="room_changed")
             self.get_logger().info(
                 f"Object '{obj.label}' riassegnato: {old_room} -> {new_room}"
             )
@@ -900,7 +931,9 @@ class ObjectManagerService(Node):
         # as it was when the pass began.
         for obj in wm.snapshot():
             _scan["visited"] += 1
-            if (time.time() - getattr(obj, 'creation_time', 0)) < OBJECT_STABILITY_TIMEOUT:
+            # GA-12: default is NOW, not the epoch -- an unstamped object is not yet stable.
+            _ct = getattr(obj, 'creation_time', None)
+            if (time.time() - (time.time() if _ct is None else _ct)) < OBJECT_STABILITY_TIMEOUT:
                 # Skipped INSIDE the loop, so it is visited to be discarded: it belongs
                 # outside the candidate set, and the count says how often that costs a visit.
                 _scan["skipped_unstable"] += 1
@@ -968,7 +1001,7 @@ class ObjectManagerService(Node):
             distance = np.sqrt((new_x - old_x)**2 + (new_y - old_y)**2 + (new_z - old_z)**2)
             iou = compute_iou_3d(bbox, best_match.bbox)
             
-            if distance > 0.35 and iou < EXPLORATION_IOU_THRESHOLD:
+            if distance > TRANSITION_MOVE_DISTANCE_M and iou < EXPLORATION_IOU_THRESHOLD:
                 self.object_services.log_both('warn', f"[TRACKING TRANSITION] Object '{best_match.label}' is the best match but moved! (Dist: {distance:.2f}m), the iou was {iou}")
                 return True, best_match, distance
         
@@ -1009,6 +1042,104 @@ class ObjectManagerService(Node):
 
         return facts
 
+    def _late_descriptions_callback(self, msg):
+        """GA-108. Hand each late description to the object seen in its origin frame."""
+        for d in getattr(msg, "descriptions", []) or []:
+            origin_frame = str(getattr(d, "origin_frame", "") or "")
+            if not origin_frame:
+                continue
+            # rclpy hands float32[4] back as a numpy array: never `or []` on it (bool() of a
+            # 4-element array raises, and did -- run 20260907_001120 died on the first box).
+            _bb = getattr(d, "origin_bbox_2d", None)
+            obj = self._object_for_sighting(origin_frame, [float(v) for v in _bb] if _bb is not None else [],
+                                            str(getattr(d, "label", "") or ""))
+            if obj is None:
+                self._n_late_unmatched += 1
+                self.object_services.log_both(
+                    'info', f"[VLM-late] no object sighted in frame {origin_frame} matches "
+                            f"{d.label}; dropped ({self._n_late_unmatched} unmatched so far)")
+                continue
+            changed = []
+            for field in ("description", "color", "material", "shape"):
+                new = str(getattr(d, field, "") or "").strip()
+                cur = str(getattr(obj, field, "") or "").strip().lower()
+                # Only fill what is still unknown: a late answer must never overwrite a
+                # description that a later, better-overlapping sighting already supplied.
+                if new and new.lower() != "unknown" and (not cur or cur == "unknown"):
+                    setattr(obj, field, new)
+                    changed.append(field)
+            if "description" in changed:
+                # GA-26: the vector was refreshed only when missing, so a description that
+                # arrived late kept the stale (or absent) embedding of the old text.
+                obj.embedding = get_embedding(world2vec, obj.description)
+            if changed:
+                self._n_late_applied += 1
+                self.object_services.log_both(
+                    'info', f"[VLM-late] {obj.label} ({getattr(obj, 'object_id', '?')}) described from "
+                            f"frame {origin_frame}: {', '.join(changed)} ({self._n_late_applied} applied)")
+                try:
+                    self._note_update(getattr(obj, "object_id", None), reason="described")
+                except Exception as exc:   # a re-evaluation trigger must not lose the description
+                    self.object_services.log_both('warn', f"[VLM-late] re-evaluation not queued: {exc}")
+
+    def _cycle_bbox_2d_for(self, obj):
+        """THIS cycle's detector box for `obj`, stashed on the object at the four sites that add
+        it to the cycle (`_cycle_bbox_2d`). Reviewed 2026-09-07: reading the object's own bbox
+        dict returned a box from an EARLIER cycle, and a fallback by label returned ANOTHER
+        detection's box -- `obj.label` is the ordinal frozen at admission, and run C holds ten
+        objects labelled "picture frame#2". Only the stash is trusted; absent means None, and
+        co-visibility abstains rather than reading a wrong box."""
+        return getattr(obj, "_cycle_bbox_2d", None)
+
+    @staticmethod
+    def _frame_seconds(frame_id):
+        """perception's frame id ("<sec>_<nanosec>") or om6's float seconds -> float seconds."""
+        if isinstance(frame_id, (int, float)):
+            return float(frame_id)
+        txt = str(frame_id)
+        if "_" in txt:
+            sec, _, nsec = txt.partition("_")
+            try:
+                return int(sec) + int(nsec) * 1e-9
+            except ValueError:
+                return None
+        try:
+            return float(txt)
+        except ValueError:
+            return None
+
+    def _object_for_sighting(self, origin_frame, origin_bbox_2d, label):
+        """The world-model object whose sighting in `origin_frame` has `origin_bbox_2d`.
+
+        Frame match is by time (1 ms), because perception keys frames as "<sec>_<nanosec>" and
+        this node stores float seconds. Within the frame the 2D box decides (IoU >= 0.3); a
+        sighting with no 2D box falls back to the label base, and only if it is the sole
+        candidate -- two same-label objects in one frame with no box stay unmatched.
+        """
+        from association import _iou_2d
+        t = self._frame_seconds(origin_frame)
+        if t is None:
+            return None
+        base = label.split('#')[0].strip().lower()
+        best, best_iou, by_label = None, 0.0, []
+        for obj in list(wm.persistent_perceptions):
+            for obs in getattr(obj, "observations", None) or []:
+                ft = self._frame_seconds(getattr(obs, "frame_id", None))
+                if ft is None or abs(ft - t) > 1e-3:
+                    continue
+                box = getattr(obs, "bbox_2d", None)
+                if box is not None and origin_bbox_2d and len(origin_bbox_2d) == 4:
+                    iou = _iou_2d(box, origin_bbox_2d)
+                    if iou > best_iou:
+                        best, best_iou = obj, iou
+                elif str(getattr(obj, "label", "")).split('#')[0].strip().lower() == base:
+                    by_label.append(obj)
+        if best is not None and best_iou >= 0.3:
+            return best
+        if len(by_label) == 1:
+            return by_label[0]
+        return None
+
     def _record_sighting(self, obj, perception_timestamp):
         """Append one Observation to `obj`, or none at all. GA-186.
 
@@ -1039,7 +1170,7 @@ class ObjectManagerService(Node):
                 # GA-186: this frame's DETECTOR box, carried in the bbox dict since the
                 # message grew `has_bbox_2d`. Absent stays None -- co-visibility abstains
                 # on a missing box and vetoes only on a measured disjoint one.
-                bbox_2d=(getattr(obj, "bbox", None) or {}).get("bbox_2d"),
+                bbox_2d=self._cycle_bbox_2d_for(obj),
                 # GA-190: this view's appearance embedding, so the appearance channel
                 # compares MEASURED crops rather than a shape descriptor derived from the
                 # box the two objects already agree on.
@@ -1202,6 +1333,7 @@ class ObjectManagerService(Node):
             }
 
             already_seen = False
+            transition = False
 
             if in_exploration:
                 transition, obj, distance = self.check_tracking_transition(
@@ -1209,16 +1341,9 @@ class ObjectManagerService(Node):
                 )
 
                 if transition:
-                    self.object_services.log_both('warn', "[TRANSITION] Switching from EXPLORATION to TRACKING mode")
-                    self.exploration_mode = False
-                    self.tracking_step_counter = 1
+                    self._enter_tracking("a stable object moved")
                     tracking_activated = True
                     in_exploration = False
-                    self.exploration_frame_counter = 0
-
-                    msg = Bool()
-                    msg.data = True
-                    self.tracking_activated_pub.publish(msg)
 
                     update_response = self.modify_existing_object(obj, bbox, description_embedding)
                     if update_response.success:
@@ -1227,6 +1352,7 @@ class ObjectManagerService(Node):
                              if getattr(o, "object_id", None) == update_response.object_id),
                             obj,
                         )
+                        matching_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
                         self._note_update(update_response.object_id)
@@ -1236,10 +1362,16 @@ class ObjectManagerService(Node):
                         # decision row was written. A refused move (GA-24) arrives here, so
                         # the failure is now a visible proposal rather than a lost object.
                         already_seen = True
+                        continue
                     else:
                         self.object_services.log_both('warn', f"Update failed for {obj.label}: {update_response.message}")
-                    continue
+                    # GA-10, transition branch: the `continue` stood HERE, after the if/else,
+                    # so a refused update still skipped the admission seam below and the
+                    # comment above it was true of the other branch only. `in_exploration`
+                    # is already False, which skips the exploration loop; `transition` skips
+                    # the tracking loop (it would re-run the update that just failed).
 
+            if in_exploration:
                 for obj in wm.snapshot():
                     # GA-04: locality first. Previously the overlap test was conjoined with the
                     # similarity test below, so attributes were compared against every object in
@@ -1285,6 +1417,7 @@ class ObjectManagerService(Node):
                     # re-evaluation path (D15), not the association loop.
                     if similarity > SIM_THRESHOLD:
                         already_seen = True
+                        obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                         current_perception_objects.append(obj)
                         # GA-07: the confirm_stationary guard that stood here is DELETED,
                         # with its twin below and the config key. It read
@@ -1301,11 +1434,15 @@ class ObjectManagerService(Node):
                         # an early return that fires when it is true, so it is provably False
                         # at this point. Real protection belongs ABOVE that early return and
                         # is a different change from this one.
-                        obj.bbox = bbox
+                        # GA-315 part 2: the AABB is this view's; the axis is fused over
+                        # every accepted view, never the last one's alone.
+                        obj.bbox, obj._yaw_acc = fuse_orientation(obj, bbox)
                         objects_modified = True
+                        # GA-11: an in-place box write is a change to THIS object; queue it.
+                        self._note_update(getattr(obj, "object_id", None) or obj.label, reason="box_written")
                         break
 
-            else:
+            elif not transition:
                 best_match = None
                 best_score = 0
 
@@ -1369,6 +1506,7 @@ class ObjectManagerService(Node):
                              if getattr(o, "object_id", None) == update_response.object_id),
                             best_match,
                         )
+                        matching_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
                         self._note_update(update_response.object_id)
@@ -1453,7 +1591,12 @@ class ObjectManagerService(Node):
                     new_obj.ontologically_usable = not new_obj.provisional
                     new_obj.onto_aligned = bool(aligned and new_obj.onto_type
                                                 and new_obj.ontologically_usable)
+                    # GA-314. The admission grade rides beside `entity`, read out of the same
+                    # generic annotation, so the merge survivor rule (`merge_rank`) can put
+                    # credibility before age. None when the hook wrote no verdict.
+                    new_obj.admission_grade = (ann.get("verdict") or {}).get("grade")
 
+                    new_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                     current_perception_objects.append(new_obj)
                     objects_modified = True
 
@@ -1464,6 +1607,18 @@ class ObjectManagerService(Node):
             # observed together. Recorded here rather than in each match branch because
             # there are four of those and a sighting missed in one of them is invisible.
             self._record_sighting(obj, perception_timestamp)
+
+        # GA-08. `association.exploration_frame_limit` was read, the counter incremented and
+        # reset, and the two never compared, so a static scene stayed in exploration for the
+        # whole run and neither delete path ever ran. The rule of the module this one
+        # replaced: after N exploration frames that carried detections, tracking starts.
+        # 0 = off (only a moved object starts tracking, as before).
+        if (in_exploration and EXPLORATION_FRAME_LIMIT > 0
+                and self.exploration_frame_counter >= EXPLORATION_FRAME_LIMIT
+                and len(request.descriptions.descriptions) > 0):
+            self._enter_tracking(f"exploration_frame_limit={EXPLORATION_FRAME_LIMIT} frames reached")
+            tracking_activated = True
+            in_exploration = False
         pov_volume = getattr(self, 'latest_fov_volume', None)
 
         if not in_exploration:
@@ -1576,6 +1731,7 @@ class ObjectManagerService(Node):
         try:
             response = requests.request(method=method, url=url, json=json_body, timeout=self.graph_api_timeout)
         except requests.RequestException as e:
+            self._graph_api_strike(f"unreachable ({method} {url}): {e}")
             raise RuntimeError(f"Graph API non raggiungibile ({method} {url}): {e}")
 
         if expected_status is None:
@@ -1593,12 +1749,34 @@ class ObjectManagerService(Node):
                     detail = payload.get('detail') or payload.get('message') or payload
             except Exception:
                 pass
+            if response.status_code >= 500:
+                self._graph_api_strike(f"{response.status_code} on {method} {path}: {detail}")
+            else:
+                self._graph_api_strikes = 0     # a refusal is the service ALIVE and answering
             raise RuntimeError(f"Graph API error {response.status_code} on {method} {path}: {detail}")
 
         try:
-            return response.json()
-        except Exception:
-            return {}
+            body = response.json()
+        except ValueError as e:
+            # GA-01: this returned {} and the caller then filed the object under its LABEL.
+            # A success reply nobody can read is a failed call, not an empty result.
+            self._graph_api_strike(f"unreadable {response.status_code} body on {method} {path}: {e}")
+            raise RuntimeError(f"Graph API {method} {path}: {response.status_code} with an unreadable body: {e}")
+        self._graph_api_strikes = 0
+        return body
+
+    def _graph_api_strike(self, what):
+        """GA-09. Every caller caught the RuntimeError and carried on, so a run whose bridge
+        died looked exactly like a static scene. Counted here, once for all callers:
+        `association.graph_api_max_strikes` CONSECUTIVE failures end the run the way
+        detection_pipeline's VLM strikes do. 0 = count and log only."""
+        self._graph_api_strikes += 1
+        self.get_logger().error(f"[GRAPH-API] call FAILED: {what}; strike "
+                                f"{self._graph_api_strikes}/{GRAPH_API_MAX_STRIKES}")
+        if 0 < GRAPH_API_MAX_STRIKES <= self._graph_api_strikes:
+            self.get_logger().error(f"[GRAPH-API] ENDING THE RUN: {self._graph_api_strikes} consecutive "
+                                    f"Graph API failures; nothing this node sees is being recorded.")
+            self._flush_and_exit()
 
     def add_new_object(self, label, bbox, description, color, material,
                        description_embedding=None, in_exploration=False, room_id=None):
@@ -1618,6 +1796,9 @@ class ObjectManagerService(Node):
             "y_max": bbox["y_max"],
             "z_min": bbox["z_min"],
             "z_max": bbox["z_max"],
+            **({"yaw": bbox["yaw"], "oriented_center": list(bbox["oriented_center"]),
+                "oriented_extents": list(bbox["oriented_extents"])}
+               if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "in_exploration": in_exploration,
             "description_embedding": serialized_embedding,
         }
@@ -1628,7 +1809,11 @@ class ObjectManagerService(Node):
             self.get_logger().error(f"Add object failed via Graph API: {e}")
             return None
 
-        object_id = result.get("object_id", label)
+        object_id = result.get("object_id")
+        if not object_id:
+            # GA-01: the label was the fallback identity, so two beds filed this way became one.
+            self.get_logger().error(f"Add object refused: the Graph API reply for {label} carries no object_id: {result}")
+            return None
 
         for obj in reversed(wm.persistent_perceptions):
             if getattr(obj, "object_id", None) == object_id or (obj.label == label and obj.bbox == bbox):
@@ -1648,6 +1833,9 @@ class ObjectManagerService(Node):
             "y_max": bbox["y_max"],
             "z_min": bbox["z_min"],
             "z_max": bbox["z_max"],
+            **({"yaw": bbox["yaw"], "oriented_center": list(bbox["oriented_center"]),
+                "oriented_extents": list(bbox["oriented_extents"])}
+               if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "description_embedding": self._serialize_embedding(description_embedding),
         }
 
@@ -1686,7 +1874,31 @@ class ObjectManagerService(Node):
 
         try:
             result = self._call_graph_api("POST", "/merge", json_body=payload)
-            return int(result.get("merged_count", 0)) > 0
+            if result.get("pending"):
+                # GA-183: HTTP 202 -- the bridge dispatched the request and stopped waiting.
+                # The merge may still land; the next cycle re-reads the world model.
+                self.get_logger().warn(f"Merge dispatched, not confirmed: {result.get('message')}")
+            merged = int(result.get("merged_count", 0)) > 0
+            if merged:
+                # GA-11. A merge changes the survivor more than anything else does; it never
+                # triggered a second look. The service already reports each pair's keeper.
+                try:
+                    # The bridge returns the parsed list as "merge_log"; "merge_log_json" is the
+                    # ROS field name and never reached this dict, so no survivor was ever queued.
+                    for pair in result.get("merge_log") or json.loads(result.get("merge_log_json") or "[]"):
+                        # The service's entry names the keeper by LABEL ("keeper": keeper.label)
+                        # and carries its id as `keeper_id` / `bbox_from_object_id`. Reading the
+                        # label as a dict killed run 20260907_002814 on the first merge.
+                        if not isinstance(pair, dict):
+                            continue
+                        keeper = pair.get("keeper")
+                        kid = (pair.get("keeper_id") or pair.get("bbox_from_object_id")
+                               or (keeper.get("object_id") if isinstance(keeper, dict) else None))
+                        if kid:
+                            self._note_update(kid, reason="merged")
+                except (TypeError, ValueError, AttributeError) as exc:
+                    self.get_logger().warn(f"GA-11: merge log unreadable, survivors not queued: {exc}")
+            return merged
         except RuntimeError as e:
             self.get_logger().error(f"Merge objects failed via Graph API: {e}")
             return False
@@ -1707,7 +1919,9 @@ class ObjectManagerService(Node):
                 pov_volume['y_min'], pov_volume['y_max'],
                 pov_volume['z_min'], pov_volume['z_max'],
             ] if pov_volume else [],
-            "current_labels": [o.label for o in current_perception_objects],
+            # GA-26: identity, not label -- seeing one chair must not clear every chair's
+            # tally. The srv field keeps its name; it carries the object_id when there is one.
+            "current_labels": [getattr(o, "object_id", None) or o.label for o in current_perception_objects],
             "check_uncertain": False,
         }
 
@@ -1739,7 +1953,7 @@ class ObjectManagerService(Node):
         now = time.time()
         expiry = 120.0 # secondi
         to_remove = [obj for obj in self.uncertain_objects
-                     if now - getattr(obj, 'creation_time', 0) > expiry]
+                     if now - (now if getattr(obj, 'creation_time', None) is None else obj.creation_time) > expiry]  # GA-12: unstamped = not expired
         if to_remove:
             for obj in to_remove:
                 self.uncertain_objects.remove(obj)
@@ -1831,17 +2045,31 @@ class ObjectManagerService(Node):
                     self.room_manager.finalize_current_room(wm.persistent_perceptions)
             except Exception as exc:
                 self.object_services.log_both('error', f"[INPUT] room finalize failed on exit: {exc}")
-            for h in list(logging.getLogger().handlers):
-                try:
-                    h.flush()
-                except Exception:
-                    pass
-            sys.stdout.flush()
-            sys.stderr.flush()
-            # os._exit, not sys.exit: this runs on a MultiThreadedExecutor WORKER thread,
-            # where SystemExit unwinds that thread only and leaves the process spinning --
-            # which is the exact failure being fixed. The log is flushed above first.
-            os._exit(1)
+            self._flush_and_exit()
+
+    def _flush_and_exit(self):
+        for h in list(logging.getLogger().handlers):
+            try:
+                h.flush()
+            except Exception:
+                pass
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # os._exit, not sys.exit: this runs on a MultiThreadedExecutor WORKER thread,
+        # where SystemExit unwinds that thread only and leaves the process spinning --
+        # which is the exact failure being fixed. The log is flushed above first.
+        os._exit(1)
+
+    def _enter_tracking(self, why):
+        """The one exit from EXPLORATION (GA-08): the transition branch and the frame limit
+        both come through here, so the counters cannot drift apart again."""
+        self.object_services.log_both('warn', f"[TRANSITION] Switching from EXPLORATION to TRACKING mode: {why}")
+        self.exploration_mode = False
+        self.tracking_step_counter = 1
+        self.exploration_frame_counter = 0
+        msg = Bool()
+        msg.data = True
+        self.tracking_activated_pub.publish(msg)
 
     def _bboxes_callback(self, msg):
         self._n_bbox_msgs += 1
@@ -1955,13 +2183,30 @@ class ObjectManagerService(Node):
                 if o is not node and o.bbox is not None and node.bbox is not None
                 and bbox_center_distance(node.bbox, o.bbox) <= radius]
 
-    def _note_update(self, object_id):
-        """A node changed: its spatial neighbours (within the association gate, 2 m when
-        the gate is off) deserve a second look. The trigger policy — which neighbours,
-        graph-distance instead of metres — is the queue subclass's to refine."""
+    def _note_update(self, object_id, reason="updated", now=None):
+        """A node changed: it and its spatial neighbours (within the association gate, 2 m
+        when the gate is off) deserve a second look. The trigger policy — which neighbours,
+        graph-distance instead of metres — is the queue subclass's to refine.
+
+        GA-11, the three missing triggers: this is now also called after a MERGE (for each
+        surviving object), after an IN-PLACE BOX WRITE, and after a ROOM CHANGE. `reason` is
+        recorded so the drain log can say which event caused the second look.
+
+        Debounce and fan-out bound, both config knobs with stated costs (config.py, GA-11):
+        an object re-queued inside `reevaluation_debounce_s` of its last queueing is skipped,
+        and at most `reevaluation_max_fanout` neighbours are queued per event, so one churning
+        object cannot flood the queue and one update cannot re-examine a whole room.
+        """
+        import time as _t
+        now = _t.monotonic() if now is None else now
+        last = self._reeval_last.get(object_id)
+        if last is not None and now - last < REEVALUATION_DEBOUNCE_S:
+            self._reeval_debounced += 1
+            return
         node = self._find_node(object_id)
         if node is None:
             return
+        self._reeval_last[object_id] = now
         radius = REEVALUATION_RADIUS
         # GA-11: queue the node that CHANGED, not only its neighbours. `on_update` adds
         # the neighbour ids and never the subject -- hooks.py's own self-test pins that
@@ -1973,8 +2218,25 @@ class ObjectManagerService(Node):
         # blueprint that FOUND extends; widening on_update's contract would change it
         # for every subclass and break the blueprint's self-test. WHICH nodes deserve a
         # second look is the caller's trigger policy, which is what this method is.
-        self.reeval.mark(object_id, "updated")
-        self.reeval.on_update(object_id, [self._node_dict(o)["object_id"] for o in self._neighbours(node, radius)])
+        self.reeval.mark(object_id, reason)
+        neighbours = [self._node_dict(o)["object_id"] for o in self._neighbours(node, radius)]
+        if len(neighbours) > REEVALUATION_MAX_FANOUT:
+            self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
+            neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
+        self.reeval.on_update(object_id, neighbours)
+
+    def _note_removed(self, obj):
+        """GA-47. A deleted object cannot be re-examined, but what stood around its last
+        position can. object_services calls this for every persistent object it removes."""
+        if getattr(obj, "bbox", None) is None:
+            return
+        oid = getattr(obj, "object_id", None) or obj.label
+        neighbours = [self._node_dict(o)["object_id"] for o in self._neighbours(obj, REEVALUATION_RADIUS)]
+        if len(neighbours) > REEVALUATION_MAX_FANOUT:
+            self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
+            neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
+        for n in neighbours:
+            self.reeval.mark(n, f"neighbour {oid} deleted")
 
     def _drain_reevaluations(self):
         """Periodic: hand every queued node, with its neighbours, to the Refiner and log
@@ -2029,7 +2291,8 @@ class ObjectManagerService(Node):
         #if hasattr(self, 'room_area_pub'):
         #    self.room_area_pub.publish(msg)
 
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor  # noqa: E402, I001  (late on purpose: used by main() only, and the module must import under rosstub on the host)
+
 
 def main(args=None):
     rclpy.init(args=args)

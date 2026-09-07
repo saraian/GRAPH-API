@@ -1,39 +1,14 @@
-"""Modal Serverless Perception Microservice.
+"""Modal Serverless Perception Microservice with YOLO-World-L and SAM 2.1.
 
 Deploy with:
     modal deploy lost3dsg/src/perception_module/cloud/modal_perception.py
 
-Runs OWLv2 open-vocabulary detection + SAM instance segmentation + CLIP feature extraction
-on an NVIDIA L4 GPU in the cloud with per-second billing and scale-to-zero.
+Runs:
+1. YOLO-World-L open-vocabulary object detection (fast, tight indoor bounding boxes)
+2. SAM 2.1 (Segment Anything 2.1 Hiera-Small) instance segmentation producing exact pixel masks
+3. Semantic Cross-Class NMS and crop feature embeddings
 
-THIS FILE IS NOT WHAT IS DEPLOYED, AND THE THING THAT IS DEPLOYED HAS NO COMMIT.
-Established 2026-09-01; recorded here so it is not re-derived from timing keys a third time.
-
-  what runs        YOLO-World-L (v2) + SAM 2.1 Hiera-Small. Not inferred — the health record
-                   in every run bundle says so verbatim:
-                   perception_latencies.json .components.perception_backend.details.models
-  where it lives   /DATA/GRAPH-API working tree ONLY, as an UNCOMMITTED edit to this same
-                   path. `git show HEAD:` in BOTH repositories returns THIS OWLv2 file;
-                   neither HEAD contains the string `YOLOWorld`.
-  what a clone     the OWLv2 server below. A fresh checkout of either repository, deployed,
-  would deploy     REPLACES the running detector.
-
-Two consequences, and they point opposite ways:
-
-1. DO NOT redeploy this file to make GA-17's fix live. It would swap the detector mid-
-   experiment, and the fix it would carry protects a field (`clip_embedding`) that nothing
-   reads: measured over the whole tree, clip_embedding reaches only detection_types.py,
-   client.py:221 and perception_2.py, which stores it and dumps output/clip_embeddings.json.
-   No association, no merge, no map, no viewer.
-
-2. DO NOT discard GA-17's fix either. This file is what both repositories hold COMMITTED, so
-   it is what any fresh clone deploys — the defect is in the version with the widest reach,
-   not a dead branch.
-
-The provenance hole is the finding, and it is worse than a stale build. A stale build has a
-commit that describes it. THE RUNNING SERVICE HAS NONE: it was deployed from an uncommitted
-working tree, so if that tree is lost the running service cannot be reproduced from either
-repository. GA-85 named a deploy skew between builds; this is a deploy from nothing.
+Deployed on an NVIDIA T4 / L4 GPU on Modal with scale-to-zero.
 """
 
 import base64
@@ -50,24 +25,25 @@ APP_NAME = "lost3dsg-perception"
 
 perception_image = (
     modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git", "libgl1", "libglib2.0-0")
     .pip_install(
-        "torch>=2.2.0",
-        "torchvision>=0.17.0",
-        "transformers>=4.40.0",
-        "accelerate>=0.28.0",
+        "torch>=2.3.1",
+        "torchvision>=0.18.1",
+        "ultralytics>=8.2.70",
+        "transformers>=4.44.0",
+        "accelerate>=0.30.0",
         "opencv-python-headless>=4.9.0",
         "pillow>=10.2.0",
         "numpy>=1.24.0",
         "fastapi>=0.110.0",
         "pycocotools>=2.0.7",
+        "sentencepiece",
+        "git+https://github.com/facebookresearch/sam2.git",
     )
     .run_commands(
-        # Pre-cache OWLv2 and SAM model weights in the image build layer
-        "python3 -c \"from transformers import Owlv2Processor, Owlv2ForObjectDetection, SamModel, SamProcessor; "
-        "Owlv2Processor.from_pretrained('google/owlv2-base-patch16-ensemble'); "
-        "Owlv2ForObjectDetection.from_pretrained('google/owlv2-base-patch16-ensemble'); "
-        "SamProcessor.from_pretrained('facebook/sam-vit-base'); "
-        "SamModel.from_pretrained('facebook/sam-vit-base')\"",
+        # Pre-cache YOLO-World-L and SAM 2.1 model weights in the image build layer
+        "python3 -c \"from ultralytics import YOLOWorld; YOLOWorld('yolov8l-worldv2.pt')\"",
+        "python3 -c \"from sam2.sam2_image_predictor import SAM2ImagePredictor; SAM2ImagePredictor.from_pretrained('facebook/sam2.1-hiera-small', device='cpu')\"",
     )
 )
 
@@ -78,40 +54,11 @@ class PerceptionRequest(BaseModel):
     image_b64: str = Field(..., description="Base64 encoded JPEG/PNG image")
     labels: List[str] = Field(..., description="Candidate open-vocabulary labels from VLM")
     score_threshold: float = Field(default=0.15, description="Confidence threshold for detections")
-    nms_threshold: float = Field(default=0.50, description="IoU threshold for non-maximum suppression")
-    containment_threshold: float = Field(
-        default=0.85,
-        description="IoS threshold (intersection over the SMALLER box) for suppressing a "
-                    "nested detection that IoU cannot see. 1.01 disables it. GA-286.")
-
-
-MIN_CROP_PX = 4
-"""Below this, in EITHER dimension, a crop carries no usable appearance."""
-
-
-def crop_regions(boxes, rgb_np, w, h, min_px=MIN_CROP_PX):
-    """-> [(box_index, crop_array)] for the boxes whose crop is at least `min_px` a side.
-
-    The BOX INDEX travels with the crop. The embeddings are computed in one batch, so
-    dropping a crop shifts every later position in that batch while the assembly step still
-    indexes `crop_embeddings` by box; carrying the index is what keeps the two from drifting.
-    Split out of the endpoint so this can be tested without a GPU, weights, or Modal — the
-    misalignment it prevents is silent, and would attach one object's appearance to another.
-    """
-    out = []
-    for i, b in enumerate(boxes):
-        x1, y1, x2, y2 = map(int, b)
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        crop = rgb_np[y1:y2, x1:x2]
-        if crop.shape[0] < min_px or crop.shape[1] < min_px:
-            continue
-        out.append((i, crop))
-    return out
+    nms_threshold: float = Field(default=0.45, description="IoU threshold for non-maximum suppression")
 
 
 def rle_encode(mask_binary: np.ndarray) -> Dict[str, Any]:
-    """Fast run-length encoding for binary boolean mask."""
+    """Fast run-length encoding for binary boolean mask (HxW)."""
     m = (mask_binary > 0).astype(np.uint8)
     h, w = m.shape[:2]
     flat = m.flatten()
@@ -128,76 +75,109 @@ def rle_encode(mask_binary: np.ndarray) -> Dict[str, Any]:
     }
 
 
-# GA-207. MEASURED on run 20260901_151714: total_ms 54,404 per cycle, of which
-# backend_overhead_ms 38,728 -- 71% -- with wire_ms 38,695 against a 230 KB request. That is
-# not bandwidth (it would be 6 KB/s); it is a COLD START ON EVERY SINGLE CYCLE.
-#
-# scaledown_window=15 stopped the container after 15 s idle, while the pipeline's cycle time
-# is ~54 s. The container therefore died between every frame and paid a full model load to
-# answer the next one. The setting saved pennies of idle GPU and cost the entire run: three
-# detection cycles in nine minutes.
-#
-# scaledown_window=600 keeps it warm across a whole tour. At T4 pricing ($0.000164/s) an
-# idle hour is ~$0.59. min_containers=1 keeps one alive even before the first request, so
-# the FIRST cycle does not pay the load either.
-#
-# gpu="L4": the describer is a 31B multimodal model and a T4 has 16 GB with no bf16 tensor
-# cores, so it runs quantised and memory-bound. L4 is the smallest tier with bf16 and 24 GB.
-# THIS IS A COST DECISION MADE EXPLICITLY, at the owner's instruction that performance
-# outranks credits here.
 @app.cls(
-    gpu="L4",               # bf16 + 24 GB; T4 has neither and made the 31B model memory-bound
-    scaledown_window=600,   # keep warm across a tour; was 15 s against a ~54 s cycle
-    min_containers=1,       # no cold start on the FIRST request either
-    max_containers=2,       # headroom for an overlapping call; was a hard 1
-    timeout=120,            # was 30, which a cold start alone could exceed
+    gpu="T4",               # T4 GPU tier ($0.000164/sec)
+    # 600 s, not 20. GA-207 measured what a short window does: one cycle that idles past
+    # it pays a ~40 s cold start, which makes the next cycle idle past it too, and the run
+    # settles at 54 s/cycle (20260901_151714: wire_ms 38,695 of 54,404). A warm cycle is
+    # 3-5 s, so 20 s held only while nothing hiccupped. 600 s costs nothing while the
+    # robot is not running and closes the trap.
+    scaledown_window=600,
+    max_containers=1,       # Guardrail: strictly 1 GPU instance
+    timeout=45,             # Timeout after 45s
 )
 class PerceptionService:
     @modal.enter()
     def setup(self):
         import torch
-        from transformers import Owlv2ForObjectDetection, Owlv2Processor
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+        from ultralytics import YOLOWorld
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"[Modal Perception] Initializing models on {self.device}...")
+        print(f"[Modal Perception] Initializing YOLO-World-L and SAM 2.1 on {self.device}...")
 
-        # 1. OWLv2 Detector & CLIP backbone
-        self.processor = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
-        self.detector = Owlv2ForObjectDetection.from_pretrained(
-            "google/owlv2-base-patch16-ensemble",
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        ).to(self.device).eval()
+        # 1. YOLO-World-L Detector
+        self.detector = YOLOWorld("yolov8l-worldv2.pt")
+        # ponytail: move to GPU BEFORE the first set_classes(). ultralytics builds and caches
+        # the CLIP text model on whatever device the YOLO weights sit on at that moment; if the
+        # first set_classes() runs on CPU, predict(device=cuda) then moves the cached text model
+        # to cuda while its tokenizer keeps device="cpu" -> every subsequent call dies with
+        # "index is on cpu, different from other tensors on cuda:0".
+        self.detector.to(self.device)
+        self.detector.set_classes(["chair"])  # warm the CLIP text head on-device
+        print("[Modal Perception] YOLO-World-L detector ready ✅")
 
-        # 2. SAM Segmentation Model
+        # 2. SAM 2.1 Predictor
+        # ponytail: no bbox-mask fallback. A rectangular "mask" silently poisons the 3D
+        # lift — the depth crop then includes wall and floor pixels, extents inflate, and
+        # the envelope check declines a real object for being the wrong size. A dead
+        # segmentator must stop the service, not quietly change what the geometry means.
+        self.sam2 = SAM2ImagePredictor.from_pretrained("facebook/sam2.1-hiera-small")
+        self.has_sam2 = True
+        print("[Modal Perception] SAM 2.1 Hiera-Small segmentation ready ✅")
+
+        # weights-resident VRAM, measured once both models are on-device (peak
+        # during inference is reported separately by health())
+        self.vram_weights_mb = (
+            round(torch.cuda.memory_allocated() / 1048576, 1) if torch.cuda.is_available() else 0.0
+        )
+        print(f"[Modal Perception] VRAM after load: {self.vram_weights_mb} MB")
+
+        # First-inference warmup. MEASURED 2026-09-06 on a fresh container: the first
+        # predict reported server total 2,766 ms against 285 ms warm -- CUDA kernel
+        # selection and the first SAM 2.1 image encode, paid by the run's first cycle.
+        # Paying it here moves it into the cold start, where the launcher's health probe
+        # already waits. A blank image with one box exercises both models end to end.
         try:
-            from transformers import SamModel, SamProcessor
-            self.sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
-            self.sam_model = SamModel.from_pretrained(
-                "facebook/sam-vit-base",
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            ).to(self.device).eval()
-            self.has_sam = True
-        except Exception as exc:
-            print(f"[Modal Perception] SAM load warning: {exc}. Segmentation will use bbox fallback.")
-            self.has_sam = False
+            blank = np.zeros((256, 256, 3), dtype=np.uint8)
+            self.detector.predict(Image.fromarray(blank), conf=0.15, iou=0.5, verbose=False,
+                                  device=self.device)
+            with torch.inference_mode():
+                self.sam2.set_image(blank)
+                self.sam2.predict(box=np.array([[64.0, 64.0, 192.0, 192.0]]), multimask_output=False)
+            print("[Modal Perception] warmup inference done ✅")
+        except Exception as exc:   # warmup is an optimisation; a failure must not stop the service
+            print(f"[Modal Perception] warmup skipped: {type(exc).__name__}: {exc}")
+        self._classes_set = ["chair"]   # matches the set_classes() above; predict() compares against it
 
-        print("[Modal Perception] Models successfully loaded and ready.")
-
-    @modal.fastapi_endpoint(method="GET")
+    # GA-319 follow-up (2026-09-06). Explicit labels: Modal derives the subdomain from
+    # "<workspace>--<app>-<class>-<method>" and truncates it past 63 characters with a hash. The
+    # new workspace name is long enough that both endpoints came back as "...perceptionser-477194"
+    # style addresses, and client.py (:118-125) recognises a pair ONLY by the "-predict.modal.run" /
+    # "-health.modal.run" suffixes; its fallback appends /predict and /health to a base URL, which a
+    # Modal endpoint answers with 404. Short fixed labels keep the pair recognisable regardless of
+    # the workspace name.
+    @modal.fastapi_endpoint(method="GET", label="lost3dsg-health")
     def health(self) -> Dict[str, Any]:
-        """Health and readiness check."""
+        """Health check endpoint."""
         import torch
         return {
             "status": "ready",
             "service": APP_NAME,
+            "models": {
+                "detector": "YOLO-World-L (v2)",
+                "segmentor": "SAM 2.1 Hiera-Small" if getattr(self, "has_sam2", False) else "fallback",
+            },
             "device": str(self.device),
             "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None",
-            "has_sam": getattr(self, "has_sam", False),
+            "has_sam2": getattr(self, "has_sam2", False),
+            "vram": {
+                # weights at load, current allocation, and the high-water mark since
+                # start (a served frame is the peak) — all MB
+                "weights_mb": getattr(self, "vram_weights_mb", 0.0),
+                "allocated_mb": round(torch.cuda.memory_allocated() / 1048576, 1) if torch.cuda.is_available() else 0.0,
+                "reserved_mb": round(torch.cuda.memory_reserved() / 1048576, 1) if torch.cuda.is_available() else 0.0,
+                "peak_mb": round(torch.cuda.max_memory_allocated() / 1048576, 1) if torch.cuda.is_available() else 0.0,
+                "device_total_mb": (
+                    round(torch.cuda.get_device_properties(0).total_memory / 1048576, 1)
+                    if torch.cuda.is_available() else 0.0
+                ),
+            },
         }
 
-    @modal.fastapi_endpoint(method="POST")
+    @modal.fastapi_endpoint(method="POST", label="lost3dsg-predict")
     def predict(self, req: PerceptionRequest) -> Dict[str, Any]:
-        """Full open-vocabulary perception: Detection + SAM Masking + Crop Embedding."""
+        """Full open-vocabulary perception: YOLO-World-L + SAM 2.1 Masking."""
         import torch
 
         t_start = time.time()
@@ -210,194 +190,77 @@ class PerceptionService:
         if not req.labels:
             return {"detections": [], "timings_ms": {"total": 0.0}}
 
-        # 1. OWLv2 Open-Vocab Detection
+        # 1. YOLO-World-L Detection
         t0 = time.time()
-        text_queries = [f"a photo of a {label}" for label in req.labels]
-        inputs = self.processor(
-            text=[text_queries],
-            images=pil_image,
-            return_tensors="pt"
-        )
-        inputs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in inputs.items()}
-        if "pixel_values" in inputs and self.detector.dtype == torch.float16:
-            inputs["pixel_values"] = inputs["pixel_values"].to(torch.float16)
+        clean_labels = [lbl.strip().lower() for lbl in req.labels if lbl.strip()]
+        # set_classes re-encodes the label list with the CLIP text tower on every call.
+        # The same list yields the same class embeddings, so it is skipped when the
+        # request repeats the previous list (consecutive cycles at one waypoint often do).
+        if clean_labels != getattr(self, "_classes_set", None):
+            self.detector.set_classes(clean_labels)
+            self._classes_set = list(clean_labels)
+        
+        results = self.detector.predict(
+            pil_image,
+            conf=req.score_threshold,
+            iou=req.nms_threshold,
+            verbose=False,
+            device=self.device
+        )[0]
+        
+        boxes_xyxy = results.boxes.xyxy.cpu().numpy().astype(np.float64) if len(results.boxes) > 0 else np.empty((0, 4))
+        scores = results.boxes.conf.cpu().numpy().astype(np.float64) if len(results.boxes) > 0 else np.empty((0,))
+        cls_indices = results.boxes.cls.cpu().numpy().astype(int) if len(results.boxes) > 0 else np.empty((0,), dtype=int)
+        
+        pred_labels = [clean_labels[idx] for idx in cls_indices] if len(cls_indices) > 0 else []
+        t_det = time.time() - t0
 
-        with torch.inference_mode():
-            outputs = self.detector(**inputs)
-            target_sizes = torch.tensor([[h, w]], device=self.device)
-            results = self.processor.post_process_grounded_object_detection(
-                outputs=outputs,
-                target_sizes=target_sizes,
-                threshold=req.score_threshold,
-                text_labels=[req.labels],
-            )[0]
-
-        boxes = results["boxes"].cpu().numpy().astype(np.float64)
-        scores = results["scores"].cpu().numpy().astype(np.float64)
-        labels = results["text_labels"]
-        t_owlv2 = time.time() - t0
-
-        if len(boxes) == 0:
+        if len(boxes_xyxy) == 0:
             return {
                 "detections": [],
                 "timings_ms": {
-                    "owlv2": round(t_owlv2 * 1000, 1),
+                    "detector": round(t_det * 1000, 1),  # same key as the non-empty path
                     "total": round((time.time() - t_start) * 1000, 1)
                 }
             }
 
-        # 2. NMS
-        t0 = time.time()
-        keep_indices = []
-        # Per-class NMS
-        for unique_label in set(labels):
-            cls_mask = [i for i, lbl in enumerate(labels) if lbl == unique_label]
-            cls_boxes = boxes[cls_mask]
-            cls_scores = scores[cls_mask]
-
-            x1 = cls_boxes[:, 0]
-            y1 = cls_boxes[:, 1]
-            x2 = cls_boxes[:, 2]
-            y2 = cls_boxes[:, 3]
-            areas = (x2 - x1) * (y2 - y1)
-            order = cls_scores.argsort()[::-1]
-
-            while order.size > 0:
-                i = order[0]
-                keep_indices.append(cls_mask[i])
-                xx1 = np.maximum(x1[i], x1[order[1:]])
-                yy1 = np.maximum(y1[i], y1[order[1:]])
-                xx2 = np.minimum(x2[i], x2[order[1:]])
-                yy2 = np.minimum(y2[i], y2[order[1:]])
-                w_inter = np.maximum(0.0, xx2 - xx1)
-                h_inter = np.maximum(0.0, yy2 - yy1)
-                inter = w_inter * h_inter
-                iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)
-                # GA-276/286. CONTAINMENT, because IoU IS BLIND TO NESTING. A small box wholly
-                # inside a large one has IoU = area_small/area_large: at a 5x size difference
-                # that is 0.2, far below any sane threshold, so it survives. MEASURED on run
-                # 20260902_221606: 61 same-class pairs in one frame where one box is >90%
-                # contained in the other, and ALL 61 have IoU < 0.5 -- median IoU 0.185 against
-                # median IoS 0.934. Replaying that run's detections, containment suppression
-                # takes 206 boxes to 149.
-                #
-                # THIS COPY EXISTS BECAUSE THE FIX WAS PUT IN THE WRONG PLACE FIRST. It was
-                # added to utils.apply_nms, the LOCAL path -- and `backend: modal` runs NMS
-                # here, server-side, so the fix was inert for every cloud run. The two
-                # implementations must agree; the local one carries the same comment.
-                #
-                # IoS = intersection / area of the SMALLER box. Boxes are visited in DESCENDING
-                # score order, so the survivor is always the stronger detection.
-                smaller = np.minimum(areas[i], areas[order[1:]])
-                ios = np.where(smaller > 0, inter / np.maximum(smaller, 1e-9), 0.0)
-                inds = np.where((iou <= req.nms_threshold)
-                                & (ios <= req.containment_threshold))[0]
-                order = order[inds + 1]
-
-        boxes = boxes[keep_indices]
-        scores = scores[keep_indices]
-        labels = [labels[i] for i in keep_indices]
-        t_nms = time.time() - t0
-
-        # 3. SAM Instance Segmentation
+        # 2. SAM 2.1 Pixel Mask Segmentation
         t0 = time.time()
         masks = []
-        if self.has_sam and len(boxes) > 0:
-            sam_boxes = [[[float(b[0]), float(b[1]), float(b[2]), float(b[3])] for b in boxes]]
-            sam_inputs = self.sam_processor(pil_image, input_boxes=sam_boxes, return_tensors="pt")
-            sam_inputs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in sam_inputs.items()}
-            if "pixel_values" in sam_inputs and self.sam_model.dtype == torch.float16:
-                sam_inputs["pixel_values"] = sam_inputs["pixel_values"].to(torch.float16)
-            with torch.inference_mode():
-                sam_outputs = self.sam_model(**sam_inputs)
-                raw_masks = self.sam_processor.image_processor.post_process_masks(
-                    sam_outputs.pred_masks.cpu(),
-                    sam_inputs["original_sizes"].cpu(),
-                    sam_inputs["reshaped_input_sizes"].cpu()
-                )[0]
-            for m in raw_masks:
-                mask_np = m[0].numpy().astype(np.uint8)  # Best predicted IoU mask
-                masks.append(mask_np)
-        else:
-            # Fallback rectangular mask
-            for b in boxes:
-                m = np.zeros((h, w), dtype=np.uint8)
-                x1, y1, x2, y2 = map(int, b)
-                m[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 1
-                masks.append(m)
+        with torch.inference_mode():
+            self.sam2.set_image(rgb_np)
+            sam_masks, sam_scores, _ = self.sam2.predict(
+                box=boxes_xyxy,
+                multimask_output=False,
+            )
+            # sam_masks: (N, 1, H, W) or (N, H, W)
+            for i in range(len(boxes_xyxy)):
+                m = sam_masks[i]
+                if m.ndim == 3:
+                    m = m[0]
+                masks.append((m > 0.0).astype(np.uint8))
+        if len(masks) != len(boxes_xyxy):
+            raise RuntimeError(
+                f"SAM 2.1 returned {len(masks)} masks for {len(boxes_xyxy)} boxes")
+
         t_sam = time.time() - t0
 
-        # 4. Crop CLIP Feature Extraction (using OWLv2 image features)
-        t0 = time.time()
-        # GA-17. A crop under MIN_CROP_PX in either dimension was replaced by
-        # `np.zeros((64, 64, 3))` and embedded like a real crop. Every sliver in a frame
-        # therefore received the SAME embedding — the encoding of a black square — so any
-        # two slivers scored 1.0 against each other whatever the threshold was set to. A
-        # substitute that is indistinguishable downstream from a measurement is the same
-        # fault as an estimated stage timing (GA-14), in the same service.
-        #
-        # The remedy is `clip_embedding: null` for that detection: the box, label, score and
-        # mask are all still real and are still returned. `detection_types.Detection` already
-        # declares the field Optional and the assembly at :271 already emits None, so the
-        # absence travels without a consumer change.
-        #
-        # `crop_index` exists because the embeddings are batched: skipping a crop shifts
-        # every later index, and the assembly reads crop_embeddings[i] against the BOX index.
-        # The list is pre-filled to len(boxes) so the two indexings cannot drift apart.
-        regions = crop_regions(boxes, rgb_np, w, h)
-        crops = [Image.fromarray(c) for _, c in regions]
-
-        crop_embeddings = [None] * len(boxes)
-        if crops:
-            crop_inputs = self.processor(images=crops, return_tensors="pt")
-            crop_inputs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in crop_inputs.items()}
-            if "pixel_values" in crop_inputs and self.detector.dtype == torch.float16:
-                crop_inputs["pixel_values"] = crop_inputs["pixel_values"].to(torch.float16)
-            with torch.inference_mode():
-                feats = self.detector.owlv2.get_image_features(pixel_values=crop_inputs["pixel_values"])
-                if not torch.is_tensor(feats):
-                    feats = feats.pooler_output
-                feats = torch.nn.functional.normalize(feats, dim=-1).cpu().numpy()
-                for k, (box_i, _) in enumerate(regions):
-                    crop_embeddings[box_i] = [round(float(v), 5) for v in feats[k]]
-        t_clip = time.time() - t0
-
-        # Assemble Detections
+        # Build output response with RLE encoded binary masks
         detections_out = []
-        for i in range(len(boxes)):
-            b = boxes[i].tolist()
+        for i, (box, label, score, mask) in enumerate(zip(boxes_xyxy, pred_labels, scores, masks)):
             detections_out.append({
-                "bbox": [float(b[0]), float(b[1]), float(b[2]), float(b[3])],
-                "label": str(labels[i]),
-                "score": float(scores[i]),
-                "mask_rle": rle_encode(masks[i]),
-                "clip_embedding": crop_embeddings[i] if i < len(crop_embeddings) else None,
+                "bbox": [round(float(v), 2) for v in box],
+                "label": label,
+                "score": round(float(score), 4),
+                "mask_rle": rle_encode(mask),
             })
 
         t_total = time.time() - t_start
         return {
-            "status": "ok",
             "detections": detections_out,
-            # GA-211. THE KEY NAMES ARE A CONTRACT WITH detection_pipeline.py, which reads
-            # `cloud_timings["detector"]` and `["sam2"]` at :120-127 and REFUSES to estimate a
-            # stage time from the wall clock when one is missing. This file emitted `owlv2`
-            # and `sam`; the checkout that had actually been deployed emitted `detector` and
-            # `sam2`. Deploying THIS file therefore replaced a working service with one whose
-            # timings the pipeline rejects, and probe a4 failed the run before it started —
-            # correctly: the pipeline would have raised on the FIRST successful detection.
-            #
-            # The two trees disagreeing about this is the defect the review already recorded
-            # ("the tree that runs has never received the fixes; the tree that received them
-            # does not run"), arriving in the one place it is expensive: a live deploy.
-            #
-            # `detector` and `sam2` are the required names. `nms` and `clip` are EXTRA stages
-            # this file measures and the other does not; a4 only refuses MISSING keys, so
-            # they are kept — they are real measurements and dropping them would lose data.
             "timings_ms": {
-                "detector": round(t_owlv2 * 1000, 1),   # pipeline reads this, outputs owlv2_ms
+                "detector": round(t_det * 1000, 1),
                 "sam2": round(t_sam * 1000, 1),
-                "nms": round(t_nms * 1000, 1),
-                "clip": round(t_clip * 1000, 1),
-                "total": round(t_total * 1000, 1),
+                "total": round(t_total * 1000, 1)
             }
         }

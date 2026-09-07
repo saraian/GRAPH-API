@@ -2,13 +2,31 @@
 # Live demo on this machine: habitat renders on the host (conda habitat_env),
 # the ROS 2 stack runs in the graphapi-run:humble-ga290 container (patched rtabmap, GA-290)
 # over a TCP feed.
-# Watch: web viewer at http://localhost:8081 and snapshots in $OUT_DIR.
+# Watch: web viewer at http://localhost:${BRIDGE_PORT:-8081} and snapshots in $OUT_DIR.
 #   ./live_run.sh [scene]  # foreground; ctrl-C stops everything
 # scene: hm3d_00861 (default) | hm3d_00337 | hm3d_00770 | mp3d_17DRP
 # HABITAT_SCENE/HABITAT_DATASET env vars still override everything.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
+
+# GA-319. The Modal endpoint URL is a CREDENTIAL -- the deployed app exposes fastapi_endpoint with
+# no proxy auth, so the URL alone buys GPU time on this account. It used to live in config.yaml and
+# was therefore committed. It now lives in an untracked, gitignored file beside this script, and is
+# forwarded into the container by the existing `-e MODAL_PERCEPTION_URL`. Sourced, not required: a
+# local-backend run needs none of this, and client.py already fails loudly and by name when the
+# backend is "modal" and neither the config nor the environment supplies an endpoint.
+[ -f "$HERE/env.local.sh" ] && . "$HERE/env.local.sh"
+# Local setup is REQUIRED for a modal-backend run: the default configs ship with an empty
+# modal_endpoint on purpose, so without env.local.sh there is no endpoint, the perception node
+# would take zero detections and die on GA-94b ~4 min in, after the simulator was spent. Refuse
+# here instead, and say what to do.
+if [ -z "${MODAL_PERCEPTION_URL:-}" ] && [ "$(python3 -c "import sys,yaml;c=yaml.safe_load(open(sys.argv[1])) or {};print((c.get('perception') or {}).get('backend','local'))" "$HERE/${CFG_NAME:-regolo_config.yaml}" 2>/dev/null)" = "modal" ]; then
+  echo "!! perception.backend is 'modal' but MODAL_PERCEPTION_URL is unset."
+  echo "!! Local setup required: cp $HERE/env.local.sh.example $HERE/env.local.sh && chmod 600 $HERE/env.local.sh, then fill in the URL."
+  echo "!! (env.local.sh is gitignored on purpose -- the URL is a credential, GA-319.)"
+  exit 1
+fi
 # WHERE FOUND IS. Derived from this script's own location, not hardcoded: the submodule sits at
 # <FOUND>/vendor/graph-api, so two levels above $REPO is the FOUND checkout whatever it is called
 # and wherever it lives. $FOUND_ROOT was written into ten places and a clone anywhere else could
@@ -114,16 +132,23 @@ z=d.get('nearest_scene_floor'); z=d['floor_height_m'] if z is None else z
 print(f'floor_{z:+.2f}')" "${db}.floor.json")
   local dest="$FOUND_ROOT/maps/${SCENE_ARG}/${fl}"
   mkdir -p "$dest"
-  # HARD LINK, NOT COPY. Every published map existed twice — once in maps/ and once in the bundle
-  # it came from — and at 0.3-1.2 GB each that was 4.7 GB of duplication with /DATA at 99% full.
-  # A link is one copy on disk with both paths valid, and it survives the bundle being read later.
-  # Falls back to a copy across filesystems, where a link is impossible.
-  #
-  # A write through EITHER path would change both. Nothing writes a published map — the
-  # localization branch mounts it read-only now — but that is the property to preserve.
-  ln "$db" "$dest/rtabmap.db" 2>/dev/null || cp "$db" "$dest/rtabmap.db"
+  # COPY, NOT HARD LINK. Owner ruling GA-295(c), 4 Sep: the library is an INDEPENDENT copy. The
+  # link era was a disk-space decision when /DATA was 99% full (it is ~72% now); its cost was
+  # measured on hm3d_00861: the canonical map, its source bundle and a localize db were ONE
+  # INODE UNDER THREE NAMES, so when the write path was live (before the :ro mount, 546fd17)
+  # every surviving copy drifted together by 24 MB and no copy could say which table grew. A
+  # copy decouples the library from the bundle it came from. A publish that cannot afford the
+  # copy FAILS LOUDLY — no fallback to the link: a silent fallback would resurrect the
+  # single-inode library exactly when the disk is tight again.
+  cp "$db" "$dest/rtabmap.db"
   cp "${db}.floor.json" "$dest/rtabmap.db.floor.json"
   cp "$RUN_DIR/rtabmap.db.params-sha" "$dest/rtabmap.db.params-sha" 2>/dev/null || true
+  # PROVENANCE AT PUBLISH TIME (GA-295: mp3d_17DRP was published with none and its drift became
+  # uncheckable). bytes + sha256 of the copy, the bundle's own integrity marker, source run —
+  # the drift check travels with the map. Failure here is LOUD by design: this is the last call
+  # in the EXIT trap, so nothing after it is lost.
+  python3 "$HERE/stamp_map_provenance.py" "$dest/rtabmap.db" "$SCENE_ARG" "$RUN_ID" "$mark" \
+      "$dest/rtabmap.db.params-sha"
   echo "    map published: $dest/rtabmap.db ($(cat "$mark"))"
 }
 
@@ -157,6 +182,11 @@ cleanup() {
   if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
     cp "$OUT_DIR"/*.json "$OUT_DIR"/*.jsonl "$RUN_DIR/" 2>/dev/null || true
     cp "$OUT_DIR"/*.log "$RUN_DIR/logs/" 2>/dev/null || true
+    # GA-336. Delete the scratch localization copy (~1.2 GB). Here, not earlier: the container
+    # holds it open until rtabmap closes, and this trap runs after `docker run` has returned.
+    # Its identity is preserved in run_metadata.json (localize_db_source + sha), so deleting the
+    # bytes loses no evidence. Left behind, every run would cost 1.2 GB of results/ for nothing.
+    [ -n "${LOCALIZE_DB_COPY:-}" ] && rm -f "$LOCALIZE_DB_COPY" 2>/dev/null || true
     # GA-238. NO COPY IS NEEDED, and the first version of this block wrongly added one.
     # `-v "$RUN_DIR":/ws/output` (below) means the container's output directory IS the bundle,
     # and live_stack_container.sh exports GRAPH_API_OUTPUT_DIR=/ws/output. So once
@@ -420,6 +450,21 @@ export FEED_SEED="${FEED_SEED:-7}"
 export FEED_FPS="${FEED_FPS:-3}"
 export FEED_WALK="${FEED_WALK:-6}"
 export FEED_DWELL="${FEED_DWELL:-0}"
+# GA-339 (owner ruling 2026-09-07 ~13:50). ADAPTIVE dwell by default: after each walk burst the
+# feed HOLDS a still camera until the object manager's merge_pending.json says nothing is pending,
+# bounded by FEED_DWELL_MAX. FEED_DWELL (fixed frames) is IGNORED in adaptive mode and only read
+# under FEED_DWELL_MODE=fixed. 18 = gate 0.5 s + one ~5 s cycle at 3 f/s; 45 = 15 s, the owner's cap.
+# Adaptive bundles are a NEW FAMILY, stamped below as dwell_family.
+export FEED_DWELL_MODE="${FEED_DWELL_MODE:-adaptive}"
+export FEED_DWELL_MIN="${FEED_DWELL_MIN:-18}"
+export FEED_DWELL_MAX="${FEED_DWELL_MAX:-45}"
+export FEED_DWELL_SIGNAL_MAX_AGE_S="${FEED_DWELL_SIGNAL_MAX_AGE_S:-10}"
+# GA-330. Ground truth ON by default. The scene ships its semantic mesh, the feed host renders
+# it, the feed node publishes /gt/semantic_instance and the archive joins it per detection --
+# and the switch below was 0 in every one of the first 12 bundles, so not one row was ever
+# labelled ("no semantic frame" on 100% of rows). The cost is a third render per frame on the
+# host; the archive refuses on any shape mismatch rather than guessing. Set 0 to opt out.
+export FEED_GT_SEMANTIC="${FEED_GT_SEMANTIC:-1}"
 # MAPPING_ONLY builds a localization map and runs no detector. 900 s is a STARTING POINT AND
 # NOT A MEASUREMENT: the only dwell=0 coverage figure that exists is run A's 7.5 m in 636 s, and
 # run A did not achieve full coverage -- it is the run that died. hm3d_00861's navmesh has FOUR
@@ -472,10 +517,36 @@ sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2]
     fi
   fi
   if [ -f "$_mapdir/rtabmap.db" ]; then
-    export RTABMAP_LOCALIZE_DB="${_mapdir#$FOUND_ROOT}"
-    export RTABMAP_LOCALIZE_DB="/found${RTABMAP_LOCALIZE_DB}/rtabmap.db"
+    # GA-336. LOCALIZE AGAINST A WRITABLE COPY, NEVER THE CANONICAL FILE.
+    #
+    # GA-295 mounts maps/ :ro so a run can never mutate the published map — that rule stands and
+    # it caught a real mutation (§27). But in localization mode rtabmap is handed the map as its
+    # OWN database_path, and its close path writes the 2D occupancy grid back into it. Measured
+    # in run 20260907_004128, the first localization run ever to reach a graceful shutdown:
+    #   [FATAL] DBDriverSqlite3.cpp:5348::save2DMapQuery() Condition (rc == SQLITE_DONE) not met!
+    #           [DB error (0.23.7): attempt to write a readonly database]   -> UException, exit -6
+    # Every earlier run died in the map::at abort band before reaching close, which is why a
+    # read-only mount and a writing close path coexisted for days without anyone seeing it.
+    #
+    # SCRATCH, NOT THE BUNDLE: the copy is ~1.2 GB and it is not evidence — the canonical file's
+    # provenance sidecar is. $OUT_DIR is the live scratch mount (/out in the container) and the
+    # cleanup trap only archives *.json/*.jsonl/*.log from it, so a .db never reaches the bundle.
+    # The trap deletes it after the container has exited, i.e. after rtabmap has closed.
+    _canon_db="$_mapdir/rtabmap.db"
+    LOCALIZE_DB_COPY="$OUT_DIR/localize_db_copy.db"
+    cp "$_canon_db" "$LOCALIZE_DB_COPY" || { echo "!! could not copy the localization map to scratch — aborting rather than localizing against the read-only canonical file"; exit 1; }
+    # The container refuses a map without its .params-sha sidecar (live_stack_container.sh, the
+    # MAP PARAMETER MISMATCH check), so the copy must carry the sidecar too, or every localization
+    # run refuses to start. Measured cost of the copy on this host: 12 s for 1.2 GB (2026-09-07).
+    cp "$_canon_db.params-sha" "$LOCALIZE_DB_COPY.params-sha" || { echo "!! could not copy $_canon_db.params-sha — the container would refuse the map without it"; exit 1; }
+    # The bundle must still name EXACTLY which map ran. The sha is recomputed here, not read from
+    # the sidecar: the sidecar records the file at publish time, and this records the file that
+    # this run actually opened.
+    LOCALIZE_DB_SOURCE="$_canon_db"
+    LOCALIZE_DB_SHA=$(sha256sum "$_canon_db" | cut -c1-16)
+    export RTABMAP_LOCALIZE_DB="/out/localize_db_copy.db"
     export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-0}"
-    echo "    localizing against $_mapdir/rtabmap.db (mapping phase 0s)"
+    echo "    localizing against a scratch COPY of $_canon_db (sha $LOCALIZE_DB_SHA, mapping phase 0s)"
   else
     echo "    NO published map at $_mapdir — this run will MAP from scratch."
     echo "    That is the fallback, not the intent: publish a map for this scene and floor and"
@@ -510,8 +581,9 @@ corpus_order=${FOUND_CORPUS_ORDER:-<code default>} kg_aliases=${FOUND_KG_ALIASES
 # plausible sixteen-hex provenance stamp for a hash that covered zero files.
 #
 # The roots are typed. Only $REPO/lost3dsg is copied into the container at startup, so only it
-# has a freeze point; $FOUND_ROOT/found and knowledge_bridge are live on the path for the whole
-# run and are SAMPLED, never asserted frozen.
+# has a freeze point; $FOUND_ROOT/found is live on the path for the whole run and is SAMPLED,
+# never asserted frozen. knowledge_bridge was a third root until GA-306 vendored the one class
+# FOUND used into found/concept_embedder.py; it is no longer read, mounted or sampled.
 _tree_sha() {
   local out
   out=$(python3 "$HERE/preflight_gate.py" --print-tree-sha "$1")     || { echo "!! cannot hash $1 — aborting rather than stamping an unrecorded run"; exit 1; }
@@ -519,8 +591,6 @@ _tree_sha() {
 }
 read -r SRC_SHA SRC_N   <<<"$(_tree_sha "$REPO/lost3dsg")"
 read -r FOUND_SHA FOUND_N <<<"$(_tree_sha $FOUND_ROOT/found)"
-KB_SRC=${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}
-read -r KB_SHA KB_N     <<<"$(_tree_sha "$KB_SRC")"
 CFG_SHA=$(sha256sum "$HERE/$CFG_NAME" | cut -c1-16)
 # GA-283. The worst frame age the PREVIOUS RUN REJECTED, read HOST-SIDE: preflight_gate.py
 # runs INSIDE the container, where /ws/output is the current bundle and previous ones are not
@@ -539,8 +609,13 @@ export PREFLIGHT_EXPECT_CYCLE_S
 [ -n "$PREFLIGHT_EXPECT_CYCLE_S" ] && \
   echo "    last run REJECTED a frame at ${PREFLIGHT_EXPECT_CYCLE_S}s (a10 checks max_frame_age_s against it)"
 
+# GA-36. GRAPH_API_CONFIG used to be set only as a one-off prefix on three commands and never
+# exported, so the health-monitor subshell below inherited nothing, resource_monitor.build_inventory
+# read no config, and every bundle recorded "no endpoint configured" for runs that used a real
+# endpoint and model. Exported once here; the prefixes below stay as harmless restatements.
+export GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}"
 MERGED_SHA=$(GRAPH_API_CONFIG="$HERE/$CFG_NAME" python3 "$HERE/preflight_gate.py" --print-merged-sha)   || { echo "!! cannot compute the merged-config sha — aborting rather than passing an empty expectation"; exit 1; }
-echo "    sources: graph-api $SRC_SHA ($SRC_N)  found $FOUND_SHA ($FOUND_N)  kb $KB_SHA ($KB_N)"
+echo "    sources: graph-api $SRC_SHA ($SRC_N)  found $FOUND_SHA ($FOUND_N)"
 echo "    config:  file $CFG_SHA  merged $MERGED_SHA"
 
 # Handed to the gate, which recomputes them INSIDE the container after the source copy. A
@@ -609,6 +684,10 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 : "${FEED_FPS:?not set at run_metadata.json}"
 : "${FEED_WALK:?not set at run_metadata.json}"
 : "${FEED_DWELL?not set at run_metadata.json}"   # no colon: 0 is the point of this variable
+: "${FEED_DWELL_MODE:?not set at run_metadata.json}"   # GA-339
+: "${FEED_DWELL_MIN:?not set at run_metadata.json}"
+: "${FEED_DWELL_MAX:?not set at run_metadata.json}"
+: "${FEED_DWELL_SIGNAL_MAX_AGE_S:?not set at run_metadata.json}"
 : "${FEED_MAPPING_SECONDS:?not set at run_metadata.json}"
 : "${MAPPING_ONLY?not set at run_metadata.json}"
 : "${FEED_SPAWN_FLOOR?not set at run_metadata.json}"   # no colon: empty means "no floor requested"   # no colon: 0 is a legal value
@@ -616,8 +695,9 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 : "${SRC_N:?not set at run_metadata.json}"
 : "${FOUND_SHA:?not set at run_metadata.json}"
 : "${FOUND_N:?not set at run_metadata.json}"
-: "${KB_SHA:?not set at run_metadata.json}"
-: "${KB_N:?not set at run_metadata.json}"
+# GA-306: KB_SHA/KB_N are NOT asserted. e5294a2 removed the only code that set them, and these
+# two assertions then aborted every launch at 5 s, before the container existed. The bundle keeps
+# kb_src_sha256_16 / kb_files / kb_root as explicit nulls below; no variable is left to assert.
 : "${CFG_SHA:?not set at run_metadata.json}"
 : "${MERGED_SHA:?not set at run_metadata.json}"
 
@@ -647,6 +727,12 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "tour_scan_frames": ${FEED_TEST_TOUR_SCAN:-12},
     "tour_note": "GA-256. 0 means NO TOUR: the agent turns in place (walk radius 0) or wanders a disc around its spawn, and never leaves the room it started in. Run 20260901_174810 recorded total_distance_m 0.0 over 1,566 steps for exactly that reason, which is why coverage, room segmentation and the held-pool resolution rate could not be measured from it. A positive value is the number of farthest-point-sampled waypoints toured on the traversed storey.",
     "dwell_frames": $FEED_DWELL,
+    "dwell_mode": "$FEED_DWELL_MODE",
+    "dwell_min_frames": $FEED_DWELL_MIN,
+    "dwell_max_frames": $FEED_DWELL_MAX,
+    "dwell_signal_path": "$RUN_DIR/merge_pending.json",
+    "dwell_signal_max_age_s": $FEED_DWELL_SIGNAL_MAX_AGE_S,
+    "dwell_family": "GA-339, 2026-09-07: dwell_mode adaptive holds a STILL camera after each walk burst until merge_pending.json reads pending 0 (fresh), bounded by dwell_max_frames. dwell_frames is IGNORED when dwell_mode is adaptive. Adaptive bundles are a NEW family: not comparable with dwell_frames 0 (2026-08-31 to 2026-09-07) or 60 (before). Per-run counters are in feed_stats.json (dwell_episodes, dwell_capped, dwell_released_on_zero, dwell_unknown_frames).",
     "fps": $FEED_FPS,
     "mapping_seconds": $FEED_MAPPING_SECONDS,
     "mapping_only": $([ "$MAPPING_ONLY" = "1" ] && echo true || echo false),
@@ -662,18 +748,21 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
              "min_support": $FOUND_MIN_SUPPORT, "rooms_enforced": $FOUND_ROOM_ENFORCE,
     "corpus_order_note": "empty FOUND_CORPUS_ORDER means the code default in found/dims.py, standard,hssd,metrictree,abo,procthor as of GA-266, and the field then says so rather than naming an order. GA-282: this note claimed the hardcoded abo,metrictree fallback was PAST while line 638 still carried it, so every bundle up to and including 20260903_110622 records corpus_order abo,metrictree for a run that used standard(125) hssd(63) metrictree(56) abo(56) by its own decision records. The note outlived the fix it described. Read the corpus cited in each decision's margins, never this field, for any bundle stamped before 2026-09-03.",
     "merge_min_consecutive": ${MERGE_MIN_CONSECUTIVE:-2},
-             "aligner": "$FOUND_ALIGNER", "ontology_ext": "${FOUND_ONTOLOGY_EXT:-default}",
+             "aligner": "$FOUND_ALIGNER", "ontology_ext": "$FOUND_ONTOLOGY_EXT",
              "corpus_order": "${FOUND_CORPUS_ORDER:-<code default: standard,hssd,metrictree,abo,procthor>}",
              "kg_aliases": ${FOUND_KG_ALIASES:-1},
+             "kg_top": ${FOUND_KG_TOP:-0.87}, "kg_z": ${FOUND_KG_Z:-3.0},
+             "kg_thresholds_note": "GA-33: the aligner's placement rule (found/kg_align.py: top >= kg_top AND z >= kg_z). The defaults here are the code defaults kg_align applies when the variable is empty. ABSENT from every bundle before 2026-09-07; an older run's thresholds are 0.87 / 3.0 unless its notes say otherwise.",
              "policy_note": "corpus_order and kg_aliases were added 2026-09-01 (owner rulings 13, 15). ABSENT from every earlier bundle, so an older run's corpus order is metrictree,abo and its alias count is 0 -- read, never guessed from the date."},
   "provenance_intent": {
     "note": "host-side, taken BEFORE docker run. provenance_confirmed in preflight.json is taken after the container copies its sources, and is the authoritative record of what executed.",
     "graph_api_src_sha256_16": "$SRC_SHA", "graph_api_files": $SRC_N,
     "found_src_sha256_16": "$FOUND_SHA", "found_files": $FOUND_N,
-    "kb_src_sha256_16": "$KB_SHA", "kb_files": $KB_N,
-    "kb_root": "$KB_SRC",
+    "kb_src_sha256_16": null, "kb_files": null,
+    "kb_root": null,
+    "kb_note": "GA-306, 2026-09-06: FOUND no longer imports knowledge_bridge -- the e5 ConceptEmbedder it used is vendored at found/concept_embedder.py. Nothing is mounted at /kb and KB_SRC is read nowhere. Explicit nulls, not removed keys: bundles before this date carry real digests here, and a reader joining across them must be able to tell 'not applicable' from 'never stamped'.",
     "frozen_roots": ["graph_api"],
-    "live_roots": ["found", "kb"],
+    "live_roots": ["found"],
     "live_root_note": "not copied into the container; on sys.path for the whole run, so sampled rather than asserted frozen"
   },
   "resolved_config": {
@@ -683,6 +772,11 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
                "note": "raised from 640x480 by owner ruling 25. A gain measured here is a gain of the SYSTEM: resolution moves detector, segmentation, depth and describer together and cannot be attributed to one without a second arm."},
     "gt_semantic": ${FEED_GT_SEMANTIC:-0},
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
+    "localize_db_note": "GA-336: localize_db points at a SCRATCH COPY deleted at exit, so the path alone identifies nothing. localize_db_source + localize_db_sha256_16 name the canonical file this run actually opened.",
+    "localize_db_source": $([ -n "${LOCALIZE_DB_SOURCE:-}" ] && echo "\"$LOCALIZE_DB_SOURCE\"" || echo null),
+    "localize_db_sha256_16": $([ -n "${LOCALIZE_DB_SHA:-}" ] && echo "\"$LOCALIZE_DB_SHA\"" || echo null),
+    "bridge_port": ${BRIDGE_PORT:-null},
+    "bridge_port_note": "the port the bridge bound (BRIDGE_PORT); null means BRIDGE_PORT was unset and the bridge used its own default. Asked for by agent2-dashboard 2026-09-06 (their 00015): the dashboard used to have to grep logs/bridge.log for it.",
     "mapping_seconds_effective": $FEED_MAPPING_SECONDS,
     "effective_config": $(GRAPH_API_CONFIG="$HERE/$CFG_NAME" python3 -c "
 import json, sys
@@ -782,7 +876,7 @@ echo "    feed host up"
 ) &
 MON_PID=$!
 
-echo ">>> ROS stack in container (web viewer -> http://localhost:8081)"
+echo ">>> ROS stack in container (web viewer -> http://localhost:${BRIDGE_PORT:-8081})"
 # OWNER RULING 22, 2026-09-01: fifteen settings looked adjustable from the host and reached
 # nothing. Every -e below is a variable some container-side module actually reads; docker passes
 # an `-e NAME` only when NAME is set in the environment, so listing one costs nothing while it is
@@ -803,7 +897,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e FOUND_ALIGNER -e FOUND_ONTOLOGY_EXT -e FOUND_STORE_PATH -e FOUND_SCENE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
   -e MAPPING_ONLY -e FEED_MAPPING_SECONDS -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
-  -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
+  -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES -e FOUND_KG_DISJOINT -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
   -e FOUND_EMBED_MODEL -e FOUND_KG_TOP -e FOUND_KG_Z -e FOUND_LEXICAL -e FOUND_ONTOLOGY \
   -e FOUND_ROOM_TYPES_PATH -e FOUND_ROOM_VLM_API_KEY -e FOUND_ROOM_VLM_BASE_URL \
   -e FOUND_ROOM_VLM_MODEL -e FOUND_SCENE_INSTANCE -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \
@@ -816,6 +910,10 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e HABITAT_EXAMPLE_OBJECTS_DIR -e DISPLAY \
   -e PREFLIGHT_EXPECT_CFG_SHA -e PREFLIGHT_EXPECT_MERGED_SHA -e PREFLIGHT_EXPECT_SRC_SHA \
   -e PREFLIGHT_EXPECT_CYCLE_S \
+  -e ARCHIVE_DEPTH -e FEED_HFOV -e BRIDGE_OVERLAY -e BRIDGE_OVERLAY_CAM_FRAME -e BRIDGE_OVERLAY_MAP_FRAME \
+  -e BRIDGE_OVERLAY_FAR -e BRIDGE_OVERLAY_MAX -e FOUND_ADJUDICATE_API_KEY -e FOUND_ADJUDICATE_MIN_CONF \
+  -e FOUND_ADJUDICATE_TIMEOUT -e FOUND_FLATNESS_CACHE -e FOUND_FLATNESS_MIN_CONF -e FOUND_STORE_DB \
+  -e FOUND_STORE_DUMP_SEC -e FOUND_WORDNET_DIR -e OPENAI_BASE_URL \
   -v "$REPO":/graph_api:ro \
   -v graphapi_ws:/ws \
   -v $FOUND_ROOT:/found \
@@ -829,7 +927,6 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
    # claim that the geometry changed -- it is a claim that a published artefact is not immutable.
    # The deeper mount wins, so runs still read the library and can no longer write it.` \
   -v "$FOUND_ROOT/maps":/found/maps:ro \
-  -v "${KB_SRC:-/DATA/ASPIRE/knowledge_bridge}":/kb:ro \
   -v "$RUN_DIR":/ws/output \
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
   -v "${HF_SHARED_CACHE:-/DATA/huggingface_cache}":/models/hf \

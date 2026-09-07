@@ -40,6 +40,9 @@ _DEFAULTS = {
         "timeout": 30.0,
         "retries": 2,
         "crop_concurrency": 4,
+        # GA-303: seconds per describer call (single crop and crop grid). Declared since
+        # the first crop_grid measurements but read by nothing until 2026-09-07: the bound
+        # actually in force was `timeout` above (30 s here, 60 s in regolo_config.yaml).
         "crop_timeout": 15.0,
         # GA-53: `fallback_labels` stood here. Non-empty, it replaced an unreachable
         # VLM with a static open-vocabulary list and let the cycle continue — working
@@ -90,6 +93,9 @@ _DEFAULTS = {
         # and consecutive silent checks before the node ends the run.
         "input_silence_timeout_s": 60.0,
         "input_silence_max_strikes": 3,
+        # GA-09: consecutive FAILED Graph API calls (unreachable, 5xx, unreadable body)
+        # before om6 ends the run, as the VLM strike counter does. 0 = count and log only.
+        "graph_api_max_strikes": 5,
         # GA-94b. Robot STOPS that must pass with no detection before the producer is called
         # dead. Detection is gated on the robot stopping, so with dwell=0 a two-minute
         # silence is a normal gap between incidental halts -- run 042828 had 4 cycles and 3
@@ -114,6 +120,13 @@ _DEFAULTS = {
         # Radius, in metres, within which a changed object triggers re-evaluation of
         # its neighbours.
         "reevaluation_radius_m": 2.0,
+        # GA-11. One object churning must not flood the second-look queue, and one update must not
+        # fan out to the whole room. Debounce: an object re-queued within this many seconds of its
+        # last queueing is skipped (cost: a genuine second change inside the window is examined
+        # once, not twice). Fan-out: at most this many neighbours are queued per update (cost: in a
+        # dense room the farthest neighbours are not re-examined on that event).
+        "reevaluation_debounce_s": 2.0,
+        "reevaluation_max_fanout": 12,
     },
     # GA-270. SERVICE ADDRESSES BELONG IN CONFIG, not in module literals.
     #
@@ -350,13 +363,16 @@ _DEFAULTS = {
         # The backlog itself is fixed by QoS depth=1 (see utils.py); this stays 1.0 so the
         # freshness guarantee is unchanged, and is now a knob rather than a literal.
         "max_frame_age_s": 1.0,
+        # GA-42. Far edge of the visible volume used for "seen but gone" removal. Was the
+        # literal `min(depth_threshold, 1.8)` in perception_utils.py, so the 4.0 m default
+        # never applied and objects beyond 1.8 m were never marked as gone. Same value, now
+        # a knob.
+        "fov_max_depth_m": 1.8,
         "backend": "local",  # "modal", "managed", "local"
         "modal_endpoint": "",  # e.g. "https://<user>--lost3dsg-perception-predict.modal.run"
         "score_threshold": 0.15,
         "nms_threshold": 0.50,
-        "reachability_strict": False,
-        # allow detection passes while moving, proposals marked as unconfirmed
-        "detect_while_moving": False,
+        # GA-19: `reachability_strict` and `detect_while_moving` stood here; no code read either.
         # Socket timeout for a remote perception call, seconds. Was hardcoded at
         # 25.0 at one call site; the testing lane measured seven Modal cold starts
         # on 2026-08-30/31 at 25.3, 42.3, 45.8, 41.1, 26.6, 47.7 and 45.6 s, so

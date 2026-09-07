@@ -215,14 +215,11 @@ class SyncedCameraData:
 
         try:
             rgb_cv = self.bridge.imgmsg_to_cv2(self.cached_rgb, 'bgr8')
-            depth_array = self.bridge.imgmsg_to_cv2(self.cached_depth, desired_encoding='passthrough')
-            depth_array = np.asarray(depth_array).astype(float)
+            depth_array = depth_to_metres(
+                self.bridge.imgmsg_to_cv2(self.cached_depth, desired_encoding='passthrough'))
 
             if config.simulation:
                 depth_array = np.nan_to_num(depth_array, nan=0.0, posinf=0.0, neginf=0.0)
-            else:
-                if depth_array.max() > 20.0:
-                    depth_array = depth_array / 1000.0
 
             result = {
                 'rgb': rgb_cv,
@@ -261,6 +258,15 @@ def depth_image_to_point_cloud(depth_image, camera_intrinsics):
     return points
 
 
+def depth_to_metres(raw):
+    """GA-42. The unit comes from the ENCODING (REP 118: 16UC1 is millimetres, 32FC1 is
+    metres), not from the frame's largest pixel: `max() > 20.0` divided a whole metre-valued
+    frame by 1000 on one far or infinite reading."""
+    raw = np.asarray(raw)
+    depth = raw.astype(float)
+    return depth / 1000.0 if raw.dtype == np.uint16 else depth
+
+
 def statistical_outlier_removal(points_xyz, k=20, std_ratio=2.0):
     """
     Removes statistical outliers based on the mean distance from the k nearest neighbors.
@@ -274,11 +280,16 @@ def statistical_outlier_removal(points_xyz, k=20, std_ratio=2.0):
         mask: Boolean array (N,) where True = valid point
     """
 
-    if len(points_xyz) < k:
+    # <= k, not < k (reviewed 2026-09-07): with exactly k points the k+1 query pads a
+    # neighbour with inf, every mean distance is inf, the threshold is nan and NOTHING is
+    # kept -- the detection lost its 3D box. Measured: n=30, k=30 -> kept 0/30.
+    if len(points_xyz) <= k:
         return np.ones(len(points_xyz), dtype=bool)
 
     tree = KDTree(points_xyz)
-    distances, _ = tree.query(points_xyz, k=k+1)  # +1 because it includes the point itself
+    # workers=-1: the same query on every core. kNN distances are deterministic, so the
+    # kept set is identical; only the wall time changes (22 cores in the run container).
+    distances, _ = tree.query(points_xyz, k=k+1, workers=-1)  # +1 because it includes the point itself
     mean_distances = distances[:, 1:].mean(axis=1)  # Exclude the point itself (distance 0)
 
     global_mean = mean_distances.mean()
@@ -375,7 +386,10 @@ def apply_nms(bboxs, labels, scores, iou_threshold=0.5, containment_threshold=No
             intersection = w * h
 
             # IoU = intersection / union
-            iou = intersection / (areas[i] + areas[order[1:]] - intersection)
+            # GA-19: epsilon, as the cloud twin has. Two zero-area boxes gave 0/0 = nan,
+            # and `nan <= threshold` is False, so a box was suppressed by one it does
+            # not overlap. A degenerate box now has IoU 0 and survives NMS on its own.
+            iou = intersection / np.maximum(areas[i] + areas[order[1:]] - intersection, 1e-9)
 
             # GA-276. CONTAINMENT, because IoU IS BLIND TO NESTING.
             # A small box wholly inside a large one has IoU = area_small/area_large: at a 5x

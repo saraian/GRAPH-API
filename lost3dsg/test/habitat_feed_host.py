@@ -47,6 +47,8 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "perception_module"))
 from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  (ROS-free)
 from config import CFG, CFG_PATH  # noqa: E402
+from adaptive_hold import AdaptiveHold  # noqa: E402  (pure Python, GA-339)
+import gt_codec as _gt_codec  # noqa: E402
 
 _print = functools.partial(print, flush=True)  # nohup/file logs must not buffer
 _log_ring = collections.deque(maxlen=400)      # served by the control server's /logs
@@ -364,7 +366,38 @@ def draw_walls(bgr, walls, cam_pos, cam_quat):
         cv2.polylines(bgr, [poly], True, (200, 160, 90), 1, cv2.LINE_AA)
 
 
-def draw_belief(bgr, belief, cam_pos, cam_quat, depth=None):
+# GA-102. The bridge's /persistent_perception stamps each object with its admission grade;
+# this maps the four-valued grade onto the LAYERS keys the window and the dashboard toggle.
+GRADE_LAYER = {"admit": "admitted", "hold": "held", "decline": "declined", "reject": "declined",
+               "no_grounds": "nogrounds", "abstain": "nogrounds"}
+
+
+def grade_layer(obj):
+    """The LAYERS key an object's grade falls under, or None when it carries no grade (an
+    older bridge, or an object no admission row links to)."""
+    return GRADE_LAYER.get(str(obj.get("grade") or "").lower())
+
+
+def visible_belief(belief, layers=None):
+    """The objects the grade toggles leave on. An ungraded object is never filtered: hiding
+    it would claim a grade nobody recorded."""
+    layers = LAYERS if layers is None else layers
+    return [o for o in belief if not (grade_layer(o) and not layers[grade_layer(o)])]
+
+
+def grade_counts(belief):
+    """Objects per grade layer for the HUD, or None when no object carries a grade at all --
+    "n/a" on the HUD rather than 0, which would claim there are none of that grade."""
+    if not any("grade" in o for o in belief):
+        return None
+    counts = {k: 0 for k in ("admitted", "held", "declined", "nogrounds")}
+    for o in belief:
+        if grade_layer(o):
+            counts[grade_layer(o)] += 1
+    return counts
+
+
+def draw_belief(bgr, belief, cam_pos, cam_quat, depth=None, labels=True):
     """Draw the belief boxes that are in view: skipped when no test point is visible
     (occluded or outside the frame), thin when fewer than 5 of 9 are, full otherwise."""
     import cv2
@@ -383,6 +416,8 @@ def draw_belief(bgr, belief, cam_pos, cam_quat, depth=None):
         thick = 2 if n_vis >= 5 else 1
         for i, j in BOX_EDGES:
             cv2.line(bgr, pts[i], pts[j], color, thick, cv2.LINE_AA)
+        if not labels:
+            continue
         top = min(pts, key=lambda p: p[1])
         cv2.putText(bgr, str(obj.get("label", "?")), (top[0], max(12, top[1] - 4)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, thick, cv2.LINE_AA)
@@ -619,8 +654,8 @@ else:
     print(f"[feed] dynamic dwell reads {_MERGE_PENDING_PATH}", flush=True)
 
 
-def _pending_merges():
-    """-> (pending, sweep) from the object manager's sidecar, or (None, None).
+def _read_signal():
+    """The object manager's merge_pending.json as a dict, or None when absent or unreadable.
 
     None means UNKNOWN, and the caller must not read it as zero: "nothing is pending" and
     "the file is not there yet" are different states, and treating the second as the first
@@ -629,9 +664,32 @@ def _pending_merges():
     try:
         with open(_MERGE_PENDING_PATH) as fh:
             d = json.load(fh)
-        return int(d.get("pending", 0)), int(d.get("sweep", -1))
-    except (OSError, ValueError, TypeError):
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _pending_merges():
+    """-> (pending, sweep) for the tour's dwell (GA-258), or (None, None)."""
+    d = _read_signal()
+    try:
+        return (int(d.get("pending", 0)), int(d.get("sweep", -1))) if d else (None, None)
+    except (ValueError, TypeError):
         return None, None
+
+
+# GA-339. ADAPTIVE HOLD in the walk/dwell burst loop (owner ruling 2026-09-07 ~13:50, design in
+# .handoff/plan/13-adaptive-dwell/topic.md). After every walk burst the agent HOLDS -- no action,
+# frames still published -- until a fresh signal says nothing is pending, bounded by FEED_DWELL_MAX.
+# Still, not turning: the tour's turn_left is 10 deg = 0.175 rad per tick, above the perception
+# gate's position_threshold 0.05, which is why the tour's dynamic dwell never produced a still
+# camera (run I, GA-337). Env only, no config keys, so there is exactly one reader per name.
+DWELL_MODE = os.environ.get("FEED_DWELL_MODE", "adaptive").strip().lower()
+if DWELL_MODE not in ("adaptive", "fixed"):
+    raise SystemExit(f"[feed] FEED_DWELL_MODE={DWELL_MODE!r}; expected adaptive or fixed")
+DWELL_MIN = int(os.environ.get("FEED_DWELL_MIN", 18))
+DWELL_MAX = int(os.environ.get("FEED_DWELL_MAX", 45))
+DWELL_SIGNAL_MAX_AGE_S = float(os.environ.get("FEED_DWELL_SIGNAL_MAX_AGE_S", 10.0))
 
 
 def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
@@ -1301,6 +1359,22 @@ def main():
     # run 19 became unrecoverable. This line costs nothing and fails closed.
     print(f"[feed] resolved: walk={walk_frames} dwell={dwell_frames} fps={FPS} "
           f"mapping_seconds={MAPPING_SECONDS} seed={SEED} scene={SCENE}", flush=True)
+    print(f"[feed] dwell_mode={DWELL_MODE} hold_min={DWELL_MIN} hold_max={DWELL_MAX} "
+          f"signal_max_age_s={DWELL_SIGNAL_MAX_AGE_S} signal={_MERGE_PENDING_PATH}"
+          + (" (FEED_DWELL is IGNORED in adaptive mode)" if DWELL_MODE == "adaptive" else ""),
+          flush=True)
+    hold = AdaptiveHold(DWELL_MIN, DWELL_MAX, DWELL_SIGNAL_MAX_AGE_S)
+    walk_count = 0
+
+    def _walk_step():
+        if tour is not None:
+            tour.step(agent)
+        else:
+            collided = agent.act("move_forward")
+            if collided:
+                turn = "turn_left" if rng.random() < 0.5 else "turn_right"
+                for _ in range(int(rng.integers(9, 18))):
+                    agent.act(turn)
     phase = 0
     t_start = time.time()
     mapping_announced = False
@@ -1309,6 +1383,15 @@ def main():
     t_start_sim = t_start
     total_steps = 0
     frame_seq = 0          # GA-121: ordinal of each published frame; see the frame dict
+    # GA-37. Two counts with two names. total_steps is RENDERED frames; frames_sent_ok is
+    # frames sendall() accepted for the ROS side (the socket is reliable, so a frame the
+    # peer never read is one that was in flight when it dropped the connection); the
+    # peer's own count is in feed_node_stats.json. A coverage denominator built from
+    # rendered frames counts viewpoints perception never saw (21-34% of frames in the
+    # two old bundles that carried a viewpoint file).
+    frames_sent_ok = 0
+    frames_send_failed = 0
+    frame_poses_path = STATS_DIR / "frame_poses.jsonl"
     total_distance_m = 0.0
     last_pos = np.asarray(ag_state.position, dtype=np.float64)
 
@@ -1347,19 +1430,27 @@ def main():
                 tour.step(agent)
             else:
                 agent.act("move_forward")
+        elif DWELL_MODE == "adaptive":
+            # GA-339. Walk `walk_frames`, then HOLD (no action) until the signal releases or the cap.
+            if hold.active:
+                label = "HOLD"
+                verdict = hold.step(_read_signal(), time.time())
+                if verdict != hold.HOLD:
+                    print(f"[feed] hold {hold.episodes}: {verdict} after {hold.frames} frames, "
+                          f"need {hold.last_need if hold.last_need is not None else '?'}", flush=True)
+                    walk_count = 0
+            else:
+                label = "WALK"
+                _walk_step()
+                walk_count += 1
+                if walk_count >= walk_frames:
+                    hold.start(_read_signal(), time.time())
         else:
             phase = (phase + 1) % (walk_frames + dwell_frames)
             moving = phase < walk_frames
             label = "WALK" if moving else "DWELL"
             if moving:
-                if tour is not None:
-                    tour.step(agent)
-                else:
-                    collided = agent.act("move_forward")
-                    if collided:
-                        turn = "turn_left" if rng.random() < 0.5 else "turn_right"
-                        for _ in range(int(rng.integers(9, 18))):
-                            agent.act(turn)
+                _walk_step()
 
         # OWNER RULING 20. Checked AFTER the motion and BEFORE the observation, so a frame is
         # never rendered from a pose the guard is about to reject — a corrected teleport would
@@ -1382,16 +1473,35 @@ def main():
             ros_agent_pos, ros_agent_quat = habitat_pose_to_ros(ag_state.position, [ag_state.rotation.x, ag_state.rotation.y, ag_state.rotation.z, ag_state.rotation.w])
             yaw = math.atan2(2.0 * (ros_agent_quat[3]*ros_agent_quat[2] + ros_agent_quat[0]*ros_agent_quat[1]), 1.0 - 2.0 * (ros_agent_quat[1]**2 + ros_agent_quat[2]**2))
 
-            phase_rem = (walk_frames - (phase % (walk_frames + dwell_frames))) if label == "WALK" else (dwell_frames - (phase % (walk_frames + dwell_frames) - walk_frames)) if label == "DWELL" else 0
+            if label == "HOLD":
+                phase_rem = -1   # GA-339: unknown by construction during an adaptive hold (rule 5: never 0)
+            elif label == "WALK" and DWELL_MODE == "adaptive":
+                phase_rem = walk_frames - walk_count
+            else:
+                phase_rem = (walk_frames - (phase % (walk_frames + dwell_frames))) if label == "WALK" else (dwell_frames - (phase % (walk_frames + dwell_frames) - walk_frames)) if label == "DWELL" else 0
             feed_stats = {
                 "elapsed_sec": round(time.time() - t_start_sim, 1),
                 "total_steps": total_steps,
+                "frames_rendered": total_steps,
+                "frames_sent_ok": frames_sent_ok,
+                "frames_send_failed": frames_send_failed,
                 "total_distance_m": round(total_distance_m, 2),
                 "phase": label,
                 "phase_walk_frames": walk_frames,
-                "phase_dwell_frames": dwell_frames,
-                "phase_remaining_frames": max(0, phase_rem),
+                # GA-339: in adaptive mode this is the length of the CURRENT hold, so readers that
+                # plot it keep working; the fixed arm keeps the configured value.
+                "phase_dwell_frames": hold.frames if label == "HOLD" else dwell_frames,
+                "phase_remaining_frames": phase_rem if phase_rem < 0 else max(0, phase_rem),
+                "dwell_mode": DWELL_MODE,
+                "dwell_min_frames": DWELL_MIN,
+                "dwell_max_frames": DWELL_MAX,
+                "dwell_signal_max_age_s": DWELL_SIGNAL_MAX_AGE_S,
+                **hold.stats(),
                 "mapping_seconds": MAPPING_SECONDS,
+                # GA-219: the walk radius was a measurement nobody could reproduce because no
+                # artefact recorded it. 0 in test mode means turn-in-place.
+                "test_mode": TEST_MODE,
+                "test_walk_radius_m": TEST_WALK_RADIUS,
                 # What the guard did. A run whose map is one storey because nothing drifted and
                 # a run whose map is one storey because it was teleported back forty times are
                 # different runs, and the map alone cannot tell them apart.
@@ -1509,7 +1619,10 @@ def main():
             # path may read it: a detector that can see the ground truth is not being measured,
             # it is being told. The key is absent entirely when the sensor is off, so a consumer
             # cannot read a zeros array as "no objects present".
-            **({"gt_semantic_instance": np.ascontiguousarray(obs["semantic_sensor"], dtype=np.uint32)}
+            # Sent run-length encoded (gt_codec, exact, ~3% of the raw 4.9 MB, ~15 ms): the raw
+            # uint32 array cut the feed to 0.10 frames/s and dropped the socket twice in run
+            # 20260906_234050; a PNG was exact but cost 245 ms a frame (run 20260907_001120).
+            **({"gt_semantic_rle": _gt_codec.encode(obs["semantic_sensor"])}
                if GT_SEMANTIC and "semantic_sensor" in obs else {}),
             "w": W, "h": H, "hfov": HFOV,
         }
@@ -1533,7 +1646,8 @@ def main():
                     # Under the boxes: a wall is context for the objects, not a peer of them.
                     draw_walls(bgr, poller.walls, frame["cam_pos"], cam_quat)
                 if LAYERS["boxes"] and poller is not None and poller.objects:
-                    draw_belief(bgr, poller.objects, frame["cam_pos"], cam_quat, frame["depth"])
+                    draw_belief(bgr, visible_belief(poller.objects), frame["cam_pos"], cam_quat,
+                                frame["depth"], labels=LAYERS["labels"])
                 if LAYERS["hud"]:
                     cv2.putText(bgr, label, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                                 (0, 255, 0), 2)
@@ -1550,6 +1664,7 @@ def main():
                     # state this run was in for an hour, and the HUD looked healthy.
                     _objs = (poller.objects if poller is not None else []) or []
                     _n_total = len(_objs)
+                    _counts = grade_counts(_objs)
                     for key, name in sorted(LAYER_KEYS.items(), key=lambda kv: kv[1]):
                         on = LAYERS[name]
                         col = (120, 255, 140) if on else (110, 110, 130)
@@ -1561,11 +1676,9 @@ def main():
                         elif name == "hud":
                             cnt = ""
                         else:
-                            # The belief the bridge serves carries no per-object verdict, so
-                            # the grade filters have nothing to count. "n/a" rather than 0:
-                            # zero would claim there are none of that grade, which is a
-                            # different statement from having no data.
-                            cnt = "n/a"
+                            # None when the bridge sent no grade at all (GA-102): "n/a"
+                            # rather than 0, which is a different statement from no data.
+                            cnt = "n/a" if _counts is None else str(_counts[name])
                         cv2.putText(bgr,
                                     f"{chr(key)}  {name:<10s} {'ON' if on else 'off':<3s} {cnt}",
                                     (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.44, col, 1,
@@ -1606,7 +1719,22 @@ def main():
         blob = pickle.dumps(frame, protocol=4)
         try:
             conn.sendall(struct.pack("!I", len(blob)) + blob)
+            frames_sent_ok += 1
+            # GA-37. The viewpoint line is appended AFTER the send succeeds, so the series
+            # holds only frames the ROS side was handed; it carries frame_id so a reader can
+            # join it to feed_node_stats.json. CAMERA pose (1.5 m above the base), which is
+            # what rendered the frame; base_z for reference. Consumed by tools/frustum_gt.py.
+            _cp, _cq = habitat_pose_to_ros(frame["cam_pos"], frame["cam_quat"])
+            _yaw = math.atan2(2.0 * (_cq[3] * _cq[2] + _cq[0] * _cq[1]), 1.0 - 2.0 * (_cq[1] ** 2 + _cq[2] ** 2))
+            with open(frame_poses_path, "a") as fp:
+                fp.write(json.dumps({
+                    "frame_id": frame["frame_id"], "stamp": frame["t"],
+                    "x": float(_cp[0]), "y": float(_cp[1]), "z": float(_cp[2]), "yaw": float(_yaw),
+                    "qx": float(_cq[0]), "qy": float(_cq[1]), "qz": float(_cq[2]), "qw": float(_cq[3]),
+                    "base_z": float(ros_agent_pos[2]), "phase": label,
+                }) + "\n")
         except (BrokenPipeError, ConnectionResetError, socket.error, OSError) as exc:
+            frames_send_failed += 1
             print(f"[feed] client disconnected ({exc}), waiting for reconnect...")
             try:
                 conn.close()

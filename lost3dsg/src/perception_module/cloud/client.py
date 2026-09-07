@@ -7,10 +7,13 @@ Provides unified interface for:
 """
 
 import base64
+import http.client
 import json
 import os
+import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
@@ -114,6 +117,7 @@ class ModalPerceptionBackend(PerceptionBackend):
         self.endpoint_url = endpoint_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.last_health = None
+        self._http = None   # one keep-alive HTTPS connection for the predict path
 
         if "-predict.modal.run" in self.endpoint_url:
             self.predict_url = self.endpoint_url
@@ -124,6 +128,63 @@ class ModalPerceptionBackend(PerceptionBackend):
         else:
             self.predict_url = f"{self.endpoint_url}/predict"
             self.health_url = f"{self.endpoint_url}/health"
+
+    def _post_keepalive(self, body: bytes) -> bytes:
+        """POST `body` to the predict URL over ONE persistent HTTPS connection.
+
+        MEASURED against the live endpoint 2026-09-06: a fresh connection costs 0.20 s to
+        connect and 0.34 s to finish TLS before the first byte moves; the same request on
+        an already-open connection answers in 0.15 s. urlopen opened a new connection per
+        cycle, so every cycle paid ~0.35 s for nothing. The server is unchanged and the
+        bytes on the wire are the same, so the detections are the same.
+
+        A keep-alive connection can be closed by the far side while the client idles
+        between cycles; that surfaces as RemoteDisconnected / BadStatusLine / a reset on
+        the next request, BEFORE any inference ran. Exactly that case reconnects once. A
+        timeout is NOT retried: it would double the wait on a request the server may be
+        working on, and the caller already reports the waited time.
+        """
+        u = urllib.parse.urlsplit(self.predict_url)
+        path = u.path or "/"
+        if u.query:
+            path += "?" + u.query
+        headers = {"Content-Type": "application/json",
+                   "User-Agent": "GraphAPI-PerceptionClient/1.0",
+                   "Connection": "keep-alive"}
+        for attempt in (0, 1):
+            if self._http is None:
+                self._http = http.client.HTTPSConnection(
+                    u.hostname, u.port or 443, timeout=self.timeout_seconds)
+            conn = self._http
+            try:
+                conn.request("POST", path, body=body, headers=headers)
+                resp = conn.getresponse()
+                raw = resp.read()
+            except (socket.timeout, TimeoutError):
+                self._drop_connection()
+                raise
+            except (http.client.HTTPException, ConnectionError, OSError):
+                self._drop_connection()
+                if attempt == 1:
+                    raise
+                continue
+            if resp.status >= 400:
+                # Same exception type urlopen raised, so the caller's handling is unchanged.
+                self._drop_connection()
+                raise urllib.error.HTTPError(self.predict_url, resp.status, resp.reason,
+                                             resp.headers, None)
+            if resp.getheader("Connection", "").lower() == "close":
+                self._drop_connection()
+            return raw
+        raise RuntimeError("unreachable")   # both attempts either returned or raised
+
+    def _drop_connection(self):
+        conn, self._http = self._http, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def health(self) -> Dict[str, Any]:
         try:
@@ -226,12 +287,6 @@ class ModalPerceptionBackend(PerceptionBackend):
 
         # 2. Call Modal predict endpoint
         req_data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            self.predict_url,
-            data=req_data,
-            headers={"Content-Type": "application/json", "User-Agent": "GraphAPI-PerceptionClient/1.0"},
-            method="POST",
-        )
 
         # The elapsed time is attached to whatever goes wrong, and the exception is
         # RE-RAISED unchanged in type. Three runs died on this line and not one recorded
@@ -248,9 +303,8 @@ class ModalPerceptionBackend(PerceptionBackend):
         t_encode_ms = (time.time() - t_encode) * 1000.0
         t_request = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                raw = resp.read()
-                result = json.loads(raw.decode("utf-8"))
+            raw = self._post_keepalive(req_data)
+            result = json.loads(raw.decode("utf-8"))
         except Exception as exc:
             waited = time.time() - t_request
             note = (f"{exc} [perception request waited {waited:.1f}s of a "
@@ -356,43 +410,28 @@ class ManagedPerceptionBackend(PerceptionBackend):
         if not self.api_key:
             raise RuntimeError(f"Missing API key for managed provider '{self.provider}'")
 
-        if self.provider == "fal":
-            # Example Fal.ai SAM2 / Florence-2 call
-            try:
-                import fal_client
-            except ImportError:
-                raise ImportError("Please install fal-client: pip install fal-client")
-
-            # Encode image to JPEG base64
-            _, buffer = cv2.imencode(".jpg", rgb_image)   # GA-13: already BGR, see above
-            data_uri = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
-
-            # 1. Florence-2 / Grounding DINO object detection
-            _res = fal_client.subscribe(
-                "fal-ai/florence-2-large/grounding",
-                arguments={"image_url": data_uri, "text_input": ", ".join(labels)},
-            )
-            # Parse detections and SAM masks
-            # (Stubbed adapter format for managed providers)
-            detections = []
-            return detections, {"total": round((time.time() - t_start) * 1000, 1)}
-
-        raise NotImplementedError(f"Provider '{self.provider}' not implemented yet")
+        # GA-19. The `fal` branch used to pay for a real Florence-2 grounding call
+        # (`fal_client.subscribe`), bind the answer to `_res` and return `[]` -- a paid
+        # request whose result was thrown away, read downstream as an empty scene. No
+        # provider has a parser yet, so no provider may place a call: refuse before the
+        # network, not after. Wiring one needs the provider's box/label envelope parsed
+        # into `Detection` AND a mask source (Florence-2 grounding returns boxes only).
+        del t_start
+        raise NotImplementedError(
+            f"managed perception provider '{self.provider}' has no response parser; "
+            "set perception.backend to 'modal' or 'local'"
+        )
 
 
 class LocalPerceptionBackend(PerceptionBackend):
     """Wraps local onboard PyTorch models (OWLv2 + VitSam)."""
 
-    def __init__(self, detector=None, vitsam=None):
-        self.detector = detector
-        self.vitsam = vitsam
-
     def health(self) -> Dict[str, Any]:
-        return {
-            "reachable": True,
-            "type": "local",
-            "models_loaded": (self.detector is not None and self.vitsam is not None),
-        }
+        # GA-19. `models_loaded` was computed from constructor arguments the only
+        # construction site (get_perception_backend) never passed, so it read False by
+        # accident. It IS False: this backend holds no models -- detect_and_segment is a
+        # stub, and test/preflight_gate.py refuses it by class name.
+        return {"reachable": True, "type": "local", "models_loaded": False}
 
     def detect_and_segment(
         self,
@@ -429,5 +468,12 @@ def get_perception_backend(cfg: Dict[str, Any]) -> PerceptionBackend:
     elif backend_type in ("managed", "fal", "replicate"):
         provider = p_cfg.get("provider", "fal")
         return ManagedPerceptionBackend(provider=provider)
-    else:
+    elif backend_type == "local":
         return LocalPerceptionBackend()
+    # GA-19. Any other string used to fall through to the local stub, whose
+    # detect_and_segment is `return [], {}` -- so a typo in perception.backend produced
+    # an empty scene that read as "nothing was there". Working rule 14: refuse.
+    raise ValueError(
+        f"perception.backend={backend_type!r} is not one of "
+        "'modal', 'local', 'managed', 'fal', 'replicate'"
+    )

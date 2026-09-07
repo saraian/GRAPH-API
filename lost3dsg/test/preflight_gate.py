@@ -92,7 +92,7 @@ NONSENSE_LABEL = "zzqx_not_a_real_object_kind"
 # Deny-list, not allow-list: COLCON_IGNORE has no extension, so no extension list can catch
 # it, and its presence decides whether the package builds. The principle for the exclusions
 # is "exclude what the system writes; keep what a person wrote, however dead" — build/,
-# install/, __pycache__/ and grafici_output/ are outputs; src/perception_module/old/ is not.
+# install/, __pycache__/ and grafici_output/ are outputs; a superseded module is not.
 # Excluded: everything the SYSTEM writes. `output/` is where the running stack writes —
 # hook_decisions.jsonl defaults to <package>/output/ — and `.mypy_cache` is written by anyone
 # running the type checker. With those inside the set the frozen root COULD NOT HOLD STILL BY

@@ -1,6 +1,6 @@
 # Request
-float32 max_distance       # default 0.8m  (0.0 = usa default)
-float32 min_similarity     # default 0.75  (0.0 = usa default)
+float32 max_distance       # metres, MUST be > 0 (GA-25: zero is refused, it does not mean "default" and cannot mean "off")
+float32 min_similarity     # unitless, MUST be > 0 (same rule); config defaults live in config.py association.*
 bool    dry_run            # se True, calcola ma non esegue il merge
 ---
 # Response

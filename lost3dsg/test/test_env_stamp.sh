@@ -66,13 +66,13 @@ ORDER
 #    downstream analysis tool fail on a bundle that otherwise looks complete.
 RUN_ID=t SCENE_ARG=s CFG_NAME=c.yaml CFG_SHA=0f9e8d7c6b5a4938 MERGED_SHA=44c1d0aa9b3e2f57 \
 FEED_SEED=7 RUN_DIR=/x HERE=/here \
-SRC_SHA=aaaa1111 SRC_N=122 FOUND_SHA=bbbb2222 FOUND_N=40 KB_SHA=cccc3333 KB_N=17 \
-KB_SRC=/DATA/ASPIRE/knowledge_bridge \
+SRC_SHA=aaaa1111 SRC_N=122 FOUND_SHA=bbbb2222 FOUND_N=40 \
 IMAGE_TAG=img IMAGE_DIGEST=sha256:dead ENC_E5=e5 ENC_MINILM=mini \
 GT_PATH=/gt/hm3d_00861.json GT_SHA=beef1234 GT_N=870 \
 FOUND_ENFORCE=1 FOUND_HOLD_BAND=0.05 FOUND_MIN_SUPPORT=30 FOUND_ROOM_ENFORCE=0 \
 FOUND_ALIGNER=kg FOUND_ONTOLOGY_EXT=default \
 FEED_WALK=6 FEED_DWELL=0 FEED_FPS=3 FEED_MAPPING_SECONDS=150 FEED_OVERLAY=1 FEED_SHOW=1 \
+FEED_DWELL_MODE=adaptive FEED_DWELL_MIN=18 FEED_DWELL_MAX=45 FEED_DWELL_SIGNAL_MAX_AGE_S=10 \
 MAPPING_ONLY=0 \
   bash -c "$(sed -n '/^cat <<EOF > "\$RUN_DIR\/run_metadata.json"/,/^EOF$/p' "$SRC" \
              | sed 's|> "\$RUN_DIR/run_metadata.json"||')" > "$TMP/meta.json"
@@ -86,7 +86,7 @@ done
 
 # 6. The new provenance keys are present and carry the values they were given.
 grep -q '"graph_api_src_sha256_16": "aaaa1111"' "$TMP/meta.json" || fail "graph-api tree digest not stamped"
-grep -q '"kb_src_sha256_16": "cccc3333"'        "$TMP/meta.json" || fail "knowledge_bridge digest not stamped — it is on PYTHONPATH and was unhashed"
+grep -q '"kb_src_sha256_16": null'              "$TMP/meta.json" || fail "kb_src_sha256_16 must be an explicit null since GA-306 — the key stays so a reader can tell 'not applicable' from 'never stamped'"
 grep -q '"graph_api_files": 122'                "$TMP/meta.json" || fail "file count not stamped; a count is what makes an empty root visible"
 grep -q '"image_digest": "sha256:dead"'         "$TMP/meta.json" || fail "image digest not stamped"
 grep -q '"intfloat/e5-small-v2": "e5"'          "$TMP/meta.json" || fail "encoder revision not stamped"
@@ -121,6 +121,9 @@ grep -q '"mapping_seconds": 150' "$TMP/meta.json" || fail "mapping_seconds not s
 # a detection run that found nothing are the same artefact -- the indistinguishability that cost
 # run 19 its merge question.
 grep -q '"mapping_only": false' "$TMP/meta.json" || fail "mapping_only not stamped for a normal run"
+# GA-33 residual: the container reads FOUND_KG_TOP / FOUND_KG_Z (found/kg_align.py); the bundle must say what they were.
+grep -q '"kg_top": 0.87' "$TMP/meta.json" || fail "kg_top not stamped (code default 0.87 when FOUND_KG_TOP is empty)"
+grep -q '"kg_z": 3.0'    "$TMP/meta.json" || fail "kg_z not stamped (code default 3.0 when FOUND_KG_Z is empty)"
 grep -q 'export OUT_DIR=' "$SRC" || fail "GA-99: OUT_DIR must be EXPORTED or the feed host never sees it and writes its stats outside the bundle"
 grep -q 'export FEED_DWELL="\${FEED_DWELL:-0}"' "$SRC" \
   || fail "FEED_DWELL must default to 0 (owner ruling 2026-08-31). A 60 here silently re-bases the family."
@@ -153,6 +156,10 @@ for _v in $(grep -o '\${[A-Z_][A-Z0-9_]*[:-]*[^}]*}' "$HERE/live_stack_container
   grep -q -- "-e ${_v}\b" "$SRC" || _missing="$_missing $_v"
 done
 [ -z "$_missing" ] || fail "read inside the container but never passed by docker run -e:$_missing"
+# GA-33: the same rule for CONTAINER-SIDE PYTHON (os.environ reads), which the shell grep above
+#        cannot see. check_env_passthrough.py existed and nothing ran it; now this does.
+python3 "$HERE/check_env_passthrough.py" "$HERE/.." >/dev/null \
+  || fail "check_env_passthrough.py: a container-side python os.environ read is not on the docker run -e list"
 
 # Stamped: a test result is true at a time, not simply true.
 # 8. The run's live output path. RESULTS/, never /tmp — owner ruling, relayed. The path needs

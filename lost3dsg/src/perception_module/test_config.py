@@ -175,6 +175,28 @@ def test_no_code_declares_the_removed_gate_anywhere_in_the_package():
     assert not offenders, f"{dead_key} is still declared in: {offenders}"
 
 
+
+def test_no_dead_perception_keys_are_declared():
+    """GA-19: `reachability_strict` and `detect_while_moving` were declared in the
+    defaults and read by nothing; a declared key that no code reads is a false statement
+    about the system. Absent from the defaults, and the quoted key is read nowhere."""
+    cfg = _reload_with("/nonexistent/graph_api_config_that_is_not_there.yaml")
+    dead = ("reachability" + "_strict", "detect_while" + "_moving")
+    for key in dead:
+        assert key not in cfg.CFG["perception"], key
+    here = os.path.dirname(os.path.abspath(__file__))
+    offenders = []
+    for root, _, files in os.walk(here):
+        for name in files:
+            if not name.endswith(".py") or "__pycache__" in root or name == os.path.basename(__file__):
+                continue
+            with open(os.path.join(root, name), errors="replace") as f:
+                code = "\n".join(line.split("#", 1)[0] for line in f.read().splitlines())
+            if any(f'"{k}"' in code or f"'{k}'" in code for k in dead):
+                offenders.append(os.path.relpath(os.path.join(root, name), here))
+    assert not offenders, offenders
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

@@ -522,7 +522,10 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                                     bbox_marker_pub=None, centroid_marker_pub=None,
                                     max_points_per_obj=20000, remove_outliers=True,
                                     sor_k=30, sor_std=1.5, transform=None,
-                                    output_frame="map"):
+                                    output_frame="map", points_out=None):
+    """`points_out`, when a list, receives one entry per mask: the map-frame points the
+    box was measured from, or None where no box was produced. The PCA stage reads them
+    instead of re-running the projection and the outlier removal on the same mask."""
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
     camera_frame = CFG["frames"]["camera"]
     centroids_3d, bboxes_3d, all_markers = [], [], []
@@ -545,6 +548,8 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
             node.get_logger().warn(f"{label}: no valid points after filtering")
             centroids_3d.append(None)
             bboxes_3d.append(None)
+            if points_out is not None:
+                points_out.append(None)
             continue
 
         try:
@@ -560,7 +565,6 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
 
 
             centroid_map = np.mean(pts_map, axis=0)
-            centroids_3d.append(tuple(float(v) for v in centroid_map))
 
             if centroid_marker_pub is not None:
                 points_list_to_rviz_3d(
@@ -584,14 +588,26 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                 "y_min": float(mins_map[1]), "y_max": float(maxs_map[1]),
                 "z_min": float(mins_map[2]), "z_max": float(maxs_map[2]),
             }
-            bboxes_3d.append(bbox_dict)
-
             corners_map = np.array(list(itertools.product(*zip(mins_map, maxs_map))))
+
+            # ALL THREE appends together, as the LAST statements of the try. The centroid used
+            # to be appended before the two raises above, so on an empty or degenerate box
+            # the except path's None made it TWO entries for one mask and every later
+            # centroid was read against the wrong detection by _archive_detections
+            # (positional). Found by agent1 in review 2026-09-06, shown red-first on a
+            # one-pixel-row mask, GA-327. Kept adjacent so that nothing inserted above them
+            # can ever leave the three lists at different lengths.
+            centroids_3d.append(tuple(float(v) for v in centroid_map))
+            bboxes_3d.append(bbox_dict)
+            if points_out is not None:
+                points_out.append(pts_map)
 
         except Exception as e:
             node.get_logger().warn(f"{label}: transform to map failed: {e}")
             centroids_3d.append(None)
             bboxes_3d.append(None)
+            if points_out is not None:
+                points_out.append(None)
             continue
 
         if bbox_marker_pub is not None:
@@ -839,11 +855,14 @@ def _vlm_client():
     return _client
 
 
-def vlm_call(prompt, encoded_image):
+def vlm_call(prompt, encoded_image, timeout=None):
     """One VLM round-trip. Transport failures (timeout, malformed envelope)
     retry up to cfg vlm.retries times, then raise — never silently degraded.
     A well-formed response is returned as-is (may be empty: a semantic outcome
-    the callers already handle)."""
+    the callers already handle).
+
+    `timeout` (seconds) bounds THIS call; None keeps the client's cfg vlm.timeout.
+    GA-303: the crop describer passes cfg vlm.crop_timeout here."""
     last_err = None
     for attempt in range(CFG["vlm"]["retries"] + 1):
         # GA-288. BACKOFF, because there was none. Run 20260903_135823 died at 18 cycles on
@@ -867,7 +886,8 @@ def vlm_call(prompt, encoded_image):
                             }
                         ],
                     }
-                ]
+                ],
+                **({"timeout": timeout} if timeout is not None else {}),
             )
             if not getattr(agent, "choices", None) or agent.choices[0].message is None:
                 raise RuntimeError(f"malformed VLM response: {agent!r:.200}")

@@ -331,14 +331,22 @@ def channel_overlap(bounds_a, bounds_b, map_volume_m3):
     """Log-odds from 3D containment and generalized IoU. The channel that catches fragments.
 
     THE NULL, and why this has no fitted constant. Under "different objects", the two boxes
-    are two independent objects in the mapped volume. The probability that an independent
-    object's box would land so as to produce an intersection of volume V is approximately
-    V / V_map -- the chance its centre falls in the overlap region. Under "same object" an
-    overlap of that size is unremarkable, probability ~1. So
+    are two independent objects in the mapped volume. For one box to overlap the other at
+    all, its centre must land inside the OTHER box, so the chance of any overlap is about
+    V_larger / V_map -- and under "same object" an overlap is unremarkable, probability ~1. So
 
-        log-odds  ~  log( 1 / (V_intersect / V_map) )  =  log(V_map / V_intersect)
+        log-odds  ~  log( 1 / (V_larger / V_map) )  =  log(V_map / V_larger)
 
-    V_map is MEASURED from the map (category b) and V_intersect from the boxes. Nothing is
+    GA-307 (owner ruling 2026-09-07, "ship it, quote no gain"). This used to read
+    log(V_map / V_intersect): the docstring derived one quantity and the code computed
+    another, and the error is unbounded as the contained object shrinks -- a ceiling light
+    sharing 61 cm3 with a door scored the 8.0 cap while two views of one bookshelf sharing
+    0.29 m3 scored 5.9 (5.5 to 11.4 excess nats on 192014). Replayed corpus-wide (17
+    evidence-engine bundles, real Hypothesis): 291 -> 296 merges, 0 net cross-kind -- the
+    GA-328 guard already holds the fragment regime, so this corrects the LOGGED NUMBER and
+    is not a merge-quality lever. Say nothing else about it.
+
+    V_map is MEASURED from the map (category b) and V_larger from the boxes. Nothing is
     tuned. The approximation is stated plainly: it treats object placement as uniform over
     the mapped volume, which is wrong in detail -- objects cluster on floors and against
     walls -- and wrong in the CONSERVATIVE direction, since real clustering makes chance
@@ -366,9 +374,11 @@ def channel_overlap(bounds_a, bounds_b, map_volume_m3):
         return max(-MAX_CHANNEL_LOG_ODDS, giou), {
             "containment": 0.0, "giou": giou, "intersection_m3": 0.0}
 
-    llr = math.log(map_volume_m3 / inter) * contain
+    larger = max(box_volume(bounds_a), box_volume(bounds_b), inter)
+    llr = math.log(map_volume_m3 / larger) * contain
     llr = float(np.clip(llr, -MAX_CHANNEL_LOG_ODDS, MAX_CHANNEL_LOG_ODDS))
-    return llr, {"containment": contain, "giou": giou, "intersection_m3": inter}
+    return llr, {"containment": contain, "giou": giou, "intersection_m3": inter,
+                 "larger_m3": larger}
 
 
 # ---------------------------------------------------------------------------------------
@@ -466,7 +476,19 @@ def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30):
         return Abstain("observations carry no frame ids")
     shared = frames_a & frames_b
     if not shared:
-        return 0.0, {"covisible_frames": [], "n_covisible": 0}
+        # GA-328. This used to return 0.0 -- a MEASUREMENT saying "consulted, nothing either
+        # way". But two objects that were never in one frame together were never COMPARED:
+        # the hard negative this channel exists to deliver (co-visible and disjoint) was not
+        # collected for this pair, and 0.0 told `containment_unchecked` that it had been.
+        # Measured on run 20260906_220046, the first live-store run after sightings began to
+        # be recorded (GA-296): 340 of 759 over-threshold pairs carried this 0.0, the guard
+        # stood down on every one of them, and the overlap channel merged 184 objects in 15
+        # minutes, a third across kinds (vanity+bath mat, cabinet+shelving unit). Replayed
+        # over 13 bundles with this line as an abstention: run B 210 -> 62 merges, cross-kind
+        # 92 -> 15; 174810's 120 correct merges all kept; 192014 8 -> 3. An absent shared
+        # frame is absence of evidence, and the abstention says so.
+        return Abstain("never observed in one frame: no shared frame in which the two could "
+                       "have been compared")
 
     detail = {"covisible_frames": sorted(shared)[:8], "n_covisible": len(shared),
               "overlap_2d": overlap_2d}
@@ -489,7 +511,8 @@ def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30):
 # ---------------------------------------------------------------------------------------
 
 
-def channel_ontology(type_a, type_b, aligned_a, aligned_b, disjoint_fn=None, n_types=None):
+def channel_ontology(type_a, type_b, aligned_a, aligned_b, disjoint_fn=None, n_types=None,
+                     disjoint_source=None):
     """Prior or veto when BOTH sides are aligned to the ontology; abstain otherwise.
 
     An unaligned label is a string somebody's detector emitted. Treating "pillow" == "pillow"
@@ -507,14 +530,21 @@ def channel_ontology(type_a, type_b, aligned_a, aligned_b, disjoint_fn=None, n_t
         return Abstain("one or both sides unaligned; alignment is required before use")
     if type_a is None or type_b is None:
         return Abstain("aligned but no type resolved")
+    # GA-309. `disjoint_source` names the component that answered when a function was
+    # supplied (rule 2). Absent from the record = nobody was asked, so the "disjoint": False
+    # below is the literal default -- which is what EVERY row before 2026-09-07 was
+    # (`disjoint_fn` was never supplied anywhere in either tree). The function may RAISE on a
+    # class name its ontology does not carry; that is its contract (rule 14) and it is not
+    # caught here.
+    src = {"disjoint_source": disjoint_source} if disjoint_fn is not None else {}
     if disjoint_fn is not None and disjoint_fn(type_a, type_b):
-        return VETO, {"type_a": type_a, "type_b": type_b, "disjoint": True}
+        return VETO, {"type_a": type_a, "type_b": type_b, "disjoint": True, **src}
     if type_a == type_b:
         if not n_types or n_types < 2:
             return Abstain("type count unknown, no null to compare against")
         return float(np.clip(math.log(n_types), 0.0, MAX_CHANNEL_LOG_ODDS)), {
-            "type_a": type_a, "type_b": type_b, "n_types": n_types}
-    return 0.0, {"type_a": type_a, "type_b": type_b, "disjoint": False}
+            "type_a": type_a, "type_b": type_b, "n_types": n_types, **src}
+    return 0.0, {"type_a": type_a, "type_b": type_b, "disjoint": False, **src}
 
 
 # ---------------------------------------------------------------------------------------
@@ -696,8 +726,16 @@ class PairScore:
 
     @property
     def evidence_count(self):
-        """How many channels actually measured something. Zero means: decide nothing."""
-        return len(self.channels)
+        """How many channels actually measured something. Zero means: decide nothing.
+
+        GA-310. This used to be `len(self.channels)`, and a channel that wrote 0.0 -- "consulted,
+        likelihood ratio 1" -- is IN that dictionary. Measured over 437 rows of run 192014, all five
+        merges had evidence_count >= 3 with only ONE channel non-zero, so `merge_min_evidence`, which
+        exists to refuse a merge on overlap alone, could never refuse anything. A veto counts: it is
+        the strongest measurement a channel can make. An Abstain never reaches `channels` at all, so
+        the abstain / 0.0 / not-consulted distinction the Abstain class carries is untouched here.
+        """
+        return sum(1 for c in self.channels.values() if c.get("veto") or c.get("log_odds"))
 
     @property
     def containment_unchecked(self):
@@ -774,7 +812,8 @@ def score_pair(a, b, ctx):
 
     s.add("ontology", channel_ontology(
         a.onto_type, b.onto_type, a.onto_aligned, b.onto_aligned,
-        disjoint_fn=ctx.disjoint_fn, n_types=ctx.n_types))
+        disjoint_fn=ctx.disjoint_fn, n_types=ctx.n_types,
+        disjoint_source=getattr(ctx, "disjoint_source", None)))
     s.add("appearance", channel_appearance(
         a.descriptors, b.descriptors, ctx.cone_half_angle_rad,
         a.descriptor_spread, b.descriptor_spread))
@@ -1038,16 +1077,20 @@ class AssocObject:
 
 class AssocContext:
     __slots__ = ("map_volume_m3", "n_rooms", "n_types", "cone_half_angle_rad",
-                 "disjoint_fn", "cost_ratio", "overlap_2d_fn")
+                 "disjoint_fn", "disjoint_source", "cost_ratio", "overlap_2d_fn")
 
     def __init__(self, map_volume_m3=None, n_rooms=None, n_types=None,
                  cone_half_angle_rad=math.radians(45.0), disjoint_fn=None, cost_ratio=20.0,
-                 overlap_2d_fn=None):
+                 overlap_2d_fn=None, disjoint_source=None):
         self.map_volume_m3 = map_volume_m3
         self.n_rooms = n_rooms
         self.n_types = n_types
         self.cone_half_angle_rad = cone_half_angle_rad
         self.disjoint_fn = disjoint_fn
+        # GA-309. WHICH component answers the disjointness question (rule 2), recorded on
+        # every ontology-channel row where a function was supplied. None = not supplied,
+        # and then the channel's "disjoint": False is a default, not a statement.
+        self.disjoint_source = disjoint_source
         self.cost_ratio = cost_ratio
         # GA-181: supplied by the caller, which is the only place 2D boxes in a shared frame
         # are available. None -> co-visibility abstains instead of vetoing.
@@ -1158,9 +1201,14 @@ def demo():
     # --- 6. accumulation: weak-but-repeated crosses; one lucky frame does not -------------
     weak = AssocObject("w1", bbox=_box(0, 0, 0, 0.30, 0.30, 0.30), room_id="kitchen",
                        observations=[_obs(1, [2, 0, 0], [0, 0, 0])])
+    # GA-328: the persistence pair is the DUPLICATE-DETECTION shape -- both seen in frame 1,
+    # 2D boxes overlapping -- so co-visibility is a measured abstention and the containment
+    # guard stands down. A pair never seen in one frame is the separate case below.
     weak2 = AssocObject("w2", bbox=_box(0.06, 0, 0, 0.30, 0.30, 0.30), room_id="kitchen",
-                        observations=[_obs(2, [2, 0, 0], [0.06, 0, 0])])
-    sw = score_pair(weak, weak2, ctx)
+                        observations=[_obs(1, [2, 0, 0], [0.06, 0, 0])])
+    ctx_dup = AssocContext(map_volume_m3=300.0, n_rooms=6, n_types=40, cost_ratio=20.0,
+                           overlap_2d_fn=lambda a, b: 0.95)
+    sw = score_pair(weak, weak2, ctx_dup)
     # THE REGRESSION TEST FOR MY OWN BUG: re-scoring identical state must NOT grow the
     # total. The first version of Hypothesis summed per frame and turned one measurement
     # repeated five times into +47 log-odds of false confidence.
@@ -1183,6 +1231,22 @@ def demo():
           f"(was +47.11 when summed)")
     print(f"  persistence : 1 update -> {d_one[0]}; 3 consecutive -> {d_persist[0]}")
     assert d_one[0] == "hold" and d_persist[0] == "merge", (d_one, d_persist)
+
+    # GA-328: the same geometry, but the two were NEVER in one frame together. Co-visibility
+    # abstains (uncollected, not 0.0), overlap carries the decision, and the guard holds
+    # however many updates repeat it. Run 20260906_220046 merged 184 objects in 15 minutes
+    # because this case returned 0.0 and read as "checked".
+    apart = AssocObject("w3", bbox=_box(0.06, 0, 0, 0.30, 0.30, 0.30), room_id="kitchen",
+                        observations=[_obs(2, [2, 0, 0], [0.06, 0, 0])])
+    s_apart = score_pair(weak, apart, ctx)
+    assert "covisibility" in s_apart.abstentions and "covisibility" not in s_apart._measured_abstentions
+    held = Hypothesis(("w1", "w3"))
+    for f in range(1, 4):
+        held.update(s_apart, frame_id=f)
+        d_apart = held.decide(thr, min_consecutive=3)
+    assert d_apart[0] == "hold" and d_apart[1].startswith("containment carries"), d_apart
+    print(f"  never co-observed : 3 consecutive -> {d_apart[0]} (GA-328; was a merge when the "
+          f"channel answered 0.0)")
 
     # --- 7. reversibility: the record outlives the objects --------------------------------
     prov = many.provenance()

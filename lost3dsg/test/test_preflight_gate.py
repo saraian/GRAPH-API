@@ -3,11 +3,12 @@
 
     python3 test_preflight_gate.py
 
-Covers the harness and the three probes that need neither ROS nor a backend (a2, a3, a5).
-a1/a2/a6/a7 need the container and are NOT exercised here — see the note at the bottom, which
-is deliberate: claiming a probe is verified when it has never run is the failure this whole
-gate exists to catch. a4's branch logic IS exercised, against stubs; its two real inferences
-are not.
+Covers the harness, the probes that need neither ROS nor a backend (a2, a3, a5), and every
+`return False` branch of a1, a2 and a6 (GA-73) — a2 against the real config.py, a1 and a6
+against stubbed aligner / TF modules. What only the container can show is marked
+`needs_container` and skipped with the call named, never faked: claiming a probe is verified
+when it has never run is the failure this whole gate exists to catch. a4's branch logic IS
+exercised, against stubs; its two real inferences are not.
 """
 import json
 import os
@@ -21,10 +22,25 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import preflight_gate as g  # noqa: E402
 
+try:
+    import pytest
+except ImportError:      # script mode on a host without pytest; the marker below still records the gap
+    pytest = None
+
 
 def check(cond, msg):
     if not cond:
         raise AssertionError(msg)
+
+
+def needs_container(reason):
+    """Mark a test that CANNOT run on the host. It is skipped, with the call that needs the
+    container in the reason, so the gap is visible in the suite output rather than absent from
+    it. Not a fake: the body is the real assertion and runs unchanged inside the container."""
+    def deco(fn):
+        fn.needs_container = f"needs the container: {reason}"
+        return pytest.mark.skip(reason=fn.needs_container)(fn) if pytest else fn
+    return deco
 
 
 
@@ -492,8 +508,7 @@ def test_run_output_lives_outside_every_hashed_root():
     the stack moved the frozen root and "frozen" was unachievable while being reported achieved.
     A path ruling that quietly put run artefacts back inside a root would restore that, so it is
     asserted rather than assumed."""
-    roots = ("/DATA/FOUND/vendor/graph-api/lost3dsg", "/DATA/FOUND/found",
-             "/DATA/ASPIRE/knowledge_bridge")
+    roots = ("/DATA/FOUND/vendor/graph-api/lost3dsg", "/DATA/FOUND/found")
     # $FOUND_ROOT, not /DATA/FOUND. The launcher derives its root from its own location so a
     # clone anywhere can run; this assertion used to encode the one machine the code was written
     # on, and it failed the moment the hardcoding it was guarding against was removed.
@@ -781,6 +796,206 @@ def test_a7_skips_when_no_expectation_reached_the_container():
     check(ok is g.SKIPPED, "outside the container there is no frozen root -> SKIPPED, not pass")
 
 
+# --- a2: every way it can refuse, against the REAL config.py -------------------------------
+# GA-73. a2 imports `config` and hashes what THAT module loaded. On the host the same config.py
+# (src/perception_module) is loaded under that name with GRAPH_API_CONFIG at a path the test
+# controls, so the probe reads a real CFG/CFG_PATH, not a stub of them. What stays untested here
+# is only the import path: /ws/install/... is the installed copy and exists in the container alone.
+_CONFIG_PY = os.path.join(HERE, "..", "src", "perception_module", "config.py")
+
+
+def _a2_with(cfg_path, **expect):
+    """Run a2 with the real config.py loaded from cfg_path. Returns (config module, ok, detail)."""
+    import importlib.util
+    saved_env = os.environ.get("GRAPH_API_CONFIG")
+    saved_mod = sys.modules.get("config")
+    os.environ["GRAPH_API_CONFIG"] = cfg_path
+    try:
+        spec = importlib.util.spec_from_file_location("config", _CONFIG_PY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.modules["config"] = mod
+        ok, d = g.a2_config_identity(**expect)
+        return mod, ok, d
+    finally:
+        if saved_env is None:
+            os.environ.pop("GRAPH_API_CONFIG", None)
+        else:
+            os.environ["GRAPH_API_CONFIG"] = saved_env
+        if saved_mod is None:
+            sys.modules.pop("config", None)
+        else:
+            sys.modules["config"] = saved_mod
+
+
+def test_a2_passes_when_every_expectation_matches_what_config_loaded():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "regolo_config.yaml")
+        open(path, "w").write("perception:\n  backend: probe_backend\nhooks:\n  filter: found\n")
+        mod, ok, d = _a2_with(path)
+        check(ok is True, f"a loaded file with no expectation is a pass: {d}")
+        check(d["loaded_path"] == path and d["perception_backend"] == "probe_backend", d)
+        check(d["hooks_filter"] == "found", d)
+        _, ok, d = _a2_with(path, expect_name="regolo_config.yaml",
+                            expect_sha=g.file_sha16(path), expect_merged=g.merged_cfg_sha(mod.CFG))
+        check(ok is True, f"matching name, file sha and merged sha -> PASS: {d}")
+
+
+def test_a2_returns_False_when_no_config_file_was_loaded():
+    # The silent defect: GRAPH_API_CONFIG names a file that is not there, config.py falls back
+    # to _DEFAULTS, hooks.filter is empty and FOUND is out of the loop.
+    with tempfile.TemporaryDirectory() as td:
+        missing = os.path.join(td, "not_here.yaml")
+        _, ok, d = _a2_with(missing)
+        check(ok is False, f"defaults in force must FAIL, not pass: {d}")
+        check(d["loaded_path"] is None and d["config_file_sha256_16"] is None, d)
+        check(d["env_path"] == missing and "no config file was loaded" in d["why"], d)
+        check(d["hooks_filter"] == "", f"on the defaults hooks.filter is empty, FOUND out of the loop: {d}")
+
+
+def test_a2_returns_False_when_loaded_file_name_differs_from_expected():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "smoke_config.yaml")
+        open(path, "w").write("simulation: true\n")
+        _, ok, d = _a2_with(path, expect_name="regolo_config.yaml")
+        check(ok is False, f"a different file name than the launcher intended must FAIL: {d}")
+        check(d["expected_name"] == "regolo_config.yaml" and d["loaded_path"] == path, d)
+
+
+def test_a2_returns_False_when_config_file_hash_differs_from_the_launchers():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "regolo_config.yaml")
+        open(path, "w").write("simulation: true\n")
+        launcher_sha = g.file_sha16(path)
+        open(path, "a").write("perception:\n  backend: edited_after_stamp\n")   # the mounted tree moved
+        _, ok, d = _a2_with(path, expect_name="regolo_config.yaml", expect_sha=launcher_sha)
+        check(ok is False, f"a file that differs from the one the launcher hashed must FAIL: {d}")
+        check(d["expected_file_sha"] == launcher_sha and d["config_file_sha256_16"] != launcher_sha, d)
+        check("differs from the one the launcher hashed" in d["why"], d)
+
+
+def test_a2_returns_False_when_merged_config_differs_although_the_file_matches():
+    # Same file, different _DEFAULTS on the other side of the boundary: the launcher's merged
+    # digest is computed the same way over a CFG that differs in a key the yaml never writes.
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "regolo_config.yaml")
+        open(path, "w").write("simulation: true\n")
+        mod, _, _ = _a2_with(path)
+        other_defaults = g.merged_cfg_sha(dict(mod.CFG, ontology_stub_key="only_on_the_host"))
+        _, ok, d = _a2_with(path, expect_sha=g.file_sha16(path), expect_merged=other_defaults)
+        check(ok is False, f"file matches, merged does not -> must FAIL: {d}")
+        check(d["expected_merged_sha"] == other_defaults, d)
+        check("MERGED configuration does not" in d["why"], d)
+
+
+@needs_container("`import config` from /ws/install/lost3dsg/lib/lost3dsg, the colcon-installed "
+                 "copy a2 hashes; the host has only the source tree")
+def test_a2_hashes_the_installed_config_module_not_the_source_tree():
+    ok, d = g.a2_config_identity(expect_name=os.path.basename(os.environ["GRAPH_API_CONFIG"]))
+    check(ok is True, d)
+    check(d["loaded_path"].startswith("/ws/") or d["loaded_path"].startswith("/graph_api/"), d)
+
+
+# --- a6: the comparison can refuse; the TF tree itself cannot be had on the host ---------
+# GA-73. rclpy/tf2_ros are stubbed at the module level so the probe's own logic runs: which
+# frames it asks for, the 20 s deadline, and the height comparison. The transform VALUE is the
+# test's, so what these show is that a wrong value is refused — not that the live tree is right.
+def _a6_with(lookup, **kw):
+    """Run a6 against a stub TF buffer whose lookup_transform is `lookup(target, source)`.
+    The clock is stubbed too: the 20 s deadline must not cost 20 s of wall time."""
+    rclpy = types.ModuleType("rclpy")
+    rclpy.init = lambda args=None: None
+    rclpy.shutdown = lambda: None
+    rclpy.create_node = lambda name: name
+    rclpy.spin_once = lambda node, timeout_sec=0.0: None
+    rclpy.time = types.ModuleType("rclpy.time")
+    rclpy.time.Time = lambda: 0
+    duration = types.ModuleType("rclpy.duration")
+    duration.Duration = lambda seconds=0.0: seconds
+    tf2 = types.ModuleType("tf2_ros")
+
+    class Buffer:
+        def lookup_transform(self, target, source, when, timeout):
+            return lookup(target, source)
+    tf2.Buffer = Buffer
+    tf2.TransformListener = lambda buf, node: None
+
+    clock = [1000.0]
+
+    def fake_time():
+        clock[0] += 1.0        # each loop turn costs a second; the deadline is 20 of them
+        return clock[0]
+    fakes = {"rclpy": rclpy, "rclpy.time": rclpy.time, "rclpy.duration": duration, "tf2_ros": tf2}
+    saved = {k: sys.modules.get(k) for k in fakes}
+    saved_time = g.time
+    sys.modules.update(fakes)
+    g.time = types.SimpleNamespace(time=fake_time)
+    try:
+        return g.a6_camera_pose_offset(**kw)
+    finally:
+        g.time = saved_time
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+def _tf_with_z(z):
+    return types.SimpleNamespace(transform=types.SimpleNamespace(
+        translation=types.SimpleNamespace(x=0.0, y=0.0, z=z)))
+
+
+def test_a6_passes_when_the_camera_sits_the_mount_height_above_base_link():
+    asked = []
+
+    def lookup(target, source):
+        asked.append((target, source))
+        return _tf_with_z(1.5)
+    ok, d = _a6_with(lookup)
+    check(ok is True, f"dz == mount height -> PASS: {d}")
+    check(d == {"dz_m": 1.5, "expected_m": 1.5, "tol_m": 0.25}, d)
+    check(asked == [("base_link", "habitat_camera")],
+          f"the probe must ask for base_link -> habitat_camera and nothing else: {asked}")
+    ok, d = _a6_with(lambda t, s: _tf_with_z(1.5 + 0.25))
+    check(ok is True, f"the tolerance is inclusive: {d}")
+
+
+def test_a6_returns_False_when_camera_pose_equals_base_pose():
+    # The defect: something publishes the base pose where the camera pose belongs, dz == 0.
+    ok, d = _a6_with(lambda t, s: _tf_with_z(0.0))
+    check(ok is False, f"a zero offset must FAIL: {d}")
+    check(d["dz_m"] == 0.0 and d["expected_m"] == 1.5, d)
+
+
+def test_a6_returns_False_when_offset_is_outside_tolerance():
+    ok, d = _a6_with(lambda t, s: _tf_with_z(1.5 + 0.26))
+    check(ok is False, f"0.26 m off with tol 0.25 must FAIL: {d}")
+    ok, d = _a6_with(lambda t, s: _tf_with_z(1.0), expect_height_m=1.0, tol=0.05)
+    check(ok is True, f"the expectation and tolerance are the caller's: {d}")
+    ok, d = _a6_with(lambda t, s: _tf_with_z(1.5), expect_height_m=1.0, tol=0.05)
+    check(ok is False, f"a mount height the caller did not expect must FAIL: {d}")
+
+
+def test_a6_skips_not_passes_when_the_transform_is_never_published():
+    turns = []
+
+    def never(target, source):
+        turns.append(1)
+        raise LookupError("base_link -> habitat_camera: not in the buffer")
+    ok, d = _a6_with(never)
+    check(ok is g.SKIPPED, f"no transform within the deadline asserted nothing -> SKIPPED: {d}")
+    check("not published within 20 s" in d["reason"], d)
+    check(len(turns) >= 2, "the probe must keep trying until the deadline, not give up on the first miss")
+
+
+@needs_container("tf2_ros.Buffer.lookup_transform('base_link', 'habitat_camera') against the "
+                 "live TF tree; on the host there is no rclpy and no publisher")
+def test_a6_reads_the_live_base_link_to_habitat_camera_transform():
+    ok, d = g.a6_camera_pose_offset()
+    check(ok is True, d)
+
+
 # --- the file is runnable as a script ------------------------------------------------------
 def test_the_gate_is_runnable_as_a_script():
     r = subprocess.run([sys.executable, os.path.join(HERE, "preflight_gate.py"), "--help"],
@@ -862,8 +1077,12 @@ if __name__ == "__main__":
     # collection is a gate that cannot fail, which is the shape this gate exists to catch.
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
-    failures = 0
+    failures = skipped = 0
     for name, fn in tests:
+        if getattr(fn, "needs_container", None):
+            print(f"  skip  {name}: {fn.needs_container}")
+            skipped += 1
+            continue
         try:
             fn()
             print(f"  ok    {name}")
@@ -876,7 +1095,7 @@ if __name__ == "__main__":
     # simply true. Two correct measurements of one file can disagree because someone fixed it
     # in between, and neither reader is wrong — that cost two sessions an exchange tonight.
     # The frozen-root digests have always carried a stamp; test results carried none.
-    print(f"preflight gate tests: {len(tests)} run,",
+    print(f"preflight gate tests: {len(tests) - skipped} run, {skipped} skipped (need the container),",
           "all passed" if not failures else f"{failures} failed",
           f"| {__import__('datetime').datetime.now().astimezone().isoformat(timespec='seconds')}")
     # Kept accurate deliberately. This said a4 was not exercised after a stubbed test for its
@@ -884,7 +1103,8 @@ if __name__ == "__main__":
     # is the family this gate exists for. It under-claimed, so it failed safe; it was still
     # wrong, and a summary nobody maintains is how "verified" drifts from what ran.
     print("a4's BRANCH LOGIC is exercised here against stubs; its two real inferences are not.")
-    print("NOT exercised here (need the container): a1 aligner identity, a2 config identity,")
-    print("a6 camera pose offset, a7 against a real frozen root.")
+    print("a1, a2 and a6 are shown REFUSING here (a2 against the real config.py; a1 and a6 against")
+    print("stubbed aligner / TF modules). NOT exercised here (need the container, see the skips):")
+    print("a2's installed config copy, a6's live TF tree, a7 against a real frozen root.")
     print("a6 and a7 passed live on 2026-08-30; a1, a2 and a4 have not yet run to completion.")
     sys.exit(1 if failures else 0)

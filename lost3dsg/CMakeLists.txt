@@ -80,6 +80,7 @@ install(PROGRAMS
   # is a hand-maintained inventory and nothing checks it against the imports.
   src/perception_module/detection_archive.py
   src/perception_module/crop_context.py
+  src/perception_module/gt_codec.py
   src/perception_module/visual_reid.py
   src/perception_module/association.py
   # GA-209's grid describer, imported by perception_2 and missing from this list — caught by

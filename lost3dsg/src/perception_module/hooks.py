@@ -131,13 +131,29 @@ class Store:
     def on_uncertain_added(self, obj, step=0):
         pass
 
+    def on_object_merged(self, keeper, discard, step=0):
+        """GA-26. A merge ends `discard`'s identity in favour of `keeper`. Without this event
+        the store kept the absorbed row active forever and disagreed with the map by one
+        object per merge, with no history row explaining the difference."""
+        pass
+
+    def on_object_room_changed(self, obj, old_room, new_room, step=0):
+        """GA-45. The shipped SQLite store defined this fifth event and the object manager calls
+        it on whatever store is configured (object_manager_6.py, the room-change loop), so a
+        store built to THIS blueprint -- four events, as advertised -- crashed the run with an
+        AttributeError the first time an object changed room. The blueprint now declares every
+        event the manager fires; a store that does not care overrides nothing."""
+        pass
+
     def objects(self, only_active=True):
-        """-> [{id, label, color, material, description, bbox, room_id, is_active,
-        is_uncertain, first_seen, last_seen, last_event}]"""
+        """-> [{id, object_uuid, label, color, material, description, bbox, room_id, is_active,
+        is_uncertain, first_seen, last_seen, last_event}]. GA-44: `object_uuid` is the durable
+        identity (the world model's object_id); `id` is the store's own row number."""
         return []
 
     def history(self, object_id):
-        """-> [{timestamp, event_type, phase, step, bbox_old, bbox_new, distance, iou, notes}]"""
+        """-> [{timestamp, event_type, phase, step, bbox_old, bbox_new, distance, iou, notes}].
+        GA-44: `object_id` may be either the durable object_uuid or the row number."""
         return []
 
 

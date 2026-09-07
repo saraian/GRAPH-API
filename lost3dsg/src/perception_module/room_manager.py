@@ -152,11 +152,17 @@ class RoomManager:
             'max_region_misses': 8,
             'poly_approx_epsilon_m': 0.08,
             'room_assignment_tolerance_m': 0.12,
+            # GA-30: the nearest-room radius used to be the literal 0.45 in
+            # `max(tolerance, 0.45)`, so the tolerance knob above never reached it.
+            'room_nearest_fallback_m': 0.45,
             # Persistence/output
             'save_period_s': 1.0,
             'room_stale_prune_s': 10.0,
             'discard_border_regions': False,
         }
+        # GA-30. Every threshold above is reachable from config.yaml's `rooms:` block; a key
+        # that is not a threshold (default_room_id) is left to its own reader.
+        self._params.update({k: v for k, v in CFG.get('rooms', {}).items() if k in self._params})
 
         if node is not None:
             self.bind_ros_node(node)
@@ -279,8 +285,16 @@ class RoomManager:
 
     @staticmethod
     def _centroid(poly):
+        """Area centroid (shoelace). GA-30: the vertex mean moved toward whichever side had
+        more corners, so the room 'centre' jumped as detail was added."""
         p = np.asarray(poly, dtype=np.float64)
-        return float(p[:, 0].mean()), float(p[:, 1].mean())
+        x, y = p[:, 0], p[:, 1]
+        xn, yn = np.roll(x, -1), np.roll(y, -1)
+        cross = x * yn - xn * y
+        a = cross.sum() / 2.0
+        if abs(a) < 1e-9:
+            return float(x.mean()), float(y.mean())
+        return float(((x + xn) * cross).sum() / (6.0 * a)), float(((y + yn) * cross).sum() / (6.0 * a))
 
     @staticmethod
     def _polygon_edges(poly):
@@ -1289,7 +1303,6 @@ class RoomManager:
             (bbox['x_max'], bbox['y_max']),
         ]
 
-        tolerance = float(self._params['room_assignment_tolerance_m'])
         for point in candidates:
             room_id = self._room_at(point)
             if room_id is not None:
@@ -1303,7 +1316,7 @@ class RoomManager:
                 nearest = room_id
                 nearest_dist = dist
 
-        if nearest is not None and nearest_dist <= max(tolerance, 0.45):
+        if nearest is not None and nearest_dist <= float(self._params['room_nearest_fallback_m']):
             return nearest
         return None
 

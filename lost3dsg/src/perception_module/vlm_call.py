@@ -84,8 +84,11 @@ class CropVlmCache:
 
 
 class VlmClient:
-    def __init__(self, vlm_call_fn, image_encoder_fn):
+    def __init__(self, vlm_call_fn, image_encoder_fn, crop_call_fn=None):
         self._vlm_call = vlm_call_fn
+        # GA-303: the describer calls (single crop, crop grid) go through this one, which
+        # perception_2 binds to cfg vlm.crop_timeout; the label call keeps vlm.timeout.
+        self._crop_call = crop_call_fn or vlm_call_fn
         self._encode = image_encoder_fn
         self.last_room_belief = None
         self.cache = CropVlmCache()
@@ -182,7 +185,7 @@ class VlmClient:
         own failure and hands back a filled-in "unknown" record, which is right when one
         object is at stake and wrong when six are.
         """
-        return self._vlm_call(prompt, self._encode(image))
+        return self._crop_call(prompt, self._encode(image))
 
     def call_crop(self, prompt_path, label):
         return open(prompt_path).read().strip().replace("{LABEL}", label)
@@ -232,7 +235,7 @@ class VlmClient:
         model_name = CFG.get("vlm", {}).get("model", "unknown")
 
         try:
-            raw = self._vlm_call(prompt, self._encode(cropped))
+            raw = self._crop_call(prompt, self._encode(cropped))
         except Exception:
             default_result = {k: "unknown" for k in ("description", "color", "material", "shape")}
             default_result.update({
