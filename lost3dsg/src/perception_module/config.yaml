@@ -50,8 +50,33 @@ tf:
   lookup_timeout: 0.1  # seconds to wait for a transform before dropping the frame
 rooms:
   default_room_id: ""   # empty = strict: no room known -> object rejected (needs SLAM rooms)
+  gvd_method: medial_axis
+  # 2.5D wall evidence from /rtabmap/cloud_map. Points are measured relative
+  # to the robot's current floor and must occupy multiple vertical bands, so
+  # low furniture and points from another storey do not become room dividers.
+  enable_3d_structural_filter: true
+  gvd_3d_min_points_per_cell: 4
+  gvd_3d_min_vertical_span_m: 0.75
+  gvd_3d_min_height_m: 0.25
+  gvd_3d_mid_height_m: 0.80
+  gvd_3d_high_height_m: 1.40
+  gvd_3d_max_height_m: 2.20
+  gvd_3d_required_height_bands: 2
+  gvd_3d_min_points_per_band: 1
+  gvd_3d_max_age_s: 15.0
+  gvd_3d_support_dilation_px: 1
+  gvd_wall_network_max_fill_ratio: 0.35
+  gvd_3d_nonwall_component_ratio: 0.05
+  gvd_door_nms_m: 1.20
+  gvd_critical_endpoint_margin_m: 0.20
+  min_room_area_m2: 1.5
 
 habitat:
+  scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb
+  scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
+  nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb
+  nav_scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
+  nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.navmesh
   # keep the simulated agent on the floor it starts on: the 2D grid cannot separate
   # storeys and HM3D navmeshes join them through the stairs (goal filter on height)
   single_floor: true

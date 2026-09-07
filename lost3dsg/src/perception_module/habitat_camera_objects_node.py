@@ -11,13 +11,15 @@ import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from nav_msgs.msg import Odometry
+from config import CFG
 
 flags = sys.getdlopenflags()
 sys.setdlopenflags(flags | ctypes.RTLD_GLOBAL)
 
 # Aggiungi il path del viewer al sys.path
 VIEWER_EXAMPLES = os.environ.get(
-    "HABITAT_VIEWER_EXAMPLES", "/root/exchange/habitat-sim/examples"
+    "HABITAT_VIEWER_EXAMPLES",
+    "/root/exchange/habitat-sim/examples",
 )
 if VIEWER_EXAMPLES not in sys.path:
     sys.path.insert(0, VIEWER_EXAMPLES)
@@ -52,8 +54,13 @@ DEFAULT_REALISTIC_PATTERNS = [
     "wine",
 ]
 
-DEFAULT_EXAMPLE_OBJECTS_DIR = os.path.expanduser(
-    "~/exchange/lost3dsg/habitat/habitat_objects/configs"
+HABITAT_DATASET_ROOT = os.environ.get(
+    "HABITAT_DATASET_ROOT",
+    CFG["habitat"].get("dataset_root", "/root/exchange/lost3dsg/habitat"),
+)
+
+DEFAULT_EXAMPLE_OBJECTS_DIR = os.path.join(
+    HABITAT_DATASET_ROOT, "habitat_objects", "configs"
 )
 
 
@@ -1862,12 +1869,11 @@ def main():
     # Scena e dataset
     sim_settings["scene"] = os.environ.get(
         "HABITAT_SCENE",
-        "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb",
+        CFG["habitat"]["scene"],
     )
     sim_settings["scene_dataset"] = os.environ.get(
         "HABITAT_SCENE_DATASET",
-        "/root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/"
-        "hm3d_annotated_basis.scene_dataset_config.json",
+        CFG["habitat"]["scene_dataset"],
     )
 
     # Risoluzione camera

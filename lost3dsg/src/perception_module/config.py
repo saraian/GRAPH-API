@@ -295,18 +295,18 @@ _DEFAULTS = {
         # label_diff's 0, with the doorway a clean clearance minimum. Whether it segments a
         # REAL occupancy grid into sensible rooms is what the pre-validation run measures.
         # On-by-default is a decision to measure it, not a claim that it works.
-        "gvd_method": "ridge",
+        "gvd_method": "medial_axis",
         # non-empty -> objects detected before any room polygon exists are
         # assigned to this room instead of being rejected. Empty (default)
         # keeps the strict behaviour: no room known -> AddObject refuses.
         "default_room_id": "",
     },
     "habitat": {  # HM3D (Matterport) scenes; defaults = previous hardcoded values
-        "scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00801-HaxA7YrQdEC/HaxA7YrQdEC.basis.glb",
-        "scene_dataset": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/hm3d_annotated_basis.scene_dataset_config.json",
-        "nav_scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00802-wcojb4TFT35/wcojb4TFT35.basis.glb",
+        "scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb",
+        "scene_dataset": "/root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json",
+        "nav_scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb",
         "nav_scene_dataset": "/root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json",
-        "nav_navmesh": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00802-wcojb4TFT35/wcojb4TFT35.basis.navmesh",
+        "nav_navmesh": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.navmesh",
         "width": 640,
         "height": 480,
         # keep the agent on the floor it starts on: a 2D grid cannot separate

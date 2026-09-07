@@ -759,6 +759,7 @@ class ObjectManagerService(Node):
         publish_persistent_bboxes(self, wm, self.persistent_bbox_pub)
         publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
         save_persistent_perceptions(self.object_services)
+        self.room_manager.update_all_rooms_semantics(wm.persistent_perceptions)
 
     def movement_callback(self, msg):
         # Sincronizza lo stato reale: True se si muove, False se è fermo
@@ -1674,7 +1675,7 @@ class ObjectManagerService(Node):
             publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
             publish_uncertain_bboxes(self, self.uncertain_objects, self.uncertain_bboxes_pub)
             publish_uncertain_centroids(self, self.uncertain_objects, self.uncertain_centroids_pub)
-            self.room_manager.update_current_room_semantics(wm.persistent_perceptions)
+            self.room_manager.update_all_rooms_semantics(wm.persistent_perceptions)
             save_uncertain_objects(self)
             self.update_spatial_relations()
             save_persistent_perceptions(self.object_services)
@@ -2258,6 +2259,9 @@ class ObjectManagerService(Node):
     @synchronized_world_model
     def periodic_bbox_publisher(self):
         self._drain_reevaluations()
+        # Room polygons evolve independently from object detections. Re-file objects after
+        # each resegmentation; the method is a no-op when geometry did not change.
+        self.reassign_objects_to_rooms()
         if self.robot_has_moved:
            return
         if len(wm.persistent_perceptions) > 0:

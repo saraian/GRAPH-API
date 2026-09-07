@@ -106,7 +106,11 @@ class RoomManager:
         self._latest_cloud_points = None
         self._latest_cloud_frame = None
         self._latest_cloud_stamp = None
+        self._latest_cloud_received_at = None
+        self._latest_cloud_observed_mask = None
+        self._latest_cloud_nonwall_mask = None
         self._last_cloud_warn_time = 0.0
+        self.last_segmentation_stats = {}
 
         from config import CFG  # local, as elsewhere in this file
         self._params = {
@@ -115,13 +119,13 @@ class RoomManager:
             # key to config.py alone would have created a setting that exists and cannot be
             # reached, which is the defect class this review keeps finding. Checked before
             # shipping it, not after.
-            'gvd_method': str(CFG.get('rooms', {}).get('gvd_method', 'label_diff')),
+            'gvd_method': str(CFG.get('rooms', {}).get('gvd_method', 'medial_axis')),
             # 2D map classification
             'free_threshold': 20,
             'occupied_threshold': 50,
             'unknown_is_obstacle': True,
             'map_median_blur_ksize': 3,
-            'min_room_area_m2': 0.5,
+            'min_room_area_m2': 1.5,
             'room_max_area_m2': 100.0,
             # Clutter filtering for topology extraction only
             'gvd_min_obstacle_length_m': 0.4,
@@ -129,21 +133,34 @@ class RoomManager:
             'gvd_wall_min_aspect_ratio': 4.0,
             'gvd_wall_min_area_m2': 0.08,
             'gvd_wall_min_fill_ratio': 0.35,
+            'gvd_wall_network_max_fill_ratio': 0.35,
             # Optional 3D support for structural obstacle filtering
             'enable_3d_structural_filter': bool(cloud_map_topic),
             'gvd_3d_min_points_per_cell': 4,
             'gvd_3d_min_vertical_span_m': 0.75,
+            'gvd_3d_min_height_m': 0.25,
+            'gvd_3d_mid_height_m': 0.80,
+            'gvd_3d_high_height_m': 1.40,
+            'gvd_3d_max_height_m': 2.20,
+            'gvd_3d_required_height_bands': 2,
+            'gvd_3d_min_points_per_band': 1,
+            'gvd_3d_max_age_s': 15.0,
             'gvd_3d_min_support_ratio': 0.05,
             'gvd_3d_support_dilation_px': 1,
             'gvd_topo_fill_max_area_m2': 3.0,
+            'gvd_3d_nonwall_component_ratio': 0.05,
             'gvd_room_hole_fill_max_area_m2': 2.0,
             'room_nested_merge_max_area_m2': 6.0,
             'room_nested_merge_area_ratio': 0.20,
             'room_nested_merge_wall_support_max_ratio': 0.20,
             # GVD construction / pruning
+            'gvd_site_min_separation_m': 0.30,
+            'gvd_equidistance_tolerance_px': 1.5,
             'gvd_prune_min_branch_m': 0.35,
             'gvd_door_max_m': 1.20,
             'gvd_bottleneck_ratio': 0.80,
+            'gvd_door_nms_m': 1.20,
+            'gvd_critical_endpoint_margin_m': 0.20,
             'gvd_cut_margin_px': 2,
             # Segmentation / region bookkeeping
             'min_region_pixels': 20,
@@ -222,6 +239,38 @@ class RoomManager:
                 continue
         return None
 
+    def _robot_height(self):
+        """Return the current base height in map coordinates.
+
+        RTAB-Map's cloud is global.  Restricting it to a height range relative
+        to the current floor prevents another storey from being projected onto
+        the same 2D occupancy grid.
+        """
+        if self.tf_buffer is None:
+            return 0.0
+        for frame in ('base_link', 'base_footprint', 'robot_base'):
+            try:
+                tf = self.tf_buffer.lookup_transform(
+                    'map', frame, rclpy.time.Time(),
+                    timeout=Duration(seconds=0.3))
+                return float(tf.transform.translation.z)
+            except Exception:
+                continue
+        return 0.0
+
+    @staticmethod
+    def _transform_points(points, transform):
+        """Vectorised geometry_msgs Transform application for an N x 3 cloud."""
+        q = transform.rotation
+        qv = np.asarray([q.x, q.y, q.z], dtype=np.float64)
+        qw = float(q.w)
+        # Quaternion rotation: v' = v + 2(qw(qv x v) + qv x (qv x v)).
+        uv = np.cross(np.broadcast_to(qv, points.shape), points)
+        uuv = np.cross(np.broadcast_to(qv, points.shape), uv)
+        rotated = points + 2.0 * (qw * uv + uuv)
+        t = transform.translation
+        return rotated + np.asarray([t.x, t.y, t.z], dtype=np.float64)
+
     def _grid_to_world(self, px, py, grid):
         origin = grid.info.origin
         yaw = self._yaw(origin.orientation)
@@ -240,15 +289,6 @@ class RoomManager:
         return int(round(x/grid.info.resolution)), int(round(y/grid.info.resolution))
 
     def _cloud_map_callback(self, msg: PointCloud2):
-        if msg.header.frame_id and msg.header.frame_id != 'map':
-            now = time.time()
-            if now - self._last_cloud_warn_time > 5.0:
-                self._log(
-                    'warn',
-                    f'Ignoring 3D cloud in frame "{msg.header.frame_id}" because only map-frame clouds are supported')
-                self._last_cloud_warn_time = now
-            return
-
         try:
             raw_pts = list(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True))
             if raw_pts:
@@ -260,16 +300,36 @@ class RoomManager:
             return
 
         if points.size == 0:
-            self._latest_cloud_points = None
-            self._latest_cloud_frame = msg.header.frame_id or 'map'
-            self._latest_cloud_stamp = msg.header.stamp
+            with self._lock:
+                self._latest_cloud_points = None
+                self._latest_cloud_frame = msg.header.frame_id or 'map'
+                self._latest_cloud_stamp = msg.header.stamp
+                self._latest_cloud_received_at = time.monotonic()
             return
 
         if points.ndim == 1:
             points = points.reshape(1, -1)
-        self._latest_cloud_points = points[:, :3].astype(np.float64, copy=False)
-        self._latest_cloud_frame = msg.header.frame_id or 'map'
-        self._latest_cloud_stamp = msg.header.stamp
+        points = points[:, :3].astype(np.float64, copy=False)
+
+        source_frame = (msg.header.frame_id or 'map').lstrip('/')
+        if source_frame != 'map':
+            try:
+                tf = self.tf_buffer.lookup_transform(
+                    'map', source_frame, msg.header.stamp,
+                    timeout=Duration(seconds=0.3))
+                points = self._transform_points(points, tf.transform)
+            except Exception as exc:
+                now = time.time()
+                if now - self._last_cloud_warn_time > 5.0:
+                    self._log('warn', f'Cannot transform 3D cloud map<-{source_frame}: {exc}')
+                    self._last_cloud_warn_time = now
+                return
+
+        with self._lock:
+            self._latest_cloud_points = points
+            self._latest_cloud_frame = 'map'
+            self._latest_cloud_stamp = msg.header.stamp
+            self._latest_cloud_received_at = time.monotonic()
 
     # ------------------------------------------------------------------
     # Geometry helpers
@@ -400,39 +460,63 @@ class RoomManager:
             aspect = long_side / max(1.0, short_side)
             bbox_area = max(1, int(bw * bh))
             fill_ratio = float(area_px) / float(bbox_area)
-            if (
+            thin_segment = (
                 long_side >= min_len_px
                 and short_side <= max_thickness_px
                 and aspect >= min_aspect
                 and area_px >= min_area_px
                 and fill_ratio >= min_fill_ratio
-            ):
+            )
+            # A connected wall network (outer boundary plus internal walls) is neither
+            # thin nor elongated as one bounding box. Its sparse footprint distinguishes
+            # it from a compact furniture blob while preserving connected wall systems.
+            sparse_network = (
+                long_side >= min_len_px and area_px >= min_area_px and
+                fill_ratio <= float(self._params.get('gvd_wall_network_max_fill_ratio', 0.35))
+            )
+            if thin_segment or sparse_network:
                 structural[labels == i] = 255
 
         if cloud_support is None and self._params.get('enable_3d_structural_filter', False) and grid is not None:
             cloud_support = self._cloud_structural_support(grid)
-            if cloud_support is not None:
-                support_dilation_px = max(0, int(self._params.get('gvd_3d_support_dilation_px', 0)))
-                if support_dilation_px > 0:
-                    kernel = np.ones((2 * support_dilation_px + 1, 2 * support_dilation_px + 1), dtype=np.uint8)
-                    cloud_support = cv2.dilate(cloud_support.astype(np.uint8), kernel, iterations=1) > 0
-                structural = np.maximum(structural, cloud_support.astype(np.uint8) * 255)
+        if cloud_support is not None:
+            observed = self._latest_cloud_observed_mask
+            if observed is not None and observed.shape == structural.shape:
+                # A 2D outline can make a bed or table look like a sparse wall network.
+                # Where the cloud actually observed the object but found no tall surface,
+                # height evidence is a veto on that purely plan-view classification.
+                structural[observed & ~cloud_support.astype(bool)] = 0
+            structural = np.maximum(structural, cloud_support.astype(np.uint8) * 255)
         return structural
 
     def _fill_nonstructural_obstacles(self, free, occupied, structural_occ, resolution):
         topo_free = free.copy()
         nonstructural = (occupied > 0) & (structural_occ == 0)
         if not np.any(nonstructural):
+            self._last_topology_fill_stats = {'components': 0, 'pixels': 0, 'confirmed_3d': 0}
             return topo_free
 
         count, labels, stats, _ = cv2.connectedComponentsWithStats(
             nonstructural.astype(np.uint8), 8)
         max_area_px = max(1, int(round(
             self._params['gvd_topo_fill_max_area_m2'] / max(resolution * resolution, 1e-12))))
+        nonwall_3d = self._latest_cloud_nonwall_mask
+        min_nonwall_ratio = float(self._params.get('gvd_3d_nonwall_component_ratio', 0.05))
         h, w = nonstructural.shape
+        filled_components = 0
+        filled_pixels = 0
+        confirmed_components = 0
         for i in range(1, count):
             area_px = int(stats[i, cv2.CC_STAT_AREA])
-            if area_px <= 0 or area_px > max_area_px:
+            if area_px <= 0:
+                continue
+            component = labels == i
+            confirmed_nonwall = False
+            if nonwall_3d is not None and nonwall_3d.shape == component.shape:
+                confirmed_nonwall = (
+                    np.count_nonzero(component & nonwall_3d) / max(1, area_px)
+                    >= min_nonwall_ratio)
+            if area_px > max_area_px and not confirmed_nonwall:
                 continue
             x = stats[i, cv2.CC_STAT_LEFT]
             y = stats[i, cv2.CC_STAT_TOP]
@@ -444,7 +528,15 @@ class RoomManager:
             )
             if touches_border:
                 continue
-            topo_free[labels == i] = 255
+            topo_free[component] = 255
+            filled_components += 1
+            filled_pixels += area_px
+            confirmed_components += int(confirmed_nonwall)
+        self._last_topology_fill_stats = {
+            'components': filled_components,
+            'pixels': filled_pixels,
+            'confirmed_3d': confirmed_components,
+        }
         return topo_free
 
     def _fill_room_holes(self, mask, resolution):
@@ -461,6 +553,42 @@ class RoomManager:
             if cv2.contourArea(contours[idx]) <= hole_limit_px:
                 cv2.drawContours(filled, contours, idx, 255, thickness=-1)
         return filled
+
+    def _navigable_free_component(self, free, grid):
+        """Keep the mapped free-space component reachable by the robot.
+
+        Disconnected free islands are scan artefacts or currently unreachable map pieces;
+        they are not rooms in the robot's present topological floor. Prefer the component
+        containing the robot and fall back to the largest component when TF is unavailable.
+        """
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(
+            (free > 0).astype(np.uint8), 8)
+        if count <= 2:
+            self._last_free_component_stats = {
+                'before': max(0, count-1), 'kept_label': 1 if count == 2 else 0,
+                'discarded_pixels': 0,
+            }
+            return free
+
+        keep = 0
+        if self.last_robot_xy is not None:
+            pixel = self._world_to_grid(*self.last_robot_xy, grid)
+            if pixel is not None:
+                x, y = pixel
+                if 0 <= y < labels.shape[0] and 0 <= x < labels.shape[1]:
+                    keep = int(labels[y, x])
+        if keep <= 0:
+            keep = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+
+        result = np.zeros_like(free)
+        result[labels == keep] = 255
+        self._last_free_component_stats = {
+            'before': count-1,
+            'kept_label': keep,
+            'kept_pixels': int(stats[keep, cv2.CC_STAT_AREA]),
+            'discarded_pixels': int(np.count_nonzero(free) - stats[keep, cv2.CC_STAT_AREA]),
+        }
+        return result
 
     def _polygon_boundary_support_ratio(self, polygon, support_mask, grid):
         if support_mask is None or grid is None or len(polygon) < 3:
@@ -518,9 +646,24 @@ class RoomManager:
     def _cloud_structural_support(self, grid):
         points = self._latest_cloud_points
         if points is None or points.shape[0] == 0:
+            self._latest_cloud_observed_mask = None
+            self._latest_cloud_nonwall_mask = None
             return None
         if grid is None or grid.info.resolution <= 0:
             return None
+
+        received_at = self._latest_cloud_received_at
+        max_age_s = float(self._params.get('gvd_3d_max_age_s', 0.0))
+        if received_at is not None and max_age_s > 0.0:
+            age_s = time.monotonic() - received_at
+            if age_s > max_age_s:
+                self._latest_cloud_observed_mask = None
+                self._latest_cloud_nonwall_mask = None
+                now = time.time()
+                if now - self._last_cloud_warn_time > 5.0:
+                    self._log('warn', f'Ignoring stale 3D cloud ({age_s:.1f}s old)')
+                    self._last_cloud_warn_time = now
+                return None
 
         resolution = float(grid.info.resolution)
         origin = grid.info.origin
@@ -544,59 +687,232 @@ class RoomManager:
         ix = ix[valid]
         iy = iy[valid]
         z = points[valid, 2].astype(np.float64, copy=False)
+
+        floor_z = self._robot_height()
+        relative_z = z - floor_z
+        min_height = float(self._params.get('gvd_3d_min_height_m', 0.25))
+        mid_height = float(self._params.get('gvd_3d_mid_height_m', 0.80))
+        high_height = float(self._params.get('gvd_3d_high_height_m', 1.40))
+        max_height = float(self._params.get('gvd_3d_max_height_m', 2.20))
+        floor_valid = (relative_z >= min_height) & (relative_z <= max_height)
+        if not np.any(floor_valid):
+            return None
+        ix = ix[floor_valid]
+        iy = iy[floor_valid]
+        relative_z = relative_z[floor_valid]
+
         flat = ix + iy * width
         size = width * height
         counts = np.bincount(flat, minlength=size)
         zmin = np.full(size, np.inf, dtype=np.float64)
         zmax = np.full(size, -np.inf, dtype=np.float64)
-        np.minimum.at(zmin, flat, z)
-        np.maximum.at(zmax, flat, z)
+        np.minimum.at(zmin, flat, relative_z)
+        np.maximum.at(zmax, flat, relative_z)
         span = zmax - zmin
+
+        min_band_points = int(self._params.get('gvd_3d_min_points_per_band', 1))
+        band_count = np.zeros(size, dtype=np.uint8)
+        for lo, hi in ((min_height, mid_height),
+                       (mid_height, high_height),
+                       (high_height, max_height)):
+            in_band = (relative_z >= lo) & (relative_z < hi)
+            if np.any(in_band):
+                per_cell = np.bincount(flat[in_band], minlength=size)
+                band_count += (per_cell >= min_band_points).astype(np.uint8)
 
         min_points = int(self._params.get('gvd_3d_min_points_per_cell', 1))
         min_span = float(self._params.get('gvd_3d_min_vertical_span_m', 0.0))
-        support = (counts >= min_points) & np.isfinite(span) & (span >= min_span)
-        return support.reshape((height, width))
+        required_bands = int(self._params.get('gvd_3d_required_height_bands', 2))
+        support = ((counts >= min_points) & np.isfinite(span) &
+                   (span >= min_span) & (band_count >= required_bands))
+        support = support.reshape((height, width))
+        observed = (counts >= min_points).reshape((height, width))
+
+        dilation_px = max(0, int(self._params.get('gvd_3d_support_dilation_px', 0)))
+        if dilation_px > 0 and np.any(support):
+            kernel = np.ones((2 * dilation_px + 1, 2 * dilation_px + 1), dtype=np.uint8)
+            support = cv2.dilate(support.astype(np.uint8), kernel, iterations=1) > 0
+            observed = cv2.dilate(observed.astype(np.uint8), kernel, iterations=1) > 0
+
+        # Height separates walls from low furniture; plan-view shape separates walls from
+        # tall compact furniture such as wardrobes and refrigerators.
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(
+            support.astype(np.uint8), 8)
+        wall_support = np.zeros_like(support)
+        min_len_px = max(1, int(round(
+            self._params['gvd_min_obstacle_length_m'] / max(resolution, 1e-6))))
+        max_thickness_px = max(1, int(round(
+            self._params['gvd_wall_max_thickness_m'] / max(resolution, 1e-6))))
+        min_aspect = float(self._params.get('gvd_wall_min_aspect_ratio', 4.0))
+        max_network_fill = float(self._params.get('gvd_wall_network_max_fill_ratio', 0.35))
+        for i in range(1, count):
+            bw = int(stats[i, cv2.CC_STAT_WIDTH])
+            bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            long_side, short_side = max(bw, bh), min(bw, bh)
+            aspect = long_side / max(1.0, short_side)
+            fill = area / max(1.0, float(bw * bh))
+            if long_side >= min_len_px and (
+                    (short_side <= max_thickness_px and aspect >= min_aspect) or
+                    fill <= max_network_fill):
+                wall_support[labels == i] = True
+        self._latest_cloud_observed_mask = observed
+        self._latest_cloud_nonwall_mask = observed & ~wall_support
+        self._last_3d_wall_stats = {
+            'observed_cells': int(np.count_nonzero(observed)),
+            'wall_cells': int(np.count_nonzero(wall_support)),
+            'nonwall_cells': int(np.count_nonzero(observed & ~wall_support)),
+        }
+        return wall_support
+
+    def _compute_medial_axis(self, free_topo, structural_occupied):
+        """One-cell medial-axis approximation of the navigable free space.
+
+        In a sampled occupancy grid the GVD/medial axis is obtained by topology-preserving
+        thinning of free space. The Euclidean distance transform supplies the clearance
+        function used to locate critical points along that graph. Structural obstacles are
+        already reflected in ``free_topo``; the argument is kept to make the GVD backends
+        share one interface.
+        """
+        del structural_occupied
+        free = (free_topo > 0).astype(np.uint8) * 255
+        if not np.any(free):
+            return free, np.zeros(free.shape, dtype=np.float32)
+        dist = cv2.distanceTransform(free, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+        return self._thin_binary(free), dist
+
+    def _compute_gvd_ridge(self, free_topo, structural_occupied, resolution=1.0):
+        """Discrete generalized Voronoi diagram of obstacle-boundary sites.
+
+        OpenCV assigns a distinct label to every occupied pixel (``DIST_LABEL_PIXEL``).
+        A free cell is on a Voronoi boundary when an adjacent free cell has a different
+        nearest site and the current cell is approximately equidistant from both sites.
+        Requiring the sites to be physically separated rejects label changes between
+        neighbouring samples of the same locally-flat wall.
+
+        Unlike the legacy connected-component construction, this remains valid when all
+        walls touch. Unlike the former local-maxima heuristic, every accepted cell carries
+        an explicit pair of distinct generating sites.
+        """
+        occupied = structural_occupied > 0
+        free = free_topo > 0
+        skeleton = np.zeros(free.shape, dtype=np.uint8)
+        if not np.any(occupied) or not np.any(free):
+            return skeleton, np.zeros(free.shape, dtype=np.float32)
+
+        src = np.where(occupied, 0, 255).astype(np.uint8)
+        # The labelled variant uses the 5x5 chamfer mask; compute the clearance returned
+        # downstream separately with the precise Euclidean transform.
+        _, labels = cv2.distanceTransformWithLabels(
+            src, cv2.DIST_L2, cv2.DIST_MASK_5,
+            labelType=cv2.DIST_LABEL_PIXEL)
+        dist = cv2.distanceTransform(src, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+
+        obstacle_y, obstacle_x = np.nonzero(occupied)
+        obstacle_labels = labels[obstacle_y, obstacle_x].astype(np.int64)
+        max_label = int(labels.max())
+        site_y = np.full(max_label + 1, -1, dtype=np.int32)
+        site_x = np.full(max_label + 1, -1, dtype=np.int32)
+        valid_labels = (obstacle_labels > 0) & (obstacle_labels <= max_label)
+        site_y[obstacle_labels[valid_labels]] = obstacle_y[valid_labels]
+        site_x[obstacle_labels[valid_labels]] = obstacle_x[valid_labels]
+
+        min_sep_px = float(self._params.get('gvd_site_min_separation_m', 0.30)) / max(
+            float(resolution), 1e-6)
+        tolerance_px = float(self._params.get('gvd_equidistance_tolerance_px', 1.5))
+        candidate = np.zeros(free.shape, dtype=bool)
+
+        # Four undirected neighbour pairs cover the full 8-neighbourhood without wrapping.
+        h, w = free.shape
+        for dy, dx in ((0, 1), (1, 0), (1, 1), (1, -1)):
+            if dx >= 0:
+                ays, axs = slice(0, h-dy), slice(0, w-dx)
+                bys, bxs = slice(dy, h), slice(dx, w)
+            else:
+                ays, axs = slice(0, h-dy), slice(-dx, w)
+                bys, bxs = slice(dy, h), slice(0, w+dx)
+
+            la = labels[ays, axs]
+            lb = labels[bys, bxs]
+            pair = free[ays, axs] & free[bys, bxs] & (la > 0) & (lb > 0) & (la != lb)
+            if not np.any(pair):
+                continue
+
+            ya, xa = np.indices(la.shape)
+            ya = ya + (ays.start or 0)
+            xa = xa + (axs.start or 0)
+            s1y, s1x = site_y[la], site_x[la]
+            s2y, s2x = site_y[lb], site_x[lb]
+            sites_known = (s1y >= 0) & (s2y >= 0)
+            site_sep = np.hypot(s1y-s2y, s1x-s2x)
+            d1 = np.hypot(ya-s1y, xa-s1x)
+            d2 = np.hypot(ya-s2y, xa-s2x)
+            accepted = pair & sites_known & (site_sep >= min_sep_px) & (np.abs(d1-d2) <= tolerance_px)
+            candidate[ays, axs] |= accepted
+
+        skeleton[candidate & free] = 255
+        skeleton = self._thin_binary(skeleton)
+        return skeleton, dist
 
     @staticmethod
-    def _compute_gvd_ridge(free_topo, structural_occupied):
-        """Medial axis by RIDGE DETECTION on the distance transform.
+    def _thin_binary(mask):
+        """Topology-preserving Zhang-Suen thinning to a one-pixel skeleton.
 
-        GA-137. The label-difference method below cannot produce a skeleton on a normal
-        floorplan, and the reason is structural rather than a matter of tuning: it marks a
-        pixel only where two adjacent free pixels have DIFFERENT nearest-obstacle CONNECTED
-        COMPONENT ids. In any ordinary building the outer walls and the interior walls
-        touch, so there is exactly ONE obstacle component, every free pixel carries the same
-        label, and the skeleton is empty at every resolution with every threshold correct.
-
-        MEASURED on a synthetic two-room floorplan (outer walls + an interior wall with a
-        doorway):
-            connected walls   -> 1 obstacle component  -> skeleton_px = 0
-            interior wall detached from the outer wall -> 3 components -> skeleton_px = 432
-            two separate blobs -> 2 components -> skeleton_px = 120
-        The method only works when the obstacles are already disconnected, which is the one
-        case a floorplan is not.
-
-        The true GVD is the set of points equidistant from two nearest obstacle POINTS --
-        a ridge of the distance transform, which exists regardless of connectivity. On the
-        same connected-wall map this yields skeleton_px = 22278, and the doorway shows as a
-        clear clearance minimum (5.00 px against an open-room median of 16.00), which is
-        exactly the local minimum `_critical_points` cuts on.
+        Kept local instead of requiring opencv-contrib's ``ximgproc.thinning`` so the room
+        manager behaves the same in both the Habitat and robot environments.
         """
-        occ = structural_occupied > 0
-        src = np.where(occ, 0, 255).astype(np.uint8)
-        dist = cv2.distanceTransform(src, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
-        freeb = free_topo > 0
-        d = np.where(freeb, dist, -1.0)
-        ridge = np.zeros(d.shape, dtype=bool)
-        # On the axis if the clearance is a local maximum along ANY direction.
-        for dy, dx in ((0, 1), (1, 0), (1, 1), (1, -1)):
-            a = np.roll(np.roll(d, dy, 0), dx, 1)
-            b = np.roll(np.roll(d, -dy, 0), -dx, 1)
-            ridge |= (d >= a) & (d >= b) & (d > 0)
-        skeleton = np.zeros(d.shape, dtype=np.uint8)
-        skeleton[ridge & freeb] = 255
-        return skeleton, dist
+        image = (mask > 0).astype(np.uint8)
+        if not np.any(image):
+            return image * 255
+
+        ximgproc = getattr(cv2, 'ximgproc', None)
+        if ximgproc is not None and hasattr(ximgproc, 'thinning'):
+            return ximgproc.thinning(image * 255)
+
+        changed = True
+        while changed:
+            changed = False
+            padded = np.pad(image, 1)
+            p2 = padded[:-2, 1:-1]
+            p3 = padded[:-2, 2:]
+            p4 = padded[1:-1, 2:]
+            p5 = padded[2:, 2:]
+            p6 = padded[2:, 1:-1]
+            p7 = padded[2:, :-2]
+            p8 = padded[1:-1, :-2]
+            p9 = padded[:-2, :-2]
+            neighbours = p2+p3+p4+p5+p6+p7+p8+p9
+            transitions = ((p2 == 0) & (p3 == 1)).astype(np.uint8)
+            for a, b in ((p3, p4), (p4, p5), (p5, p6), (p6, p7),
+                         (p7, p8), (p8, p9), (p9, p2)):
+                transitions += ((a == 0) & (b == 1)).astype(np.uint8)
+            remove = ((image == 1) & (neighbours >= 2) & (neighbours <= 6) &
+                      (transitions == 1) & ((p2*p4*p6) == 0) & ((p4*p6*p8) == 0))
+            if np.any(remove):
+                image[remove] = 0
+                changed = True
+
+            padded = np.pad(image, 1)
+            p2 = padded[:-2, 1:-1]
+            p3 = padded[:-2, 2:]
+            p4 = padded[1:-1, 2:]
+            p5 = padded[2:, 2:]
+            p6 = padded[2:, 1:-1]
+            p7 = padded[2:, :-2]
+            p8 = padded[1:-1, :-2]
+            p9 = padded[:-2, :-2]
+            neighbours = p2+p3+p4+p5+p6+p7+p8+p9
+            transitions = ((p2 == 0) & (p3 == 1)).astype(np.uint8)
+            for a, b in ((p3, p4), (p4, p5), (p5, p6), (p6, p7),
+                         (p7, p8), (p8, p9), (p9, p2)):
+                transitions += ((a == 0) & (b == 1)).astype(np.uint8)
+            remove = ((image == 1) & (neighbours >= 2) & (neighbours <= 6) &
+                      (transitions == 1) & ((p2*p4*p8) == 0) & ((p2*p6*p8) == 0))
+            if np.any(remove):
+                image[remove] = 0
+                changed = True
+
+        return image * 255
 
     @staticmethod
     def _compute_gvd(free_topo, structural_occupied):
@@ -626,9 +942,8 @@ class RoomManager:
         topological branches."""
         skel = skeleton > 0
         min_len_px = max(1, int(round(self._params['gvd_prune_min_branch_m'] / max(resolution, 1e-6))))
-        kernel = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.uint8)
         for _ in range(min_len_px):
-            deg = cv2.filter2D(skel.astype(np.uint8), -1, kernel, borderType=cv2.BORDER_CONSTANT)
+            deg = self._skeleton_degree(skel)
             endpoints = skel & (deg == 1)
             if not np.any(endpoints):
                 break
@@ -637,10 +952,40 @@ class RoomManager:
 
     @staticmethod
     def _skeleton_degree(skel_bool):
-        kernel = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.uint8)
-        deg = cv2.filter2D(skel_bool.astype(np.uint8), -1, kernel, borderType=cv2.BORDER_CONSTANT)
-        deg[~skel_bool] = 0
-        return deg
+        """Degree in the same corner-safe 8-neighbour graph used for tracing."""
+        skel = skel_bool.astype(bool)
+        h, w = skel.shape
+        degree = np.zeros((h, w), dtype=np.uint8)
+        ys, xs = np.nonzero(skel)
+        for y, x in zip(ys, xs):
+            degree[y, x] = len(RoomManager._skeleton_neighbors(skel, int(y), int(x)))
+        return degree
+
+    @staticmethod
+    def _skeleton_neighbors(skel, y, x):
+        """Graph neighbours without diagonal shortcut edges.
+
+        In an 8-connected thinned raster, a one-pixel staircase creates triangles: two
+        orthogonal edges plus their diagonal. Those triangles turn ordinary curve pixels
+        into false degree-3 junctions. Keep a diagonal only when neither corresponding
+        orthogonal bridge pixel exists.
+        """
+        h, w = skel.shape
+        out = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                ny, nx = y+dy, x+dx
+                if not (0 <= ny < h and 0 <= nx < w and skel[ny, nx]):
+                    continue
+                if dy != 0 and dx != 0:
+                    bridge_a = 0 <= y < h and 0 <= x+dx < w and skel[y, x+dx]
+                    bridge_b = 0 <= y+dy < h and 0 <= x < w and skel[y+dy, x]
+                    if bridge_a or bridge_b:
+                        continue
+                out.append((ny, nx))
+        return out
 
     def _trace_branches(self, skel_bool):
         """Splits the skeleton into branches between graph nodes
@@ -656,29 +1001,53 @@ class RoomManager:
         h, w = skel_bool.shape
 
         def neighbors(y, x):
-            out = []
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    if dy == 0 and dx == 0:
-                        continue
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < h and 0 <= nx < w and skel_bool[ny, nx]:
-                        out.append((ny, nx))
-            return out
+            return self._skeleton_neighbors(skel_bool, y, x)
+
+        def edge(a, b):
+            return (a, b) if a <= b else (b, a)
 
         branches = []
+        visited = set()
         max_steps = int(h) * int(w) + 8
         for node in node_set:
             for nbr in neighbors(*node):
+                if edge(node, nbr) in visited:
+                    continue
                 path = [node, nbr]
+                visited.add(edge(node, nbr))
                 prev, curr = node, nbr
                 steps = 0
                 while curr not in node_set and steps < max_steps:
-                    nxts = [n for n in neighbors(*curr) if n != prev]
+                    nxts = [n for n in neighbors(*curr)
+                            if n != prev and edge(curr, n) not in visited]
                     if not nxts:
                         break
                     nxt = nxts[0]
                     path.append(nxt)
+                    visited.add(edge(curr, nxt))
+                    prev, curr = curr, nxt
+                    steps += 1
+                branches.append(path)
+
+        # A pure cycle has no degree != 2 nodes, so seed its one branch from any unvisited
+        # edge. The same loop also safely captures a residual edge in malformed input.
+        for y, x in zip(ys.tolist(), xs.tolist()):
+            start = (y, x)
+            for nbr in neighbors(y, x):
+                if edge(start, nbr) in visited:
+                    continue
+                path = [start, nbr]
+                visited.add(edge(start, nbr))
+                prev, curr = start, nbr
+                steps = 0
+                while steps < max_steps:
+                    nxts = [n for n in neighbors(*curr)
+                            if n != prev and edge(curr, n) not in visited]
+                    if not nxts:
+                        break
+                    nxt = nxts[0]
+                    path.append(nxt)
+                    visited.add(edge(curr, nxt))
                     prev, curr = curr, nxt
                     steps += 1
                 branches.append(path)
@@ -729,7 +1098,7 @@ class RoomManager:
             return []
         door_radius_px = (self._params['gvd_door_max_m'] / 2.0) / max(resolution, 1e-6)
         branches = self._trace_branches(skel_bool)
-        points = set()
+        points = []
 
         # GA-196. WHY a branch was rejected, counted. `branches_cut=0` was the only signal
         # this stage produced, and it is the same shape as every unlogged exit this review
@@ -738,9 +1107,13 @@ class RoomManager:
         # px and NEVER empty -- so the failure is here, among these four filters, and no
         # bundle could say which. Counters only; no behaviour changes.
         rej = {"too_short_px": 0, "too_short_m": 0, "wider_than_door": 0,
-               "no_end_clearance": 0, "not_a_bottleneck": 0, "accepted": 0}
+               "minimum_at_endpoint": 0, "no_end_clearance": 0,
+               "not_a_bottleneck": 0, "accepted": 0}
         min_branch_px = max(4, int(round(
             self._params['gvd_prune_min_branch_m'] / max(resolution, 1e-6))))
+        endpoint_margin_px = max(1, int(round(
+            self._params.get('gvd_critical_endpoint_margin_m', 0.20) /
+            max(resolution, 1e-6))))
         narrowest = None
 
         for path in branches:
@@ -765,6 +1138,9 @@ class RoomManager:
             if min_val > door_radius_px:
                 rej["wider_than_door"] += 1
                 continue
+            if min_idx < endpoint_margin_px or min_idx >= len(path)-endpoint_margin_px:
+                rej["minimum_at_endpoint"] += 1
+                continue
             if end_clearance <= 1e-6:
                 rej["no_end_clearance"] += 1
                 continue
@@ -772,8 +1148,16 @@ class RoomManager:
                 rej["not_a_bottleneck"] += 1
                 continue
             y, x = path[min_idx]
-            points.add((int(y), int(x), float(self._branch_direction(path, min_idx)), float(min_val)))
-            rej["accepted"] += 1
+            points.append((int(y), int(x), float(self._branch_direction(path, min_idx)), float(min_val)))
+
+        # The graph representation can expose the same physical bottleneck on several
+        # adjacent branches around a junction. Keep the narrowest representative per door.
+        nms_px = float(self._params.get('gvd_door_nms_m', 0.60)) / max(resolution, 1e-6)
+        selected = []
+        for point in sorted(points, key=lambda p: p[3]):
+            if all(math.hypot(point[0]-q[0], point[1]-q[1]) > nms_px for q in selected):
+                selected.append(point)
+        rej["accepted"] = len(selected)
 
         self._last_critical_stats = {
             "branches": len(branches),
@@ -782,26 +1166,70 @@ class RoomManager:
             "narrowest_branch_m": (None if narrowest is None else round(narrowest, 3)),
             **rej,
         }
-        return list(points)
+        return selected
 
-    def _cut_free_space(self, free, dist_real, critical_points):
-        """Zeroes a disk sized to the true local corridor half-width (from
-        the distance transform of the REAL, unfiltered free mask) at every
-        critical point, severing free-space connectivity across each
-        doorway."""
+    def _cut_free_space(self, free, dist_real, critical_points, resolution=None):
+        """Insert critical lines orthogonal to the GVD at doorway minima.
+
+        Each line spans the local clearance diameter and reconnects the two nearest sides
+        of the obstacle boundary. This is the standard room partition induced by a critical
+        GVD point; the previous disk removed free space in every direction and could erase
+        corridor length or merge unrelated nearby cuts.
+        """
         cut = free.copy()
         margin_px = max(1, int(self._params['gvd_cut_margin_px']))
-        for point in critical_points:
+        resolution = float(resolution if resolution is not None else
+                           getattr(self, '_active_resolution', 1.0))
+        min_component_px = max(1, int(round(
+            float(self._params['min_room_area_m2']) /
+            max(resolution ** 2, 1e-12))))
+        accepted = []
+        rejected_small = 0
+        rejected_no_split = 0
+        # Narrowest bottlenecks first. Once a valid partition exists, later cuts are
+        # evaluated against the already partitioned map.
+        for point in sorted(critical_points, key=lambda p: p[3] if len(p) >= 4 else 0.0):
             if len(point) >= 4:
-                y, x, theta, _ = point  # theta unused below; kept only by the unpacking
+                y, x, theta, _ = point
             else:
                 y, x = point[:2]
-                # unused — nothing below reads theta
-                # theta = 0.0
+                theta = 0.0
             radius = int(round(float(dist_real[y, x]))) + margin_px
             radius = max(1, radius)
-            cv2.circle(cut, (int(x), int(y)), radius, 0, -1)
+            # Normal to the local GVD tangent.
+            nx, ny = -math.sin(theta), math.cos(theta)
+            p0 = (int(round(x-radius*nx)), int(round(y-radius*ny)))
+            p1 = (int(round(x+radius*nx)), int(round(y+radius*ny)))
+            trial = cut.copy()
+            cv2.line(trial, p0, p1, 0, max(1, 2*margin_px+1))
+            _, before_labels = cv2.connectedComponents(cut, 8)
+            _, after_labels = cv2.connectedComponents(trial, 8)
+            parent_label = int(before_labels[int(y), int(x)])
+            if parent_label <= 0:
+                rejected_no_split += 1
+                continue
+            parent = before_labels == parent_label
+            children = np.unique(after_labels[parent])
+            children = children[children > 0]
+            if children.size < 2:
+                rejected_no_split += 1
+                continue
+            areas = np.asarray([
+                np.count_nonzero(parent & (after_labels == child)) for child in children
+            ])
+            if int(areas.min()) < min_component_px:
+                rejected_small += 1
+                continue
+            cut = trial
+            accepted.append(point)
 
+        self._last_validated_cuts = accepted
+        self._last_cut_stats = {
+            'proposed': len(critical_points),
+            'accepted': len(accepted),
+            'rejected_no_split': rejected_no_split,
+            'rejected_small_partition': rejected_small,
+        }
         return cut
 
     @staticmethod
@@ -894,27 +1322,44 @@ class RoomManager:
 
         structural_occ = self._structural_obstacles(occupied, resolution, grid, cloud_support=cloud_support)
         free_topo = self._fill_nonstructural_obstacles(free, occupied, structural_occ, resolution)
+        # Furniture removed from the topology can leave isolated corner pixels after the
+        # occupancy median filter. Closed holes below the configured area are clutter, not
+        # navigable-space boundaries, and would create dense spurious medial-axis branches.
+        free_topo = self._fill_room_holes(free_topo, resolution)
+        free_topo = self._navigable_free_component(free_topo, grid)
+        self._active_resolution = resolution
         # GA-137: `label_diff` is today's behaviour and stays the default -- it is provably
         # always-empty on a connected floorplan, but changing room segmentation changes
         # EVERY room-scoped number, which is a run-design decision, not mine to take.
         _method = str(self._params.get('gvd_method', 'label_diff'))
-        if _method == 'ridge':
-            skeleton_raw, dist_topo = self._compute_gvd_ridge(free_topo, structural_occ)
+        if _method == 'medial_axis':
+            skeleton_raw, dist_topo = self._compute_medial_axis(
+                free_topo, structural_occ)
+        elif _method in ('boundary_sites', 'ridge'):
+            skeleton_raw, dist_topo = self._compute_gvd_ridge(
+                free_topo, structural_occ, resolution)
         elif _method == 'label_diff':
             skeleton_raw, dist_topo = self._compute_gvd(free_topo, structural_occ)
         else:
             raise ValueError(f"unknown rooms.gvd_method {_method!r}; "
-                             f"expected 'label_diff' or 'ridge'")
+                             f"expected 'medial_axis', 'boundary_sites', 'ridge', or 'label_diff'")
         skeleton = self._prune_skeleton(skeleton_raw, resolution)
         critical_points = self._critical_points(skeleton, dist_topo, resolution)
 
-        cut = self._cut_free_space(free_topo, dist_topo, critical_points)
+        cut = self._cut_free_space(free_topo, dist_topo, critical_points, resolution)
+        validated_cuts = getattr(self, '_last_validated_cuts', [])
 
         markers = self._grow_labels(free_topo, cut, dist_topo)
         if markers is None:
             _, markers = cv2.connectedComponents(free_topo, 8)
 
-        min_pixels = self._params['min_region_pixels']
+        # A cut may create tiny connected components around clutter or map noise. Merge
+        # them before polygon extraction using the actual minimum room area, not merely the
+        # old 20-pixel implementation floor.
+        min_pixels = max(
+            int(self._params['min_region_pixels']),
+            int(round(float(self._params['min_room_area_m2']) /
+                      max(resolution * resolution, 1e-12))))
         markers = self._merge_small_labels(markers, min_pixels, dist_topo, resolution)
 
         _skel_px = int(np.count_nonzero(skeleton))
@@ -931,11 +1376,24 @@ class RoomManager:
         # count was misread as a region count in the first place).
         _cstats = getattr(self, '_last_critical_stats', {}) or {}
         _cdesc = ' '.join(f'{k}={v}' for k, v in _cstats.items())
+        _fill_stats = getattr(self, '_last_topology_fill_stats', {}) or {}
+        _fill_desc = ' '.join(f'{k}={v}' for k, v in _fill_stats.items())
+        _wall_stats = getattr(self, '_last_3d_wall_stats', {}) or {}
+        _wall_desc = ' '.join(f'{k}={v}' for k, v in _wall_stats.items())
+        _cut_stats = getattr(self, '_last_cut_stats', {}) or {}
+        _cut_desc = ' '.join(f'{k}={v}' for k, v in _cut_stats.items())
+        _free_stats = getattr(self, '_last_free_component_stats', {}) or {}
+        _free_desc = ' '.join(f'{k}={v}' for k, v in _free_stats.items())
+        region_labels = np.unique(markers[markers > 0])
         self._log(
             'warn' if _skel_px == 0 else 'info',
             f'GVD segmentation: skeleton_px={_skel_px} '
-            f'branches_cut={len(critical_points)} regions={int(markers.max())}'
+            f'branches_cut={len(validated_cuts)} regions={len(region_labels)}'
             + (f' | critical_points: {_cdesc}' if _cdesc else '')
+            + (f' | cut_validation: {_cut_desc}' if _cut_desc else '')
+            + (f' | free_component: {_free_desc}' if _free_desc else '')
+            + (f' | topology_fill: {_fill_desc}' if _fill_desc else '')
+            + (f' | cloud_3d: {_wall_desc}' if _wall_desc else '')
             + (' -- SKELETON EMPTY: no segmentation happened, every object will land in one'
                ' room. regions= here is the watershed count, not evidence of a split.'
                if _skel_px == 0 else ''))
@@ -981,8 +1439,30 @@ class RoomManager:
 
             polygon = [self._grid_to_world(int(px), int(py), grid) for px, py in outer_pts]
             if len(polygon) >= 3:
-                candidates.append((polygon, self._polygon_area(polygon), self._centroid(polygon), False))
-        return self._merge_nested_candidates(candidates, cloud_support=cloud_support, grid=grid)
+                polygon_area = self._polygon_area(polygon)
+                if (self._params['min_room_area_m2'] <= polygon_area <=
+                        self._params['room_max_area_m2']):
+                    candidates.append((polygon, polygon_area, self._centroid(polygon), False))
+        merged_candidates = self._merge_nested_candidates(
+            candidates, cloud_support=cloud_support, grid=grid)
+        self.last_segmentation_stats = {
+            'method': _method,
+            'resolution_m': resolution,
+            'skeleton_pixels': _skel_px,
+            'graph_branches': int(_cstats.get('branches', 0)),
+            'door_candidates': len(critical_points),
+            'door_cuts': len(validated_cuts),
+            'cut_validation': dict(_cut_stats),
+            'free_component': dict(_free_stats),
+            'regions_after_small_merge': len(region_labels),
+            'polygon_candidates_before_nested_merge': len(candidates),
+            'polygon_candidates_final': len(merged_candidates),
+            'candidate_areas_m2': [round(float(item[1]), 3) for item in merged_candidates],
+            'critical_points': dict(_cstats),
+            'topology_fill': dict(_fill_stats),
+            'cloud_3d': dict(_wall_stats),
+        }
+        return merged_candidates
 
     def process_grid(self, grid, full_resegment=True):
         with self._lock:
@@ -1197,13 +1677,24 @@ class RoomManager:
             room['objects'] = sorted(merged_labels)
             room['last_seen'] = now
             if merged_labels:
+                evidence = sorted(self._vlm_room_label(label) for label in merged_labels)
+                previous_evidence = room.get('_semantic_evidence')
+                semantic = str(room.get('semantic_label', '')).strip().lower()
+                already_labelled = semantic not in ('', 'unknownroom', 'unknown_room')
+                last_attempt = float(room.get('_semantic_last_attempt', 0.0) or 0.0)
+                if evidence == previous_evidence and (
+                        already_labelled or now-last_attempt < 30.0):
+                    continue
+                room['_semantic_last_attempt'] = now
                 semantic_name, description = self.ask_vlm_room_info(
-                    [self._vlm_room_label(label) for label in sorted(merged_labels)]
+                    evidence
                 )
                 if semantic_name:
                     room['semantic_label'] = semantic_name
                 if description:
                     room['description'] = description
+                if str(semantic_name).strip().lower() not in ('', 'unknownroom', 'unknown_room'):
+                    room['_semantic_evidence'] = evidence
         self._save_rooms()
 
     def update_current_room_geometry(self, room_id, bbox):
@@ -1588,6 +2079,7 @@ class RoomManager:
         payload = {
             'current_room_id': self.current_room_id,
             'updated_at': time.time(),
+            'segmentation': self._json_safe(self.last_segmentation_stats),
             'building': building_payload,
             'rooms': rooms_payload,
         }

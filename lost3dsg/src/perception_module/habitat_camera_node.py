@@ -17,8 +17,15 @@ flags = sys.getdlopenflags()
 sys.setdlopenflags(flags | ctypes.RTLD_GLOBAL)
 
 
-# Aggiungi il path del viewer al sys.path
-sys.path.insert(0, "/root/exchange/habitat-sim/examples")
+# Aggiungi il path del viewer al sys.path.  Habitat-Sim is an external
+# dependency, so its examples directory is selected at runtime rather than
+# tied to one developer's checkout.
+VIEWER_EXAMPLES = os.environ.get(
+    "HABITAT_VIEWER_EXAMPLES",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "habitat-sim", "examples"),
+)
+if VIEWER_EXAMPLES not in sys.path:
+    sys.path.insert(0, VIEWER_EXAMPLES)
 
 
 # These imports MUST follow the sys.path.insert above: they resolve against the
@@ -27,7 +34,7 @@ sys.path.insert(0, "/root/exchange/habitat-sim/examples")
 # import that had to come first for its side effect.
 import numpy as np  # noqa: E402
 import rclpy  # noqa: E402
-from config import CFG  # noqa: E402
+from config import CFG, habitat_value  # noqa: E402
 from geometry_msgs.msg import TransformStamped  # noqa: E402
 from habitat_sim.utils.settings import default_sim_settings  # noqa: E402
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy  # noqa: E402
@@ -450,8 +457,8 @@ def main():
 
 
     # Scena e dataset (config.yaml: habitat)
-    sim_settings["scene"] = CFG["habitat"]["scene"]
-    sim_settings["scene_dataset"] = CFG["habitat"]["scene_dataset"]
+    sim_settings["scene"] = habitat_value("scene")
+    sim_settings["scene_dataset"] = habitat_value("scene_dataset")
 
     # Risoluzione camera
     sim_settings["width"] = CFG["habitat"]["width"]
