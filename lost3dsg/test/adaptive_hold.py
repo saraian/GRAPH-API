@@ -10,7 +10,8 @@ Rules, from plan/13-adaptive-dwell/topic.md (owner ruling 2026-09-07 ~13:50):
   * hold at least `min_frames` (18 = gate 0.5 s + one ~5 s cycle at 3 f/s);
   * then release only on a FRESH signal (its `sweep` advanced since the hold began and it is
     younger than `signal_max_age_s`) that says pending == 0, or whose sweep advanced by needs_max;
-  * an unknown, absent or stale signal HOLDS, bounded by `max_frames` (45 = 15 s, owner's value).
+  * an unknown, absent or stale signal HOLDS, bounded by `max_frames` (90 = 30 s; the owner raised it
+    from 45 on 2026-09-07 ~16:55 after run 152446 capped 27 of 39 holds with pending work still owed).
     Failing toward looking, not toward leaving (rule 11).
 """
 
@@ -18,7 +19,7 @@ Rules, from plan/13-adaptive-dwell/topic.md (owner ruling 2026-09-07 ~13:50):
 class AdaptiveHold:
     HOLD, RELEASE, CAP = "hold", "release", "cap"
 
-    def __init__(self, min_frames=18, max_frames=45, signal_max_age_s=10.0):
+    def __init__(self, min_frames=18, max_frames=90, signal_max_age_s=10.0):
         if min_frames < 1 or max_frames < min_frames:
             raise ValueError(f"min_frames {min_frames} / max_frames {max_frames}")
         self.min_frames, self.max_frames, self.max_age = int(min_frames), int(max_frames), float(signal_max_age_s)

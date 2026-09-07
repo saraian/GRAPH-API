@@ -453,11 +453,13 @@ export FEED_DWELL="${FEED_DWELL:-0}"
 # GA-339 (owner ruling 2026-09-07 ~13:50). ADAPTIVE dwell by default: after each walk burst the
 # feed HOLDS a still camera until the object manager's merge_pending.json says nothing is pending,
 # bounded by FEED_DWELL_MAX. FEED_DWELL (fixed frames) is IGNORED in adaptive mode and only read
-# under FEED_DWELL_MODE=fixed. 18 = gate 0.5 s + one ~5 s cycle at 3 f/s; 45 = 15 s, the owner's cap.
+# under FEED_DWELL_MODE=fixed. 18 = gate 0.5 s + one ~5 s cycle at 3 f/s; 90 = 30 s, the owner's cap
+# (raised from 45 on 2026-09-07 ~16:55: run 152446 capped 27 of 39 holds with pending work still owed).
+# Bundles at 90 are a new family against 152446 (45).
 # Adaptive bundles are a NEW FAMILY, stamped below as dwell_family.
 export FEED_DWELL_MODE="${FEED_DWELL_MODE:-adaptive}"
 export FEED_DWELL_MIN="${FEED_DWELL_MIN:-18}"
-export FEED_DWELL_MAX="${FEED_DWELL_MAX:-45}"
+export FEED_DWELL_MAX="${FEED_DWELL_MAX:-90}"
 export FEED_DWELL_SIGNAL_MAX_AGE_S="${FEED_DWELL_SIGNAL_MAX_AGE_S:-10}"
 # GA-330. Ground truth ON by default. The scene ships its semantic mesh, the feed host renders
 # it, the feed node publishes /gt/semantic_instance and the archive joins it per detection --
@@ -732,7 +734,7 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "dwell_max_frames": $FEED_DWELL_MAX,
     "dwell_signal_path": "$RUN_DIR/merge_pending.json",
     "dwell_signal_max_age_s": $FEED_DWELL_SIGNAL_MAX_AGE_S,
-    "dwell_family": "GA-339, 2026-09-07: dwell_mode adaptive holds a STILL camera after each walk burst until merge_pending.json reads pending 0 (fresh), bounded by dwell_max_frames. dwell_frames is IGNORED when dwell_mode is adaptive. Adaptive bundles are a NEW family: not comparable with dwell_frames 0 (2026-08-31 to 2026-09-07) or 60 (before). Per-run counters are in feed_stats.json (dwell_episodes, dwell_capped, dwell_released_on_zero, dwell_unknown_frames).",
+    "dwell_family": "GA-339, 2026-09-07: dwell_mode adaptive holds a STILL camera after each walk burst until merge_pending.json reads pending 0 (fresh), bounded by dwell_max_frames (45 in 20260907_152446, 90 from 2026-09-07 ~17:00). dwell_frames is IGNORED when dwell_mode is adaptive. Adaptive bundles are a NEW family: not comparable with dwell_frames 0 (2026-08-31 to 2026-09-07) or 60 (before). Per-run counters are in feed_stats.json (dwell_episodes, dwell_capped, dwell_released_on_zero, dwell_unknown_frames).",
     "fps": $FEED_FPS,
     "mapping_seconds": $FEED_MAPPING_SECONDS,
     "mapping_only": $([ "$MAPPING_ONLY" = "1" ] && echo true || echo false),
