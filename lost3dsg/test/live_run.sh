@@ -705,6 +705,8 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 : "${FEED_DWELL_MIN:?not set at run_metadata.json}"
 : "${FEED_DWELL_MAX:?not set at run_metadata.json}"
 : "${FEED_DWELL_SIGNAL_MAX_AGE_S:?not set at run_metadata.json}"
+: "${ROOM_FRAME_MAX:?not set at run_metadata.json}"   # GA-350
+: "${ROOM_FRAME_STRIDE_M:?not set at run_metadata.json}"
 : "${FEED_MAPPING_SECONDS:?not set at run_metadata.json}"
 : "${MAPPING_ONLY?not set at run_metadata.json}"
 : "${FEED_SPAWN_FLOOR?not set at run_metadata.json}"   # no colon: empty means "no floor requested"   # no colon: 0 is a legal value
