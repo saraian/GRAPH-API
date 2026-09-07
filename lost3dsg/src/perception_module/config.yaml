@@ -38,6 +38,8 @@ frames:
   # into. If you point this at a BODY frame (x forward, z up), depth lands in
   # the height axis and every object position is silently wrong.
   camera: "habitat_camera_optical"
+  # Physical camera axes (x forward, y left, z up) for the saved agent pose.
+  agent_pose: "habitat_camera"
 
 paths:
   operations_log: "/root/exchange/output/operations.txt"
@@ -48,6 +50,18 @@ paths:
 
 tf:
   lookup_timeout: 0.1  # seconds to wait for a transform before dropping the frame
+walls:
+  # Fast 2.5D detector: metric cells with vertical support, Hough candidates, TLS refinement.
+  # Set method: ransac to compare with the previous point-wise implementation.
+  method: grid_hough
+  min_interval_s: 0.5
+  grid_resolution_m: 0.05
+  vertical_bands: 4
+  min_vertical_bands: 3
+  min_cell_points: 3
+  hough_threshold: 8
+  max_line_gap_m: 0.20
+  max_segments: 12
 rooms:
   default_room_id: ""   # empty = strict: no room known -> object rejected (needs SLAM rooms)
   gvd_method: medial_axis
@@ -65,6 +79,18 @@ rooms:
   gvd_3d_min_points_per_band: 1
   gvd_3d_max_age_s: 15.0
   gvd_3d_support_dilation_px: 1
+  # Use only stable, wall-scale surfaces to support an existing GVD doorway hypothesis.
+  # Direct obstacle reinforcement is deliberately off: tall furniture can also be planar.
+  enable_detected_wall_support: true
+  detected_wall_reinforce_obstacles: false
+  detected_wall_min_observations: 4
+  detected_wall_min_length_m: 1.50
+  detected_wall_min_vertical_extent_m: 1.20
+  detected_wall_max_rms_m: 0.03
+  detected_wall_thickness_m: 0.12
+  detected_wall_door_endpoint_radius_m: 0.20
+  detected_wall_door_min_support: 0.66
+  detected_wall_bottleneck_ratio: 0.90
   gvd_wall_network_max_fill_ratio: 0.35
   gvd_3d_nonwall_component_ratio: 0.05
   gvd_door_nms_m: 1.20
@@ -72,6 +98,7 @@ rooms:
   min_room_area_m2: 1.5
 
 habitat:
+  localization_mode: rtabmap  # rtabmap | ground_truth
   scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb
   scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
   nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb

@@ -174,6 +174,8 @@ _DEFAULTS = {
         # puts depth into the height axis — see habitat_camera_node.py, which
         # publishes habitat_camera (body) -> habitat_camera_optical.
         "camera": "habitat_camera_optical",
+        # Physical camera frame used for the saved agent trajectory.
+        "agent_pose": "habitat_camera",
     },
     "paths": {
         "operations_log": "/root/exchange/output/operations.txt",
@@ -302,6 +304,7 @@ _DEFAULTS = {
         "default_room_id": "",
     },
     "habitat": {  # HM3D (Matterport) scenes; defaults = previous hardcoded values
+        "localization_mode": "rtabmap",
         "scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb",
         "scene_dataset": "/root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json",
         "nav_scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb",

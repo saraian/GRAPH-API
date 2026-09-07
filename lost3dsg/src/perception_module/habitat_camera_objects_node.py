@@ -246,6 +246,13 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             history=HistoryPolicy.KEEP_LAST,
         )
 
+        self._localization_mode = os.environ.get(
+            "HABITAT_LOCALIZATION_MODE",
+            CFG.get("habitat", {}).get("localization_mode", "rtabmap"),
+        ).strip().lower()
+        if self._localization_mode not in ("rtabmap", "ground_truth"):
+            raise ValueError("HABITAT_LOCALIZATION_MODE must be 'rtabmap' or 'ground_truth'")
+
         # Publisher ROS
         self._rgb_pub = self._ros_node.create_publisher(Image, "/camera/rgb", qos_sensor)
         self._object_capture_pub = self._ros_node.create_publisher(
@@ -253,6 +260,9 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
         )
         self._depth_pub = self._ros_node.create_publisher(Image, "/camera/depth", qos_sensor)
         self._odom_pub = self._ros_node.create_publisher(Odometry, "/odom", qos_sensor)
+        self._ground_truth_odom_pub = self._ros_node.create_publisher(
+            Odometry, "/ground_truth/odom", qos_sensor
+        )
         self._camera_info_pub = self._ros_node.create_publisher(
             CameraInfo, "/camera/camera_info", qos_sensor
         )
@@ -302,9 +312,27 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
         self._base_frame_id = "base_link"
         self._camera_frame_id = "habitat_camera"
         self._camera_optical_frame_id = "habitat_camera_optical"
+        # Encoder-like odometry. The estimate starts at a local origin and integrates
+        # relative motion only; it is never snapped to Habitat's absolute world pose.
+        self._dr_prev_position = None
+        self._dr_prev_rotation = None
+        self._dr_position = np.zeros(3, dtype=np.float64)
+        self._dr_rotation = np.eye(3, dtype=np.float64)
+        self._dr_rng = np.random.default_rng(
+            int(os.environ.get("HABITAT_ODOM_SEED", "7"))
+        )
+        self._dr_translation_noise = float(
+            os.environ.get("HABITAT_ODOM_TRANS_NOISE", "0.01")
+        )
+        self._dr_rotation_noise = math.radians(
+            float(os.environ.get("HABITAT_ODOM_ROT_NOISE_DEG", "0.2"))
+        )
 
         self._camera_info_msg = self._make_camera_info_msg(frame_id=self._camera_optical_frame_id)
         self._publish_static_tfs()
+        self._ros_node.get_logger().info(
+            f"Localization mode: {self._localization_mode}; odometry=/odom; "
+            "validation ground truth=/ground_truth/odom")
         self._publish_timer = self._ros_node.create_timer(0.1, self._publish_observations)
 
         self._object_template_mgr = self.sim.get_object_template_manager()
@@ -1550,19 +1578,13 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
     def _publish_static_tfs(self):
         stamp = self._ros_node.get_clock().now().to_msg()
 
-        # map -> odom
-        t_map_odom = TransformStamped()
-        t_map_odom.header.stamp = stamp
-        t_map_odom.header.frame_id = self._map_frame_id
-        t_map_odom.child_frame_id = self._odom_frame_id
-        t_map_odom.transform.translation.x = 0.0
-        t_map_odom.transform.translation.y = 0.0
-        t_map_odom.transform.translation.z = 0.0
-        t_map_odom.transform.rotation.x = 0.0
-        t_map_odom.transform.rotation.y = 0.0
-        t_map_odom.transform.rotation.z = 0.0
-        t_map_odom.transform.rotation.w = 1.0
-        self._static_tf_broadcaster.sendTransform(t_map_odom)
+        if self._localization_mode == "ground_truth":
+            t_map_odom = TransformStamped()
+            t_map_odom.header.stamp = stamp
+            t_map_odom.header.frame_id = self._map_frame_id
+            t_map_odom.child_frame_id = self._odom_frame_id
+            t_map_odom.transform.rotation.w = 1.0
+            self._static_tf_broadcaster.sendTransform(t_map_odom)
 
         # habitat_camera -> habitat_camera_optical
         t_cam_opt = TransformStamped()
@@ -1808,17 +1830,48 @@ Object editing:
             base_position, base_quat, cam_position, cam_quat
         )
 
+        absolute_rotation = _quat_to_rotmat(*base_quat)
+        if self._localization_mode == "ground_truth":
+            odom_position = base_position
+            odom_rotation = absolute_rotation
+        else:
+            if self._dr_prev_position is not None:
+                delta_local = self._dr_prev_rotation.T @ (
+                    base_position - self._dr_prev_position
+                )
+                delta_rotation = self._dr_prev_rotation.T @ absolute_rotation
+                if np.linalg.norm(delta_local[:2]) > 0.0 and self._dr_translation_noise > 0.0:
+                    delta_local[:2] *= 1.0 + self._dr_rng.normal(
+                        0.0, self._dr_translation_noise
+                    )
+                if self._dr_rotation_noise > 0.0 and not np.allclose(
+                    delta_rotation, np.eye(3), atol=1e-8
+                ):
+                    angle = self._dr_rng.normal(0.0, self._dr_rotation_noise)
+                    c, s = math.cos(angle), math.sin(angle)
+                    delta_rotation = delta_rotation @ np.array(
+                        [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]],
+                        dtype=np.float64,
+                    )
+                self._dr_position += self._dr_rotation @ delta_local
+                self._dr_rotation = self._dr_rotation @ delta_rotation
+            odom_position = self._dr_position.copy()
+            odom_rotation = self._dr_rotation.copy()
+        self._dr_prev_position = base_position.copy()
+        self._dr_prev_rotation = absolute_rotation.copy()
+        odom_quat = _rotmat_to_quat(odom_rotation)
+
         t_odom_base = TransformStamped()
         t_odom_base.header.stamp = stamp
         t_odom_base.header.frame_id = self._odom_frame_id
         t_odom_base.child_frame_id = self._base_frame_id
-        t_odom_base.transform.translation.x = float(base_position[0])
-        t_odom_base.transform.translation.y = float(base_position[1])
-        t_odom_base.transform.translation.z = float(base_position[2])
-        t_odom_base.transform.rotation.x = float(base_quat[0])
-        t_odom_base.transform.rotation.y = float(base_quat[1])
-        t_odom_base.transform.rotation.z = float(base_quat[2])
-        t_odom_base.transform.rotation.w = float(base_quat[3])
+        t_odom_base.transform.translation.x = float(odom_position[0])
+        t_odom_base.transform.translation.y = float(odom_position[1])
+        t_odom_base.transform.translation.z = float(odom_position[2])
+        t_odom_base.transform.rotation.x = float(odom_quat[0])
+        t_odom_base.transform.rotation.y = float(odom_quat[1])
+        t_odom_base.transform.rotation.z = float(odom_quat[2])
+        t_odom_base.transform.rotation.w = float(odom_quat[3])
         self._tf_broadcaster.sendTransform(t_odom_base)
 
         # Pubblica anche il messaggio /odom con la stessa posa
@@ -1826,14 +1879,27 @@ Object editing:
         odom_msg.header.stamp = stamp
         odom_msg.header.frame_id = self._odom_frame_id
         odom_msg.child_frame_id = self._base_frame_id
-        odom_msg.pose.pose.position.x = float(base_position[0])
-        odom_msg.pose.pose.position.y = float(base_position[1])
-        odom_msg.pose.pose.position.z = float(base_position[2])
-        odom_msg.pose.pose.orientation.x = float(base_quat[0])
-        odom_msg.pose.pose.orientation.y = float(base_quat[1])
-        odom_msg.pose.pose.orientation.z = float(base_quat[2])
-        odom_msg.pose.pose.orientation.w = float(base_quat[3])
+        odom_msg.pose.pose.position.x = float(odom_position[0])
+        odom_msg.pose.pose.position.y = float(odom_position[1])
+        odom_msg.pose.pose.position.z = float(odom_position[2])
+        odom_msg.pose.pose.orientation.x = float(odom_quat[0])
+        odom_msg.pose.pose.orientation.y = float(odom_quat[1])
+        odom_msg.pose.pose.orientation.z = float(odom_quat[2])
+        odom_msg.pose.pose.orientation.w = float(odom_quat[3])
         self._odom_pub.publish(odom_msg)
+
+        gt_msg = Odometry()
+        gt_msg.header.stamp = stamp
+        gt_msg.header.frame_id = self._map_frame_id
+        gt_msg.child_frame_id = self._base_frame_id
+        gt_msg.pose.pose.position.x = float(base_position[0])
+        gt_msg.pose.pose.position.y = float(base_position[1])
+        gt_msg.pose.pose.position.z = float(base_position[2])
+        gt_msg.pose.pose.orientation.x = float(base_quat[0])
+        gt_msg.pose.pose.orientation.y = float(base_quat[1])
+        gt_msg.pose.pose.orientation.z = float(base_quat[2])
+        gt_msg.pose.pose.orientation.w = float(base_quat[3])
+        self._ground_truth_odom_pub.publish(gt_msg)
 
         t_base_cam = TransformStamped()
         t_base_cam.header.stamp = stamp

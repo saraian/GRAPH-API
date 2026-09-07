@@ -16,6 +16,8 @@ import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from config import CFG
+
 
 SCENES = {
     "808": ("00808-y9hTuugGdiq", "y9hTuugGdiq"),
@@ -464,7 +466,6 @@ def build_jobs(
 
 
 def build_parser():
-    project_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
         description=(
             "Genera con OpenRouter un prompt unico per scena e lo compila con "
@@ -532,7 +533,8 @@ def build_parser():
         help="Salta i JSON già generati e riparte dalla prima scena mancante.",
     )
     parser.add_argument(
-        "--habitat-root", type=Path, default=project_root / "habitat"
+        "--habitat-root", type=Path, default=Path(CFG["habitat"]["dataset_root"]),
+        help="radice dei dataset Habitat (default: HABITAT_DATASETS_DIR)",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser

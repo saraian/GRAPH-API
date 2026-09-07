@@ -100,6 +100,7 @@ class RoomManager:
         self._lock = threading.RLock()
         self._grid_sub = None
         self._marker_pub = None
+        self._persistent_wall_marker_pub = None
         self._room_pub = None
         self._room_areas_pub = None
         self._cloud_sub = None
@@ -147,6 +148,17 @@ class RoomManager:
             'gvd_3d_max_age_s': 15.0,
             'gvd_3d_min_support_ratio': 0.05,
             'gvd_3d_support_dilation_px': 1,
+            # Temporally fused wall_detector evidence for conservative doorway support.
+            'enable_detected_wall_support': True,
+            'detected_wall_reinforce_obstacles': False,
+            'detected_wall_min_observations': 4,
+            'detected_wall_min_length_m': 1.50,
+            'detected_wall_min_vertical_extent_m': 1.20,
+            'detected_wall_max_rms_m': 0.03,
+            'detected_wall_thickness_m': 0.12,
+            'detected_wall_door_endpoint_radius_m': 0.20,
+            'detected_wall_door_min_support': 0.66,
+            'detected_wall_bottleneck_ratio': 0.90,
             'gvd_topo_fill_max_area_m2': 3.0,
             'gvd_3d_nonwall_component_ratio': 0.05,
             'gvd_room_hole_fill_max_area_m2': 2.0,
@@ -196,6 +208,8 @@ class RoomManager:
         self._grid_sub = node.create_subscription(
             OccupancyGrid, self.map_topic, self._slow_map_callback, qos)
         self._marker_pub = node.create_publisher(MarkerArray, '/room_areas_array', qos)
+        self._persistent_wall_marker_pub = node.create_publisher(
+            MarkerArray, '/room_detected_wall_markers', qos)
         self._room_pub = node.create_publisher(String, '/current_room', 10)
         self._room_areas_pub = node.create_publisher(String, '/room_areas', 10)
         if self.cloud_map_topic:
@@ -642,6 +656,53 @@ class RoomManager:
                 kept.append((polygon, area, centroid, flag))
 
         return kept
+
+    def _detected_wall_support(self, grid):
+        """Rasterise temporally confirmed depth walls as a 0..1 confidence image."""
+        if not self._params.get('enable_detected_wall_support', True) or grid is None:
+            return None
+        height, width = int(grid.info.height), int(grid.info.width)
+        support = np.zeros((height, width), dtype=np.float32)
+        min_obs = max(1, int(self._params.get('detected_wall_min_observations', 4)))
+        min_length = float(self._params.get('detected_wall_min_length_m', 1.50))
+        min_vertical = float(self._params.get('detected_wall_min_vertical_extent_m', 1.20))
+        max_rms = float(self._params.get('detected_wall_max_rms_m', 0.03))
+        thickness = max(1, int(round(float(self._params.get(
+            'detected_wall_thickness_m', 0.12)) / max(float(grid.info.resolution), 1e-6))))
+        segments = 0
+        rejected = 0
+        for room in self.scene_graph.values():
+            if not room.get('active', True):
+                continue
+            for wall in room.get('detected_walls', []):
+                observations = int(wall.get('observations', 1))
+                if observations < min_obs:
+                    continue
+                try:
+                    p0, p1, _, length = self._wall_geometry(wall)
+                except (KeyError, TypeError, ValueError):
+                    rejected += 1
+                    continue
+                vertical = float(wall.get('z_max', 0.0)) - float(wall.get('z_min', 0.0))
+                rms = float(wall.get('inlier_rms_m', float('inf')))
+                if length < min_length or vertical < min_vertical or rms > max_rms:
+                    rejected += 1
+                    continue
+                q0 = self._world_to_grid(float(p0[0]), float(p0[1]), grid)
+                q1 = self._world_to_grid(float(p1[0]), float(p1[1]), grid)
+                if q0 is None or q1 is None:
+                    continue
+                confidence = min(1.0, observations / 6.0)
+                layer = np.zeros_like(support, dtype=np.uint8)
+                cv2.line(layer, q0, q1, 255, thickness)
+                support[layer > 0] = np.maximum(support[layer > 0], confidence)
+                segments += 1
+        self._last_detected_wall_stats = {
+            'confirmed_segments': segments,
+            'rejected_segments': rejected,
+            'support_cells': int(np.count_nonzero(support)),
+        }
+        return support
 
     def _cloud_structural_support(self, grid):
         points = self._latest_cloud_points
@@ -1108,7 +1169,7 @@ class RoomManager:
         # bundle could say which. Counters only; no behaviour changes.
         rej = {"too_short_px": 0, "too_short_m": 0, "wider_than_door": 0,
                "minimum_at_endpoint": 0, "no_end_clearance": 0,
-               "not_a_bottleneck": 0, "accepted": 0}
+               "not_a_bottleneck": 0, "wall_supported_recovery": 0, "accepted": 0}
         min_branch_px = max(4, int(round(
             self._params['gvd_prune_min_branch_m'] / max(resolution, 1e-6))))
         endpoint_margin_px = max(1, int(round(
@@ -1144,11 +1205,22 @@ class RoomManager:
             if end_clearance <= 1e-6:
                 rej["no_end_clearance"] += 1
                 continue
-            if min_val > float(self._params['gvd_bottleneck_ratio']) * end_clearance:
+            y, x = path[min_idx]
+            theta = float(self._branch_direction(path, min_idx))
+            base_bottleneck = (
+                min_val <= float(self._params['gvd_bottleneck_ratio']) * end_clearance)
+            wall_score = self._door_wall_support_score(
+                int(y), int(x), theta, min_val, resolution)
+            wall_recovery = (
+                wall_score >= float(self._params.get('detected_wall_door_min_support', 1.0)) and
+                min_val <= float(self._params.get(
+                    'detected_wall_bottleneck_ratio', 0.95)) * end_clearance)
+            if not base_bottleneck and not wall_recovery:
                 rej["not_a_bottleneck"] += 1
                 continue
-            y, x = path[min_idx]
-            points.append((int(y), int(x), float(self._branch_direction(path, min_idx)), float(min_val)))
+            if wall_recovery and not base_bottleneck:
+                rej["wall_supported_recovery"] += 1
+            points.append((int(y), int(x), theta, float(min_val), float(wall_score)))
 
         # The graph representation can expose the same physical bottleneck on several
         # adjacent branches around a junction. Keep the narrowest representative per door.
@@ -1167,6 +1239,27 @@ class RoomManager:
             **rej,
         }
         return selected
+
+    def _door_wall_support_score(self, y, x, theta, radius_px, resolution):
+        """Return 0..1 when confirmed walls support both ends of a proposed door cut."""
+        support = getattr(self, '_active_detected_wall_support', None)
+        if support is None or not np.any(support):
+            return 0.0
+        nx, ny = -math.sin(theta), math.cos(theta)
+        endpoints = ((x-radius_px*nx, y-radius_px*ny),
+                     (x+radius_px*nx, y+radius_px*ny))
+        search_px = max(1, int(round(float(self._params.get(
+            'detected_wall_door_endpoint_radius_m', 0.20)) / max(resolution, 1e-6))))
+        h, w = support.shape
+        values = []
+        for ex, ey in endpoints:
+            ix, iy = int(round(ex)), int(round(ey))
+            x0, x1 = max(0, ix-search_px), min(w, ix+search_px+1)
+            y0, y1 = max(0, iy-search_px), min(h, iy+search_px+1)
+            values.append(float(np.max(support[y0:y1, x0:x1]))
+                          if x0 < x1 and y0 < y1 else 0.0)
+        # Both sides are required; a cupboard on one side is not a doorway frame.
+        return min(values)
 
     def _cut_free_space(self, free, dist_real, critical_points, resolution=None):
         """Insert critical lines orthogonal to the GVD at doorway minima.
@@ -1190,7 +1283,7 @@ class RoomManager:
         # evaluated against the already partitioned map.
         for point in sorted(critical_points, key=lambda p: p[3] if len(p) >= 4 else 0.0):
             if len(point) >= 4:
-                y, x, theta, _ = point
+                y, x, theta, _ = point[:4]
             else:
                 y, x = point[:2]
                 theta = 0.0
@@ -1320,7 +1413,17 @@ class RoomManager:
         if self._params.get('enable_3d_structural_filter', False) and grid is not None:
             cloud_support = self._cloud_structural_support(grid)
 
+        detected_wall_support = self._detected_wall_support(grid)
+        self._active_detected_wall_support = detected_wall_support
         structural_occ = self._structural_obstacles(occupied, resolution, grid, cloud_support=cloud_support)
+        reinforced_cells = 0
+        if (detected_wall_support is not None and
+                self._params.get('detected_wall_reinforce_obstacles', False)):
+            # Evidence confirms classification only where SLAM already says non-free. It cannot
+            # hallucinate an obstacle across observed navigable space.
+            reinforce = (detected_wall_support > 0) & (occupied > 0)
+            reinforced_cells = int(np.count_nonzero(reinforce & (structural_occ == 0)))
+            structural_occ[reinforce] = 255
         free_topo = self._fill_nonstructural_obstacles(free, occupied, structural_occ, resolution)
         # Furniture removed from the topology can leave isolated corner pixels after the
         # occupancy median filter. Closed holes below the configured area are clutter, not
@@ -1380,6 +1483,12 @@ class RoomManager:
         _fill_desc = ' '.join(f'{k}={v}' for k, v in _fill_stats.items())
         _wall_stats = getattr(self, '_last_3d_wall_stats', {}) or {}
         _wall_desc = ' '.join(f'{k}={v}' for k, v in _wall_stats.items())
+        _detected_stats = getattr(self, '_last_detected_wall_stats', {}) or {}
+        _detected_stats = {**_detected_stats,
+                           'reinforced_cells': reinforced_cells,
+                           'door_candidates_recovered': int(
+                               _cstats.get('wall_supported_recovery', 0))}
+        _detected_desc = ' '.join(f'{k}={v}' for k, v in _detected_stats.items())
         _cut_stats = getattr(self, '_last_cut_stats', {}) or {}
         _cut_desc = ' '.join(f'{k}={v}' for k, v in _cut_stats.items())
         _free_stats = getattr(self, '_last_free_component_stats', {}) or {}
@@ -1394,6 +1503,7 @@ class RoomManager:
             + (f' | free_component: {_free_desc}' if _free_desc else '')
             + (f' | topology_fill: {_fill_desc}' if _fill_desc else '')
             + (f' | cloud_3d: {_wall_desc}' if _wall_desc else '')
+            + (f' | detected_walls: {_detected_desc}' if _detected_desc else '')
             + (' -- SKELETON EMPTY: no segmentation happened, every object will land in one'
                ' room. regions= here is the watershed count, not evidence of a split.'
                if _skel_px == 0 else ''))
@@ -1461,6 +1571,7 @@ class RoomManager:
             'critical_points': dict(_cstats),
             'topology_fill': dict(_fill_stats),
             'cloud_3d': dict(_wall_stats),
+            'detected_walls': dict(_detected_stats),
         }
         return merged_candidates
 
@@ -1491,7 +1602,7 @@ class RoomManager:
                 'room_id': room_id, 'region_id': None,
                 'semantic_label': 'UnknownRoom', 'description': '',
                 'objects': [], 'polygon': [], 'area_m2': 0.0,
-                'centroid': [], 'walls': [], 'wall_segments': [],
+                'centroid': [], 'walls': [], 'wall_segments': [], 'detected_walls': [],
                 'confirmed': False, 'boundaries': {}, 'last_seen': time.time(),
                 # GA-185: whether the region backing this room is currently detected. A
                 # retired room stays in the registry and stays referenceable; it is simply
@@ -1919,7 +2030,9 @@ class RoomManager:
             label=semantic_name, 
             description=description, 
             objects=objs_to_save, 
-            walls=self.current_room_walls
+            # `walls` remains the occupancy-derived room boundary. Depth measurements live
+            # under `detected_walls` and must not overwrite a different kind of geometry.
+            walls=room_node.get("walls", [])
         )
 
 
@@ -1937,6 +2050,132 @@ class RoomManager:
 
     def walls_of(self, room_id):
         return list(self._walls_by_room.get(room_id, []))
+
+    @staticmethod
+    def _wall_geometry(wall):
+        p0 = np.array([wall["start"]["x"], wall["start"]["y"]], dtype=float)
+        p1 = np.array([wall["end"]["x"], wall["end"]["y"]], dtype=float)
+        direction = p1 - p0
+        length = float(np.linalg.norm(direction))
+        if length < 1e-6:
+            raise ValueError("wall endpoints coincide")
+        return p0, p1, direction / length, length
+
+    @classmethod
+    def _merge_detected_wall(cls, stored, observed):
+        """Fuse a repeated observation, or return False when it is a different wall."""
+        a0, a1, adir, alen = cls._wall_geometry(stored)
+        b0, b1, bdir, blen = cls._wall_geometry(observed)
+        if abs(float(adir @ bdir)) < math.cos(math.radians(6.0)):
+            return False
+        amid, bmid = (a0 + a1) * 0.5, (b0 + b1) * 0.5
+        normal = np.array([-adir[1], adir[0]])
+        if abs(float((bmid - amid) @ normal)) > 0.12:
+            return False
+        if abs(float((bmid - amid) @ adir)) > (alen + blen) * 0.5 + 0.25:
+            return False
+
+        # Keep one stable line and expand it over the union of both observed intervals.
+        support = max(1, int(stored.get("observations", 1)))
+        centre = (amid * support + bmid) / (support + 1)
+        if float(adir @ bdir) < 0:
+            bdir = -bdir
+        direction = adir * support + bdir
+        direction /= max(float(np.linalg.norm(direction)), 1e-9)
+        projections = np.array([(p - centre) @ direction for p in (a0, a1, b0, b1)])
+        p0, p1 = centre + direction * projections.min(), centre + direction * projections.max()
+        stored["start"] = {"x": float(p0[0]), "y": float(p0[1])}
+        stored["end"] = {"x": float(p1[0]), "y": float(p1[1])}
+        stored["z_min"] = min(float(stored.get("z_min", 0.0)),
+                              float(observed.get("z_min", 0.0)))
+        stored["z_max"] = max(float(stored.get("z_max", 0.0)),
+                              float(observed.get("z_max", 0.0)))
+        stored["observations"] = support + 1
+        stored["last_seen"] = time.time()
+        stored["n_points"] = int(observed.get("n_points", 0))
+        stored["inlier_rms_m"] = float(observed.get("inlier_rms_m", 0.0))
+        return True
+
+    def ingest_detected_walls(self, walls):
+        """Assign depth walls by geometry and fuse repeat observations per room."""
+        assigned = 0
+        with self._lock:
+            for observed in walls:
+                p0, p1, _, _ = self._wall_geometry(observed)
+                midpoint = (p0 + p1) * 0.5
+                matching = [room for room in self.scene_graph.values()
+                            if room.get("active", True) and
+                            self._point_in_polygon(room.get("polygon", []), midpoint, 0.15)]
+                # A shared boundary may legitimately belong to both adjacent rooms.
+                for room in matching:
+                    detected = room.setdefault("detected_walls", [])
+                    if not any(self._merge_detected_wall(old, observed) for old in detected):
+                        wall = self._json_safe(dict(observed))
+                        wall["observations"] = 1
+                        wall["last_seen"] = time.time()
+                        detected.append(wall)
+                    assigned += 1
+            if assigned:
+                self._save_rooms()
+                self._publish_detected_wall_markers()
+        return assigned
+
+    def _publish_detected_wall_markers(self):
+        """Render only fused walls that pass the structural-support qualification."""
+        if self._persistent_wall_marker_pub is None or self.node is None:
+            return
+        output = MarkerArray()
+        clear = Marker()
+        clear.header.frame_id = "map"
+        clear.header.stamp = self.node.get_clock().now().to_msg()
+        clear.action = Marker.DELETEALL
+        output.markers.append(clear)
+
+        marker_id = 0
+        min_obs = max(1, int(self._params.get('detected_wall_min_observations', 4)))
+        min_length = float(self._params.get('detected_wall_min_length_m', 1.50))
+        min_vertical = float(self._params.get('detected_wall_min_vertical_extent_m', 1.20))
+        max_rms = float(self._params.get('detected_wall_max_rms_m', 0.03))
+        for room_id, room in self.scene_graph.items():
+            if not room.get("active", True):
+                continue
+            for wall in room.get("detected_walls", []):
+                observations = max(1, int(wall.get("observations", 1)))
+                if observations < min_obs:
+                    continue
+                try:
+                    p0, p1, _, length = self._wall_geometry(wall)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                z0 = float(wall.get("z_min", 0.4))
+                z1 = float(wall.get("z_max", 2.0))
+                if (length < min_length or z1-z0 < min_vertical or
+                        float(wall.get("inlier_rms_m", float("inf"))) > max_rms):
+                    continue
+                yaw = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
+                strength = min(1.0, observations / 6.0)
+                marker = Marker()
+                marker.header = clear.header
+                marker.ns = "persistent_detected_walls"
+                marker.id = marker_id
+                marker_id += 1
+                marker.type = Marker.CUBE
+                marker.action = Marker.ADD
+                marker.pose.position.x = float((p0[0] + p1[0]) * 0.5)
+                marker.pose.position.y = float((p0[1] + p1[1]) * 0.5)
+                marker.pose.position.z = (z0 + z1) * 0.5
+                marker.pose.orientation.z = math.sin(yaw * 0.5)
+                marker.pose.orientation.w = math.cos(yaw * 0.5)
+                marker.scale.x = max(0.01, length)
+                marker.scale.y = 0.06
+                marker.scale.z = max(0.01, z1 - z0)
+                # Weak confirmations are pale/transparent; repeated support tends to blue.
+                marker.color.r = 0.10 * (1.0 - strength)
+                marker.color.g = 0.25 + 0.25 * strength
+                marker.color.b = 0.55 + 0.45 * strength
+                marker.color.a = 0.25 + 0.65 * strength
+                output.markers.append(marker)
+        self._persistent_wall_marker_pub.publish(output)
 
     @staticmethod
     def _room_color(room_id):

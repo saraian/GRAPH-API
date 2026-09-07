@@ -360,13 +360,24 @@ if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
   echo "    mapping is OFF; the driver must also set FEED_MAPPING_SECONDS=0"
 fi
 
-# same rtabmap arguments as launch/habitat_launch.py (odometry from /odom, no TF publish)
+# In rtabmap mode, Habitat's encoder-like dead reckoning owns odom->base_link and
+# RTAB-Map owns map->odom. Exact Habitat pose stays isolated on /ground_truth/odom.
+export HABITAT_LOCALIZATION_MODE="${HABITAT_LOCALIZATION_MODE:-rtabmap}"
+if [ "$HABITAT_LOCALIZATION_MODE" = "rtabmap" ]; then
+  RTABMAP_POSE_ARGS=(visual_odometry:=false odom_topic:=/odom frame_id:=base_link
+    odom_frame_id:='' publish_tf_odom:=false publish_tf_map:=true)
+elif [ "$HABITAT_LOCALIZATION_MODE" = "ground_truth" ]; then
+  RTABMAP_POSE_ARGS=(visual_odometry:=false odom_topic:=/odom publish_tf_odom:=false publish_tf_map:=false)
+else
+  echo "!! HABITAT_LOCALIZATION_MODE must be rtabmap or ground_truth" >&2
+  exit 2
+fi
 # The args are the first line of rtabmap.log so the bundle records them; before this they were
 # visible only in ros2 launch's death message, i.e. only when the node died.
 echo "rtabmap_args: $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS" > /tmp/rtabmap.log
-ros2 launch rtabmap_launch rtabmap.launch.py visual_odometry:=false odom_topic:=/odom \
+ros2 launch rtabmap_launch rtabmap.launch.py "${RTABMAP_POSE_ARGS[@]}" \
   rgb_topic:=/camera/rgb depth_topic:=/camera/depth camera_info_topic:=/camera/camera_info \
-  approx_sync:=true rtabmap_viz:=false publish_tf:=false database_path:="$_RT_DB_PATH" \
+  approx_sync:=false rtabmap_viz:=false database_path:="$_RT_DB_PATH" \
   rtabmap_args:="$_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS" \
   >> /tmp/rtabmap.log 2>&1 &
 RTABMAP_PID=$!

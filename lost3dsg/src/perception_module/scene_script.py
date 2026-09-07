@@ -29,16 +29,15 @@ from urllib.request import Request, urlopen
 import habitat_sim
 import magnum as mn
 import numpy as np
+from config import CFG, habitat_value
 
 
-DEFAULT_SCENE = (
-    "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00814-p53SfW6mjZe/p53SfW6mjZe.basis.glb"
+DEFAULT_SCENE = os.path.join(
+    CFG["habitat"]["dataset_root"], "hm3d-val-habitat-v0.2",
+    "00814-p53SfW6mjZe", "p53SfW6mjZe.basis.glb",
 )
-DEFAULT_SCENE_DATASET = (
-    "/root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/"
-    "hm3d_annotated_basis.scene_dataset_config.json"
-)
-DEFAULT_OBJECTS = os.path.expanduser("~/exchange/lost3dsg/habitat/habitat_objects/configs")
+DEFAULT_SCENE_DATASET = habitat_value("scene_dataset")
+DEFAULT_OBJECTS = os.path.join(CFG["habitat"]["dataset_root"], "habitat_objects", "configs")
 DEFAULT_NAVMESH = ""
 VALID_ACTIONS = frozenset({"spawn", "move", "remove", "wait"})
 MAX_STEPS = 64

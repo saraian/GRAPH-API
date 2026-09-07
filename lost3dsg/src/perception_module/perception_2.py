@@ -376,7 +376,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.publish_individual_objects = False
         self.pcl_object_id_counter = 0
         self.individual_pcl_publishers = {}
-        self.robot_base_frame = "base_link"  
+        # Save/publish the physical camera pose. This is deliberately distinct
+        # from frames.camera, the optical frame used for RGB-D projection.
+        self.agent_pose_frame = (CFG.get("frames", {}) or {}).get(
+            "agent_pose", "habitat_camera"
+        )
 
     def _create_timers(self):
         self.create_timer(0.5, self._perception_timer_callback, callback_group=self.perception_cb_group)
@@ -1323,11 +1327,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             lookup_time = rclpy.time.Time.from_msg(cycle_stamp)
             t = self.tf_buffer.lookup_transform(
                 "map",
-                self.robot_base_frame,
+                self.agent_pose_frame,
                 lookup_time,
             )
         except TransformException as ex:
-            self.log_both("warn", f"Could not get agent pose (map -> {self.robot_base_frame}): {ex}")
+            self.log_both(
+                "warn",
+                f"Could not get camera pose (map -> {self.agent_pose_frame}): {ex}",
+            )
             return
 
         pose_msg = PoseStamped()
@@ -1339,7 +1346,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         pose_msg.pose.orientation = t.transform.rotation
 
         self.agent_pose_pub.publish(pose_msg)
-        self.log_both("debug", "Agent pose published on /agent_camera_pose")
+        self.log_both(
+            "debug",
+            f"Camera pose ({self.agent_pose_frame}) published on /agent_camera_pose",
+        )
 
     def _queue_perceptions_json(self):
         perceptions_snapshot = [

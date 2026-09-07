@@ -2,7 +2,7 @@
 """
 Launch file per il sistema lost3dsg completo:
 
-  1) rtabmap (SLAM, senza odometria visiva, TF non pubblicato)
+  1) rtabmap (SLAM RGB-D di default; ground-truth selezionabile)
   2) perception_2.py         (ros2 run lost3dsg perception_2.py)
   3) object_manager_6.py     (ros2 run lost3dsg object_manager_6.py)
   4) graph_api_bridge.py     (script Python standalone, non un nodo ROS2)
@@ -10,11 +10,12 @@ Launch file per il sistema lost3dsg completo:
 
 USO
 ---
-    ros2 launch lost3dsg full_system.launch.py
+    ros2 launch lost3dsg habitat_launch.py
 
     # opzioni:
-    ros2 launch lost3dsg full_system.launch.py use_rviz:=false
-    ros2 launch lost3dsg full_system.launch.py graph_api_bridge_dir:=/altro/path
+    ros2 launch lost3dsg habitat_launch.py use_rviz:=false
+    ros2 launch lost3dsg habitat_launch.py localization_mode:=ground_truth
+    ros2 launch lost3dsg habitat_launch.py use_wall_detector:=true
 
 INSTALLAZIONE
 -------------
@@ -50,7 +51,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -73,6 +74,12 @@ def generate_launch_description():
         description="Avvia rviz2 se true",
     )
 
+    use_wall_detector_arg = DeclareLaunchArgument(
+        'use_wall_detector',
+        default_value='false',
+        description="Avvia wall_detector.py se true",
+    )
+
     perception_delay_arg = DeclareLaunchArgument(
         'perception_delay',
         default_value='3.0',
@@ -92,11 +99,29 @@ def generate_launch_description():
                     "'log' per mandarli solo su file (~/.ros/log/...)",
     )
 
+    localization_mode_arg = DeclareLaunchArgument(
+        'localization_mode',
+        default_value='rtabmap',
+        choices=['rtabmap', 'ground_truth'],
+        description="Sorgente della posa: SLAM RGB-D RTAB-Map oppure ground truth Habitat",
+    )
+
+    odom_args_arg = DeclareLaunchArgument(
+        'odom_args',
+        default_value='--Odom/Strategy 1 --Odom/GuessMotion false --Odom/ResetCountdown 0',
+        description="Odometry frame-to-frame senza reset automatici che spezzano la mappa",
+    )
+
     graph_api_bridge_dir = LaunchConfiguration('graph_api_bridge_dir')
     use_rviz = LaunchConfiguration('use_rviz')
+    use_wall_detector = LaunchConfiguration('use_wall_detector')
     perception_delay = LaunchConfiguration('perception_delay')
     bridge_delay = LaunchConfiguration('bridge_delay')
     rtabmap_output = LaunchConfiguration('rtabmap_output')
+    localization_mode = LaunchConfiguration('localization_mode')
+    use_rtabmap_tf = PythonExpression([
+        "'true' if '", localization_mode, "' == 'rtabmap' else 'false'"
+    ])
 
     # ------------------------------------------------------------
     # 1) rtabmap
@@ -110,14 +135,24 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
+            # Habitat publishes encoder-like dead reckoning on /odom.
             'visual_odometry': 'false',
             'odom_topic': '/odom',
+            'frame_id': 'base_link',
+            'vo_frame_id': 'odom',
+            # Vuoto: il nodo SLAM sincronizza il messaggio /odom con RGB-D.
+            # Usare "odom" qui forza invece un lookup TF al timestamp dell'immagine:
+            # quando rgbd_odometry e' in ritardo, quel transform non esiste ancora.
+            'odom_frame_id': '',
+            'odom_args': LaunchConfiguration('odom_args'),
             'rgb_topic': '/camera/rgb',
             'depth_topic': '/camera/depth',
             'camera_info_topic': '/camera/camera_info',
-            'approx_sync': 'true',
+            # Habitat pubblica RGB, depth, camera_info e odometria con lo stesso stamp.
+            'approx_sync': 'false',
             'rtabmap_viz': 'false',
-            'publish_tf': 'false',
+            'publish_tf_odom': 'false',
+            'publish_tf_map': use_rtabmap_tf,
             'database_path': '/root/.ros/rtabmap.db',
             'rtabmap_args': '--delete_db_on_start --RGBD/NeighborLinkRefining false',
             'output': rtabmap_output,
@@ -141,6 +176,14 @@ def generate_launch_description():
         output='screen',
     )
 
+    wall_detector_node = Node(
+        package='lost3dsg',
+        executable='wall_detector.py',
+        name='wall_detector',
+        output='screen',
+        condition=IfCondition(use_wall_detector),
+    )
+
     # ------------------------------------------------------------
     # 3) graph_api_bridge.py — script standalone (non un nodo ROS2
     #    installato), lanciato con ExecuteProcess impostando la cwd.
@@ -159,6 +202,8 @@ def generate_launch_description():
         package='rviz2',
         executable='rviz2',
         name='rviz2',
+        # La vista resta nel riferimento globale anche quando SLAM corregge map->odom.
+        arguments=['--fixed-frame', 'map'],
         output='screen',
         condition=IfCondition(use_rviz),
     )
@@ -170,7 +215,7 @@ def generate_launch_description():
     # ------------------------------------------------------------
     delayed_perception = TimerAction(
         period=perception_delay,
-        actions=[perception_node, object_manager_node],
+        actions=[perception_node, object_manager_node, wall_detector_node],
     )
 
     delayed_bridge = TimerAction(
@@ -179,8 +224,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        localization_mode_arg,
+        odom_args_arg,
         graph_api_bridge_dir_arg,
         use_rviz_arg,
+        use_wall_detector_arg,
         perception_delay_arg,
         bridge_delay_arg,
         rtabmap_output_arg,

@@ -20,6 +20,7 @@ import time
 
 import numpy as np
 import rclpy
+from config import CFG
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -135,10 +136,28 @@ class HabitatFeedNode(Node):
         # subscribers accept reliable publishers fine.
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE,
                          history=HistoryPolicy.KEEP_LAST)
+        self.localization_mode = os.environ.get(
+            "HABITAT_LOCALIZATION_MODE",
+            CFG.get("habitat", {}).get("localization_mode", "rtabmap"),
+        ).strip().lower()
+        if self.localization_mode not in ("rtabmap", "ground_truth"):
+            raise ValueError("HABITAT_LOCALIZATION_MODE must be 'rtabmap' or 'ground_truth'")
         self.pub_rgb = self.create_publisher(Image, "/camera/rgb", qos)
         self.pub_depth = self.create_publisher(Image, "/camera/depth", qos)
         self.pub_info = self.create_publisher(CameraInfo, "/camera/camera_info", qos)
         self.pub_odom = self.create_publisher(Odometry, "/odom", qos)
+        self.pub_ground_truth_odom = self.create_publisher(
+            Odometry, "/ground_truth/odom", qos)
+        # Simulated wheel odometry: start at an arbitrary local origin and integrate only
+        # frame-to-frame body motion. It is never snapped back to Habitat's global pose.
+        self._dr_prev_pos = None
+        self._dr_prev_R = None
+        self._dr_pos = np.zeros(3, dtype=np.float64)
+        self._dr_R = np.eye(3, dtype=np.float64)
+        self._dr_rng = np.random.default_rng(int(os.environ.get("HABITAT_ODOM_SEED", "7")))
+        self._dr_trans_noise = float(os.environ.get("HABITAT_ODOM_TRANS_NOISE", "0.01"))
+        self._dr_rot_noise_rad = math.radians(
+            float(os.environ.get("HABITAT_ODOM_ROT_NOISE_DEG", "0.2")))
         # GT-ONLY CHANNEL. habitat's semantic sensor renders its own instance id per pixel,
         # which is the join a detection needs to be labelled with ground truth. The feed host
         # has been putting it in the payload under `gt_semantic_instance` whenever
@@ -157,11 +176,16 @@ class HabitatFeedNode(Node):
         self.static_tf = StaticTransformBroadcaster(self)
 
         now = self.get_clock().now().to_msg()
-        # same static links as habitat_camera_node: map->odom identity, camera->optical
-        self.static_tf.sendTransform([
-            _tf(now, FRAME_MAP, FRAME_ODOM, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+        static_transforms = [
             _tf(now, FRAME_CAMERA, FRAME_OPTICAL, (0.0, 0.0, 0.0), (-0.5, 0.5, -0.5, 0.5)),
-        ])
+        ]
+        if self.localization_mode == "ground_truth":
+            static_transforms.insert(
+                0, _tf(now, FRAME_MAP, FRAME_ODOM, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
+        self.static_tf.sendTransform(static_transforms)
+        self.get_logger().info(
+            f"Localization mode: {self.localization_mode}; odometry=/odom, "
+            "validation ground truth=/ground_truth/odom")
 
         self._host = os.environ.get("FEED_HOST", "127.0.0.1")
         self._port = int(os.environ.get("FEED_PORT", "7799"))
@@ -279,19 +303,53 @@ class HabitatFeedNode(Node):
         else:  # older feed host without agent pose: body = camera
             base_pos, base_quat = cam_pos, cam_quat
         rel_pos, rel_quat = _relative_ros_transform(base_pos, base_quat, cam_pos, cam_quat)
-        # dynamic chain: odom->base_link (agent body), base_link->habitat_camera
+        gt_R = _quat_to_rotmat(*base_quat)
+        if self.localization_mode == "ground_truth":
+            odom_pos, odom_R = base_pos, gt_R
+        else:
+            if self._dr_prev_pos is not None:
+                # Relative motion expressed in the previous body frame, like encoder
+                # increments. Noise accumulates; absolute Habitat position is never reused
+                # to correct the estimate.
+                delta_local = self._dr_prev_R.T @ (base_pos - self._dr_prev_pos)
+                delta_R = self._dr_prev_R.T @ gt_R
+                distance = float(np.linalg.norm(delta_local[:2]))
+                if distance > 0.0 and self._dr_trans_noise > 0.0:
+                    delta_local[:2] *= 1.0 + self._dr_rng.normal(0.0, self._dr_trans_noise)
+                if self._dr_rot_noise_rad > 0.0 and not np.allclose(delta_R, np.eye(3), atol=1e-8):
+                    yaw_noise = self._dr_rng.normal(0.0, self._dr_rot_noise_rad)
+                    c, s = math.cos(yaw_noise), math.sin(yaw_noise)
+                    delta_R = delta_R @ np.array(
+                        [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+                self._dr_pos += self._dr_R @ delta_local
+                self._dr_R = self._dr_R @ delta_R
+            odom_pos, odom_R = self._dr_pos.copy(), self._dr_R.copy()
+        self._dr_prev_pos = base_pos.copy()
+        self._dr_prev_R = gt_R.copy()
+        odom_quat = _rotmat_to_quat(odom_R)
+
+        # Habitat/dead-reckoning owns odom->base_link and the rigid camera calibration.
         self.tf.sendTransform([
-            _tf(stamp, FRAME_ODOM, FRAME_BASE, base_pos, base_quat),
+            _tf(stamp, FRAME_ODOM, FRAME_BASE, odom_pos, odom_quat),
             _tf(stamp, FRAME_BASE, FRAME_CAMERA, rel_pos, rel_quat),
         ])
         odom = Odometry()
         odom.header.stamp = stamp
         odom.header.frame_id = FRAME_ODOM
         odom.child_frame_id = FRAME_BASE
-        odom.pose.pose.position.x, odom.pose.pose.position.y, odom.pose.pose.position.z = (float(v) for v in base_pos)
+        odom.pose.pose.position.x, odom.pose.pose.position.y, odom.pose.pose.position.z = (float(v) for v in odom_pos)
         (odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
-         odom.pose.pose.orientation.z, odom.pose.pose.orientation.w) = (float(v) for v in base_quat)
+         odom.pose.pose.orientation.z, odom.pose.pose.orientation.w) = (float(v) for v in odom_quat)
         self.pub_odom.publish(odom)
+
+        gt_odom = Odometry()
+        gt_odom.header.stamp = stamp
+        gt_odom.header.frame_id = FRAME_MAP
+        gt_odom.child_frame_id = FRAME_BASE
+        gt_odom.pose.pose.position.x, gt_odom.pose.pose.position.y, gt_odom.pose.pose.position.z = (float(v) for v in base_pos)
+        (gt_odom.pose.pose.orientation.x, gt_odom.pose.pose.orientation.y,
+         gt_odom.pose.pose.orientation.z, gt_odom.pose.pose.orientation.w) = (float(v) for v in base_quat)
+        self.pub_ground_truth_odom.publish(gt_odom)
 
         rgb = Image(height=h, width=w, encoding="rgb8", is_bigendian=False, step=w * 3)
         rgb.header.stamp = stamp

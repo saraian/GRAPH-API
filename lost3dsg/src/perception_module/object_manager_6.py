@@ -800,6 +800,10 @@ class ObjectManagerService(Node):
         entry = {
             "timestamp": timestamp_sec,
             "datetime": _utc_iso_from_seconds(timestamp_sec),
+            "tracked_frame": (CFG.get("frames", {}) or {}).get(
+                "agent_pose", "habitat_camera"
+            ),
+            "reference_frame": msg.header.frame_id or "map",
             "x": msg.pose.position.x,
             "y": msg.pose.position.y,
             "z": msg.pose.position.z,
@@ -2162,11 +2166,7 @@ class ObjectManagerService(Node):
         # raise in a subscription callback is visible in the node's log with a traceback
         # naming the field that was wrong. Rule 14: a missing component crashes.
         new_walls = json.loads(msg.data)
-        self.room_manager.init_room_node(self.room_manager.current_room_id)
-        for w in new_walls:
-            start_x, start_y = w["start"]["x"], w["start"]["y"]
-            end_x, end_y = w["end"]["x"], w["end"]["y"]
-            self.room_manager.current_room_walls.append([start_x, start_y, end_x, end_y])
+        self.room_manager.ingest_detected_walls(new_walls)
 
     # --- re-evaluation seam (hooks.Reevaluation / hooks.Refiner) ---
     @staticmethod
