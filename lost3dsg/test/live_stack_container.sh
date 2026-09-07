@@ -361,12 +361,27 @@ if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
 fi
 
 # same rtabmap arguments as launch/habitat_launch.py (odometry from /odom, no TF publish)
+# GA-359 (2026-09-07). `publish_tf:=false`, passed here and in upstream habitat_launch.py since the
+# first run, IS NOT A LAUNCH ARGUMENT of rtabmap.launch.py: the declared names are publish_tf_map
+# (default TRUE) and publish_tf_odom, and ros2 launch accepts an undeclared name silently. So rtabmap
+# published map->odom on /tf in every run while habitat_feed_node published a static identity
+# map->odom on /tf_static -- two authorities. MEASURED on 20260907_152446: 54 of 747 detection rows
+# (18 of 139 frames, T+121..229 s, right after rtabmap's "Localization mode" line) carried a camera
+# pose 2-4 m from the true one; the rest matched to 3 cm. The flag is now EXPLICIT and follows the
+# pose source the launcher stamps: simulator arm -> false (the feed's identity is the only authority),
+# rtabmap arm -> true (and the feed node must then NOT publish the identity: perception's half).
+case "${FEED_POSE_SOURCE:-simulator}" in
+  rtabmap)   _RT_PUBLISH_TF_MAP=true ;;
+  simulator) _RT_PUBLISH_TF_MAP=false ;;
+  *) echo "!! FEED_POSE_SOURCE=${FEED_POSE_SOURCE} is neither simulator nor rtabmap"; exit 1 ;;
+esac
+echo ">>> pose source: ${FEED_POSE_SOURCE:-simulator} (rtabmap publish_tf_map:=$_RT_PUBLISH_TF_MAP)"
 # The args are the first line of rtabmap.log so the bundle records them; before this they were
 # visible only in ros2 launch's death message, i.e. only when the node died.
-echo "rtabmap_args: $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS" > /tmp/rtabmap.log
+echo "rtabmap_args: $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS publish_tf_map:=$_RT_PUBLISH_TF_MAP" > /tmp/rtabmap.log
 ros2 launch rtabmap_launch rtabmap.launch.py visual_odometry:=false odom_topic:=/odom \
   rgb_topic:=/camera/rgb depth_topic:=/camera/depth camera_info_topic:=/camera/camera_info \
-  approx_sync:=true rtabmap_viz:=false publish_tf:=false database_path:="$_RT_DB_PATH" \
+  approx_sync:=true rtabmap_viz:=false publish_tf_map:="$_RT_PUBLISH_TF_MAP" database_path:="$_RT_DB_PATH" \
   rtabmap_args:="$_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS" \
   >> /tmp/rtabmap.log 2>&1 &
 RTABMAP_PID=$!
@@ -433,6 +448,21 @@ ros2 run image_view image_saver --ros-args -r image:=/image_with_bb \
     echo "   the run will continue, but it is very likely to produce nothing. See GA-200."
   fi
 ) &
+
+# GA-359 / probe a13. EXACTLY ONE AUTHORITY FOR map->odom. Measured on 20260907_152446: with
+# rtabmap publishing map->odom (publish_tf_map defaulted true; publish_tf was never a launch
+# argument) AND the feed node's static identity, tf2 served rtabmap's correction for 108 s and
+# 54 of 747 detections landed 2-4 m from their true pose. BLOCKING: a run with two authorities
+# measures that defect, so it ends here. Foreground, after the nodes are up; samples 5 s.
+sleep 15
+if python3 /graph_api/lost3dsg/test/preflight_gate.py --only a13 \
+     --pose-source "${FEED_POSE_SOURCE:-simulator}" --out /tmp/preflight_a13.json \
+     >> /tmp/a13.log 2>&1; then
+  echo ">>> a13 pose_authority: one authority for map->odom (${FEED_POSE_SOURCE:-simulator})"
+else
+  echo "!! a13 pose_authority FAILED — ending the run. $(tail -3 /tmp/a13.log | tr '\n' ' ')"
+  exit 3
+fi
 
 echo ">>> stack up. logs in /tmp/*.log — tailing perception:"
 touch /tmp/perception.log /tmp/om6.log

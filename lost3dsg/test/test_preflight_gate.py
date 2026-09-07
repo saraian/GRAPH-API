@@ -1136,3 +1136,20 @@ def test_a12_refuses_a_gt_reader_outside_the_allow_list_and_passes_the_clean_tre
         assert ok is False, detail
         assert "src/perception_module/object_manager_6.py" in detail["not_allowed_files"], detail
         assert "publish_objects" in detail["perception_2_functions_not_allowed"], detail
+
+
+def test_a13_verdict_requires_exactly_one_authority_on_the_stamped_side():
+    """GA-359. Today's stack (both sides publish) must FAIL under either arm; each single
+    authority passes only under its own arm; no authority fails."""
+    from preflight_gate import a13_verdict
+    both = [("map", "odom")]
+    assert a13_verdict("simulator", both, both)[0] is False
+    assert a13_verdict("rtabmap", both, both)[0] is False
+    assert a13_verdict("simulator", [], both)[0] is True
+    assert a13_verdict("rtabmap", [], both)[0] is False
+    assert a13_verdict("rtabmap", both, [])[0] is True
+    assert a13_verdict("simulator", both, [])[0] is False
+    ok, d = a13_verdict("rtabmap", [], [])
+    assert ok is False and "NO authority" in d["reason"]
+    # other pairs do not count as map->odom
+    assert a13_verdict("simulator", [("odom", "base_link")], both)[0] is True

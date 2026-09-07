@@ -415,6 +415,14 @@ export FOUND_ROOM_TYPES_PATH="${FOUND_ROOM_TYPES_PATH:-/ws/output/room_types.jso
 # the typer reads those. Defaults here equal object_manager_6.py:85-86 so the stamp says what ran.
 export ROOM_FRAME_MAX="${ROOM_FRAME_MAX:-5}"
 export ROOM_FRAME_STRIDE_M="${ROOM_FRAME_STRIDE_M:-1.5}"
+# GA-359 (owner 2026-09-07 ~18:20 "switch to rtabmap localised poses"; design plan/14). The pose
+# source the boxes are placed in. simulator = the feed node's static identity map->odom is the only
+# authority and rtabmap does not publish TF (today's behaviour, made explicit); rtabmap = rtabmap
+# publishes map->odom and the feed node must not (perception's half, not landed yet: do NOT set
+# rtabmap before it lands, or two authorities publish again). Read by live_stack_container.sh and
+# by habitat_feed_node.py (once perception lands its half); stamped as pose_source.
+export FEED_POSE_SOURCE="${FEED_POSE_SOURCE:-simulator}"
+case "$FEED_POSE_SOURCE" in simulator|rtabmap) ;; *) echo "!! FEED_POSE_SOURCE=$FEED_POSE_SOURCE is neither simulator nor rtabmap"; exit 1 ;; esac
 echo "    room typing: $FOUND_ROOM_VLM_MODEL at $FOUND_ROOM_VLM_BASE_URL -> $FOUND_ROOM_TYPES_PATH (key $([ -n "$FOUND_ROOM_VLM_API_KEY" ] && echo set || echo UNSET))"
 
 # Feed geometry. These were interpolated ONLY into the launch line 160 lines below and appeared
@@ -707,6 +715,7 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 : "${FEED_DWELL_SIGNAL_MAX_AGE_S:?not set at run_metadata.json}"
 : "${ROOM_FRAME_MAX:?not set at run_metadata.json}"   # GA-350
 : "${ROOM_FRAME_STRIDE_M:?not set at run_metadata.json}"
+: "${FEED_POSE_SOURCE:?not set at run_metadata.json}"   # GA-359
 : "${FEED_MAPPING_SECONDS:?not set at run_metadata.json}"
 : "${MAPPING_ONLY?not set at run_metadata.json}"
 : "${FEED_SPAWN_FLOOR?not set at run_metadata.json}"   # no colon: empty means "no floor requested"   # no colon: 0 is a legal value
@@ -772,6 +781,8 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "room_vlm_key_set": $([ -n "${FOUND_ROOM_VLM_API_KEY:-}" ] && echo true || echo false),
     "room_types_path": "$FOUND_ROOM_TYPES_PATH",
     "room_typing_note": "GA-350: the room typer (found/room_type.py) reads these four names itself. The key is never stamped, only whether one was set. Ported from GRAPH-API 3a5a818.",
+    "pose_source": "$FEED_POSE_SOURCE",
+    "pose_source_note": "GA-359: simulator = boxes placed through the feed node's identity map->odom (Habitat's true pose as odometry AND localisation); rtabmap = rtabmap's map->odom correction applied. Bundles before 2026-09-07 19:45 ran with BOTH authorities publishing (publish_tf was an undeclared launch argument; publish_tf_map defaulted true): run 152446 had 54 of 747 detection rows 2-4 m off. A bundle with this key set is single-authority.",
     "room_frames": {"max": $ROOM_FRAME_MAX, "stride_m": $ROOM_FRAME_STRIDE_M,
                     "seam": "GA-350: object_manager_6 saves a room view on room entry and per stride_m of travel (at most max per room); the proposal carries room_frames/room_frame to the typer (vendor 4c0e0dc)."},
              "aligner": "$FOUND_ALIGNER", "ontology_ext": "$FOUND_ONTOLOGY_EXT",
@@ -926,7 +937,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES -e FOUND_KG_DISJOINT -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
   -e FOUND_EMBED_MODEL -e FOUND_KG_TOP -e FOUND_KG_Z -e FOUND_LEXICAL -e FOUND_ONTOLOGY \
   -e FOUND_ROOM_TYPES_PATH -e FOUND_ROOM_VLM_API_KEY -e FOUND_ROOM_VLM_BASE_URL \
-  -e ROOM_FRAME_MAX -e ROOM_FRAME_STRIDE_M \
+  -e ROOM_FRAME_MAX -e ROOM_FRAME_STRIDE_M -e FEED_POSE_SOURCE \
   -e FOUND_ROOM_VLM_MODEL -e FOUND_SCENE_INSTANCE -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \
   -e KG_BRIDGE_SRC \
   -e BRIDGE_PORT -e BRIDGE_RAW_MAX_AGE -e BRIDGE_ANNOTATED_MAX_AGE -e BRIDGE_FEED_PROBE_BACKOFF \

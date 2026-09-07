@@ -1064,6 +1064,68 @@ def a12_gt_isolation(root=None):
                                  f"perception_2 functions {bad_functions}"),
     }
 
+
+# GA-359 (owner 2026-09-07: boxes placed with rtabmap's localised pose). Design: plan/14.
+def a13_verdict(pose_source, dynamic_pairs, static_pairs, parent="map", child="odom"):
+    """EXACTLY ONE authority for map->odom, on the side the stamp names.
+
+    MEASURED, run 20260907_152446: rtabmap published map->odom on /tf (publish_tf_map defaults
+    true; the publish_tf:=false both trees passed is not a launch argument) while the feed node
+    published a static identity on /tf_static -- and for 108 s rtabmap's correction won in tf2,
+    placing 54 of 747 detections 2-4 m from their true pose. Two authorities is the defect; this
+    verdict names it whichever side wins.
+    """
+    pair = (parent, child)
+    dyn, sta = pair in set(dynamic_pairs), pair in set(static_pairs)
+    want_dyn = pose_source == "rtabmap"
+    ok = (dyn != sta) and (dyn == want_dyn)
+    return ok, {
+        "pose_source": pose_source, "map_odom_in_tf": dyn, "map_odom_in_tf_static": sta,
+        "reason": "" if ok else (
+            "TWO AUTHORITIES for map->odom (/tf and /tf_static)" if dyn and sta else
+            "NO authority for map->odom in the window" if not (dyn or sta) else
+            f"map->odom is published on the wrong side for pose_source={pose_source}: "
+            f"{'/tf (rtabmap)' if dyn else '/tf_static (feed node identity)'}"),
+    }
+
+
+def a13_pose_authority(pose_source=None, window_s=5.0):
+    """POST-START. Sample /tf and /tf_static for `window_s` and apply a13_verdict.
+
+    Container only: rclpy is not importable on the host, and a probe that cannot run is
+    SKIPPED (which fails the gate), never a pass (rule 2). /tf_static is latched, so the
+    subscription uses transient-local durability or it would miss a transform published
+    before the probe started.
+    """
+    pose_source = pose_source or os.environ.get("FEED_POSE_SOURCE", "simulator")
+    try:
+        import rclpy
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from tf2_msgs.msg import TFMessage
+    except Exception as exc:
+        return SKIPPED, {"reason": f"rclpy/tf2_msgs not importable here ({type(exc).__name__}); "
+                                   "a13 answers only inside the container"}
+    dynamic, static = set(), set()
+    rclpy.init(args=[])
+    try:
+        node = rclpy.create_node("preflight_a13")
+        latched = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        node.create_subscription(TFMessage, "/tf", lambda m: dynamic.update(
+            (t.header.frame_id, t.child_frame_id) for t in m.transforms), 100)
+        node.create_subscription(TFMessage, "/tf_static", lambda m: static.update(
+            (t.header.frame_id, t.child_frame_id) for t in m.transforms), latched)
+        end = time.time() + window_s
+        while time.time() < end:
+            rclpy.spin_once(node, timeout_sec=0.2)
+        node.destroy_node()
+    finally:
+        rclpy.shutdown()
+    ok, detail = a13_verdict(pose_source, dynamic, static)
+    detail.update({"window_s": window_s, "tf_pairs": sorted(f"{a}->{b}" for a, b in dynamic),
+                   "tf_static_pairs": sorted(f"{a}->{b}" for a, b in static)})
+    return ok, detail
+
 PROBES = {
     "a1": ("aligner_identity", a1_aligner_identity),
     "a2": ("config_identity", a2_config_identity),
@@ -1090,6 +1152,7 @@ PROBES = {
 # the eight probes that can answer before the stack exists.
 POST_START_PROBES = {
     "a9": ("feed_streaming", a9_feed_streaming),
+    "a13": ("pose_authority", a13_pose_authority),
 }
 
 
@@ -1109,6 +1172,8 @@ def main(argv=None):
                                    "such as a9 are available ONLY through this flag)")
     ap.add_argument("--feed-log", default="/tmp/feed_node.log",
                     help="a9: the feed node's log, whose frame counter is sampled twice")
+    ap.add_argument("--pose-source", default=None,
+                    help="a13: the stamped pose source (default: FEED_POSE_SOURCE env)")
     ap.add_argument("--feed-window-s", type=float, default=12.0,
                     help="a9: seconds between the two samples")
     ap.add_argument("--expect-config-name")
@@ -1200,6 +1265,7 @@ def main(argv=None):
         "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha)),
         "a8": lambda: a8_stack_imports(install=args.install_tree),
         "a9": lambda: a9_feed_streaming(args.feed_log, args.feed_window_s),
+        "a13": lambda: a13_pose_authority(args.pose_source),
         # GA-281. REGISTERING A PROBE TAKES TWO EDITS, and the comment beside
         # POST_START_PROBES already says what happens when only one is made: the id lands in
         # the default set, `bound[pid]` raises KeyError, the probe records SKIPPED, and a
