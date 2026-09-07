@@ -450,6 +450,15 @@ export FEED_SEED="${FEED_SEED:-7}"
 export FEED_FPS="${FEED_FPS:-3}"
 export FEED_WALK="${FEED_WALK:-6}"
 export FEED_DWELL="${FEED_DWELL:-0}"
+# GA-339 (owner ruling 2026-09-07 ~13:50). ADAPTIVE dwell by default: after each walk burst the
+# feed HOLDS a still camera until the object manager's merge_pending.json says nothing is pending,
+# bounded by FEED_DWELL_MAX. FEED_DWELL (fixed frames) is IGNORED in adaptive mode and only read
+# under FEED_DWELL_MODE=fixed. 18 = gate 0.5 s + one ~5 s cycle at 3 f/s; 45 = 15 s, the owner's cap.
+# Adaptive bundles are a NEW FAMILY, stamped below as dwell_family.
+export FEED_DWELL_MODE="${FEED_DWELL_MODE:-adaptive}"
+export FEED_DWELL_MIN="${FEED_DWELL_MIN:-18}"
+export FEED_DWELL_MAX="${FEED_DWELL_MAX:-45}"
+export FEED_DWELL_SIGNAL_MAX_AGE_S="${FEED_DWELL_SIGNAL_MAX_AGE_S:-10}"
 # GA-330. Ground truth ON by default. The scene ships its semantic mesh, the feed host renders
 # it, the feed node publishes /gt/semantic_instance and the archive joins it per detection --
 # and the switch below was 0 in every one of the first 12 bundles, so not one row was ever
@@ -675,6 +684,10 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 : "${FEED_FPS:?not set at run_metadata.json}"
 : "${FEED_WALK:?not set at run_metadata.json}"
 : "${FEED_DWELL?not set at run_metadata.json}"   # no colon: 0 is the point of this variable
+: "${FEED_DWELL_MODE:?not set at run_metadata.json}"   # GA-339
+: "${FEED_DWELL_MIN:?not set at run_metadata.json}"
+: "${FEED_DWELL_MAX:?not set at run_metadata.json}"
+: "${FEED_DWELL_SIGNAL_MAX_AGE_S:?not set at run_metadata.json}"
 : "${FEED_MAPPING_SECONDS:?not set at run_metadata.json}"
 : "${MAPPING_ONLY?not set at run_metadata.json}"
 : "${FEED_SPAWN_FLOOR?not set at run_metadata.json}"   # no colon: empty means "no floor requested"   # no colon: 0 is a legal value
@@ -714,6 +727,12 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "tour_scan_frames": ${FEED_TEST_TOUR_SCAN:-12},
     "tour_note": "GA-256. 0 means NO TOUR: the agent turns in place (walk radius 0) or wanders a disc around its spawn, and never leaves the room it started in. Run 20260901_174810 recorded total_distance_m 0.0 over 1,566 steps for exactly that reason, which is why coverage, room segmentation and the held-pool resolution rate could not be measured from it. A positive value is the number of farthest-point-sampled waypoints toured on the traversed storey.",
     "dwell_frames": $FEED_DWELL,
+    "dwell_mode": "$FEED_DWELL_MODE",
+    "dwell_min_frames": $FEED_DWELL_MIN,
+    "dwell_max_frames": $FEED_DWELL_MAX,
+    "dwell_signal_path": "$RUN_DIR/merge_pending.json",
+    "dwell_signal_max_age_s": $FEED_DWELL_SIGNAL_MAX_AGE_S,
+    "dwell_family": "GA-339, 2026-09-07: dwell_mode adaptive holds a STILL camera after each walk burst until merge_pending.json reads pending 0 (fresh), bounded by dwell_max_frames. dwell_frames is IGNORED when dwell_mode is adaptive. Adaptive bundles are a NEW family: not comparable with dwell_frames 0 (2026-08-31 to 2026-09-07) or 60 (before). Per-run counters are in feed_stats.json (dwell_episodes, dwell_capped, dwell_released_on_zero, dwell_unknown_frames).",
     "fps": $FEED_FPS,
     "mapping_seconds": $FEED_MAPPING_SECONDS,
     "mapping_only": $([ "$MAPPING_ONLY" = "1" ] && echo true || echo false),
@@ -878,7 +897,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e FOUND_ALIGNER -e FOUND_ONTOLOGY_EXT -e FOUND_STORE_PATH -e FOUND_SCENE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
   -e MAPPING_ONLY -e FEED_MAPPING_SECONDS -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
-  -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
+  -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES -e FOUND_KG_DISJOINT -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
   -e FOUND_EMBED_MODEL -e FOUND_KG_TOP -e FOUND_KG_Z -e FOUND_LEXICAL -e FOUND_ONTOLOGY \
   -e FOUND_ROOM_TYPES_PATH -e FOUND_ROOM_VLM_API_KEY -e FOUND_ROOM_VLM_BASE_URL \
   -e FOUND_ROOM_VLM_MODEL -e FOUND_SCENE_INSTANCE -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \

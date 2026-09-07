@@ -47,6 +47,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "perception_module"))
 from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  (ROS-free)
 from config import CFG, CFG_PATH  # noqa: E402
+from adaptive_hold import AdaptiveHold  # noqa: E402  (pure Python, GA-339)
 import gt_codec as _gt_codec  # noqa: E402
 
 _print = functools.partial(print, flush=True)  # nohup/file logs must not buffer
@@ -653,8 +654,8 @@ else:
     print(f"[feed] dynamic dwell reads {_MERGE_PENDING_PATH}", flush=True)
 
 
-def _pending_merges():
-    """-> (pending, sweep) from the object manager's sidecar, or (None, None).
+def _read_signal():
+    """The object manager's merge_pending.json as a dict, or None when absent or unreadable.
 
     None means UNKNOWN, and the caller must not read it as zero: "nothing is pending" and
     "the file is not there yet" are different states, and treating the second as the first
@@ -663,9 +664,32 @@ def _pending_merges():
     try:
         with open(_MERGE_PENDING_PATH) as fh:
             d = json.load(fh)
-        return int(d.get("pending", 0)), int(d.get("sweep", -1))
-    except (OSError, ValueError, TypeError):
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _pending_merges():
+    """-> (pending, sweep) for the tour's dwell (GA-258), or (None, None)."""
+    d = _read_signal()
+    try:
+        return (int(d.get("pending", 0)), int(d.get("sweep", -1))) if d else (None, None)
+    except (ValueError, TypeError):
         return None, None
+
+
+# GA-339. ADAPTIVE HOLD in the walk/dwell burst loop (owner ruling 2026-09-07 ~13:50, design in
+# .handoff/plan/13-adaptive-dwell/topic.md). After every walk burst the agent HOLDS -- no action,
+# frames still published -- until a fresh signal says nothing is pending, bounded by FEED_DWELL_MAX.
+# Still, not turning: the tour's turn_left is 10 deg = 0.175 rad per tick, above the perception
+# gate's position_threshold 0.05, which is why the tour's dynamic dwell never produced a still
+# camera (run I, GA-337). Env only, no config keys, so there is exactly one reader per name.
+DWELL_MODE = os.environ.get("FEED_DWELL_MODE", "adaptive").strip().lower()
+if DWELL_MODE not in ("adaptive", "fixed"):
+    raise SystemExit(f"[feed] FEED_DWELL_MODE={DWELL_MODE!r}; expected adaptive or fixed")
+DWELL_MIN = int(os.environ.get("FEED_DWELL_MIN", 18))
+DWELL_MAX = int(os.environ.get("FEED_DWELL_MAX", 45))
+DWELL_SIGNAL_MAX_AGE_S = float(os.environ.get("FEED_DWELL_SIGNAL_MAX_AGE_S", 10.0))
 
 
 def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
@@ -1335,6 +1359,22 @@ def main():
     # run 19 became unrecoverable. This line costs nothing and fails closed.
     print(f"[feed] resolved: walk={walk_frames} dwell={dwell_frames} fps={FPS} "
           f"mapping_seconds={MAPPING_SECONDS} seed={SEED} scene={SCENE}", flush=True)
+    print(f"[feed] dwell_mode={DWELL_MODE} hold_min={DWELL_MIN} hold_max={DWELL_MAX} "
+          f"signal_max_age_s={DWELL_SIGNAL_MAX_AGE_S} signal={_MERGE_PENDING_PATH}"
+          + (" (FEED_DWELL is IGNORED in adaptive mode)" if DWELL_MODE == "adaptive" else ""),
+          flush=True)
+    hold = AdaptiveHold(DWELL_MIN, DWELL_MAX, DWELL_SIGNAL_MAX_AGE_S)
+    walk_count = 0
+
+    def _walk_step():
+        if tour is not None:
+            tour.step(agent)
+        else:
+            collided = agent.act("move_forward")
+            if collided:
+                turn = "turn_left" if rng.random() < 0.5 else "turn_right"
+                for _ in range(int(rng.integers(9, 18))):
+                    agent.act(turn)
     phase = 0
     t_start = time.time()
     mapping_announced = False
@@ -1390,19 +1430,27 @@ def main():
                 tour.step(agent)
             else:
                 agent.act("move_forward")
+        elif DWELL_MODE == "adaptive":
+            # GA-339. Walk `walk_frames`, then HOLD (no action) until the signal releases or the cap.
+            if hold.active:
+                label = "HOLD"
+                verdict = hold.step(_read_signal(), time.time())
+                if verdict != hold.HOLD:
+                    print(f"[feed] hold {hold.episodes}: {verdict} after {hold.frames} frames, "
+                          f"need {hold.last_need if hold.last_need is not None else '?'}", flush=True)
+                    walk_count = 0
+            else:
+                label = "WALK"
+                _walk_step()
+                walk_count += 1
+                if walk_count >= walk_frames:
+                    hold.start(_read_signal(), time.time())
         else:
             phase = (phase + 1) % (walk_frames + dwell_frames)
             moving = phase < walk_frames
             label = "WALK" if moving else "DWELL"
             if moving:
-                if tour is not None:
-                    tour.step(agent)
-                else:
-                    collided = agent.act("move_forward")
-                    if collided:
-                        turn = "turn_left" if rng.random() < 0.5 else "turn_right"
-                        for _ in range(int(rng.integers(9, 18))):
-                            agent.act(turn)
+                _walk_step()
 
         # OWNER RULING 20. Checked AFTER the motion and BEFORE the observation, so a frame is
         # never rendered from a pose the guard is about to reject — a corrected teleport would
@@ -1425,7 +1473,12 @@ def main():
             ros_agent_pos, ros_agent_quat = habitat_pose_to_ros(ag_state.position, [ag_state.rotation.x, ag_state.rotation.y, ag_state.rotation.z, ag_state.rotation.w])
             yaw = math.atan2(2.0 * (ros_agent_quat[3]*ros_agent_quat[2] + ros_agent_quat[0]*ros_agent_quat[1]), 1.0 - 2.0 * (ros_agent_quat[1]**2 + ros_agent_quat[2]**2))
 
-            phase_rem = (walk_frames - (phase % (walk_frames + dwell_frames))) if label == "WALK" else (dwell_frames - (phase % (walk_frames + dwell_frames) - walk_frames)) if label == "DWELL" else 0
+            if label == "HOLD":
+                phase_rem = -1   # GA-339: unknown by construction during an adaptive hold (rule 5: never 0)
+            elif label == "WALK" and DWELL_MODE == "adaptive":
+                phase_rem = walk_frames - walk_count
+            else:
+                phase_rem = (walk_frames - (phase % (walk_frames + dwell_frames))) if label == "WALK" else (dwell_frames - (phase % (walk_frames + dwell_frames) - walk_frames)) if label == "DWELL" else 0
             feed_stats = {
                 "elapsed_sec": round(time.time() - t_start_sim, 1),
                 "total_steps": total_steps,
@@ -1435,8 +1488,15 @@ def main():
                 "total_distance_m": round(total_distance_m, 2),
                 "phase": label,
                 "phase_walk_frames": walk_frames,
-                "phase_dwell_frames": dwell_frames,
-                "phase_remaining_frames": max(0, phase_rem),
+                # GA-339: in adaptive mode this is the length of the CURRENT hold, so readers that
+                # plot it keep working; the fixed arm keeps the configured value.
+                "phase_dwell_frames": hold.frames if label == "HOLD" else dwell_frames,
+                "phase_remaining_frames": phase_rem if phase_rem < 0 else max(0, phase_rem),
+                "dwell_mode": DWELL_MODE,
+                "dwell_min_frames": DWELL_MIN,
+                "dwell_max_frames": DWELL_MAX,
+                "dwell_signal_max_age_s": DWELL_SIGNAL_MAX_AGE_S,
+                **hold.stats(),
                 "mapping_seconds": MAPPING_SECONDS,
                 # GA-219: the walk radius was a measurement nobody could reproduce because no
                 # artefact recorded it. 0 in test mode means turn-in-place.
