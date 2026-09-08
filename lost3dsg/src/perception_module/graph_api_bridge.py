@@ -1574,6 +1574,46 @@ def proxy_frame():
         return Response(content=frame, media_type="image/jpeg")
     return Response(status_code=503)
 
+@app.get("/last_perception/meta")
+def last_perception_meta():
+    """Describe the retained cycle image independently from the live feed."""
+    node = get_node()
+    frame = getattr(node, "latest_jpeg", None) if node else None
+    captured_at = float(getattr(node, "last_frame_time", 0.0) or 0.0) if node else 0.0
+    if not frame or not captured_at:
+        return {
+            "available": False,
+            "captured_at": None,
+            "age_s": None,
+            "revision": None,
+            "url": None,
+        }
+    return {
+        "available": True,
+        "captured_at": captured_at,
+        "age_s": round(max(0.0, time.time() - captured_at), 2),
+        "revision": str(int(captured_at * 1_000_000)),
+        "url": "/last_perception.jpg",
+    }
+
+
+@app.get("/last_perception.jpg")
+def last_perception_frame(request: Request = None):
+    """Return the newest annotated cycle even after the live feed resumes."""
+    node = get_node()
+    frame = getattr(node, "latest_jpeg", None) if node else None
+    captured_at = float(getattr(node, "last_frame_time", 0.0) or 0.0) if node else 0.0
+    if not frame or not captured_at:
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
+    etag = f'"perception-{int(captured_at * 1_000_000)}"'
+    if request is not None and request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={"ETag": etag, "Cache-Control": "no-cache, must-revalidate"},
+    )
+
 @app.get("/feed")
 @app.get("/feed.mjpg")
 def proxy_feed():

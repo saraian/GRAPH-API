@@ -77,6 +77,64 @@
     }
     .feed-img { height: 100%; max-width: 100%; object-fit: contain; object-position: center center; }
 
+    #panelFeed.standard-feed-grid {
+      display: grid !important;
+      grid-template-columns: minmax(190px, 250px) minmax(0, 1fr) minmax(230px, 285px);
+      grid-template-areas: "map cameras controls";
+      align-items: stretch; gap: 8px; padding: 8px; background: #05070c;
+    }
+    #panelFeed.standard-feed-grid #feedWrapper {
+      grid-area: cameras; padding: 0 !important; min-width: 0;
+    }
+    #panelFeed.standard-feed-grid .minimap-hud {
+      grid-area: map; position: static; inset: auto; width: auto; height: auto;
+      min-width: 0; transform: none;
+    }
+    #panelFeed.standard-feed-grid .minimap-hud:hover { transform: none; }
+    #panelFeed.standard-feed-grid .teleop-overlay {
+      grid-area: controls; position: static; inset: auto; width: auto; min-width: 0;
+      overflow-y: auto;
+    }
+    .standard-camera-strip {
+      display: flex !important; flex-direction: column; align-items: stretch !important;
+      justify-content: stretch !important; min-width: 0; min-height: 0; overflow: hidden;
+    }
+    .standard-camera-pane {
+      position: relative; min-width: 0; height: 100%; overflow: hidden;
+      display: flex; align-items: center; justify-content: center; background: #000;
+    }
+    #liveFeedPane { flex: 0 0 calc(50% - 3px); }
+    #lastPerceptionPane { flex: 1 1 0; border-top: 1px solid #1e3a5f; }
+    .standard-camera-pane .feed-img {
+      display: block; width: 100%; height: 100%; min-width: 0; object-fit: contain;
+    }
+    .camera-pane-label {
+      position: absolute; top: 6px; left: 50%; transform: translateX(-50%); z-index: 4;
+      display: flex; align-items: center; gap: 5px; max-width: calc(100% - 12px);
+      padding: 3px 7px; border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 5px;
+      color: #7dd3fc; background: rgba(2, 6, 23, 0.78); backdrop-filter: blur(6px);
+      font: 800 0.58rem ui-monospace, monospace; letter-spacing: 0.04em; white-space: nowrap;
+    }
+    #lastPerceptionAge { color: #34d399; }
+    .camera-pane-age {
+      position: absolute; left: 6px; bottom: 6px; z-index: 4; padding: 3px 5px;
+      border: 1px solid rgba(52, 211, 153, 0.45); border-radius: 5px;
+      background: rgba(2, 6, 23, 0.8); font: 800 0.54rem ui-monospace, monospace;
+      white-space: nowrap;
+    }
+    .last-perception-empty {
+      position: absolute; inset: 0; z-index: 2; display: flex; align-items: center;
+      justify-content: center; padding: 28px 12px 12px; text-align: center;
+      color: #94a3b8; background: #05070c; font: 600 0.66rem ui-monospace, monospace;
+    }
+    .last-perception-refresh {
+      position: absolute; right: 6px; bottom: 6px; z-index: 4;
+      border: 1px solid rgba(56, 189, 248, 0.5); border-radius: 5px; padding: 3px 6px;
+      color: #7dd3fc; background: rgba(2, 6, 23, 0.8); font-size: 0.56rem;
+      font-weight: 800; cursor: pointer;
+    }
+    #resizerLivePerception { z-index: 40; }
+
     /* Feed / Pipeline Degraded Collapsible Toast (Top-Right Corner) */
     .feed-offline-overlay {
       display: none; position: absolute; top: 8px; right: 8px; max-width: 250px; min-width: 170px;
@@ -601,6 +659,10 @@
       .feed-container { --hud-col: 234px; }
       .minimap-modal { width: 94vw; }
       .minimap-modal > div[style*="grid"] { grid-template-columns: 1fr !important; }
+      #panelFeed.standard-feed-grid {
+        height: auto !important; grid-template-columns: 1fr; grid-template-rows: 56vh 220px auto;
+        grid-template-areas: "cameras" "map" "controls"; overflow: auto;
+      }
     }
   </style>
 </head>
@@ -624,22 +686,35 @@
       <!-- Left Column: Feed + Graph & Details -->
       <div id="colLeft" class="col-pane" style="width: 58%; min-width: 350px;">
         <!-- Top Left: Live Simulator Feed -->
-        <div id="panelFeed" class="feed-container" style="height: 46%; min-height: 180px; position: relative;">
-          <div id="feedWrapper" style="position:relative; height:100%; width:100%; padding:0 var(--hud-col); box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center;">
-            <img id="habitatFeedImg" class="feed-img" src="/feed" />
+        <div id="panelFeed" class="feed-container standard-feed-grid" style="height: 46%; min-height: 180px; position: relative;">
+          <div id="feedWrapper" class="standard-camera-strip" style="position:relative; height:100%; width:100%; padding:0 var(--hud-col); box-sizing:border-box;">
+            <section id="liveFeedPane" class="standard-camera-pane" aria-label="Live camera feed">
+              <span class="camera-pane-label"><i data-lucide="video" style="width:11px;height:11px;"></i> LIVE FEED</span>
+              <img id="habitatFeedImg" class="feed-img" src="/feed" alt="Live camera feed" />
 
-            <!-- Collapsible Pipeline Warning Card (Top-Right Corner) -->
-            <div id="feedOfflineOverlay" class="feed-offline-overlay">
-              <div class="toast-header" onclick="toggleToastCollapse()" style="display:flex; align-items:center; justify-content:space-between; width:100%; cursor:pointer; gap:6px;">
-                <span style="display:flex; align-items:center; gap:4px; font-weight:800; font-size:0.68rem; color:#ef4444; text-transform:uppercase;">
-                  <i data-lucide="alert-triangle" style="width:12px;height:12px;color:#ef4444;"></i> PIPELINE DEGRADED
-                </span>
-                <i id="toastChevron" data-lucide="chevron-down" style="width:12px;height:12px;color:#cbd5e1;transition:transform 0.2s;"></i>
+              <!-- Collapsible Pipeline Warning Card (Top-Right Corner) -->
+              <div id="feedOfflineOverlay" class="feed-offline-overlay">
+                <div class="toast-header" onclick="toggleToastCollapse()" style="display:flex; align-items:center; justify-content:space-between; width:100%; cursor:pointer; gap:6px;">
+                  <span style="display:flex; align-items:center; gap:4px; font-weight:800; font-size:0.68rem; color:#ef4444; text-transform:uppercase;">
+                    <i data-lucide="alert-triangle" style="width:12px;height:12px;color:#ef4444;"></i> PIPELINE DEGRADED
+                  </span>
+                  <i id="toastChevron" data-lucide="chevron-down" style="width:12px;height:12px;color:#cbd5e1;transition:transform 0.2s;"></i>
+                </div>
+                <div id="overlayDetails" class="toast-body" style="display:block; color:#cbd5e1; font-size:0.65rem; line-height:1.3; margin-top:3px; border-top:1px solid rgba(255,255,255,0.08); padding-top:3px;">
+                  Component offline details
+                </div>
               </div>
-              <div id="overlayDetails" class="toast-body" style="display:block; color:#cbd5e1; font-size:0.65rem; line-height:1.3; margin-top:3px; border-top:1px solid rgba(255,255,255,0.08); padding-top:3px;">
-                Component offline details
-              </div>
-            </div>
+            </section>
+
+            <div id="resizerLivePerception" class="resizer-v" title="Drag to resize Live Feed / Last Perception Result"></div>
+
+            <section id="lastPerceptionPane" class="standard-camera-pane" aria-label="Last perception result">
+              <span class="camera-pane-label"><i data-lucide="scan-search" style="width:11px;height:11px;"></i> LAST PERCEPTION</span>
+              <b id="lastPerceptionAge" class="camera-pane-age">WAITING</b>
+              <img id="lastPerceptionImg" class="feed-img" alt="Latest annotated perception frame" />
+              <div id="lastPerceptionEmpty" class="last-perception-empty">Waiting for the first annotated perception frame</div>
+              <button class="last-perception-refresh" type="button" onclick="refreshLastPerception(true)" title="Reload the retained result">↻ REFRESH</button>
+            </section>
           </div>
 
           <!-- Aero Glass BEV Minimap -->
@@ -2433,6 +2508,47 @@
         if (textEl) textEl.dataset.source = stamp.frame_source;
       }
     }
+
+    // Keep the completed perception cycle visible while the live feed continues.
+    // Metadata polling avoids downloading the same annotated JPEG every two seconds.
+    let lastPerceptionRevision = null;
+    async function refreshLastPerception(force = false) {
+      const ageEl = document.getElementById('lastPerceptionAge');
+      const img = document.getElementById('lastPerceptionImg');
+      const empty = document.getElementById('lastPerceptionEmpty');
+      if (!ageEl || !img || !empty) return;
+      try {
+        const response = await fetch('/last_perception/meta', { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const meta = await response.json();
+        if (!meta.available) {
+          ageEl.textContent = 'WAITING';
+          empty.textContent = 'Waiting for the first annotated perception frame';
+          empty.style.display = 'flex';
+          return;
+        }
+        ageEl.textContent = `${Number(meta.age_s || 0).toFixed(0)}s AGO`;
+        if (force || meta.revision !== lastPerceptionRevision) {
+          lastPerceptionRevision = meta.revision;
+          img.src = `${meta.url}?v=${encodeURIComponent(meta.revision)}${force ? '&reload=' + Date.now() : ''}`;
+        }
+      } catch (err) {
+        ageEl.textContent = 'UNAVAILABLE';
+        empty.textContent = `Last perception result unavailable: ${err.message}`;
+        empty.style.display = 'flex';
+      }
+    }
+    document.getElementById('lastPerceptionImg')?.addEventListener('load', () => {
+      const empty = document.getElementById('lastPerceptionEmpty');
+      if (empty) empty.style.display = 'none';
+    });
+    document.getElementById('lastPerceptionImg')?.addEventListener('error', () => {
+      const empty = document.getElementById('lastPerceptionEmpty');
+      if (empty) {
+        empty.textContent = 'Annotated frame could not be loaded';
+        empty.style.display = 'flex';
+      }
+    });
 
     function checkFeedHeartbeat() {
       // An MJPEG <img> fires `load` ONCE, for its first part; every later frame repaints
@@ -4503,6 +4619,9 @@
       const panelBottomLeft = document.getElementById('panelBottomLeft');
       const panelLogs = document.getElementById('panelLogs');
       const panelWidgets = document.getElementById('panelWidgets');
+      const feedWrapper = document.getElementById('feedWrapper');
+      const liveFeedPane = document.getElementById('liveFeedPane');
+      const lastPerceptionPane = document.getElementById('lastPerceptionPane');
 
       function saveResizerGeometry() {
         try {
@@ -4512,7 +4631,8 @@
             panelFeed: panelFeed ? panelFeed.style.height : null,
             panelBottomLeft: panelBottomLeft ? panelBottomLeft.style.height : null,
             panelLogs: panelLogs ? panelLogs.style.height : null,
-            panelWidgets: panelWidgets ? panelWidgets.style.height : null
+            panelWidgets: panelWidgets ? panelWidgets.style.height : null,
+            liveFeedPane: liveFeedPane ? liveFeedPane.style.flexBasis : null
           };
           localStorage.setItem(RESIZER_STORAGE_KEY, JSON.stringify(geom));
         } catch (err) {
@@ -4536,6 +4656,9 @@
           if (geom.panelLogs && geom.panelWidgets && panelLogs && panelWidgets) {
             panelLogs.style.height = geom.panelLogs;
             panelWidgets.style.height = geom.panelWidgets;
+          }
+          if (geom.liveFeedPane && liveFeedPane) {
+            liveFeedPane.style.flexBasis = geom.liveFeedPane;
           }
         } catch (err) {
           console.debug('[Resizer] Failed to restore geometry:', err);
@@ -4615,6 +4738,16 @@
         panelLogs.style.height = `${logsPct}%`;
         panelWidgets.style.height = `${100 - logsPct}%`;
       }, null, true);
+
+      // 4. Vertical Splitter: live feed vs retained perception result.
+      setupSplitter(document.getElementById('resizerLivePerception'), (cx, cyPos) => {
+        if (!feedWrapper || !liveFeedPane || !lastPerceptionPane) return;
+        const rect = feedWrapper.getBoundingClientRect();
+        const usableHeight = Math.max(1, rect.height - 6);
+        const minPane = Math.min(100, usableHeight * 0.35);
+        const liveHeight = Math.max(minPane, Math.min(usableHeight - minPane, cyPos - rect.top));
+        liveFeedPane.style.flexBasis = `${(liveHeight / usableHeight) * 100}%`;
+      }, null, true);
     }
 
     function startDashboard() {
@@ -4640,6 +4773,8 @@
         setAuditFilter('all');
       });
       initFeedInteraction();
+      refreshLastPerception();
+      setInterval(refreshLastPerception, 2000);
       setupBEVInteractions('bevCanvasHUD');
       makeDockable(document.getElementById('minimapHud'), 'minimap', { minW: 160, aspect: 250 / 300 });
       makeDockable(document.getElementById('teleopOverlay'), 'teleop', { minW: 170, aspect: null });
