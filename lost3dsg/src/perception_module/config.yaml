@@ -83,27 +83,33 @@ rooms:
   # Direct obstacle reinforcement is deliberately off: tall furniture can also be planar.
   enable_detected_wall_support: true
   detected_wall_reinforce_obstacles: false
-  detected_wall_min_observations: 4
+  detected_wall_min_observations: 1
   detected_wall_min_length_m: 1.50
   detected_wall_min_vertical_extent_m: 1.20
   detected_wall_max_rms_m: 0.03
+  detected_wall_merge_angle_deg: 8.0
+  detected_wall_merge_distance_m: 0.18
+  detected_wall_merge_gap_m: 0.50
   detected_wall_thickness_m: 0.12
   detected_wall_door_endpoint_radius_m: 0.20
-  detected_wall_door_min_support: 0.66
+  detected_wall_door_min_support: 0.16
   detected_wall_bottleneck_ratio: 0.90
   gvd_wall_network_max_fill_ratio: 0.35
   gvd_3d_nonwall_component_ratio: 0.05
   gvd_door_nms_m: 1.20
   gvd_critical_endpoint_margin_m: 0.20
   min_room_area_m2: 1.5
+  # A split/merge or incompatible replacement must persist across this many map updates.
+  # Compatible boundary refinements still apply immediately.
+  room_partition_change_confirmations: 1
 
 habitat:
   localization_mode: rtabmap  # rtabmap | ground_truth
-  scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb
+  scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb
   scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb
+  nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb
   nav_scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.navmesh
+  nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.navmesh
   # keep the simulated agent on the floor it starts on: the 2D grid cannot separate
   # storeys and HM3D navmeshes join them through the stairs (goal filter on height)
   single_floor: true

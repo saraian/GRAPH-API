@@ -305,11 +305,11 @@ _DEFAULTS = {
     },
     "habitat": {  # HM3D (Matterport) scenes; defaults = previous hardcoded values
         "localization_mode": "rtabmap",
-        "scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb",
+        "scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb",
         "scene_dataset": "/root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json",
-        "nav_scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb",
+        "nav_scene": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb",
         "nav_scene_dataset": "/root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json",
-        "nav_navmesh": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.navmesh",
+        "nav_navmesh": "/root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.navmesh",
         "width": 640,
         "height": 480,
         # keep the agent on the floor it starts on: a 2D grid cannot separate

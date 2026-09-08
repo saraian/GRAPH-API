@@ -95,8 +95,18 @@ class MapDatabase(Store):
             # that already exists, so a database written before GA-44 would keep the
             # old object_history and the next insert would fail with
             # "no such column: object_uuid". Migrate it forward instead.
-            cols = {r[1] for r in conn.execute("PRAGMA table_info(object_history)")}
-            if cols and "object_uuid" not in cols:
+            # Both sides of the lookup/history join need the durable identity. GA-44 migrated
+            # only object_history, leaving an existing `objects` table without object_uuid;
+            # the first room reassignment then crashed in _find_active's SELECT.
+            object_cols = {r[1] for r in conn.execute("PRAGMA table_info(objects)")}
+            if object_cols and "object_uuid" not in object_cols:
+                conn.execute("ALTER TABLE objects ADD COLUMN object_uuid TEXT")
+                # Old rows have no trustworthy durable ID. NULL makes them an explicit miss;
+                # inventing one from label/rowid could attach future events to the wrong object.
+                print("[MapDB] migrated objects: added nullable object_uuid")
+
+            history_cols = {r[1] for r in conn.execute("PRAGMA table_info(object_history)")}
+            if history_cols and "object_uuid" not in history_cols:
                 conn.execute("ALTER TABLE object_history ADD COLUMN object_uuid TEXT")
                 # Backfill from the row number while it still resolves. After this the
                 # history keeps a durable identity even if the rowids are ever reused.
@@ -111,6 +121,9 @@ class MapDatabase(Store):
             # column that is not there yet raises before the migration can run.
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_hist_uuid ON object_history(object_uuid)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_obj_uuid ON objects(object_uuid)"
             )
 
     # ------------------------------------------------------------------ #
