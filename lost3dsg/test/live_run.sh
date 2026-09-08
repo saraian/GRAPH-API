@@ -132,6 +132,20 @@ z=d.get('nearest_scene_floor'); z=d['floor_height_m'] if z is None else z
 print(f'floor_{z:+.2f}')" "${db}.floor.json")
   local dest="$FOUND_ROOT/maps/${SCENE_ARG}/${fl}"
   mkdir -p "$dest"
+  # NEVER OVERWRITE A PUBLISHED MAP. The copy in the library is the only copy (GA-295), and the cp
+  # below would replace it silently. A re-map of a floor moves the previous map aside under its
+  # own publish date, sidecars with it, the way the 640x480 map was kept by hand on 7 Sep.
+  # ponytail: named by mtime, not resolution; the provenance sidecar (camera_db) says the rest.
+  if [ -f "$dest/rtabmap.db" ]; then
+    local old; old="rtabmap_superseded_$(date -r "$dest/rtabmap.db" +%Y%m%d_%H%M)"
+    local s; for s in "" .floor.json .params-sha .provenance.json .INTEGRITY_OK; do
+      [ -e "$dest/rtabmap.db$s" ] && mv -n "$dest/rtabmap.db$s" "$dest/$old.db$s"
+    done
+    # mv -n refuses when $old already exists (two publishes in one minute); then the cp below
+    # would overwrite after all. Refuse to publish instead of pretending the move happened.
+    [ ! -e "$dest/rtabmap.db" ] || { echo "!! map NOT published: previous map could not be moved aside ($old.db exists)"; return 1; }
+    echo "    previous map moved aside: $dest/$old.db"
+  fi
   # COPY, NOT HARD LINK. Owner ruling GA-295(c), 4 Sep: the library is an INDEPENDENT copy. The
   # link era was a disk-space decision when /DATA was 99% full (it is ~72% now); its cost was
   # measured on hm3d_00861: the canonical map, its source bundle and a localize db were ONE
