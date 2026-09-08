@@ -77,6 +77,64 @@
     }
     .feed-img { height: 100%; max-width: 100%; object-fit: contain; object-position: center center; }
 
+    #panelFeed.standard-feed-grid {
+      display: grid !important;
+      grid-template-columns: minmax(190px, 250px) minmax(0, 1fr) minmax(230px, 285px);
+      grid-template-areas: "map cameras controls";
+      align-items: stretch; gap: 8px; padding: 8px; background: #05070c;
+    }
+    #panelFeed.standard-feed-grid #feedWrapper {
+      grid-area: cameras; padding: 0 !important; min-width: 0;
+    }
+    #panelFeed.standard-feed-grid .minimap-hud {
+      grid-area: map; position: static; inset: auto; width: auto; height: auto;
+      min-width: 0; transform: none;
+    }
+    #panelFeed.standard-feed-grid .minimap-hud:hover { transform: none; }
+    #panelFeed.standard-feed-grid .teleop-overlay {
+      grid-area: controls; position: static; inset: auto; width: auto; min-width: 0;
+      overflow-y: auto;
+    }
+    .standard-camera-strip {
+      display: flex !important; flex-direction: column; align-items: stretch !important;
+      justify-content: stretch !important; min-width: 0; min-height: 0; overflow: hidden;
+    }
+    .standard-camera-pane {
+      position: relative; min-width: 0; height: 100%; overflow: hidden;
+      display: flex; align-items: center; justify-content: center; background: #000;
+    }
+    #liveFeedPane { flex: 0 0 calc(50% - 3px); }
+    #lastPerceptionPane { flex: 1 1 0; border-top: 1px solid #1e3a5f; }
+    .standard-camera-pane .feed-img {
+      display: block; width: 100%; height: 100%; min-width: 0; object-fit: contain;
+    }
+    .camera-pane-label {
+      position: absolute; top: 6px; left: 50%; transform: translateX(-50%); z-index: 4;
+      display: flex; align-items: center; gap: 5px; max-width: calc(100% - 12px);
+      padding: 3px 7px; border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 5px;
+      color: #7dd3fc; background: rgba(2, 6, 23, 0.78); backdrop-filter: blur(6px);
+      font: 800 0.58rem ui-monospace, monospace; letter-spacing: 0.04em; white-space: nowrap;
+    }
+    #lastPerceptionAge { color: #34d399; }
+    .camera-pane-age {
+      position: absolute; left: 6px; bottom: 6px; z-index: 4; padding: 3px 5px;
+      border: 1px solid rgba(52, 211, 153, 0.45); border-radius: 5px;
+      background: rgba(2, 6, 23, 0.8); font: 800 0.54rem ui-monospace, monospace;
+      white-space: nowrap;
+    }
+    .last-perception-empty {
+      position: absolute; inset: 0; z-index: 2; display: flex; align-items: center;
+      justify-content: center; padding: 28px 12px 12px; text-align: center;
+      color: #94a3b8; background: #05070c; font: 600 0.66rem ui-monospace, monospace;
+    }
+    .last-perception-refresh {
+      position: absolute; right: 6px; bottom: 6px; z-index: 4;
+      border: 1px solid rgba(56, 189, 248, 0.5); border-radius: 5px; padding: 3px 6px;
+      color: #7dd3fc; background: rgba(2, 6, 23, 0.8); font-size: 0.56rem;
+      font-weight: 800; cursor: pointer;
+    }
+    #resizerLivePerception { z-index: 40; }
+
     /* Feed / Pipeline Degraded Collapsible Toast (Top-Right Corner) */
     .feed-offline-overlay {
       display: none; position: absolute; top: 8px; right: 8px; max-width: 250px; min-width: 170px;
@@ -145,7 +203,16 @@
       box-shadow: 0 8px 32px rgba(0,0,0,0.5); cursor: pointer; transition: all 0.2s ease;
       display: flex; flex-direction: column; z-index: 20;
     }
-    .minimap-hud:hover { border-color: #10b981; box-shadow: 0 0 16px rgba(16, 185, 129, 0.4); transform: scale(1.03); }
+    /* No hover scale: it moved the drag grip and the resize corner under the pointer (GA-348). */
+    .minimap-hud:hover { border-color: #10b981; box-shadow: 0 0 16px rgba(16, 185, 129, 0.4); }
+    /* GA-348: both feed overlays dock to the left or right border, drag to move, drag the corner to resize. */
+    .minimap-hud.dragging, .teleop-overlay.dragging { transform: none !important; transition: none !important; opacity: 0.85; }
+    .dock-grip { cursor: grab; user-select: none; touch-action: none; }
+    .dock-grip:active { cursor: grabbing; }
+    .dock-resize { position: absolute; right: 2px; bottom: 2px; width: 14px; height: 14px; cursor: nwse-resize; touch-action: none; z-index: 2;
+      background: linear-gradient(135deg, transparent 50%, rgba(56,189,248,0.7) 50%); border-bottom-right-radius: 8px; }
+    .teleop-grip { display:flex; align-items:center; justify-content:center; gap:6px; font-size:0.56rem; color:var(--muted);
+      text-transform:uppercase; letter-spacing:0.08em; padding:0 0 2px; }
     .minimap-hud-header {
       display: flex; align-items: center; justify-content: space-between;
       padding: 4px 8px; background: rgba(15, 23, 42, 0.85); font-size: 0.68rem; font-weight: 700;
@@ -592,6 +659,10 @@
       .feed-container { --hud-col: 234px; }
       .minimap-modal { width: 94vw; }
       .minimap-modal > div[style*="grid"] { grid-template-columns: 1fr !important; }
+      #panelFeed.standard-feed-grid {
+        height: auto !important; grid-template-columns: 1fr; grid-template-rows: 56vh 220px auto;
+        grid-template-areas: "cameras" "map" "controls"; overflow: auto;
+      }
     }
   </style>
 </head>
@@ -615,27 +686,40 @@
       <!-- Left Column: Feed + Graph & Details -->
       <div id="colLeft" class="col-pane" style="width: 58%; min-width: 350px;">
         <!-- Top Left: Live Simulator Feed -->
-        <div id="panelFeed" class="feed-container" style="height: 46%; min-height: 180px; position: relative;">
-          <div id="feedWrapper" style="position:relative; height:100%; width:100%; padding:0 var(--hud-col); box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center;">
-            <img id="habitatFeedImg" class="feed-img" src="/feed" />
+        <div id="panelFeed" class="feed-container standard-feed-grid" style="height: 46%; min-height: 180px; position: relative;">
+          <div id="feedWrapper" class="standard-camera-strip" style="position:relative; height:100%; width:100%; padding:0 var(--hud-col); box-sizing:border-box;">
+            <section id="liveFeedPane" class="standard-camera-pane" aria-label="Live camera feed">
+              <span class="camera-pane-label"><i data-lucide="video" style="width:11px;height:11px;"></i> LIVE FEED</span>
+              <img id="habitatFeedImg" class="feed-img" src="/feed" alt="Live camera feed" />
 
-            <!-- Collapsible Pipeline Warning Card (Top-Right Corner) -->
-            <div id="feedOfflineOverlay" class="feed-offline-overlay">
-              <div class="toast-header" onclick="toggleToastCollapse()" style="display:flex; align-items:center; justify-content:space-between; width:100%; cursor:pointer; gap:6px;">
-                <span style="display:flex; align-items:center; gap:4px; font-weight:800; font-size:0.68rem; color:#ef4444; text-transform:uppercase;">
-                  <i data-lucide="alert-triangle" style="width:12px;height:12px;color:#ef4444;"></i> PIPELINE DEGRADED
-                </span>
-                <i id="toastChevron" data-lucide="chevron-down" style="width:12px;height:12px;color:#cbd5e1;transition:transform 0.2s;"></i>
+              <!-- Collapsible Pipeline Warning Card (Top-Right Corner) -->
+              <div id="feedOfflineOverlay" class="feed-offline-overlay">
+                <div class="toast-header" onclick="toggleToastCollapse()" style="display:flex; align-items:center; justify-content:space-between; width:100%; cursor:pointer; gap:6px;">
+                  <span style="display:flex; align-items:center; gap:4px; font-weight:800; font-size:0.68rem; color:#ef4444; text-transform:uppercase;">
+                    <i data-lucide="alert-triangle" style="width:12px;height:12px;color:#ef4444;"></i> PIPELINE DEGRADED
+                  </span>
+                  <i id="toastChevron" data-lucide="chevron-down" style="width:12px;height:12px;color:#cbd5e1;transition:transform 0.2s;"></i>
+                </div>
+                <div id="overlayDetails" class="toast-body" style="display:block; color:#cbd5e1; font-size:0.65rem; line-height:1.3; margin-top:3px; border-top:1px solid rgba(255,255,255,0.08); padding-top:3px;">
+                  Component offline details
+                </div>
               </div>
-              <div id="overlayDetails" class="toast-body" style="display:block; color:#cbd5e1; font-size:0.65rem; line-height:1.3; margin-top:3px; border-top:1px solid rgba(255,255,255,0.08); padding-top:3px;">
-                Component offline details
-              </div>
-            </div>
+            </section>
+
+            <div id="resizerLivePerception" class="resizer-v" title="Drag to resize Live Feed / Last Perception Result"></div>
+
+            <section id="lastPerceptionPane" class="standard-camera-pane" aria-label="Last perception result">
+              <span class="camera-pane-label"><i data-lucide="scan-search" style="width:11px;height:11px;"></i> LAST PERCEPTION</span>
+              <b id="lastPerceptionAge" class="camera-pane-age">WAITING</b>
+              <img id="lastPerceptionImg" class="feed-img" alt="Latest annotated perception frame" />
+              <div id="lastPerceptionEmpty" class="last-perception-empty">Waiting for the first annotated perception frame</div>
+              <button class="last-perception-refresh" type="button" onclick="refreshLastPerception(true)" title="Reload the retained result">↻ REFRESH</button>
+            </section>
           </div>
 
           <!-- Aero Glass BEV Minimap -->
-          <div class="minimap-hud">
-            <div class="minimap-hud-header" onclick="toggleMinimapModal(true)">
+          <div class="minimap-hud" id="minimapHud">
+            <div class="minimap-hud-header dock-grip" onclick="toggleMinimapModal(true)" title="Click to expand; drag to the left or right border">
               <span style="display:flex;align-items:center;gap:4px;"><i data-lucide="compass" style="width:12px;height:12px;"></i> BEV</span>
               <div style="display:flex;align-items:center;gap:4px;">
                 <select id="hudFloorSelect" class="viz-btn" style="padding:1px 3px; font-size:0.56rem; background:#0f172a; text-transform:none;" onchange="event.stopPropagation(); onFloorChange(this.value);">
@@ -649,7 +733,8 @@
           </div>
 
           <!-- Aero Glass D-Pad Controller Overlay -->
-          <div class="teleop-overlay">
+          <div class="teleop-overlay" id="teleopOverlay">
+            <div class="teleop-grip dock-grip" title="Drag to the left or right border; drag the corner to resize">&#8942;&#8942; TELEOP</div>
             <div class="dpad-grid">
               <div></div>
               <button class="dpad-btn" onclick="sendLinearAction('forward')" title="Forward"><i data-lucide="chevron-up" style="width:16px;height:16px;"></i></button>
@@ -837,6 +922,15 @@
             <button id="tabBtnComputation" class="tab-btn" onclick="switchTab('computation')"><i data-lucide="cpu" style="width:13px;height:13px;"></i> COMPUTATION</button>
             <button id="tabBtnSettings" class="tab-btn" onclick="switchTab('settings')"><i data-lucide="sliders" style="width:13px;height:13px;"></i> SETTINGS</button>
             <button id="tabBtnStats" class="tab-btn" onclick="switchTab('stats')"><i data-lucide="activity" style="width:13px;height:13px;"></i> METRICS</button>
+            <button id="tabBtnScene3d" class="tab-btn" onclick="switchTab('scene3d')" title="The 3D scene (measured boxes over the ground-truth mesh). Loads in the background from page open, so it is ready when you click."><i data-lucide="cuboid" style="width:13px;height:13px;"></i> 3D</button>
+          </div>
+
+          <!-- GA-347: /scene3d as a tab, in live and replay alike. The page is embedded whole (it
+               owns its three.js, mesh loader and controls); the frame is in the DOM from page load
+               so the 38 MB mesh streams in while the user is on another tab. -->
+          <div id="tabContentScene3d" class="tab-content" style="padding: 0;">
+            <iframe id="scene3dFrame" src="/scene3d" title="Scene 3D" loading="eager"
+                    style="flex:1; width:100%; height:100%; border:0; background:#090d16;"></iframe>
           </div>
 
           <!-- Computation & Pipeline Stage Tracker Tab -->
@@ -1030,6 +1124,18 @@
                   </tr>
                 </tbody>
               </table>
+            </div>
+
+            <div style="margin: 4px 0 14px;" title="cycle_ms per completed perception cycle (the number to quote) and total_ms, the detection sub-span inside it. Source: perception_latencies.jsonl, one row per cycle (GA-334).">
+              <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">
+                <span style="font-size:0.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em;">Perception cycle latency, per cycle</span>
+                <span id="latSeriesNote" style="font-size:0.65rem; color:var(--muted); font-family:ui-monospace,monospace;">no series yet</span>
+              </div>
+              <canvas id="latSeriesCanvas" width="600" height="150" style="width:100%; height:150px; display:block; background:#090d16; border:1px solid var(--border); border-radius:6px;"></canvas>
+              <div style="font-size:0.62rem; color:var(--muted); margin-top:3px;">
+                <span style="color:#10b981;">&#9632;</span> PERCEPTION CYCLE, WALL (cycle_ms) &nbsp;
+                <span style="color:#38bdf8;">&#9632;</span> DETECTION SPAN (total_ms) &nbsp; x = cycle index
+              </div>
             </div>
 
             <h3 style="font-size: 0.85rem; font-weight: 700; color: #38bdf8; margin-bottom: 10px; letter-spacing: 0.04em; text-transform: uppercase;">
@@ -1480,6 +1586,132 @@
       }
     }
 
+    // ---- the per-cycle latency graph (owner, 2026-09-07) ----------------------------------
+    // /cycle_series is the bridge's reader of perception_latencies.jsonl, the same file in live
+    // and in replay. Inline canvas: no new dependency. Two lines kept apart on purpose:
+    // cycle_ms is the number to quote, total_ms the detection sub-span inside it.
+    let latSeriesAt = 0, latSeriesN = -1;
+    function refreshLatencySeries() {
+      const now = Date.now();
+      if (now - latSeriesAt < 3000) return;
+      latSeriesAt = now;
+      fetch('/cycle_series?limit=400').then(r => r.ok ? r.json() : null).then(d => {
+        if (!d) return;
+        const rows = d.rows || [];
+        const note = document.getElementById('latSeriesNote');
+        if (note) note.textContent = rows.length ? `${d.n} cycles` + (d.n > rows.length ? ` (last ${rows.length} shown)` : '') : 'no per-cycle series yet';
+        if (d.n === latSeriesN) return;
+        latSeriesN = d.n;
+        drawLatencySeries(rows);
+      }).catch(() => {});
+    }
+    function drawLatencySeries(rows) {
+      const cv = document.getElementById('latSeriesCanvas');
+      if (!cv) return;
+      const W = cv.width, H = cv.height, g = cv.getContext('2d');
+      g.clearRect(0, 0, W, H);
+      if (!rows.length) return;
+      const padL = 44, padR = 8, padT = 8, padB = 18;
+      const ys = rows.flatMap(r => [r.cycle_ms, r.total_ms]).filter(v => typeof v === 'number');
+      const ymax = Math.max(1000, ...ys) * 1.08;
+      const x = i => padL + (rows.length === 1 ? 0 : (i / (rows.length - 1)) * (W - padL - padR));
+      const y = v => H - padB - (v / ymax) * (H - padT - padB);
+      g.strokeStyle = 'rgba(255,255,255,0.08)'; g.fillStyle = '#64748b'; g.font = '10px ui-monospace, monospace';
+      g.textAlign = 'right'; g.textBaseline = 'middle';
+      for (let k = 0; k <= 4; k++) {
+        const v = (ymax / 4) * k, yy = y(v);
+        g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
+        g.fillText(v >= 1000 ? (v / 1000).toFixed(1) + 's' : Math.round(v) + 'ms', padL - 4, yy);
+      }
+      g.textAlign = 'center'; g.textBaseline = 'top';
+      const first = rows[0].cycle ?? 1, last = rows[rows.length - 1].cycle ?? rows.length;
+      g.fillText('cycle ' + first, x(0) + 18, H - padB + 3);
+      g.fillText('cycle ' + last, x(rows.length - 1) - 18, H - padB + 3);
+      const line = (key, colour) => {
+        g.strokeStyle = colour; g.lineWidth = 1.5; g.beginPath();
+        let pen = false;
+        rows.forEach((r, i) => {
+          const v = r[key];
+          if (typeof v !== 'number') { pen = false; return; }   // a gap stays a gap, never bridged
+          if (pen) g.lineTo(x(i), y(v)); else g.moveTo(x(i), y(v));
+          pen = true;
+        });
+        g.stroke();
+        g.fillStyle = colour;
+        rows.forEach((r, i) => { if (typeof r[key] === 'number') { g.beginPath(); g.arc(x(i), y(r[key]), 2, 0, 6.283); g.fill(); } });
+      };
+      line('total_ms', '#38bdf8');
+      line('cycle_ms', '#10b981');
+    }
+
+    // ---- GA-348: dockable feed overlays (minimap, d-pad) --------------------------------------
+    // Drag the grip: the overlay follows the pointer and, on release, SNAPS to the nearer border
+    // (left or right; the vertical position is free). Drag the corner: resize (the minimap keeps
+    // its aspect, the d-pad keeps a minimum usable width). Position and size persist per browser
+    // in localStorage; there is no server state. A drag under 5 px is a click, so the minimap's
+    // header still opens the modal. ponytail: pointer events only, no library.
+    function makeDockable(el, name, opts) {
+      if (!el) return;
+      const parent = el.parentElement, key = 'dock:' + name;
+      const grip = el.querySelector('.dock-grip');
+      const rz = document.createElement('div'); rz.className = 'dock-resize'; rz.title = 'Drag to resize'; el.appendChild(rz);
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      function apply(st) {
+        const pw = parent.clientWidth, ph = parent.clientHeight;
+        const w = clamp(st.width || el.offsetWidth, opts.minW, Math.max(opts.minW, pw - 24));
+        el.style.width = w + 'px';
+        if (opts.aspect) el.style.height = Math.round(w * opts.aspect) + 'px';
+        el.style.bottom = 'auto';
+        el.style.top = clamp(st.top ?? 12, 0, Math.max(0, ph - el.offsetHeight)) + 'px';
+        if (st.side === 'right') { el.style.left = 'auto'; el.style.right = '12px'; }
+        else { el.style.right = 'auto'; el.style.left = '12px'; }
+        el.dataset.dockSide = st.side || 'left';
+      }
+      function save(st) { try { localStorage.setItem(key, JSON.stringify(st)); } catch (e) {} }
+      function load() { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
+      let state = load();
+      if (state) apply(state);
+      else state = { side: name === 'teleop' ? 'right' : 'left', top: name === 'teleop' ? Math.max(0, parent.clientHeight - el.offsetHeight - 12) : 12, width: el.offsetWidth };
+      let drag = null, suppressClick = false;
+      grip.addEventListener('pointerdown', ev => {
+        if (ev.button !== 0) return;
+        const r = el.getBoundingClientRect(), pr = parent.getBoundingClientRect();
+        drag = { x0: ev.clientX, y0: ev.clientY, left0: r.left - pr.left, top0: r.top - pr.top, moved: false };
+        grip.setPointerCapture(ev.pointerId);
+      });
+      grip.addEventListener('pointermove', ev => {
+        if (!drag) return;
+        const dx = ev.clientX - drag.x0, dy = ev.clientY - drag.y0;
+        if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+        drag.moved = true; el.classList.add('dragging');
+        el.style.right = 'auto'; el.style.bottom = 'auto';
+        el.style.left = clamp(drag.left0 + dx, 0, parent.clientWidth - el.offsetWidth) + 'px';
+        el.style.top = clamp(drag.top0 + dy, 0, parent.clientHeight - el.offsetHeight) + 'px';
+      });
+      grip.addEventListener('pointerup', ev => {
+        if (!drag) return;
+        const moved = drag.moved; drag = null; el.classList.remove('dragging');
+        if (!moved) return;
+        suppressClick = true;
+        const r = el.getBoundingClientRect(), pr = parent.getBoundingClientRect();
+        const cx = (r.left + r.right) / 2 - pr.left;
+        state = { side: cx < parent.clientWidth / 2 ? 'left' : 'right', top: r.top - pr.top, width: el.offsetWidth };
+        apply(state); save(state);
+      });
+      grip.addEventListener('click', ev => { if (suppressClick) { suppressClick = false; ev.stopImmediatePropagation(); ev.preventDefault(); } }, true);
+      let rs = null;
+      rz.addEventListener('pointerdown', ev => { ev.stopPropagation(); rs = { x0: ev.clientX, w0: el.offsetWidth }; rz.setPointerCapture(ev.pointerId); });
+      rz.addEventListener('pointermove', ev => {
+        if (!rs) return;
+        const grow = (el.dataset.dockSide === 'right') ? (rs.x0 - ev.clientX) : (ev.clientX - rs.x0);
+        state.width = clamp(rs.w0 + grow, opts.minW, parent.clientWidth - 24);
+        apply(state);
+      });
+      rz.addEventListener('pointerup', () => { if (rs) { rs = null; save(state); } });
+      window.addEventListener('resize', () => apply(state));
+      el.__dock = { get: () => ({ ...state }), set: st => { state = { ...state, ...st }; apply(state); save(state); } };
+    }
+
     function updateBEV() {
       fetch('/bev_data?floor_y=' + encodeURIComponent(selectedFloorY))
         .then(r => {
@@ -1529,6 +1761,7 @@
             setL('latSamPill', l.sam_ms);
             setL('latProjPill', l.projection_ms);
           }
+          refreshLatencySeries();
           if (data && data.stats) {
             const s = data.stats;
             const elSteps = document.getElementById('statSteps');
@@ -1558,7 +1791,10 @@
             const phaseText = document.getElementById('perceptionStatusText');
             if (phaseBadge && phaseText && s.phase) {
               const isMoving = s.phase === 'WALK' || s.phase === 'MAPPING';
-              const countdown = (s.phase_remaining_frames !== undefined) ? ` (${s.phase_remaining_frames}f)` : '';
+              // phase_remaining_frames < 0 is the feed host's "unknown by construction" sentinel
+              // (adaptive HOLD, a6a928b); it is not a count and must not read as one.
+              const countdown = (s.phase_remaining_frames === undefined) ? ''
+                : (s.phase_remaining_frames < 0 ? ' (remaining: unknown)' : ` (${s.phase_remaining_frames}f)`);
               phaseBadge.className = isMoving ? 'perception-state-badge' : 'perception-state-badge dwell';
               phaseText.textContent = isMoving ? `${s.phase} (MOTION PAUSE${countdown})` : `${s.phase} (DETECTING 3D${countdown})`;
               // compStatusBadge had no writer anywhere in this file, so it read
@@ -2196,6 +2432,13 @@
       } else if (tabId === 'stats') {
         document.getElementById('tabBtnStats').classList.add('active');
         document.getElementById('tabContentStats').classList.add('active');
+      } else if (tabId === 'scene3d') {
+        document.getElementById('tabBtnScene3d').classList.add('active');
+        document.getElementById('tabContentScene3d').classList.add('active');
+        // The frame was sized while hidden; tell its page the viewport changed so the
+        // renderer fits the tab (scene3d listens for its own window's resize).
+        const fr = document.getElementById('scene3dFrame');
+        try { if (fr && fr.contentWindow) fr.contentWindow.dispatchEvent(new Event('resize')); } catch (e) {}
       }
       if (window.lucide) lucide.createIcons();
     }
@@ -2242,9 +2485,10 @@
 
     // Item 1: one header saying which moment each panel is from. Ages come from
     // /health's stamp (server clock), so a skewed browser clock cannot fake freshness.
-    let lastStamp = null;
+    let lastStamp = null, lastStampAt = 0;
     function renderCycleStamp(stamp) {
       lastStamp = stamp || null;
+      lastStampAt = Date.now();
       const el = document.getElementById('cycleStamp');
       if (!el || !stamp) return;
       const age = (t) => (t ? Math.max(0, stamp.now - t) : null);
@@ -2265,8 +2509,56 @@
       }
     }
 
+    // Keep the completed perception cycle visible while the live feed continues.
+    // Metadata polling avoids downloading the same annotated JPEG every two seconds.
+    let lastPerceptionRevision = null;
+    async function refreshLastPerception(force = false) {
+      const ageEl = document.getElementById('lastPerceptionAge');
+      const img = document.getElementById('lastPerceptionImg');
+      const empty = document.getElementById('lastPerceptionEmpty');
+      if (!ageEl || !img || !empty) return;
+      try {
+        const response = await fetch('/last_perception/meta', { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const meta = await response.json();
+        if (!meta.available) {
+          ageEl.textContent = 'WAITING';
+          empty.textContent = 'Waiting for the first annotated perception frame';
+          empty.style.display = 'flex';
+          return;
+        }
+        ageEl.textContent = `${Number(meta.age_s || 0).toFixed(0)}s AGO`;
+        if (force || meta.revision !== lastPerceptionRevision) {
+          lastPerceptionRevision = meta.revision;
+          img.src = `${meta.url}?v=${encodeURIComponent(meta.revision)}${force ? '&reload=' + Date.now() : ''}`;
+        }
+      } catch (err) {
+        ageEl.textContent = 'UNAVAILABLE';
+        empty.textContent = `Last perception result unavailable: ${err.message}`;
+        empty.style.display = 'flex';
+      }
+    }
+    document.getElementById('lastPerceptionImg')?.addEventListener('load', () => {
+      const empty = document.getElementById('lastPerceptionEmpty');
+      if (empty) empty.style.display = 'none';
+    });
+    document.getElementById('lastPerceptionImg')?.addEventListener('error', () => {
+      const empty = document.getElementById('lastPerceptionEmpty');
+      if (empty) {
+        empty.textContent = 'Annotated frame could not be loaded';
+        empty.style.display = 'flex';
+      }
+    });
+
     function checkFeedHeartbeat() {
-      const elapsed = Date.now() - lastFrameTimestamp;
+      // An MJPEG <img> fires `load` ONCE, for its first part; every later frame repaints
+      // without an event. Measured 2026-09-07 (run 152446, :8082): 1 load event, then
+      // "FEED OFFLINE" at 6 s and a re-src every second while the stream was healthy. So the
+      // silence clock is the BRIDGE's own frame time from /health (server clock, GA-103's
+      // stamp), aged by the time since that poll; the load event is the fallback only.
+      const fromStamp = (lastStamp && typeof lastStamp.frame_at === 'number' && typeof lastStamp.now === 'number')
+        ? (lastStamp.now - lastStamp.frame_at) * 1000 + (Date.now() - lastStampAt) : null;
+      const elapsed = (fromStamp !== null) ? fromStamp : (Date.now() - lastFrameTimestamp);
       const badge = document.getElementById('feedStatusBadge');
       const textEl = document.getElementById('feedStatusText');
       // Item 4: source and age are ALWAYS on screen. _best_frame has four sources
@@ -2274,14 +2566,18 @@
       // looked the same, and the badge only spoke up after six seconds of silence.
       const src = (textEl && textEl.dataset.source) ? textEl.dataset.source : 'unknown source';
       const age = (elapsed / 1000).toFixed(1) + 's';
-      if (elapsed > 6000) {
+      // GA-344: frames arrive once per cycle, measured 6.2-6.7 s apart; a fixed 6 s threshold
+      // called a healthy feed OFFLINE between cycles. Twice the measured period, floor 6 s.
+      const periodS = (lastBEVData && lastBEVData.latencies) ? lastBEVData.latencies.frame_period_s : null;
+      const offlineMs = Math.max(6000, (typeof periodS === 'number' ? periodS * 2000 : 0));
+      if (elapsed > offlineMs) {
         if (badge) badge.className = 'feed-heartbeat-badge offline';
         if (textEl) textEl.textContent = `FEED OFFLINE · ${src} · ${age}`;
         const img = document.getElementById('habitatFeedImg');
         // Silent re-src: say it happened rather than looking like a spontaneous recovery.
         setStatusLine(`Feed silent ${age} — reconnecting`, 'warn');
         if (img) img.src = '/feed?t=' + Date.now();
-      } else if (elapsed > 2000) {
+      } else if (elapsed > offlineMs / 2) {
         if (badge) badge.className = 'feed-heartbeat-badge stalled';
         if (textEl) textEl.textContent = `FEED STALLED · ${src} · ${age}`;
       } else if (textEl && !textEl.textContent.startsWith('LIVE')) {
@@ -3685,8 +3981,12 @@
     function verdictRows() {
       const rows = [];
       const seenLabels = new Set();
+      // GA-361: the replay page sets window.REPLAY_TIME_FILTER(node) -> bool to show the object
+      // set AS IT WAS at the viewed frame; live and unfiltered replay leave it null.
+      const tf = (typeof window.REPLAY_TIME_FILTER === 'function') ? window.REPLAY_TIME_FILTER : null;
       (lastAdmittedNodes || []).forEach(n => {
         if (!n) return;
+        if (tf && !tf(n)) return;
         const d = n.decision || {};
         seenLabels.add(n.label);
         rows.push({
@@ -3858,6 +4158,12 @@
                 <div style="font-size:0.72rem; font-family:monospace; color:#f8fafc; margin-top:2px;">${bbox}</div>
               </div>
             </div>
+            ${typeof data.created_at === 'number' ? `<div style="background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px; display:flex; gap:16px;" title="creation_time and last_perception_timestamp of the object in the store (GA-361)">
+              <div><div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase;">Added</div>
+                <div style="font-size:0.74rem; font-family:monospace; color:#f8fafc;">${new Date(data.created_at * 1000).toLocaleTimeString()}${(typeof window.REPLAY_T0 === 'number') ? ' <span style="color:var(--muted)">(t+' + Math.max(0, Math.round(data.created_at - window.REPLAY_T0)) + ' s)</span>' : ''}</div></div>
+              ${typeof data.last_seen === 'number' ? `<div><div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase;">Last seen</div>
+                <div style="font-size:0.74rem; font-family:monospace; color:#f8fafc;">${new Date(data.last_seen * 1000).toLocaleTimeString()}</div></div>` : ''}
+            </div>` : ''}
             <div style="background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px; display:flex; flex-direction:column; gap:4px;">
               <div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase;">Visual Attributes</div>
               <div style="font-size:0.74rem; color:#f8fafc; display:flex; gap:12px;">
@@ -4235,7 +4541,7 @@
         // name and says so on hover, rather than implying one it does not have.
         const conceptName = (onto && onto.entity)
           ? (onto.iri
-              ? `<a href="${escHtml(onto.iri)}" target="_blank" rel="noopener" title="${escHtml(onto.iri)}" style="color:#a78bfa; text-decoration:underline dotted;">${escHtml(onto.entity)}</a>`
+              ? `<a href="/concept?iri=${encodeURIComponent(onto.iri)}" target="_blank" rel="noopener" title="${escHtml(onto.iri)}" style="color:#a78bfa; text-decoration:underline dotted;">${escHtml(onto.entity)}</a>`
               : `<span title="no IRI recorded by the aligner">${escHtml(onto.entity)}</span>`)
           : '—';
         if (!matchesTextFilters(r, onto && onto.entity)) return;
@@ -4313,6 +4619,9 @@
       const panelBottomLeft = document.getElementById('panelBottomLeft');
       const panelLogs = document.getElementById('panelLogs');
       const panelWidgets = document.getElementById('panelWidgets');
+      const feedWrapper = document.getElementById('feedWrapper');
+      const liveFeedPane = document.getElementById('liveFeedPane');
+      const lastPerceptionPane = document.getElementById('lastPerceptionPane');
 
       function saveResizerGeometry() {
         try {
@@ -4322,7 +4631,8 @@
             panelFeed: panelFeed ? panelFeed.style.height : null,
             panelBottomLeft: panelBottomLeft ? panelBottomLeft.style.height : null,
             panelLogs: panelLogs ? panelLogs.style.height : null,
-            panelWidgets: panelWidgets ? panelWidgets.style.height : null
+            panelWidgets: panelWidgets ? panelWidgets.style.height : null,
+            liveFeedPane: liveFeedPane ? liveFeedPane.style.flexBasis : null
           };
           localStorage.setItem(RESIZER_STORAGE_KEY, JSON.stringify(geom));
         } catch (err) {
@@ -4346,6 +4656,9 @@
           if (geom.panelLogs && geom.panelWidgets && panelLogs && panelWidgets) {
             panelLogs.style.height = geom.panelLogs;
             panelWidgets.style.height = geom.panelWidgets;
+          }
+          if (geom.liveFeedPane && liveFeedPane) {
+            liveFeedPane.style.flexBasis = geom.liveFeedPane;
           }
         } catch (err) {
           console.debug('[Resizer] Failed to restore geometry:', err);
@@ -4425,6 +4738,16 @@
         panelLogs.style.height = `${logsPct}%`;
         panelWidgets.style.height = `${100 - logsPct}%`;
       }, null, true);
+
+      // 4. Vertical Splitter: live feed vs retained perception result.
+      setupSplitter(document.getElementById('resizerLivePerception'), (cx, cyPos) => {
+        if (!feedWrapper || !liveFeedPane || !lastPerceptionPane) return;
+        const rect = feedWrapper.getBoundingClientRect();
+        const usableHeight = Math.max(1, rect.height - 6);
+        const minPane = Math.min(100, usableHeight * 0.35);
+        const liveHeight = Math.max(minPane, Math.min(usableHeight - minPane, cyPos - rect.top));
+        liveFeedPane.style.flexBasis = `${(liveHeight / usableHeight) * 100}%`;
+      }, null, true);
     }
 
     function startDashboard() {
@@ -4450,7 +4773,11 @@
         setAuditFilter('all');
       });
       initFeedInteraction();
+      refreshLastPerception();
+      setInterval(refreshLastPerception, 2000);
       setupBEVInteractions('bevCanvasHUD');
+      makeDockable(document.getElementById('minimapHud'), 'minimap', { minW: 160, aspect: 250 / 300 });
+      makeDockable(document.getElementById('teleopOverlay'), 'teleop', { minW: 170, aspect: null });
       setupBEVInteractions('bevCanvasModal');
 
       const feedImg = document.getElementById('habitatFeedImg');

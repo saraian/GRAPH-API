@@ -1,3 +1,4 @@
+import atexit
 import base64
 import binascii
 import collections
@@ -707,6 +708,10 @@ def graph_data(request: Request = None):
             "label": label,
             "type": "object",
             "room": o.get("room_id") or "",
+            # GA-361: when this object entered the store and when it was last seen (epoch s),
+            # so a replay can show the graph AS IT WAS at a frame. Absent stays absent.
+            "created_at": o.get("creation_time"),
+            "last_seen": o.get("last_perception_timestamp"),
             # No default: a missing confidence rendered as 1.0 showed every object
             # at a confident 100%. Absent stays absent; the viewer renders "—".
             #
@@ -1466,7 +1471,42 @@ def _with_overlay(jpeg):
 _OVERLAY_FAILURES = {"n": 0, "last": None}
 
 
+# GA-354: how often each source actually answered. _last_frame_source was set on every pick and
+# read by nobody but the badge, so the owner's "why does the label alternate" had no number.
+# Counted PER SERVED PICK (one per /frame.jpg request or /feed part), not per camera frame;
+# written to the run's output dir every 30 s and at exit as feed_source_counts.json (a new
+# file, rule 6), and carried on /health.stamp.frame_source_counts.
+_FRAME_SOURCE_COUNTS = {"perception overlay": 0, "simulator host": 0, "raw camera": 0,
+                        "stale overlay": 0, "stale composite": 0, "none": 0}
+_FRAME_SOURCE_WRITE = {"at": 0.0, "lock": threading.Lock()}
+atexit.register(lambda: _write_frame_source_counts(force=True))
+
+
+def _write_frame_source_counts(force=False):
+    now = time.time()
+    if not force and now - _FRAME_SOURCE_WRITE["at"] < 30.0:
+        return
+    with _FRAME_SOURCE_WRITE["lock"]:
+        _FRAME_SOURCE_WRITE["at"] = now
+        try:
+            path = _active_output_dir() / "feed_source_counts.json"
+            path.write_text(json.dumps({"counts": dict(_FRAME_SOURCE_COUNTS),
+                                        "total_picks": sum(_FRAME_SOURCE_COUNTS.values()),
+                                        "unit": "served picks (one per /frame.jpg request or /feed part)",
+                                        "written_at": now}, indent=1))
+        except OSError:
+            pass                 # the output dir can vanish at run end; the counts stay in /health
+
+
 def _best_frame():
+    """`_best_frame_pick` plus the GA-354 tally; every caller goes through here."""
+    data = _best_frame_pick()
+    _FRAME_SOURCE_COUNTS[_last_frame_source or "none"] = _FRAME_SOURCE_COUNTS.get(_last_frame_source or "none", 0) + 1
+    _write_frame_source_counts()
+    return data
+
+
+def _best_frame_pick():
     """The freshest frame worth showing, newest source first.
 
     1. the current perception overlay (/image_with_bb) while it is still current
@@ -1533,6 +1573,46 @@ def proxy_frame():
             frame = _with_overlay(frame)
         return Response(content=frame, media_type="image/jpeg")
     return Response(status_code=503)
+
+@app.get("/last_perception/meta")
+def last_perception_meta():
+    """Describe the retained cycle image independently from the live feed."""
+    node = get_node()
+    frame = getattr(node, "latest_jpeg", None) if node else None
+    captured_at = float(getattr(node, "last_frame_time", 0.0) or 0.0) if node else 0.0
+    if not frame or not captured_at:
+        return {
+            "available": False,
+            "captured_at": None,
+            "age_s": None,
+            "revision": None,
+            "url": None,
+        }
+    return {
+        "available": True,
+        "captured_at": captured_at,
+        "age_s": round(max(0.0, time.time() - captured_at), 2),
+        "revision": str(int(captured_at * 1_000_000)),
+        "url": "/last_perception.jpg",
+    }
+
+
+@app.get("/last_perception.jpg")
+def last_perception_frame(request: Request = None):
+    """Return the newest annotated cycle even after the live feed resumes."""
+    node = get_node()
+    frame = getattr(node, "latest_jpeg", None) if node else None
+    captured_at = float(getattr(node, "last_frame_time", 0.0) or 0.0) if node else 0.0
+    if not frame or not captured_at:
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
+    etag = f'"perception-{int(captured_at * 1_000_000)}"'
+    if request is not None and request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={"ETag": etag, "Cache-Control": "no-cache, must-revalidate"},
+    )
 
 @app.get("/feed")
 @app.get("/feed.mjpg")
@@ -1838,6 +1918,7 @@ def _stamp():
     if node and getattr(node, "last_frame_time", 0):
         out["frame_at"] = node.last_frame_time
     out["frame_source"] = _last_frame_source
+    out["frame_source_counts"] = dict(_FRAME_SOURCE_COUNTS)
     out["overlay"] = {"on": OVERLAY_ON, "pose_source": _overlay_pose_source,
                       "objects": len(_OVERLAY_OBJ["objects"]),
                       "failures": _OVERLAY_FAILURES["n"], "last_error": _OVERLAY_FAILURES["last"]}
@@ -2053,6 +2134,35 @@ def get_overlay_pose(width: int = 0, height: int = 0, max_age: float = 90.0):
                              "quat_xyzw and add position. Same convention as the projection "
                              "in live_overlay.project_box."))
     return JSONResponse(out)
+
+
+@app.get("/cycle_series")
+def get_cycle_series(limit: int = 400):
+    """The per-cycle perception series (GA-334's `perception_latencies.jsonl`), newest last.
+
+    One row per completed cycle: `cycle`, `t`, `frame_id`, `n_detections`, `cycle_ms` (the
+    whole cycle, the number to quote), `total_ms` (the detection sub-span) and `stages_ms`.
+    `n` is the row count in the file, `rows` the last `limit` of them. Absent series -> rows
+    [] and `path` null, never a fabricated series. Same file in live (the run's output dir) and
+    in replay (the bundle), so the Metrics graph is one reader for both.
+    """
+    picked = _pick_run_file(
+        (_active_output_dir(), _active_output_dir().parent, Path("/tmp")),
+        "perception_latencies.jsonl")
+    rows, n = [], 0
+    if picked is not None and picked.exists():
+        keep = ("cycle", "t", "frame_id", "n_detections", "cycle_ms", "total_ms", "stages_ms")
+        with open(picked, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                n += 1
+                rows.append({k: r.get(k) for k in keep})
+        rows = rows[-max(1, limit):]
+    return JSONResponse(content={"rows": rows, "n": n,
+                                 "path": str(picked) if picked is not None else None})
 
 
 @app.get("/health")

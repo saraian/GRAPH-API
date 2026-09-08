@@ -31,6 +31,36 @@ def test_modal_client_mock():
     print("test_modal_client_mock: PASSED")
 
 
+def test_crop_regions():
+    """GA-342 / GA-17: a sliver under MIN_CROP_PX is skipped and the surviving crops keep
+    their BOX index, so a skipped crop cannot shift another object's embedding onto it.
+    Imports the service module with a stub `modal` so this runs on any host."""
+    import sys
+    import types
+
+    if "modal" not in sys.modules:
+        class _Chain:
+            def __getattr__(self, _name):
+                return lambda *a, **k: self
+
+        stub = types.ModuleType("modal")
+        stub.Image = _Chain()
+        stub.App = lambda *a, **k: _Chain()
+        stub.enter = lambda *a, **k: (lambda f: f)
+        stub.fastapi_endpoint = lambda *a, **k: (lambda f: f)
+        sys.modules["modal"] = stub
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import modal_perception as mp
+
+    rgb = np.zeros((100, 100, 3), dtype=np.uint8)
+    boxes = np.array([[0, 0, 50, 50], [10, 10, 12, 13], [90, 90, 120, 120]], dtype=float)
+    regions = mp.crop_regions(boxes, rgb, 100, 100)
+    assert [i for i, _ in regions] == [0, 2], regions          # the 2x3 sliver is skipped
+    assert regions[1][1].shape == (10, 10, 3), regions[1][1].shape   # clipped to the image
+    assert mp.MIN_CROP_PX == 4
+    print("test_crop_regions: PASSED")
+
+
 def test_modal_client_live():
     # Test client calling live deployed Modal endpoint
     endpoint = os.environ.get("MODAL_PERCEPTION_URL", "")
@@ -56,5 +86,6 @@ def test_modal_client_live():
 if __name__ == "__main__":
     test_rle_codec()
     test_modal_client_mock()
+    test_crop_regions()
     test_modal_client_live()
     print("ALL CLOUD PERCEPTION TESTS PASSED.")

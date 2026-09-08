@@ -20,12 +20,14 @@ import urllib.parse
 from collections import deque
 from datetime import datetime, timezone
 
+import cv2
 import numpy as np
 import rclpy
 import requests
 from association import AssocObject, Observation, search_radius
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG
+from cv_bridge import CvBridge
 from cv_utils import publish_persistent_bboxes
 from geometry_msgs.msg import PoseStamped
 from hooks import DecisionLog, load_hooks
@@ -40,9 +42,11 @@ from object_services import (
     save_uncertain_objects,
     synchronized_world_model,
 )
+from perception_utils import room_frame_due
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy
 from room_manager import RoomManager
+from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformListener
 
@@ -73,6 +77,13 @@ OBJECT_STABILITY_TIMEOUT = CFG["association"]["object_stability_timeout"]
 POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
 MAX_VOLUME_THRESHOLD = CFG["association"]["max_volume_threshold"]
 BBOX_REDUCTION_RATIO = CFG["association"]["bbox_reduction_ratio"]
+
+# GA-350 (ported from GRAPH-API 3a5a818). Room frames handed to the ontology side for
+# typing: one on entry, then one per this much in-room travel, capped. Env-tunable because
+# the right stride is scene-scale dependent (a corridor and an open-plan room want different
+# spacing). The launcher stamps both into run_metadata so a bundle says what it ran with.
+ROOM_FRAME_MAX = int(os.environ.get("ROOM_FRAME_MAX", "5"))
+ROOM_FRAME_STRIDE_M = float(os.environ.get("ROOM_FRAME_STRIDE_M", "1.5"))
 # GA-12: the exploration->tracking move distance was the literal 0.35 at its one use site,
 # the only destructive threshold in this block with no config key.
 TRANSITION_MOVE_DISTANCE_M = CFG["association"].get("transition_move_distance_m", 0.35)
@@ -639,6 +650,12 @@ class ObjectManagerService(Node):
         self.agent_poses = []
         self.agent_pose_history = deque(maxlen=2000)
         self.latest_agent_pose = None
+        # GA-350. The latest camera frame, kept so a room view can be saved on entry and
+        # per stride of travel (`_room_frames_for`); the room typing itself is the ontology
+        # side's and this side only says what the room looked like, from which poses.
+        self._latest_rgb = None
+        self._room_bridge = CvBridge()
+        self._room_frames = {}
         self._last_pose_snapshot = 0.0
         self._last_path_publish = 0.0
         self._pending_descriptions = {}
@@ -695,6 +712,8 @@ class ObjectManagerService(Node):
         self.uncertain_centroids_pub = self.object_services.uncertain_centroids_pub
         self.uncertain_objects = self.object_services.uncertain_objects
         self.tracking_activated_pub = self.create_publisher(Bool, '/tracking_mode_activated', qos_standard)
+        # GA-350: the room-frame source. The raw camera topic, not the annotated one.
+        self.create_subscription(Image, '/camera/rgb', self._room_rgb_callback, qos_standard)
         
         self.agent_path_pub = self.create_publisher(Path, '/agent_path', qos_latch)
         
@@ -830,6 +849,11 @@ class ObjectManagerService(Node):
         if now - self._last_path_publish >= AGENT_PATH_PUBLISH_PERIOD:
             self._last_path_publish = now
             publish_agent_path(self, self.agent_poses, self.agent_path_pub)
+
+        # GA-350. Travel-triggered room views, driven from the pose stream, not from the
+        # admission path: hanging them off new-object proposals meant a room the robot
+        # crossed without detecting anything new was only ever typed from its doorway.
+        self._room_frames_for(self.room_manager._effective_room_id())
 
     def _closest_agent_pose(self, timestamp_sec):
         if timestamp_sec is None:
@@ -1522,10 +1546,20 @@ class ObjectManagerService(Node):
             if not already_seen:
                 # Admission seam: the configured Filter sees exactly what would be
                 # sent to the Graph API and may refuse it (blueprint: never does).
+                room_id = self.room_manager.assign_room_by_geometry(bbox)
+                # GA-350: the file is written BEFORE the proposal is judged; the FOUND
+                # reader raises on a room_frame path that does not exist.
+                room_frames = self._room_frames_for(room_id)
                 proposal = {
                     "label": label, "bbox": bbox, "color": color, "material": material,
                     "description": description_text,
-                    "room_id": self.room_manager.assign_room_by_geometry(bbox),
+                    "room_id": room_id,
+                    # GA-350 (GRAPH-API 3a5a818's names, verbatim, so the 2026-08-26 bundles
+                    # stay comparable): every view of this room (path + pose + stamp) for the
+                    # ontology side to type and vote over; room_frame is the entry view so a
+                    # consumer reading one frame keeps working.
+                    "room_frames": room_frames,
+                    "room_frame": room_frames[0]["path"] if room_frames else None,
                     # GA-277. The gate sees geometry and no pixels, so an image-based check
                     # on a borderline decision had nothing to look at. The PATH, not the
                     # image: the seam stays a small message and the reader opens the file.
@@ -1782,6 +1816,61 @@ class ObjectManagerService(Node):
             self.get_logger().error(f"[GRAPH-API] ENDING THE RUN: {self._graph_api_strikes} consecutive "
                                     f"Graph API failures; nothing this node sees is being recorded.")
             self._flush_and_exit()
+
+    def _room_rgb_callback(self, msg):
+        self._latest_rgb = msg
+
+    def _room_frames_for(self, room_id):
+        """Tagged frames of this room: one on entry, then every ROOM_FRAME_STRIDE_M of
+        in-room travel, capped at ROOM_FRAME_MAX. Returns the full list, newest last.
+        (GA-350, ported from GRAPH-API 3a5a818.)
+
+        Deliberately NOT the room typing: naming the type is the ontology layer's job and
+        it decides against its own vocabulary, so this side only says "here is what this
+        room looked like, from these poses". Keeping the seam generic is also what keeps
+        the admission layer out of this repository.
+
+        Multiple views because one is demonstrably not enough: in run 20260826_0808 the
+        entering frame of room_0 typed as a corridor (doorway view) while the room's
+        contents were office furniture. Every frame is handed over, with its pose and
+        stamp, so the ontology side can vote and keep the provenance of the views that
+        lost -- the agreement rate across views is itself a measurable result.
+        """
+        if not room_id:
+            return []
+        key = str(room_id)
+        # Read from the instance dict on purpose: this state is set by __init__, and a node
+        # built without it (the host harnesses construct one with object.__new__) has none
+        # -- it must read as "no frame yet", not as whatever a stub's __getattr__ returns.
+        frames = self.__dict__.setdefault("_room_frames", {}).setdefault(key, [])
+        latest_rgb = self.__dict__.get("_latest_rgb")
+        if latest_rgb is None:
+            return frames
+
+        pose = self.latest_agent_pose
+        xy = (pose["x"], pose["y"]) if pose else None
+        stamp = latest_rgb.header.stamp
+        timestamp_sec = stamp.sec + stamp.nanosec * 1e-9
+        if not room_frame_due(frames, xy, ROOM_FRAME_STRIDE_M, ROOM_FRAME_MAX, timestamp_sec):
+            return frames
+
+        out_dir = os.path.join(os.environ.get("GRAPH_API_OUTPUT_DIR", "/tmp"), "room_frames")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"{key}@{stamp.sec}.{stamp.nanosec}.jpg")
+        rgb = self._room_bridge.imgmsg_to_cv2(latest_rgb, 'bgr8')
+        if not cv2.imwrite(path, rgb):
+            raise RuntimeError(f"could not write the room frame for {key} to {path}")
+        frames.append({
+            "path": path,
+            "stamp": timestamp_sec,
+            "datetime": _utc_iso_from_seconds(timestamp_sec),
+            "pose": dict(pose) if pose else None,
+            "reason": "entry" if len(frames) == 0 else "travel",
+        })
+        self.object_services.log_both(
+            'info', f"[P_room] room frame {len(frames)}/{ROOM_FRAME_MAX} for {key} "
+                    f"({frames[-1]['reason']}) -> {path}")
+        return frames
 
     def add_new_object(self, label, bbox, description, color, material,
                        description_embedding=None, in_exploration=False, room_id=None):

@@ -132,6 +132,20 @@ z=d.get('nearest_scene_floor'); z=d['floor_height_m'] if z is None else z
 print(f'floor_{z:+.2f}')" "${db}.floor.json")
   local dest="$FOUND_ROOT/maps/${SCENE_ARG}/${fl}"
   mkdir -p "$dest"
+  # NEVER OVERWRITE A PUBLISHED MAP. The copy in the library is the only copy (GA-295), and the cp
+  # below would replace it silently. A re-map of a floor moves the previous map aside under its
+  # own publish date, sidecars with it, the way the 640x480 map was kept by hand on 7 Sep.
+  # ponytail: named by mtime, not resolution; the provenance sidecar (camera_db) says the rest.
+  if [ -f "$dest/rtabmap.db" ]; then
+    local old; old="rtabmap_superseded_$(date -r "$dest/rtabmap.db" +%Y%m%d_%H%M)"
+    local s; for s in "" .floor.json .params-sha .provenance.json .INTEGRITY_OK; do
+      [ -e "$dest/rtabmap.db$s" ] && mv -n "$dest/rtabmap.db$s" "$dest/$old.db$s"
+    done
+    # mv -n refuses when $old already exists (two publishes in one minute); then the cp below
+    # would overwrite after all. Refuse to publish instead of pretending the move happened.
+    [ ! -e "$dest/rtabmap.db" ] || { echo "!! map NOT published: previous map could not be moved aside ($old.db exists)"; return 1; }
+    echo "    previous map moved aside: $dest/$old.db"
+  fi
   # COPY, NOT HARD LINK. Owner ruling GA-295(c), 4 Sep: the library is an INDEPENDENT copy. The
   # link era was a disk-space decision when /DATA was 99% full (it is ~72% now); its cost was
   # measured on hm3d_00861: the canonical map, its source bundle and a localize db were ONE
@@ -401,6 +415,29 @@ export FOUND_KG_ALIASES="${FOUND_KG_ALIASES:-}"
 export FOUND_ONTOLOGY_EXT="${FOUND_ONTOLOGY_EXT:-}"
 export FOUND_STORE_PATH="${FOUND_STORE_PATH:-/ws/output/knowledge_graph.ttl}"
 export FOUND_SCENE="${FOUND_SCENE:-$SCENE_ARG}"
+# GA-350 (ontology; owner-authorised set C, 2026-09-07). ROOM TYPING (P_room): one room-view frame
+# -> a room type, asked of the same multimodal endpoint the describer uses (regolo_config.yaml `vlm`),
+# read by found/room_type.py's RoomTyper from ITS OWN keys. Ported from GRAPH-API 3a5a818's launcher:
+# without these the first tagged room frame raises "no room-typing model configured" and ends the run.
+# The container path is /ws/output (the bundle mount); the -e list below forwards all four.
+export FOUND_ROOM_VLM_BASE_URL="${FOUND_ROOM_VLM_BASE_URL:-https://api.regolo.ai/v1}"
+export FOUND_ROOM_VLM_MODEL="${FOUND_ROOM_VLM_MODEL:-gemma4-31b}"
+export FOUND_ROOM_VLM_API_KEY="${FOUND_ROOM_VLM_API_KEY:-${OPENAI_API_KEY:-}}"
+export FOUND_ROOM_TYPES_PATH="${FOUND_ROOM_TYPES_PATH:-/ws/output/room_types.json}"
+# Room VIEW frames (perception's half of GA-350, vendor 4c0e0dc): object_manager_6 saves a room view
+# on room entry and every ROOM_FRAME_STRIDE_M metres of travel, at most ROOM_FRAME_MAX per room, and
+# the typer reads those. Defaults here equal object_manager_6.py:85-86 so the stamp says what ran.
+export ROOM_FRAME_MAX="${ROOM_FRAME_MAX:-5}"
+export ROOM_FRAME_STRIDE_M="${ROOM_FRAME_STRIDE_M:-1.5}"
+# GA-359 (owner 2026-09-07 ~18:20 "switch to rtabmap localised poses"; design plan/14). The pose
+# source the boxes are placed in. simulator = the feed node's static identity map->odom is the only
+# authority and rtabmap does not publish TF (today's behaviour, made explicit); rtabmap = rtabmap
+# publishes map->odom and the feed node must not (perception's half, not landed yet: do NOT set
+# rtabmap before it lands, or two authorities publish again). Read by live_stack_container.sh and
+# by habitat_feed_node.py (once perception lands its half); stamped as pose_source.
+export FEED_POSE_SOURCE="${FEED_POSE_SOURCE:-simulator}"
+case "$FEED_POSE_SOURCE" in simulator|rtabmap) ;; *) echo "!! FEED_POSE_SOURCE=$FEED_POSE_SOURCE is neither simulator nor rtabmap"; exit 1 ;; esac
+echo "    room typing: $FOUND_ROOM_VLM_MODEL at $FOUND_ROOM_VLM_BASE_URL -> $FOUND_ROOM_TYPES_PATH (key $([ -n "$FOUND_ROOM_VLM_API_KEY" ] && echo set || echo UNSET))"
 
 # Feed geometry. These were interpolated ONLY into the launch line 160 lines below and appeared
 # NOWHERE in the bundle — a run recorded its seed and nothing else about how the agent moved.
@@ -453,11 +490,13 @@ export FEED_DWELL="${FEED_DWELL:-0}"
 # GA-339 (owner ruling 2026-09-07 ~13:50). ADAPTIVE dwell by default: after each walk burst the
 # feed HOLDS a still camera until the object manager's merge_pending.json says nothing is pending,
 # bounded by FEED_DWELL_MAX. FEED_DWELL (fixed frames) is IGNORED in adaptive mode and only read
-# under FEED_DWELL_MODE=fixed. 18 = gate 0.5 s + one ~5 s cycle at 3 f/s; 45 = 15 s, the owner's cap.
+# under FEED_DWELL_MODE=fixed. 18 = gate 0.5 s + one ~5 s cycle at 3 f/s; 90 = 30 s, the owner's cap
+# (raised from 45 on 2026-09-07 ~16:55: run 152446 capped 27 of 39 holds with pending work still owed).
+# Bundles at 90 are a new family against 152446 (45).
 # Adaptive bundles are a NEW FAMILY, stamped below as dwell_family.
 export FEED_DWELL_MODE="${FEED_DWELL_MODE:-adaptive}"
 export FEED_DWELL_MIN="${FEED_DWELL_MIN:-18}"
-export FEED_DWELL_MAX="${FEED_DWELL_MAX:-45}"
+export FEED_DWELL_MAX="${FEED_DWELL_MAX:-90}"
 export FEED_DWELL_SIGNAL_MAX_AGE_S="${FEED_DWELL_SIGNAL_MAX_AGE_S:-10}"
 # GA-330. Ground truth ON by default. The scene ships its semantic mesh, the feed host renders
 # it, the feed node publishes /gt/semantic_instance and the archive joins it per detection --
@@ -688,6 +727,9 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 : "${FEED_DWELL_MIN:?not set at run_metadata.json}"
 : "${FEED_DWELL_MAX:?not set at run_metadata.json}"
 : "${FEED_DWELL_SIGNAL_MAX_AGE_S:?not set at run_metadata.json}"
+: "${ROOM_FRAME_MAX:?not set at run_metadata.json}"   # GA-350
+: "${ROOM_FRAME_STRIDE_M:?not set at run_metadata.json}"
+: "${FEED_POSE_SOURCE:?not set at run_metadata.json}"   # GA-359
 : "${FEED_MAPPING_SECONDS:?not set at run_metadata.json}"
 : "${MAPPING_ONLY?not set at run_metadata.json}"
 : "${FEED_SPAWN_FLOOR?not set at run_metadata.json}"   # no colon: empty means "no floor requested"   # no colon: 0 is a legal value
@@ -732,7 +774,7 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "dwell_max_frames": $FEED_DWELL_MAX,
     "dwell_signal_path": "$RUN_DIR/merge_pending.json",
     "dwell_signal_max_age_s": $FEED_DWELL_SIGNAL_MAX_AGE_S,
-    "dwell_family": "GA-339, 2026-09-07: dwell_mode adaptive holds a STILL camera after each walk burst until merge_pending.json reads pending 0 (fresh), bounded by dwell_max_frames. dwell_frames is IGNORED when dwell_mode is adaptive. Adaptive bundles are a NEW family: not comparable with dwell_frames 0 (2026-08-31 to 2026-09-07) or 60 (before). Per-run counters are in feed_stats.json (dwell_episodes, dwell_capped, dwell_released_on_zero, dwell_unknown_frames).",
+    "dwell_family": "GA-339, 2026-09-07: dwell_mode adaptive holds a STILL camera after each walk burst until merge_pending.json reads pending 0 (fresh), bounded by dwell_max_frames (45 in 20260907_152446, 90 from 2026-09-07 ~17:00). dwell_frames is IGNORED when dwell_mode is adaptive. Adaptive bundles are a NEW family: not comparable with dwell_frames 0 (2026-08-31 to 2026-09-07) or 60 (before). Per-run counters are in feed_stats.json (dwell_episodes, dwell_capped, dwell_released_on_zero, dwell_unknown_frames).",
     "fps": $FEED_FPS,
     "mapping_seconds": $FEED_MAPPING_SECONDS,
     "mapping_only": $([ "$MAPPING_ONLY" = "1" ] && echo true || echo false),
@@ -748,6 +790,19 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
              "min_support": $FOUND_MIN_SUPPORT, "rooms_enforced": $FOUND_ROOM_ENFORCE,
     "corpus_order_note": "empty FOUND_CORPUS_ORDER means the code default in found/dims.py, standard,hssd,metrictree,abo,procthor as of GA-266, and the field then says so rather than naming an order. GA-282: this note claimed the hardcoded abo,metrictree fallback was PAST while line 638 still carried it, so every bundle up to and including 20260903_110622 records corpus_order abo,metrictree for a run that used standard(125) hssd(63) metrictree(56) abo(56) by its own decision records. The note outlived the fix it described. Read the corpus cited in each decision's margins, never this field, for any bundle stamped before 2026-09-03.",
     "merge_min_consecutive": ${MERGE_MIN_CONSECUTIVE:-2},
+    "room_vlm_base_url": "$FOUND_ROOM_VLM_BASE_URL",
+    "room_vlm_model": "$FOUND_ROOM_VLM_MODEL",
+    "room_vlm_key_set": $([ -n "${FOUND_ROOM_VLM_API_KEY:-}" ] && echo true || echo false),
+    "room_types_path": "$FOUND_ROOM_TYPES_PATH",
+    "room_typing_note": "GA-350: the room typer (found/room_type.py) reads these four names itself. The key is never stamped, only whether one was set. Ported from GRAPH-API 3a5a818.",
+    "pose_source": "$FEED_POSE_SOURCE",
+    "rtabmap_pub_loc_pose_only_when_localizing": true,
+    "rtabmap_launch": "direct ros2 run rtabmap_slam rtabmap since 2026-09-07 21:40 (GA-359 C): rtabmap.launch.py cannot set pub_loc_pose_only_when_localizing and every earlier bundle's rtabmap.log echoes it false, so /rtabmap/localization_pose was published on every frame, localised or not.",
+    "localization_pose_record": "logs/localization_pose.log",
+    "localization_pose_record_note": "ros2 topic echo --csv --full-length of /rtabmap/localization_pose for the whole run, no header: stamp sec, nanosec, frame_id, position xyz, orientation xyzw, 36 covariance values. Gaps are the not-localised intervals; the covariance gate's threshold (perception, GA-359 C) is to be read from here.",
+    "pose_source_note": "GA-359: simulator = boxes placed through the feed node's identity map->odom (Habitat's true pose as odometry AND localisation); rtabmap = rtabmap's map->odom correction applied. Bundles before 2026-09-07 19:45 ran with BOTH authorities publishing (publish_tf was an undeclared launch argument; publish_tf_map defaulted true): run 152446 had 54 of 747 detection rows 2-4 m off. A bundle with this key set is single-authority.",
+    "room_frames": {"max": $ROOM_FRAME_MAX, "stride_m": $ROOM_FRAME_STRIDE_M,
+                    "seam": "GA-350: object_manager_6 saves a room view on room entry and per stride_m of travel (at most max per room); the proposal carries room_frames/room_frame to the typer (vendor 4c0e0dc)."},
              "aligner": "$FOUND_ALIGNER", "ontology_ext": "$FOUND_ONTOLOGY_EXT",
              "corpus_order": "${FOUND_CORPUS_ORDER:-<code default: standard,hssd,metrictree,abo,procthor>}",
              "kg_aliases": ${FOUND_KG_ALIASES:-1},
@@ -900,6 +955,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES -e FOUND_KG_DISJOINT -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
   -e FOUND_EMBED_MODEL -e FOUND_KG_TOP -e FOUND_KG_Z -e FOUND_LEXICAL -e FOUND_ONTOLOGY \
   -e FOUND_ROOM_TYPES_PATH -e FOUND_ROOM_VLM_API_KEY -e FOUND_ROOM_VLM_BASE_URL \
+  -e ROOM_FRAME_MAX -e ROOM_FRAME_STRIDE_M -e FEED_POSE_SOURCE \
   -e FOUND_ROOM_VLM_MODEL -e FOUND_SCENE_INSTANCE -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \
   -e KG_BRIDGE_SRC \
   -e BRIDGE_PORT -e BRIDGE_RAW_MAX_AGE -e BRIDGE_ANNOTATED_MAX_AGE -e BRIDGE_FEED_PROBE_BACKOFF \

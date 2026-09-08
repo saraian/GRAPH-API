@@ -992,6 +992,140 @@ def a11_tf_buffer_outlasts_frame_window():
     }
 
 
+
+# GA-355 (owner, 2026-09-07: "a preflight rule that checks that ground-truth does not contaminate
+# the inference process"). Design: .handoff/plan/4-preflight-gate/1-a12-gt-isolation-GA-355.md.
+GT_TOKENS = r"FEED_GT_|GT_SEMANTIC|gt_semantic|habitat_gt|/gt/semantic_instance|semantic_sensor|gt_codec|_gt_"
+# Files that may name a GT token, each with the reason it is allowed. Anything else FAILS.
+A12_ALLOWED_FILES = {
+    "test/habitat_feed_host.py": "renders the semantic sensor (producer)",
+    "test/live_run.sh": "exports FEED_GT_SEMANTIC and stamps gt_semantic",
+    "test/preflight_gate.py": "this probe names the tokens",
+    "test/test_preflight_gate.py": "the negative test names the tokens",
+    "src/perception_module/habitat_feed_node.py": "relays the blob to /gt/semantic_instance (transport)",
+    "src/perception_module/gt_codec.py": "the run-length codec",
+    "src/perception_module/detection_archive.py": "the archive join: habitat_gt_* row keys, validation only",
+    "src/perception_module/perception_2.py": "subscription + cache + hand-off to the archive; functions audited below",
+    "src/perception_module/test_perception_smoke.py": "smoke test",
+    "src/perception_module/habitat_camera_node.py": "NOT installed (GA-299); host-side node",
+    "src/perception_module/habitat_camera_objects_node.py": "NOT installed (GA-299); host-side node",
+}
+# Inside perception_2.py a GT token may occur only in these functions (AST, not grep).
+# _record_cycle_ms carries the gt_semantic_hit latency key: MEASURED by this probe's first run on the
+# clean tree, which named it in place of the two names I had guessed (rule 26: run it).
+A12_ALLOWED_FUNCTIONS = {"__init__", "_gt_semantic_callback", "_gt_semantic_for",
+                         "_archive_detections", "_record_cycle_ms"}
+
+
+def a12_gt_isolation(root=None):
+    """No file outside the allow-list, and no function of perception_2.py outside its allow-list,
+    may name a ground-truth token. Static, over the copied tree the gate runs from -- the same
+    root a7 hashes. A reader added to the association loop, the labeler or the describer path
+    would show up here as a file or a function not on the list, which is the reading this probe
+    exists to produce (rule 18: the answer differs when contamination exists).
+
+    What it does NOT assert: the pose channel. habitat_feed_node publishes /odom and the
+    odom->base_link TF from the simulator's exact pose, and rtabmap supplies map->odom only, so
+    "pose_source is never habitat GT" fails by construction on the odometry axis. Recorded as a
+    stamp until the owner rules (design note, question 1).
+    """
+    import ast
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.abspath(root or os.path.dirname(here))
+    if not os.path.isdir(os.path.join(root, "src")) or not os.path.exists("/bin/grep"):
+        return SKIPPED, {"reason": f"no src/ under {root} or /bin/grep absent"}
+    dirs = [d for d in ("src", "test", "launch") if os.path.isdir(os.path.join(root, d))]
+    cmd = ["/bin/grep", "-rlE", GT_TOKENS, "--include=*.py", "--include=*.sh", "--include=*.yaml",
+           "--exclude-dir=__pycache__", "--exclude-dir=.ruff_cache"] + dirs
+    out = subprocess.run(cmd, cwd=root, capture_output=True, text=True).stdout.split()
+    files = sorted(f.replace(os.sep, "/") for f in out)
+    not_allowed = [f for f in files if f not in A12_ALLOWED_FILES]
+    bad_functions = {}
+    p2 = os.path.join(root, "src", "perception_module", "perception_2.py")
+    if os.path.isfile(p2):
+        import re
+        src = open(p2).read()
+        tree = ast.parse(src)
+        lines = src.splitlines()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                body = "\n".join(lines[node.lineno - 1:node.end_lineno])
+                if re.search(GT_TOKENS, body) and node.name not in A12_ALLOWED_FUNCTIONS:
+                    bad_functions[node.name] = node.lineno
+    ok = not not_allowed and not bad_functions
+    return ok, {
+        "root": root,
+        "files_with_gt_tokens": files,
+        "not_allowed_files": not_allowed,
+        "perception_2_functions_not_allowed": bad_functions,
+        "pose_source": "simulator odometry (habitat_feed_node /odom + TF) re-anchored by rtabmap map->odom; NOT asserted (design question 1)",
+        "reason": "" if ok else (f"ground-truth tokens outside the allow-list: files {not_allowed}, "
+                                 f"perception_2 functions {bad_functions}"),
+    }
+
+
+# GA-359 (owner 2026-09-07: boxes placed with rtabmap's localised pose). Design: plan/14.
+def a13_verdict(pose_source, dynamic_pairs, static_pairs, parent="map", child="odom"):
+    """EXACTLY ONE authority for map->odom, on the side the stamp names.
+
+    MEASURED, run 20260907_152446: rtabmap published map->odom on /tf (publish_tf_map defaults
+    true; the publish_tf:=false both trees passed is not a launch argument) while the feed node
+    published a static identity on /tf_static -- and for 108 s rtabmap's correction won in tf2,
+    placing 54 of 747 detections 2-4 m from their true pose. Two authorities is the defect; this
+    verdict names it whichever side wins.
+    """
+    pair = (parent, child)
+    dyn, sta = pair in set(dynamic_pairs), pair in set(static_pairs)
+    want_dyn = pose_source == "rtabmap"
+    ok = (dyn != sta) and (dyn == want_dyn)
+    return ok, {
+        "pose_source": pose_source, "map_odom_in_tf": dyn, "map_odom_in_tf_static": sta,
+        "reason": "" if ok else (
+            "TWO AUTHORITIES for map->odom (/tf and /tf_static)" if dyn and sta else
+            "NO authority for map->odom in the window" if not (dyn or sta) else
+            f"map->odom is published on the wrong side for pose_source={pose_source}: "
+            f"{'/tf (rtabmap)' if dyn else '/tf_static (feed node identity)'}"),
+    }
+
+
+def a13_pose_authority(pose_source=None, window_s=5.0):
+    """POST-START. Sample /tf and /tf_static for `window_s` and apply a13_verdict.
+
+    Container only: rclpy is not importable on the host, and a probe that cannot run is
+    SKIPPED (which fails the gate), never a pass (rule 2). /tf_static is latched, so the
+    subscription uses transient-local durability or it would miss a transform published
+    before the probe started.
+    """
+    pose_source = pose_source or os.environ.get("FEED_POSE_SOURCE", "simulator")
+    try:
+        import rclpy
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from tf2_msgs.msg import TFMessage
+    except Exception as exc:
+        return SKIPPED, {"reason": f"rclpy/tf2_msgs not importable here ({type(exc).__name__}); "
+                                   "a13 answers only inside the container"}
+    dynamic, static = set(), set()
+    rclpy.init(args=[])
+    try:
+        node = rclpy.create_node("preflight_a13")
+        latched = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        node.create_subscription(TFMessage, "/tf", lambda m: dynamic.update(
+            (t.header.frame_id, t.child_frame_id) for t in m.transforms), 100)
+        node.create_subscription(TFMessage, "/tf_static", lambda m: static.update(
+            (t.header.frame_id, t.child_frame_id) for t in m.transforms), latched)
+        end = time.time() + window_s
+        while time.time() < end:
+            rclpy.spin_once(node, timeout_sec=0.2)
+        node.destroy_node()
+    finally:
+        rclpy.shutdown()
+    ok, detail = a13_verdict(pose_source, dynamic, static)
+    detail.update({"window_s": window_s, "tf_pairs": sorted(f"{a}->{b}" for a, b in dynamic),
+                   "tf_static_pairs": sorted(f"{a}->{b}" for a, b in static)})
+    return ok, detail
+
 PROBES = {
     "a1": ("aligner_identity", a1_aligner_identity),
     "a2": ("config_identity", a2_config_identity),
@@ -1003,6 +1137,7 @@ PROBES = {
     "a8": ("stack_imports", a8_stack_imports),
     "a10": ("frame_age_vs_rejected", a10_frame_age_rejected_frames),
     "a11": ("tf_buffer_outlasts_frames", a11_tf_buffer_outlasts_frame_window),
+    "a12": ("gt_isolation", a12_gt_isolation),
 }
 
 # PROBES THAT ONLY MAKE SENSE AFTER THE STACK IS UP, kept in a SEPARATE dict on purpose.
@@ -1017,6 +1152,7 @@ PROBES = {
 # the eight probes that can answer before the stack exists.
 POST_START_PROBES = {
     "a9": ("feed_streaming", a9_feed_streaming),
+    "a13": ("pose_authority", a13_pose_authority),
 }
 
 
@@ -1036,6 +1172,8 @@ def main(argv=None):
                                    "such as a9 are available ONLY through this flag)")
     ap.add_argument("--feed-log", default="/tmp/feed_node.log",
                     help="a9: the feed node's log, whose frame counter is sampled twice")
+    ap.add_argument("--pose-source", default=None,
+                    help="a13: the stamped pose source (default: FEED_POSE_SOURCE env)")
     ap.add_argument("--feed-window-s", type=float, default=12.0,
                     help="a9: seconds between the two samples")
     ap.add_argument("--expect-config-name")
@@ -1127,6 +1265,7 @@ def main(argv=None):
         "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha)),
         "a8": lambda: a8_stack_imports(install=args.install_tree),
         "a9": lambda: a9_feed_streaming(args.feed_log, args.feed_window_s),
+        "a13": lambda: a13_pose_authority(args.pose_source),
         # GA-281. REGISTERING A PROBE TAKES TWO EDITS, and the comment beside
         # POST_START_PROBES already says what happens when only one is made: the id lands in
         # the default set, `bound[pid]` raises KeyError, the probe records SKIPPED, and a
@@ -1134,6 +1273,7 @@ def main(argv=None):
         # 20260903_105431 before it started -- which is the gate working, not failing.
         "a10": lambda: a10_frame_age_rejected_frames(args.expect_cycle_s),
         "a11": a11_tf_buffer_outlasts_frame_window,
+        "a12": a12_gt_isolation,
     }
 
     bound.update({pid: fn for pid, (_n, fn, _s) in external.items()})

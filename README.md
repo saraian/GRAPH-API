@@ -169,7 +169,6 @@ hooks.py`, `python3 box_view.py`.
 | `lost3dsg/test/` | `live_run.sh`, `live_stack_container.sh`, `habitat_feed_host.py`, `preflight_gate.py`, `smoke_test.sh`, `nonregression.sh`, the two configs, `resource_monitor.py` |
 | `lost3dsg/msg`, `lost3dsg/srv` | the ROS 2 interfaces; `ObjectDescription.msg` carries `crop_path` |
 | `Dockerfile` | the `graphapi-run:humble` image |
-| `lost3dsg/src/perception_module/old/` | superseded nodes, not built |
 
 ## Known ways a run ends early
 

@@ -1,0 +1,306 @@
+# GA-369 (owner 2026-09-07: "a properly configured Rviz file"). Loaded by view_rviz.sh
+# (rviz2 -d /graph_api/lost3dsg/test/live.rviz) against the live stack. Fixed frame map.
+# Topics named here were measured on the mapping stack of run 20260907_172205 (ros2 topic list -t);
+# the object-manager MarkerArrays are published by object_manager_6.py / object_services.py.
+# NOT shown: /detected_wall_segments and /room_areas are std_msgs/String, no rviz display exists.
+# Under FEED_POSE_SOURCE=rtabmap the localization_pose display shows where rtabmap thinks the base is.
+Panels:
+- Class: rviz_common/Displays
+  Name: Displays
+  Property Tree Widget:
+    Expanded: []
+  Splitter Ratio: 0.5
+  Tree Height: 500
+- Class: rviz_common/Views
+  Name: Views
+  Expanded:
+  - /Current View1
+  Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ''
+  Displays:
+  - Class: rviz_default_plugins/Grid
+    Enabled: true
+    Name: Grid
+    Value: true
+    Reference Frame: <Fixed Frame>
+    Plane Cell Count: 40
+    Cell Size: 1.0
+  - Class: rviz_default_plugins/TF
+    Enabled: true
+    Name: TF
+    Value: true
+    Show Names: true
+    Show Axes: true
+    Show Arrows: false
+    Marker Scale: 0.5
+    Frame Timeout: 15
+    Frames:
+      All Enabled: false
+      map:
+        Value: true
+      odom:
+        Value: true
+      base_link:
+        Value: true
+      habitat_camera:
+        Value: true
+  - Class: rviz_default_plugins/Map
+    Enabled: true
+    Name: rtabmap occupancy grid (/rtabmap/map)
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /rtabmap/map
+    Color Scheme: map
+    Alpha: 0.7
+    Draw Behind: true
+    Update Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /rtabmap/map_updates
+  - Class: rviz_default_plugins/PointCloud2
+    Enabled: true
+    Name: rtabmap cloud_map
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /rtabmap/cloud_map
+    Style: Points
+    Size (Pixels): 2
+    Color Transformer: RGB8
+    Position Transformer: XYZ
+    Decay Time: 0
+    Alpha: 0.8
+  - Class: rviz_default_plugins/PointCloud2
+    Enabled: false
+    Name: rtabmap cloud_obstacles (local grid)
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /rtabmap/cloud_obstacles
+    Style: Points
+    Size (Pixels): 2
+    Color Transformer: AxisColor
+    Position Transformer: XYZ
+  - Class: rviz_default_plugins/Path
+    Enabled: true
+    Name: rtabmap mapPath
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /rtabmap/mapPath
+    Color: 25; 255; 0
+    Line Style: Lines
+    Alpha: 1.0
+  - Class: rviz_default_plugins/PoseWithCovariance
+    Enabled: true
+    Name: rtabmap localization_pose
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /rtabmap/localization_pose
+    Shape: Arrow
+    Color: 255; 25; 0
+    Covariance:
+      Value: true
+      Position:
+        Value: true
+        Alpha: 0.3
+        Color: 204; 51; 204
+        Scale: 1.0
+      Orientation:
+        Value: false
+  - Class: rviz_default_plugins/Path
+    Enabled: true
+    Name: agent path (feed pose)
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /agent_path
+    Color: 0; 170; 255
+    Line Style: Lines
+    Alpha: 0.8
+  - Class: rviz_default_plugins/Pose
+    Enabled: true
+    Name: agent camera pose
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /agent_camera_pose
+    Shape: Axes
+    Axes Length: 0.3
+    Axes Radius: 0.03
+  - Class: rviz_default_plugins/Image
+    Enabled: true
+    Name: camera rgb
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /camera/rgb
+    Normalize Range: true
+  - Class: rviz_default_plugins/Image
+    Enabled: true
+    Name: perception overlay (/image_with_bb)
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /image_with_bb
+    Normalize Range: true
+  - Class: rviz_default_plugins/DepthCloud
+    Enabled: true
+    Name: depth cloud (camera depth + rgb)
+    Value: true
+    Depth Map Topic: /camera/depth
+    Color Image Topic: /camera/rgb
+    Depth Map Transport Hint: raw
+    Color Transport Hint: raw
+    Auto Size:
+      Auto Size Factor: 1
+      Value: true
+    Queue Size: 5
+    Style: Flat Squares
+    Occlusion Compensation:
+      Value: false
+    Topic Filter: true
+    Decay Time: 0
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: 'objects: persistent boxes'
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /persistent_bbox
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: 'objects: persistent centroids + labels'
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /persistent_centroids
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: false
+    Name: 'objects: uncertain'
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /uncertain_object
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: rooms (room_areas_array)
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /room_areas_array
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: false
+    Name: considered volume (FOV)
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /considered_volume
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: false
+    Name: rtabmap node labels
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /rtabmap/labels
+    Namespaces: {}
+  Global Options:
+    Background Color: 30; 30; 36
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+  - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/Select
+  - Class: rviz_default_plugins/FocusCamera
+  - Class: rviz_default_plugins/Measure
+  - Class: rviz_default_plugins/SetInitialPose
+    Topic:
+      Value: /rtabmap/initialpose
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 18.0
+      Pitch: 0.9
+      Yaw: 0.8
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Target Frame: <Fixed Frame>
+      Near Clip Distance: 0.01
+      Invert Z Axis: false
+    Saved: null
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 1000
+  Width: 1600
+  Hide Left Dock: false
+  Hide Right Dock: true
+  Views:
+    collapsed: true
+  camera rgb:
+    collapsed: false
+  perception overlay (/image_with_bb):
+    collapsed: false

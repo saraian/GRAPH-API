@@ -1829,6 +1829,19 @@ class RoomManager:
     def _vlm_room_label(label):
         return str(label).split('#', 1)[0].strip().lower().replace(" ", "_")
 
+    def _effective_room_id(self):
+        """The room objects are actually filed under. (GA-350, from GRAPH-API 3a5a818.)
+
+        `current_room_id` is None whenever the robot is not inside a GVD region polygon
+        (no map yet, or standing in a doorway). Objects meanwhile fall back to
+        rooms.default_room_id (object_services), so returning None here would leave every
+        admitted object in a room the room-frame seam never looked at.
+        """
+        if self.current_room_id is not None:
+            return self.current_room_id
+        from config import CFG
+        return CFG["rooms"]["default_room_id"] or None
+
     def update_current_room_semantics(self, persistent_objects):
         if self.current_room_id is None:
             return

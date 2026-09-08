@@ -1108,3 +1108,48 @@ if __name__ == "__main__":
     print("a2's installed config copy, a6's live TF tree, a7 against a real frozen root.")
     print("a6 and a7 passed live on 2026-08-30; a1, a2 and a4 have not yet run to completion.")
     sys.exit(1 if failures else 0)
+
+def test_a12_refuses_a_gt_reader_outside_the_allow_list_and_passes_the_clean_tree():
+    """GA-355. The negative control is the point: a reader injected into the association loop
+    and into perception_2.publish_objects must be NAMED by the probe, and the untouched copy must
+    pass. Rule 18/26: run it, do not predict it."""
+    import shutil
+    import tempfile
+    from preflight_gate import a12_gt_isolation
+    lost = os.path.dirname(HERE)
+    ignore = shutil.ignore_patterns("__pycache__", ".ruff_cache", "*.pyc", "output", "probe_assets")
+    with tempfile.TemporaryDirectory() as td:
+        for d in ("src", "test"):
+            shutil.copytree(os.path.join(lost, d), os.path.join(td, d), ignore=ignore)
+        ok, detail = a12_gt_isolation(root=td)
+        assert ok is True, detail
+        om6 = os.path.join(td, "src", "perception_module", "object_manager_6.py")
+        with open(om6, "a") as fh:
+            fh.write("\n_leak = os.environ.get('FEED_GT_SEMANTIC')\n")
+        p2 = os.path.join(td, "src", "perception_module", "perception_2.py")
+        src = open(p2).read()
+        needle = "    def publish_objects("
+        assert needle in src, "perception_2.publish_objects moved; re-point the negative test"
+        src = src.replace(needle, "    def publish_objects(self, *_a, **_k):\n        _x = self._gt_semantic\n\n" + needle, 1)
+        open(p2, "w").write(src)
+        ok, detail = a12_gt_isolation(root=td)
+        assert ok is False, detail
+        assert "src/perception_module/object_manager_6.py" in detail["not_allowed_files"], detail
+        assert "publish_objects" in detail["perception_2_functions_not_allowed"], detail
+
+
+def test_a13_verdict_requires_exactly_one_authority_on_the_stamped_side():
+    """GA-359. Today's stack (both sides publish) must FAIL under either arm; each single
+    authority passes only under its own arm; no authority fails."""
+    from preflight_gate import a13_verdict
+    both = [("map", "odom")]
+    assert a13_verdict("simulator", both, both)[0] is False
+    assert a13_verdict("rtabmap", both, both)[0] is False
+    assert a13_verdict("simulator", [], both)[0] is True
+    assert a13_verdict("rtabmap", [], both)[0] is False
+    assert a13_verdict("rtabmap", both, [])[0] is True
+    assert a13_verdict("simulator", both, [])[0] is False
+    ok, d = a13_verdict("rtabmap", [], [])
+    assert ok is False and "NO authority" in d["reason"]
+    # other pairs do not count as map->odom
+    assert a13_verdict("simulator", [("odom", "base_link")], both)[0] is True

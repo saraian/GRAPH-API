@@ -688,7 +688,7 @@ DWELL_MODE = os.environ.get("FEED_DWELL_MODE", "adaptive").strip().lower()
 if DWELL_MODE not in ("adaptive", "fixed"):
     raise SystemExit(f"[feed] FEED_DWELL_MODE={DWELL_MODE!r}; expected adaptive or fixed")
 DWELL_MIN = int(os.environ.get("FEED_DWELL_MIN", 18))
-DWELL_MAX = int(os.environ.get("FEED_DWELL_MAX", 45))
+DWELL_MAX = int(os.environ.get("FEED_DWELL_MAX", 90))
 DWELL_SIGNAL_MAX_AGE_S = float(os.environ.get("FEED_DWELL_SIGNAL_MAX_AGE_S", 10.0))
 
 
@@ -1152,15 +1152,15 @@ def main():
         state.position = np.array([c[0], float(bb.min[1]) + 0.1, c[2]], dtype=np.float32)
     agent.set_state(state)
 
+    # No handler here (owner ruling 2026-09-08 12:15, rule 14): a sampling failure stops the launch.
+    # The old `except Exception` continued with NO points, so the storey clustering below ran
+    # against an empty list and the spawn-floor filter had nothing to filter on.
     cached_navmesh_pts = []
-    try:
-        if sim.pathfinder.is_loaded:
-            for _ in range(300):
-                p = sim.pathfinder.get_random_navigable_point()
-                rp, _ = habitat_pose_to_ros(p, [0, 0, 0, 1])
-                cached_navmesh_pts.append([float(rp[0]), float(rp[1]), float(rp[2])])
-    except Exception as exc:
-        print(f"[feed] navmesh sampling skipped: {exc}")
+    if sim.pathfinder.is_loaded:
+        for _ in range(300):
+            p = sim.pathfinder.get_random_navigable_point()
+            rp, _ = habitat_pose_to_ros(p, [0, 0, 0, 1])
+            cached_navmesh_pts.append([float(rp[0]), float(rp[1]), float(rp[2])])
 
     tour = Tour(sim, rng) if have_nav else None
     poller = None
