@@ -42,6 +42,11 @@ ALLOWED = {
     'FOUND-Dataset': "a submodule that shares the name; a different repository, required by the experiments",
     "FOUND AND REMOVED": "the English word",
     "has FOUND onto": "the English word",
+    # The checker cannot look for a path without naming it. Every other pattern above is written so
+    # it does not match its own source (FOUND_ has no uppercase after it, \bFOUND\b has a word char
+    # before the F); a literal path has no such escape, so it is named here with its reason like any
+    # other line. The key carries the surrounding pipes, so a real reference cannot borrow it.
+    r'|/DATA/FOUND|/found/': "this file's own pattern: the definition of what to forbid, not a use of it",
 }
 
 
