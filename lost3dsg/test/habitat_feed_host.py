@@ -6,6 +6,10 @@ habitat_feed_node.py connects, converts, and publishes to ROS topics + TF.
 Protocol: length-prefixed pickle dicts {rgb, depth, cam_pos, cam_quat,
 base_pos, base_quat, t, w, h, hfov}.
 
+The HTTP control port also accepts runtime rigid-object commands from
+habitat_feed_node.py, so run_habitat_script.py works with this headless feed
+just as it does with habitat_camera_objects_node.py.
+
 Motion has two phases:
   MAPPING   (first FEED_MAPPING_SECONDS): continuous coverage tour over the
             navmesh — greedy nearest-unvisited waypoints with a full
@@ -25,6 +29,7 @@ start floor (`habitat.floor_tolerance_m`), because the 2D SLAM grid cannot tell 
 storey from another. Config is config.yaml / GRAPH_API_CONFIG, as on the ROS side.
 """
 import collections
+import base64
 import functools
 import json
 import math
@@ -38,6 +43,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -189,6 +195,7 @@ if CFG_PATH is None:
 W = int(os.environ.get("FEED_WIDTH", hab_cfg.get("width", 1280)))
 H = int(os.environ.get("FEED_HEIGHT", hab_cfg.get("height", 960)))
 HFOV = float(os.environ.get("FEED_HFOV", hab_cfg.get("hfov", 90.0)))
+CAMERA_PITCH_DEG = float(os.environ.get("FEED_CAMERA_PITCH_DEG", "0.0"))
 SENSOR_HEIGHT = 1.5
 
 
@@ -224,6 +231,9 @@ def make_sim():
         s.sensor_type = stype
         s.resolution = [H, W]
         s.position = [0.0, SENSOR_HEIGHT, 0.0]
+        # CameraSensorSpec.orientation uses Habitat's XYZ Euler angles in radians;
+        # rotate around X so the same pitch is applied to RGB/depth/semantic views.
+        s.orientation = [math.radians(CAMERA_PITCH_DEG), 0.0, 0.0]
         s.hfov = HFOV
         specs.append(s)
     agent_cfg = habitat_sim.agent.AgentConfiguration(
@@ -463,6 +473,10 @@ class Ctrl:
         self.config = {}                     # perceive_while_moving/perm/temp/seg/det, echoed in bev_data
         self.latest_jpeg = None
         self.bev = {}
+        # HTTP threads enqueue requests, but only the simulator thread is
+        # allowed to mutate Habitat's scene graph.
+        self.object_commands = collections.deque()
+        self.object_catalog = {"templates": []}
 
 
 CTRL = Ctrl()
@@ -487,6 +501,34 @@ class CtrlHandler(BaseHTTPRequestHandler):
             self._route(url.path, q)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def do_POST(self):
+        url = urllib.parse.urlparse(self.path)
+        if url.path != "/object_command":
+            self._json({"success": False, "error": f"unknown path {url.path}"}, code=404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 65536:
+                raise ValueError("invalid object command body size")
+            command = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(command, dict):
+                raise ValueError("object command must be a JSON object")
+            done = threading.Event()
+            item = {"command": command, "done": done, "result": None}
+            CTRL.object_commands.append(item)
+            if not done.wait(timeout=10.0):
+                item["cancelled"] = True
+                self._json({
+                    "success": False,
+                    "action": command.get("action"),
+                    "request_id": command.get("request_id"),
+                    "message": "timeout waiting for the Habitat simulator thread",
+                }, code=504)
+                return
+            self._json(item["result"])
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._json({"success": False, "message": str(exc)}, code=400)
 
     def _route(self, path, q):
         if path == "/frame.jpg":
@@ -514,6 +556,8 @@ class CtrlHandler(BaseHTTPRequestHandler):
             self._json(CTRL.bev)
         elif path == "/logs":
             self._json({"logs": list(_log_ring)})
+        elif path == "/object_catalog":
+            self._json(CTRL.object_catalog)
         elif path == "/auto_mode":
             CTRL.auto_mode = q.get("enabled", "true").lower() in ("1", "true", "yes", "on")
             self._json({"success": True, "auto_mode": CTRL.auto_mode})
@@ -562,7 +606,281 @@ def start_ctrl_server():
         return
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     print(f"[feed] control server on :{CTRL_PORT} "
-          "(frame.jpg feed.mjpg bev_data logs auto_mode action set_config)")
+          "(frame.jpg feed.mjpg bev_data logs auto_mode action set_config object_command)")
+
+
+class DynamicObjectController:
+    """Rigid-object operations used by run_habitat_script through the feed node.
+
+    All methods run in the main simulation loop.  The HTTP handler only queues
+    JSON commands, avoiding concurrent access to Habitat-Sim's scene graph.
+    """
+
+    def __init__(self, sim, agent):
+        self.sim = sim
+        self.agent = agent
+        self.templates = sim.get_object_template_manager()
+        self.objects = sim.get_rigid_object_manager()
+        self.spawned = set()
+        # Keep the ManagedRigidObject wrappers alive.  Some Habitat-Sim builds
+        # release the underlying scene object when the last Python wrapper is
+        # collected, even though its id was returned by the manager.
+        self.spawned_objects = {}
+        self.capture_sensor = None
+        self._load_templates()
+        CTRL.object_catalog = {"templates": self._catalog_names()}
+        print(f"[feed] dynamic objects ready: {len(CTRL.object_catalog['templates'])} templates")
+
+    def _load_templates(self):
+        # This process runs on the host, not in the ROS container.  The
+        # repository-local habitat directory is therefore the useful default;
+        # HABITAT_EXAMPLE_OBJECTS_DIR still overrides it for other layouts.
+        default_root = (hab_cfg.get("dataset_root") or
+                        str(Path(__file__).resolve().parent.parent / "habitat"))
+        requested = os.environ.get(
+            "HABITAT_EXAMPLE_OBJECTS_DIR",
+            os.path.join(default_root, "habitat_objects", "configs"),
+        )
+        if not os.path.isdir(requested):
+            print(f"[feed] object template directory not found: {requested}")
+            return
+        directories = []
+        for root, _dirs, files in os.walk(requested):
+            if any(name.endswith(".object_config.json") for name in files):
+                directories.append(root)
+        for directory in directories:
+            try:
+                self.templates.load_configs(directory)
+            except Exception as exc:
+                print(f"[feed] failed loading object templates from {directory}: {exc}")
+
+    def _handles(self):
+        return list(self.templates.get_template_handles())
+
+    def _catalog_names(self):
+        names = set()
+        for handle in self._handles():
+            name = os.path.basename(str(handle)).lower()
+            for suffix in (".object_config.json", ".json"):
+                if name.endswith(suffix):
+                    name = name[:-len(suffix)]
+                    break
+            if name:
+                names.add(name)
+        return sorted(names)
+
+    def _resolve_template(self, requested):
+        handles = self._handles()
+        if requested is None or str(requested).strip().lower() in ("", "random"):
+            return handles[0] if handles else None
+        requested = str(requested).strip()
+        if requested in handles:
+            return requested
+        wanted = os.path.basename(requested).lower()
+        for suffix in (".object_config.json", ".json"):
+            if wanted.endswith(suffix):
+                wanted = wanted[:-len(suffix)]
+                break
+        for handle in handles:
+            stem = os.path.basename(str(handle)).lower()
+            for suffix in (".object_config.json", ".json"):
+                if stem.endswith(suffix):
+                    stem = stem[:-len(suffix)]
+                    break
+            if stem == wanted:
+                return handle
+        return None
+
+    @staticmethod
+    def _position(value):
+        p = np.asarray(value, dtype=np.float32)
+        if p.shape != (3,) or not np.all(np.isfinite(p)) or np.any(np.abs(p) > 100.0):
+            raise ValueError("position must contain three finite coordinates within +/-100 m")
+        return p
+
+    def _object(self, object_id):
+        object_id = int(object_id)
+        obj = self.spawned_objects.get(object_id)
+        if obj is None:
+            obj = self.objects.get_object_by_id(object_id)
+        if obj is None:
+            raise ValueError(f"object id={object_id} not found")
+        return obj
+
+    def _camera_state(self):
+        state = self.agent.get_state()
+        sensor = state.sensor_states.get("color_sensor")
+        return ((np.asarray(sensor.position, dtype=np.float64), sensor.rotation)
+                if sensor is not None else
+                (np.asarray(state.position, dtype=np.float64), state.rotation))
+
+    @staticmethod
+    def _rotmat(q):
+        return _quat_to_rot([q.x, q.y, q.z, q.w])
+
+    @staticmethod
+    def _bottom_offset(obj):
+        try:
+            return -float(obj.root_scene_node.cumulative_bb.min.y)
+        except Exception:
+            return -float(obj.aabb.min.y)
+
+    def _pixel_hit(self, pixel):
+        import magnum as mn
+        if not isinstance(pixel, (list, tuple)) or len(pixel) != 2:
+            raise ValueError("pixel must be [u, v]")
+        u, v = int(pixel[0]), int(pixel[1])
+        if not (0 <= u < W and 0 <= v < H):
+            raise ValueError("pixel is outside the camera image")
+        fx = (W / 2.0) / math.tan(math.radians(HFOV) / 2.0)
+        direction = np.array([(u - W / 2.0) / fx, -(v - H / 2.0) / fx, -1.0])
+        direction /= np.linalg.norm(direction)
+        camera, rotation = self._camera_state()
+        direction = self._rotmat(rotation) @ direction
+        hits = self.sim.cast_ray(habitat_sim.geo.Ray(mn.Vector3(camera), mn.Vector3(direction)))
+        if not hits.has_hits():
+            raise ValueError("pixel does not intersect the scene")
+        return hits.hits[0]
+
+    def spawn(self, command):
+        import magnum as mn
+        handle = self._resolve_template(command.get("template"))
+        if handle is None:
+            raise ValueError(f"template {command.get('template')!r} not found")
+        obj = self.objects.add_object_by_template_handle(handle)
+        if obj is None:
+            raise RuntimeError(f"Habitat could not instantiate template {handle!r}")
+        try:
+            scale = float(command.get("object_scale", 1.0))
+            if not math.isfinite(scale) or scale <= 0:
+                raise ValueError("object_scale must be a positive number")
+            if abs(scale - 1.0) > 1e-6:
+                obj.root_scene_node.scale(mn.Vector3(scale))
+            if "position" in command:
+                position = self._position(command["position"])
+            else:
+                camera, rotation = self._camera_state()
+                position = camera + self._rotmat(rotation) @ np.array([0.0, 0.0, -1.5])
+            obj.motion_type = habitat_sim.physics.MotionType.KINEMATIC
+            obj.translation = position
+            obj.rotation = mn.Quaternion.rotation(mn.Deg(0.0), mn.Vector3(0.0, 1.0, 0.0))
+            obj.awake = True
+            object_id = int(obj.object_id)
+            self.spawned.add(object_id)
+            self.spawned_objects[object_id] = obj
+        except Exception:
+            self.objects.remove_object_by_id(int(obj.object_id))
+            raise
+        print(f"[feed] scripted object spawned: id={object_id} handle={handle} pos={position.tolist()}")
+        return {"success": True, "action": "spawn", "object_id": object_id,
+                "handle": str(handle), "position": [float(v) for v in position],
+                "target_category": command.get("target_category"),
+                "target_surface_point": command.get("target_surface_point")}
+
+    def move(self, command):
+        obj = self._object(command["object_id"])
+        mode = "position"
+        extra = {}
+        if "position" in command:
+            position = self._position(command["position"])
+        elif "pixel" in command:
+            hit = self._pixel_hit(command["pixel"])
+            normal = np.asarray([float(hit.normal.x), float(hit.normal.y),
+                                 float(hit.normal.z)], dtype=np.float32)
+            normal /= max(float(np.linalg.norm(normal)), 1e-6)
+            offset = self._bottom_offset(obj) + 0.01 if abs(float(normal[1])) > 0.8 else 0.01
+            position = np.asarray(hit.point, dtype=np.float32) + normal * offset
+            mode = "pixel"
+            extra = {"pixel": [int(v) for v in command["pixel"]],
+                     "hit_object_id": int(hit.object_id)}
+        else:
+            raise ValueError("move requires position or pixel")
+        obj.motion_type = habitat_sim.physics.MotionType.KINEMATIC
+        obj.translation = position
+        obj.awake = True
+        return {"success": True, "action": "move", "object_id": int(obj.object_id),
+                "mode": mode, "position": [float(v) for v in position], **extra}
+
+    def remove(self, command):
+        if command.get("all") is True:
+            for object_id in list(self.spawned):
+                self.objects.remove_object_by_id(object_id)
+            count = len(self.spawned)
+            self.spawned.clear()
+            self.spawned_objects.clear()
+            return {"success": True, "action": "remove", "object_id": None,
+                    "removed_count": count, "position": None}
+        object_id = int(command["object_id"])
+        if object_id not in self.spawned:
+            raise ValueError(f"object id={object_id} was not spawned by this feed")
+        obj = self._object(object_id)
+        position = [float(obj.translation.x), float(obj.translation.y), float(obj.translation.z)]
+        self.objects.remove_object_by_id(object_id)
+        self.spawned.remove(object_id)
+        self.spawned_objects.pop(object_id, None)
+        return {"success": True, "action": "remove", "object_id": object_id,
+                "position": position}
+
+    def _capture_sensor(self):
+        if self.capture_sensor is not None:
+            return self.capture_sensor
+        spec = habitat_sim.CameraSensorSpec()
+        spec.uuid = "object_capture_sensor"
+        spec.sensor_type = habitat_sim.SensorType.COLOR
+        spec.resolution = [H, W]
+        spec.position = [0.0, 0.0, 0.0]
+        spec.orientation = [0.0, 0.0, 0.0]
+        spec.hfov = 55.0
+        self.sim.add_sensor(spec)
+        registry = getattr(self.sim, "sensors", None)
+        self.capture_sensor = registry[spec.uuid] if registry is not None else None
+        if self.capture_sensor is None or not hasattr(self.capture_sensor, "sensor_object"):
+            raise RuntimeError("this Habitat build does not expose the auxiliary VisualSensor")
+        return self.capture_sensor
+
+    def capture(self, command):
+        import magnum as mn
+        object_id = int(command["object_id"]) if "object_id" in command else None
+        obj = self._object(object_id) if object_id is not None else None
+        target = (obj.transformation.transform_point(obj.aabb.center()) if obj is not None
+                  else mn.Vector3(self._position(command["position"])))
+        if command.get("capture_eye") is not None:
+            eye = mn.Vector3(self._position(command["capture_eye"]))
+        else:
+            current, _rotation = self._camera_state()
+            eye = mn.Vector3(current)
+        sensor = self._capture_sensor()
+        camera = sensor.sensor_object
+        node = camera.object() if callable(getattr(camera, "object", None)) else camera.object
+        view = mn.Matrix4.look_at(eye, target, mn.Vector3(0.0, 1.0, 0.0))
+        try:
+            agent_world = self.agent.scene_node.absolute_transformation()
+            node.transformation = agent_world.inverted() @ view
+            rgb = self.sim.get_sensor_observations().get("object_capture_sensor")
+            if rgb is None:
+                raise RuntimeError("no observation from object capture sensor")
+            rgb = np.ascontiguousarray(rgb[..., :3], dtype=np.uint8)
+        finally:
+            camera.set_transformation_from_spec()
+        return {"success": True, "action": "capture", "object_id": object_id,
+                "rgb_zlib": base64.b64encode(
+                    zlib.compress(rgb.tobytes(), level=1)).decode("ascii"),
+                "rgb_width": int(rgb.shape[1]), "rgb_height": int(rgb.shape[0])}
+
+    def execute(self, command):
+        action = str(command.get("action", "")).lower()
+        try:
+            handler = {"spawn": self.spawn, "move": self.move,
+                       "remove": self.remove, "capture": self.capture}.get(action)
+            if handler is None:
+                raise ValueError(f"unsupported object action {action!r}")
+            result = handler(command)
+        except Exception as exc:
+            result = {"success": False, "action": action, "message": str(exc)}
+            print(f"[feed] object command {action} failed: {exc}")
+        if command.get("request_id") is not None:
+            result["request_id"] = str(command["request_id"])
+        return result
 
 
 
@@ -1151,6 +1469,7 @@ def main():
         c = (np.array(bb.min) + np.array(bb.max)) / 2
         state.position = np.array([c[0], float(bb.min[1]) + 0.1, c[2]], dtype=np.float32)
     agent.set_state(state)
+    object_controller = DynamicObjectController(sim, agent)
 
     # No handler here (owner ruling 2026-09-08 12:15, rule 14): a sampling failure stops the launch.
     # The old `except Exception` continued with NO points, so the storey clustering below ran
@@ -1408,6 +1727,15 @@ def main():
         while CTRL.actions:
             queued_act, queued_params = CTRL.actions.popleft()
             exec_manual(queued_act, queued_params)
+
+        # Scene-graph mutations are queued by the HTTP threads and executed
+        # here, on the same thread that steps and renders Habitat-Sim.
+        while CTRL.object_commands:
+            item = CTRL.object_commands.popleft()
+            if item.get("cancelled"):
+                continue
+            item["result"] = object_controller.execute(item["command"])
+            item["done"].set()
 
         if not CTRL.auto_mode:
             label = "MANUAL"
