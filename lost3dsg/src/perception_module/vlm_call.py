@@ -100,6 +100,26 @@ class VlmClient:
         raw = self._vlm_call(prompt, self._encode(rgb))
         return self.parse_labels_response(raw)
 
+    def call_scene(self, prompt_path, rgb):
+        """Analyze the complete frame in one structured VLM request.
+
+        The returned boxes are converted to coordinates in the original image,
+        even when the encoder downsizes the image before transport: the response
+        uses aspect-preserving 0..1000 normalized coordinates.
+        """
+        from scene_analysis import SCENE_ANALYSIS_RESPONSE_FORMAT, parse_scene_analysis
+
+        with open(prompt_path, encoding="utf-8") as prompt_file:
+            prompt = prompt_file.read()
+        raw = self._vlm_call(
+            prompt,
+            self._encode(rgb),
+            response_format=SCENE_ANALYSIS_RESPONSE_FORMAT,
+            image_detail="high",
+        )
+        height, width = rgb.shape[:2]
+        return parse_scene_analysis(raw, image_width=width, image_height=height)
+
     def _clean_labels(self, raw_labels):
         """Lemmatise and de-duplicate, logging what was collapsed. GA-285.
 

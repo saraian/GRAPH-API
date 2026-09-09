@@ -855,14 +855,20 @@ def _vlm_client():
     return _client
 
 
-def vlm_call(prompt, encoded_image, timeout=None):
+def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_detail=None):
     """One VLM round-trip. Transport failures (timeout, malformed envelope)
     retry up to cfg vlm.retries times, then raise — never silently degraded.
     A well-formed response is returned as-is (may be empty: a semantic outcome
     the callers already handle).
 
     `timeout` (seconds) bounds THIS call; None keeps the client's cfg vlm.timeout.
-    GA-303: the crop describer passes cfg vlm.crop_timeout here."""
+    GA-303: the crop describer passes cfg vlm.crop_timeout here.
+
+    `response_format` and `image_detail` are optional so existing label/crop callers
+    keep byte-for-byte request semantics. The unified scene caller uses both to ask
+    the configured OpenAI-compatible endpoint for one strict JSON object containing
+    the boxes and attributes for the entire frame.
+    """
     last_err = None
     for attempt in range(CFG["vlm"]["retries"] + 1):
         # GA-288. BACKOFF, because there was none. Run 20260903_135823 died at 18 cycles on
@@ -873,25 +879,38 @@ def vlm_call(prompt, encoded_image, timeout=None):
         if attempt:
             time.sleep(min(2 ** (attempt - 1), 8))
         try:
-            agent = _vlm_client().chat.completions.create(
-                model=CFG["vlm"]["model"],
-                messages=[
+            image_url = {"url": f"data:image/png;base64,{encoded_image}"}
+            if image_detail is not None:
+                image_url["detail"] = image_detail
+            request = {
+                "model": CFG["vlm"]["model"],
+                "messages": [
                     {
                         "role": "user",
                         "content": [
                             {"type": "text", "text": prompt},
                             {
                                 "type": "image_url",
-                                "image_url": {"url": f"data:image/png;base64,{encoded_image}"}
+                                "image_url": image_url,
                             }
                         ],
                     }
                 ],
-                **({"timeout": timeout} if timeout is not None else {}),
-            )
+            }
+            if timeout is not None:
+                request["timeout"] = timeout
+            if response_format is not None:
+                request["response_format"] = response_format
+            agent = _vlm_client().chat.completions.create(**request)
             if not getattr(agent, "choices", None) or agent.choices[0].message is None:
                 raise RuntimeError(f"malformed VLM response: {agent!r:.200}")
-            return agent.choices[0].message.content
+            message = agent.choices[0].message
+            refusal = getattr(message, "refusal", None)
+            if refusal:
+                raise RuntimeError(f"VLM refused the image request: {refusal}")
+            if not message.content:
+                raise RuntimeError("VLM returned an empty response")
+            return message.content
         except Exception as e:
             last_err = e
     raise RuntimeError(f"VLM unreachable after {CFG['vlm']['retries'] + 1} attempts") from last_err
