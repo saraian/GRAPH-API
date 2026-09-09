@@ -1,11 +1,11 @@
 # GRAPH-API — `dev/lost3dsg-cleanup`
 
 The LOST-3DSG perception and world-model stack, on the branch that
-[FOUND](https://github.com/EmanueleMusumeci/FOUND) vendors as `vendor/graph-api`. Upstream
+An extension package may vendor this repository as `vendor/graph-api`. Upstream
 LOST-3DSG (paper, authors, ROS 2 install on a real robot) is documented in
 [`lost3dsg/README.md`](lost3dsg/README.md). This file documents what this branch adds: a
 containerised stack, a Habitat simulator feed, a run harness with a pre-flight gate, cloud
-perception, and a generic extension seam that an external package (FOUND) plugs into
+perception, and a generic extension seam an external package plugs into
 through configuration only.
 
 ## What runs where
@@ -85,7 +85,7 @@ VLM                    regolo    any OpenAI-compatible endpoint; vlm.base_url / 
    L4, per-second billing, scale-to-zero; a warm request is ~100 ms of GPU inside a
    ~1.3-5.5 s HTTP round trip (transport-bound, not compute-bound).
 
-6. **FOUND** (optional, the admission layer). Clone it next to this checkout, or use this
+6. **An extension** (optional, e.g. an admission layer). Clone it next to this checkout, or use this
    tree as its submodule; the seam is configured in step "Extension seam" below.
 
 ## Configuration
@@ -137,7 +137,7 @@ sibling container. Frequently used feed knobs: `FEED_SEED`, `FEED_FPS`, `FEED_WA
 boxes projected in), `FEED_SPAWN_FLOOR`, `FEED_GT_SEMANTIC`.
 
 **What a run leaves behind:** the bundle under `runs/<stamp>_<scene>/` (when launched from
-FOUND; `OUT_DIR` otherwise): `run_metadata.json` (resolved config), `preflight.json`,
+an extension; `OUT_DIR` otherwise): `run_metadata.json` (resolved config), `preflight.json`,
 `detections.jsonl`, `hook_decisions.jsonl`, `frames/`, `depth/`, `cropped_images/`,
 `knowledge_graph.ttl`, `rtabmap.db`, and one log per node under `logs/`.
 
@@ -149,7 +149,7 @@ are loaded by dotted path from config; this tree never imports the package.
 
 ```yaml
 hooks:
-  search_paths: ["/path/to/FOUND"]
+  search_paths: ["/path/to/extension"]
   filter:  "found.filter:OntologicalFilter"   # per-proposal admission: ADMIT / REJECT / ABSTAIN
   refiner: "pkg.module:ClassName"            # second look at a node + neighbours (default: none)
   store:   "pkg.module:ClassName"            # persistence adapter (default: SQLite temporal map)

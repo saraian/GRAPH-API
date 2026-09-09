@@ -53,4 +53,4 @@ List all visible, functional, movable, and fixture objects in the foreground and
   ]
 }
 ```
-<!-- TODO: Wire room_belief critique_reason to PROV-O provenance tracking (wasDerivedFrom / wasAttributedTo) in FOUND admission layer -->
+<!-- TODO: Wire room_belief critique_reason to PROV-O provenance tracking (wasDerivedFrom / wasAttributedTo) in the admission layer -->

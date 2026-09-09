@@ -77,7 +77,7 @@ def test_there_is_no_fallback_label_seam_left_to_arm():
     the VLM on the live detection path when it was unreachable — the third shape in
     working rule 14, a run reporting success on behalf of something that never ran.
     WORKING_RULES.md lists a fallback label list among the substitutions already
-    FOUND AND REMOVED; that removal was in the other checkout only, and this is the
+    DISCOVERED AND REMOVED; that removal was in the other checkout only, and this is the
     tree that runs.
 
     Both halves are asserted: the key is gone from the defaults, and no reader of it

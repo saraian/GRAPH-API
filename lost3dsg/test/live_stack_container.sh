@@ -91,7 +91,8 @@ PY
 # on the path because kg_align.py imported ConceptEmbedder from it. GA-306 vendored that class into
 # found/concept_embedder.py, so there is nothing to mount and nothing to add to the path. `found`
 # itself never came from PYTHONPATH -- the hook config carries its path.
-export HF_HOME=/found/.hf_cache
+EXT_MOUNT_POINT="${EXT_MOUNT_POINT:-/ext}"
+export HF_HOME="$EXT_MOUNT_POINT/.hf_cache"
 
 # CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).
 # No default. This line used to read ${CFG_NAME:-smoke_config.yaml}, and because
@@ -101,7 +102,7 @@ export HF_HOME=/found/.hf_cache
 : "${CFG_NAME:?CFG_NAME not set — live_run.sh must export it; refusing to guess a config}"
 export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/${CFG_NAME}
 # The config must EXIST. config.py::_load returns the defaults when it does not, silently —
-# so a mistyped or unported config name yields a run with hooks.filter empty, FOUND out of
+# so a mistyped or unported config name yields a run with hooks.filter empty, the extension out of
 # the loop, and a bundle that looks complete. Fail here instead.
 [ -f "$GRAPH_API_CONFIG" ] || { echo "!! GRAPH_API_CONFIG=$GRAPH_API_CONFIG does not exist — refusing to run on defaults"; exit 1; }
 export GRAPH_API_OUTPUT_DIR=/ws/output
@@ -110,7 +111,7 @@ export GRAPH_API_OUTPUT_DIR=/ws/output
 # found/store.py falls back to the in-memory rdflib graph if the import fails, and SAYS so --
 # a silent fallback would report a performance fix as landed when it is not.
 if ! python3 -c "import pyoxigraph" 2>/dev/null; then
-  pip install --quiet --no-index --find-links=/found/vendor/wheels pyoxigraph 2>&1 | tail -1 ||     echo "!! pyoxigraph install failed; the triple store will use the slow in-memory path"
+  pip install --quiet --no-index --find-links="$EXT_MOUNT_POINT"/vendor/wheels pyoxigraph 2>&1 | tail -1 ||     echo "!! pyoxigraph install failed; the triple store will use the slow in-memory path"
 fi
 python3 -c "import pyoxigraph as _o; print('    triple store: pyoxigraph', _o.__version__)" 2>/dev/null ||   echo "    triple store: rdflib in-memory (pyoxigraph unavailable)"
 LOG_DIR=/ws/output/logs
@@ -231,6 +232,16 @@ fi
 }
 
 container_exit_cleanup() {
+  # GA-373. a7 ONCE MORE AT TEARDOWN, before anything else in the close: the extension is a live mount, so
+  # a live tree that moved during the run is what the stack executed, and only a second sample can
+  # say so. Verdict lands in the bundle as a7_teardown.json; the launcher's latest-pointer refuses a
+  # failing one. Same expectations and the same found-exercised rule as the startup gate.
+  python3 /graph_api/lost3dsg/test/preflight_gate.py --only a7 --teardown --out /ws/output/a7_teardown.json \
+      --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
+      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo 1)" \
+      --install-tree /ws/install/lost3dsg/lib/lost3dsg > /tmp/a7_teardown.log 2>&1 \
+    && echo ">>> a7 at teardown: PASS — $(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));a=[p for p in d['probes'] if p['id']=='a7'][0]['detail'];m=a.get('live_mismatches') or {};print('live roots unchanged since the launch stamp' if not m else 'live root(s) MOVED during the run, recorded non-blocking: '+', '.join(f'{k} {v[\"launcher\"]}->{v[\"container\"]}' for k,v in m.items()))" /ws/output/a7_teardown.json 2>/dev/null || echo 'a7_teardown.json unreadable')" \
+    || echo "!! a7 at teardown FAILED — a source root moved during the run; see a7_teardown.json (latest will not move)"
   # The close runs FIRST: it can still write into $LOG_DIR, and the log copy below should carry
   # whatever it says. Log-copy-then-close would ship a bundle whose logs predate its own verdict.
   _close_map_and_check
@@ -279,6 +290,7 @@ else
       --expect-config-sha "${PREFLIGHT_EXPECT_CFG_SHA:-}" \
       --expect-merged-sha "${PREFLIGHT_EXPECT_MERGED_SHA:-}" \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
+      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo 1)" \
       --expect-policy "${PREFLIGHT_EXPECT_POLICY:-}" \
       --expect-cycle-s "${PREFLIGHT_EXPECT_CYCLE_S:-}" \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg \
@@ -343,10 +355,10 @@ if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
   # exit -6. live_run.sh now hands this script a WRITABLE SCRATCH COPY under /out, on purpose.
   # So a writable path is expected there, and the warning fires only for a writable path under
   # the canonical mount, which is the case the :ro mount exists to prevent.
-  if [ -w "$_RT_DB_PATH" ] && [[ "$_RT_DB_PATH" == /found/* ]]; then
+  if [ -w "$_RT_DB_PATH" ] && [[ "$_RT_DB_PATH" == "$EXT_MOUNT_POINT"/* ]]; then
     echo "!! WARNING: $_RT_DB_PATH is the CANONICAL map and it is WRITABLE inside the container."
     echo "   rtabmap writes its 2D grid into this file at close. Mount maps read-only"
-    echo "   (-v <host>:/found/maps:ro) and localize against the scratch copy (live_run.sh, GA-336)."
+    echo "   (-v <host>:\$EXT_MOUNT_POINT/maps:ro) and localize against the scratch copy (live_run.sh, GA-336)."
   fi
   # GA-290, REFUTED, AND THE FLAG IS GONE WITH IT. --RGBD/MaxOdomCacheSize 0 was the owner-approved
   # hypothesis for the Rtabmap.cpp:4090 (_optimizedPoses) SIGABRT that killed runs 20260903_110622
@@ -595,6 +607,29 @@ while [ -z "$_dead_node" ]; do
   [ -z "$_dead_node" ] && sleep 2
 done
 kill "$TAIL_PID" 2>/dev/null || true
+# GA-430. THE TERMINATING NODE, WRITTEN AS A FIELD AND NOT LEFT TO A GREP. The testing lane's crash
+# condition greps the announce line below out of the stack log, and said so inside its own verdict:
+# the same producer records status-ZERO deaths too, so a non-zero status does not discriminate and
+# the line does. A line is not an interface — it is prose that a future edit here would silently
+# break. This writes what the loop above already knows, at the moment it knows it, into the bundle;
+# the launcher folds it into run_metadata beside the cap block, same producer and same moment.
+python3 - "$_dead_node" "$_dead_rc" "${_dead_why:-}" > /ws/output/terminating_node.json <<'PY'   || echo "!! could not write terminating_node.json — the bundle cannot name what ended the run"
+import json, sys
+node, rc, why = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    rc_i = int(rc)
+except ValueError:
+    rc_i = None
+print(json.dumps({
+    "node": node,
+    "exit_status": rc_i,
+    "exit_status_raw": rc,
+    "reason": why.strip(" ()") or None,
+    "note": "the node whose exit ENDED the run, recorded by the container that watched it. A "
+            "status of 0 is still a death: MAPPING_TIME ends a mapping run normally, and a watched "
+            "node exiting 0 unexpectedly ends a run too, so read `node` and not the status alone.",
+}, indent=2))
+PY
 echo "!! $_dead_node exited with status ${_dead_rc}${_dead_why:-} — ending the run."
 echo "   The stack is not left running: a run missing any of these nodes measures nothing further."
 tail -5 /tmp/perception.log

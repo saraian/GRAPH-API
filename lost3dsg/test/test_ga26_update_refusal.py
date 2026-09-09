@@ -3,10 +3,12 @@
  - a door gets measured distance/iou, not the constants 0.0 / 1.0;
  - an UNSTAMPED object is treated as young (updated in place, never replaced) -- GA-12;
  - the miss counter is reset by identity, not by label."""
+import os
 import sys
 from types import SimpleNamespace as NS
 
-sys.path.insert(0, "/DATA/FOUND/vendor/graph-api/lost3dsg/src/perception_module")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               os.pardir, "src", "perception_module"))
 import rosstub  # noqa: E402
 
 rosstub.install()

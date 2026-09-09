@@ -160,7 +160,7 @@ _MISSING = object()
 def _aligned_name(res):
     """Return `(name, source)` for an alignment result, or RAISE if its shape is unrecognised.
 
-    a1 read `res.name` for a whole day. `found.align.Alignment` has fields
+    a probe read `res.name` for a whole day. The alignment result it read has fields
     `label, aligned, score, evidence` — **there is no `name`** — so `getattr(res, "name", None)`
     returned None for every input the aligner could produce. The consequence is worse than a
     wrong field:
@@ -179,7 +179,7 @@ def _aligned_name(res):
     """
     if res is None:
         return None, "no result"
-    for attr in ("aligned",):                      # found.align.Alignment
+    for attr in ("aligned",):                      # the alignment result of an extension
         val = getattr(res, attr, _MISSING)
         if val is not _MISSING:
             return val, f".{attr}"
@@ -228,77 +228,15 @@ def _discriminants(aligner, label, result):
     return out
 
 
-def a1_aligner_identity():
-    """WHICH aligner answered — not that one exists.
-
-    found.kg_align.make_aligner returns KGAlignerAdapter for FOUND_ALIGNER=kg and a plain
-    Aligner for exemplar/lexical. Constructing it is not enough: a KGAlignerAdapter that
-    raises on first use still reports as 'kg'. So the probe also aligns a golden label whose
-    correct answer is on record from a live run — couch -> Sofa at 0.903.
-    """
-    # Reach `found` the way the RUN reaches it, rather than assuming it is importable.
-    # The node gets it from hooks.load_hook doing sys.path.insert over CFG hooks.search_paths;
-    # this probe is a separate process that never loads a hook, so on the first gated run it
-    # raised ModuleNotFoundError and reported a probe fault where the real finding was that
-    # /kb was not mounted. Resolving from the CONFIG keeps the identity assertion intact: a
-    # wrong search_paths still fails, it just fails saying so.
-    sys.path.insert(0, "/ws/install/lost3dsg/lib/lost3dsg")
-    import config as cfgmod
-    search_paths = ((cfgmod.CFG.get("hooks") or {}).get("search_paths") or [])
-    for sp in search_paths:
-        if sp and sp not in sys.path:
-            sys.path.insert(0, sp)
-    try:
-        from found.dims import DimensionDB
-        from found.kg_align import make_aligner
-    except ImportError as exc:
-        return False, {"search_paths": search_paths, "error": f"{type(exc).__name__}: {exc}",
-                       "why": ("the aligner package the run is configured to load is not "
-                               "importable from the paths the config names. CHECK THE MOUNTS "
-                               "FIRST — /found and /kb must both be mounted, and "
-                               "PYTHONPATH must carry /kb, before concluding anything about "
-                               "the aligner itself.")}
-
-    want = os.environ.get("FOUND_ALIGNER", "kg")
-    aligner = make_aligner(DimensionDB().types())
-    got = type(aligner).__name__
-    expect_cls = "KGAlignerAdapter" if want == "kg" else "Aligner"
-    if got != expect_cls:
-        return False, {"requested": want, "constructed": got, "expected": expect_cls}
-
-    # POSITIVE: a label whose correct answer is on record from a live run on 26 Aug.
-    # The name is compared; the score is recorded and NOT asserted at 0.903, because a gate
-    # that demands an exact float is brittle, and a brittle gate gets switched off.
-    golden = aligner.align(GOLDEN_LABEL)
-    got_name, name_source = _aligned_name(golden)
-
-    # NEGATIVE: a label that is in no ontology. This is the half the probe was missing —
-    # without it an aligner that returns a non-empty name for EVERYTHING passes, which is
-    # exactly the fallback behaviour the probe exists to detect.
-    nonsense = aligner.align(NONSENSE_LABEL)
-    nonsense_name, _ = _aligned_name(nonsense)
-
-    detail = {
-        "requested": want, "constructed": got,
-        "golden": {"label": GOLDEN_LABEL, "expected": GOLDEN_EXPECT,
-                   "aligned_to": got_name, "read_from": name_source,
-                   "score": getattr(golden, "score", None) if golden else None,
-                   "score_note": "recorded 0.903 live 26 Aug; recorded here, not asserted",
-                   **_discriminants(aligner, GOLDEN_LABEL, golden)},
-        "negative": {"label": NONSENSE_LABEL, "aligned_to": nonsense_name,
-                     "expected": None},
-    }
-    if got_name != GOLDEN_EXPECT:
-        return False, dict(detail, why=(
-            f"{GOLDEN_LABEL!r} aligned to {got_name!r}, expected {GOLDEN_EXPECT!r}. "
-            "CHECK THE ENVIRONMENT FIRST — is /kb mounted and first on PYTHONPATH? "
-            "Updating the golden when the real cause was the mount calibrates this probe "
-            "against the failure it exists to detect, and it then passes forever."))
-    if nonsense_name is not None:
-        return False, dict(detail, why=(
-            f"a label in no ontology aligned to {nonsense_name!r}. An aligner that answers "
-            "everything is the fallback this probe exists to catch."))
-    return True, detail
+# a1 IS NOT HERE, and no probe that asserts about a belief layer belongs in this file.
+# It named an ontology-specific golden pair and imported an extension package, so outside the
+# one deployment that ships that package it could NEVER pass -- and this harness turns "cannot
+# pass" into "failed". A gate that always fails gets switched off, and every check it carried
+# goes with it.
+#
+# An extension supplies such a probe through the `Probe` seam below, the same way it extends
+# Filter and Refiner. The implementation moved; the copy here was simply never deleted, so
+# this file carried an ontology probe long after it had one elsewhere.
 
 
 def a2_config_identity(expect_name=None, expect_sha=None, expect_merged=None):
@@ -314,7 +252,7 @@ def a2_config_identity(expect_name=None, expect_sha=None, expect_merged=None):
     env_path = os.environ.get("GRAPH_API_CONFIG", "<unset>")
     # CFG_PATH is the file config.py ACTUALLY read, or None when the defaults are in force.
     # The environment variable only says what it was asked to read. A run on the defaults is
-    # a run with hooks.filter empty and FOUND out of the loop, and it is silent.
+    # a run with hooks.filter empty and the extension out of the loop, and it is silent.
     loaded_path = getattr(cfgmod, "CFG_PATH", None)
     merged = merged_cfg_sha(cfgmod.CFG)
     file_sha = file_sha16(loaded_path) if loaded_path else None
@@ -326,7 +264,7 @@ def a2_config_identity(expect_name=None, expect_sha=None, expect_merged=None):
     if loaded_path is None:
         return False, dict(detail, why=(
             f"no config file was loaded — config.py fell back to its defaults. "
-            f"GRAPH_API_CONFIG={env_path!r} does not exist. hooks.filter is empty, so FOUND "
+            f"GRAPH_API_CONFIG={env_path!r} does not exist. hooks.filter is empty, so the extension "
             "is not in the loop. This is a wiring fault, not a configuration choice."))
     # The old comparison was basename(GRAPH_API_CONFIG) against CFG_NAME, and the container
     # builds GRAPH_API_CONFIG from CFG_NAME — true for every value, so it could never fail.
@@ -349,8 +287,12 @@ def a3_policy_reached_container(expect_policy):
     """Compare the launcher's INTENDED values against what is set in here.
 
     Not an echo of whatever is present — that is what made an "enforcing" run a
-    pass-through: FOUND_ENFORCE was absent from the -e list, so exporting it on the host
-    did nothing and the run printed the value it had never delivered.
+    pass-through: the enforcement variable was absent from the `-e` list, so exporting it on
+    the HOST did nothing, and the run printed the value it had never delivered.
+
+    The probe names no variable of its own. Which keys matter is the CALLER's declaration,
+    passed as `expect_policy`, so a deployment with a different policy layer checks its own
+    keys and this file learns nothing about any of them.
     """
     if not expect_policy:
         return SKIPPED, {"reason": "no --expect-policy given; nothing to compare against"}
@@ -386,6 +328,41 @@ def a4_perception_twice(frame=None):
     # So a4 asserts WHICH backend answered before asking it anything — the gate's first
     # principle applied to a4 itself. It has never fired: both launcher configs set `modal`,
     # and today's 36,521 ms first call proves Modal answered. Latent, not historical.
+    # GA-434 (finding: experiment lane, 2026-09-09; verified in the source here). THE NAME CHECK
+    # BELOW WOULD REFUSE A LEGITIMATE LOCAL RUN. On `perception.backend: "local"` the factory returns
+    # LocalPerceptionBackend, but the pipeline NEVER ASKS IT ANYTHING: detection_pipeline gates the
+    # backend call on `backend_type != "local"`, and perception_2 builds OWLv2() and VitSam() in-line
+    # instead. So the stub's empty return is not on the detection path, and a4's premise is true of
+    # the OBJECT it inspects and false of the CODE that runs (rule 51).
+    #
+    # What the local path actually depends on is FILES, so that is what is asserted. Deliberately NOT
+    # by loading the models: a4 runs before the stack, and loading OWLv2 and the SAM pair here would
+    # cost minutes and a lot of memory in the one probe whose job is to be cheap.
+    local_cfg = (getattr(cfgmod, "CFG", {}) or {}).get("perception", {}).get("backend", "local")
+    if str(local_cfg).lower() == "local":
+        import glob
+        paths = (cfgmod.CFG.get("paths") or {})
+        want = {"vitsam_encoder": paths.get("vitsam_encoder"), "vitsam_decoder": paths.get("vitsam_decoder")}
+        missing = {k: v for k, v in want.items() if not (v and os.path.isfile(v) and os.path.getsize(v) > 0)}
+        # The detector's weights come from the HF hub by model id, so a cache MISS is a download at
+        # the first cycle, not a fault. Recorded rather than refused — a gate silent about a
+        # multi-gigabyte fetch at cycle 1 is hiding a cost, and one that refuses it blocks a first run.
+        hf = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE") or "/models/hf"
+        cached = bool(glob.glob(os.path.join(hf, "**", "models--google--owlv2*"), recursive=True))
+        detail = {"backend": name, "path": "in-line (OWLv2 + VitSam), the stub is never called",
+                  "vitsam": {k: (v, os.path.getsize(v) if v and os.path.isfile(v) else None)
+                             for k, v in want.items()},
+                  "owlv2_weights_cached": cached, "hf_cache_root": hf,
+                  "note": "the segmenter's files are ASSERTED; the detector's weights are RECORDED, "
+                          "because a cache miss is a first-run download and not a fault. Whether the "
+                          "models actually detect is the first cycle's answer, not this probe's."}
+        if missing:
+            detail["why"] = (f"perception.backend is 'local' and the segmenter files do not resolve: "
+                             f"{missing}. The in-line path cannot start without them, and there is no "
+                             f"fallback — a4 refuses rather than letting the run discover it.")
+            return False, detail
+        return True, detail
+
     if name in STUB_BACKENDS:
         return False, {
             "backend": name,
@@ -616,7 +593,7 @@ def a6_camera_pose_offset(expect_height_m=1.5, tol=0.25):
 
 
 # Roots, typed by MOUNT DISCIPLINE. Only /graph_api is copied into the container's install
-# tree at startup, so only it has a freeze point. /found reaches the process through
+# tree at startup, so only it has a freeze point. A live-mounted tree reaches the process through
 # hooks.search_paths -> sys.path.insert and /kb through PYTHONPATH: both are live for the
 # whole run, so a comparison taken at container start asserts a property that cannot hold
 # even when it passes — an edit at T2, mid-run, still changes the code that executes.
@@ -631,10 +608,18 @@ FROZEN_ROOTS = {"graph_api": "/graph_api/lost3dsg"}
 # moments; it does not attest the code that ran. This closes that.
 EXECUTED_TREE = "/ws/install/lost3dsg/lib/lost3dsg"
 COPY_SOURCE = "/graph_api/lost3dsg/src/perception_module"
-LIVE_ROOTS = {"found": "/found/found", "kb": "/kb"}
+# NO DEFAULT ROOTS. This used to name two mounts by path -- mounts that
+# only exists in one deployment, hard-coded into the generic gate. The roots a run must keep
+# frozen are the CALLER's to declare: they are whatever that deployment mounts live.
+#
+# Empty is not "check nothing". a7 with no roots returns SKIPPED, and a skipped probe FAILS
+# the gate, so a caller that forgets to declare its live roots is told rather than silently
+# passed. That is the difference between an absent check and a check that found nothing.
+LIVE_ROOTS = {}
 
 
-def a7_source_frozen(expect, executed_tree=None, copy_source=None):
+def a7_source_frozen(expect, executed_tree=None, copy_source=None, live_roots=None,
+                     found_exercised=True, teardown=False):
     """The copied tree must match what the launcher hashed. The live mounts are SAMPLED.
 
     Rule 9 made mechanical: the container copies its sources once at startup, so anything
@@ -693,16 +678,61 @@ def a7_source_frozen(expect, executed_tree=None, copy_source=None):
         executed["note"] = "install tree or mount absent; not running in the container"
     detail_executed = executed
 
-    for name, root in LIVE_ROOTS.items():
+    # GA-373 (2026-09-08). The live roots were SAMPLED and compared with nothing, so a write into
+    # a live-mounted tree inside the freeze window (run 131906: launcher 13:19:06 eaed38df, gate 13:20:27
+    # 9c49ecb9, same instrument) refused nothing. Now: a differing live root against the launcher's
+    # stamp is a MISMATCH — blocking when the run executes extension code, recorded-only under MAPPING_ONLY
+    # (no extension code runs there, so the run is not refused for code it never executes). The
+    # container runs this probe once more at teardown (a7_teardown.json), so a live tree that moved
+    # DURING the run is a bundle finding, not a reader's inference.
+    live_mismatches = {}
+    # NO ROOTS DECLARED IS A FACT TO RECORD, NOT A REASON TO ABANDON THE PROBE. a7 does two
+    # jobs: it compares the EXECUTED tree against the mount, and it samples the live roots.
+    # Refusing the whole probe when no roots are declared threw away the first job too -- the
+    # one that catches a container running a tree nobody hashed. So the executed-tree half
+    # always runs, and the absence of roots is written into the detail where a reader meets it.
+    # It becomes a FAILURE only when the caller says this run executes extension code, because
+    # then an undeclared live tree is exactly the thing that can change underneath it.
+    roots = live_roots if live_roots is not None else LIVE_ROOTS
+    if not roots and found_exercised:
+        mismatches["live_roots_undeclared"] = (
+            "this run executes extension code and declared no live roots; pass "
+            "--live-root NAME=PATH for each tree mounted live, or a tree can change "
+            "underneath the run with nothing to notice")
+    for name, root in roots.items():
         if os.path.isdir(root):
             sha, n = tree_sha(root)
             live[name] = {"sha256_16": sha, "files": n,
-                          "note": "live mount, not copied — sampled again at teardown"}
+                          "note": "live mount, not copied — compared against the launcher's stamp "
+                                  "when one was given; sampled once more at teardown "
+                                  "(a7_teardown.json)"}
+            want = (expect or {}).get(name)
+            if want and want != sha:
+                live_mismatches[name] = {"launcher": want, "container": sha,
+                                         "blocking": bool(found_exercised)}
+                if found_exercised:
+                    mismatches[name + "_live"] = live_mismatches[name]
+    if teardown:
+        # AT TEARDOWN THE MOUNT IS EXPECTED TO HAVE MOVED: the vendored tree is released to the
+        # lanes at the copied ping, and what executed is the COPY taken at startup, which the
+        # startup a7 already matched against the stamp. Comparing the mount again here refused
+        # run 20260908_135714 for edits that reached nothing. Only the LIVE roots are asserted at
+        # teardown; the mount readings stay in the detail as information.
+        detail_informational = {"frozen": frozen, "mount_vs_stamp": mismatches}
+        mismatches = {k: v for k, v in mismatches.items() if k.endswith("_live")}
     detail = {"frozen": frozen, "live_sampled": live, "mismatches": mismatches,
+              "live_mismatches": live_mismatches, "found_exercised": bool(found_exercised),
+              "teardown": bool(teardown),
               "executed": detail_executed,
               "note": ("`frozen` compares the MOUNT against the launcher's stamp — the same host "
                        "directory at two moments. `executed` compares what runs against that "
                        "mount. Neither alone attests the code that produced the numbers.")}
+    if teardown:
+        detail["informational_at_teardown"] = detail_informational
+    if live_mismatches and not mismatches:
+        detail["why_recorded"] = ("a live root changed between the launcher's stamp and this sample "
+                                  "(a write into a live-mounted tree inside the freeze window); not blocking "
+                                  "because this run executes no extension code (MAPPING_ONLY)")
     if mismatches:
         moved = ", ".join(mismatches)
         detail["why"] = (
@@ -770,10 +800,10 @@ class Probe:
     Store. GRAPH-API ships the harness and the generic probes; anything that asserts about a
     specific belief layer belongs to the package that implements it.
 
-    a1 is the case that forced this. It imports `found.dims` and `found.kg_align` and hardcodes
-    an ontology-specific golden pair, so **outside a FOUND deployment it cannot pass** — and a
+    An ontology-identity probe is the case that forced this. It imports an extension's modules and
+    hardcodes an ontology-specific golden pair, so **outside that deployment it cannot pass** — and a
     probe that cannot pass makes the gate's verdict permanently `fail` for a reason the operator
-    cannot fix. Ontology knowledge lives in FOUND; GRAPH-API ships the seam.
+    cannot fix. Ontology knowledge lives in the extension; GRAPH-API ships the seam.
 
     Subclasses set `id` and `name` and implement `run()`, returning `(ok, detail)` with the same
     contract as the built-ins: True, False, or SKIPPED — and SKIPPED is not a pass.
@@ -1127,7 +1157,6 @@ def a13_pose_authority(pose_source=None, window_s=5.0):
     return ok, detail
 
 PROBES = {
-    "a1": ("aligner_identity", a1_aligner_identity),
     "a2": ("config_identity", a2_config_identity),
     "a3": ("policy_reached_container", a3_policy_reached_container),
     "a4": ("perception_twice", a4_perception_twice),
@@ -1176,10 +1205,21 @@ def main(argv=None):
                     help="a13: the stamped pose source (default: FEED_POSE_SOURCE env)")
     ap.add_argument("--feed-window-s", type=float, default=12.0,
                     help="a9: seconds between the two samples")
+    ap.add_argument("--live-root", action="append", default=[], metavar="NAME=PATH",
+                    help="a tree this deployment mounts LIVE, which a7 must find unchanged. "
+                         "Repeatable. The gate ships no default: what must stay frozen is the "
+                         "caller's to declare, and a7 SKIPS (and so fails) when none is given.")
     ap.add_argument("--expect-config-name")
     ap.add_argument("--expect-config-sha", help="sha of the config FILE, from the launcher")
     ap.add_argument("--expect-merged-sha", help="sha of the MERGED cfg, from the launcher")
-    ap.add_argument("--expect-src-sha", help="K=V,K=V tree digests the launcher recorded")
+    ap.add_argument("--expect-src-sha", help="K=V,K=V tree digests the launcher recorded "
+                                             "(graph_api=…,found=…; a live root named here is compared)")
+    ap.add_argument("--teardown", action="store_true",
+                    help="a7 run at container close: assert only the LIVE roots against the stamp; "
+                         "the vendored mount is released at the copied ping and is reported, not judged")
+    ap.add_argument("--found-exercised", default="1",
+                    help="1 if this run executes an extension package (a live-root mismatch then FAILS a7); "
+                         "0 under MAPPING_ONLY, where it is recorded and does not block")
     # Read on the HOST, where the previous bundle exists; this gate runs in the container.
     ap.add_argument("--expect-cycle-s", default="",
                     help="worst frame age the previous run REJECTED, seconds, for a10")
@@ -1255,14 +1295,15 @@ def main(argv=None):
 
     wanted = [p.strip() for p in args.only.split(",")] if args.only else list(all_probes)
     bound = {
-        "a1": a1_aligner_identity,
         "a2": lambda: a2_config_identity(args.expect_config_name, args.expect_config_sha,
                                          args.expect_merged_sha),
         "a3": lambda: a3_policy_reached_container(_kv(args.expect_policy)),
         "a4": a4_perception_twice,
         "a5": lambda: a5_bundle_clean(args.run_dir, args.run_start, args.scratch_dir),
         "a6": lambda: a6_camera_pose_offset(args.camera_height),
-        "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha)),
+        "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha),
+                                       found_exercised=(args.found_exercised == "1"),
+                                       teardown=args.teardown),
         "a8": lambda: a8_stack_imports(install=args.install_tree),
         "a9": lambda: a9_feed_streaming(args.feed_log, args.feed_window_s),
         "a13": lambda: a13_pose_authority(args.pose_source),

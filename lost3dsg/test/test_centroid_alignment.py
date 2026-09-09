@@ -1,6 +1,7 @@
 """GA-327: a degenerate mask must leave centroids_3d, bboxes_3d and points_out the same length (red-first, 2026-09-06)."""
 import os, sys, types
-sys.path.insert(0, "/DATA/FOUND/vendor/graph-api/lost3dsg/src/perception_module")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               os.pardir, "src", "perception_module"))
 import rosstub; rosstub.install()
 import numpy as np
 import cv_utils

@@ -76,64 +76,35 @@
       --hud-col: 324px; /* overlay width + margins; minimap left, dpad right, feed centered between */
     }
     .feed-img { height: 100%; max-width: 100%; object-fit: contain; object-position: center center; }
-
-    #panelFeed.standard-feed-grid {
-      display: grid !important;
-      grid-template-columns: minmax(190px, 250px) minmax(0, 1fr) minmax(230px, 285px);
-      grid-template-areas: "map cameras controls";
-      align-items: stretch; gap: 8px; padding: 8px; background: #05070c;
+    /* GA-379: two feeds SIDE BY SIDE (owner ruling 2026-09-08) -- the live camera and the newest
+       annotated perception cycle, which the live stream has already run past. Off by default; the
+       toggle remembers itself per browser. The wrapper is already an inline-flex row, so this only
+       gives the two panes half of it each; every overlay in here (minimap, d-pad, replay bar,
+       replay canvas, badges) is position:absolute, so none of them are flex items and none move. */
+    #lastPerceptionPane { display: none; }
+    #feedWrapper.two-feed { gap: 6px; }
+    #feedWrapper.two-feed > #habitatFeedImg { flex: 1 1 50%; min-width: 0; }
+    #feedWrapper.two-feed > #lastPerceptionPane {
+      display: flex; flex: 1 1 50%; min-width: 0; height: 100%; position: relative;
+      align-items: center; justify-content: center; background: #05070c;
+      border-left: 1px solid rgba(56,189,248,.25);
     }
-    #panelFeed.standard-feed-grid #feedWrapper {
-      grid-area: cameras; padding: 0 !important; min-width: 0;
-    }
-    #panelFeed.standard-feed-grid .minimap-hud {
-      grid-area: map; position: static; inset: auto; width: auto; height: auto;
-      min-width: 0; transform: none;
-    }
-    #panelFeed.standard-feed-grid .minimap-hud:hover { transform: none; }
-    #panelFeed.standard-feed-grid .teleop-overlay {
-      grid-area: controls; position: static; inset: auto; width: auto; min-width: 0;
-      overflow-y: auto;
-    }
-    .standard-camera-strip {
-      display: flex !important; flex-direction: column; align-items: stretch !important;
-      justify-content: stretch !important; min-width: 0; min-height: 0; overflow: hidden;
-    }
-    .standard-camera-pane {
-      position: relative; min-width: 0; height: 100%; overflow: hidden;
-      display: flex; align-items: center; justify-content: center; background: #000;
-    }
-    #liveFeedPane { flex: 0 0 calc(50% - 3px); }
-    #lastPerceptionPane { flex: 1 1 0; border-top: 1px solid #1e3a5f; }
-    .standard-camera-pane .feed-img {
-      display: block; width: 100%; height: 100%; min-width: 0; object-fit: contain;
-    }
-    .camera-pane-label {
+    #lastPerceptionPane .pane-label {
       position: absolute; top: 6px; left: 50%; transform: translateX(-50%); z-index: 4;
-      display: flex; align-items: center; gap: 5px; max-width: calc(100% - 12px);
-      padding: 3px 7px; border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 5px;
-      color: #7dd3fc; background: rgba(2, 6, 23, 0.78); backdrop-filter: blur(6px);
-      font: 800 0.58rem ui-monospace, monospace; letter-spacing: 0.04em; white-space: nowrap;
+      padding: 3px 7px; border: 1px solid rgba(56,189,248,.45); border-radius: 5px;
+      color: #7dd3fc; background: rgba(2,6,23,.78); white-space: nowrap;
+      font: 800 0.58rem ui-monospace, monospace; letter-spacing: 0.04em;
     }
-    #lastPerceptionAge { color: #34d399; }
-    .camera-pane-age {
+    #lastPerceptionAge {
       position: absolute; left: 6px; bottom: 6px; z-index: 4; padding: 3px 5px;
-      border: 1px solid rgba(52, 211, 153, 0.45); border-radius: 5px;
-      background: rgba(2, 6, 23, 0.8); font: 800 0.54rem ui-monospace, monospace;
-      white-space: nowrap;
+      border: 1px solid rgba(52,211,153,.45); border-radius: 5px; color: #34d399;
+      background: rgba(2,6,23,.8); font: 800 0.54rem ui-monospace, monospace; white-space: nowrap;
     }
-    .last-perception-empty {
+    #lastPerceptionEmpty {
       position: absolute; inset: 0; z-index: 2; display: flex; align-items: center;
-      justify-content: center; padding: 28px 12px 12px; text-align: center;
-      color: #94a3b8; background: #05070c; font: 600 0.66rem ui-monospace, monospace;
+      justify-content: center; padding: 28px 12px 12px; text-align: center; color: #94a3b8;
+      background: #05070c; font: 600 0.66rem ui-monospace, monospace;
     }
-    .last-perception-refresh {
-      position: absolute; right: 6px; bottom: 6px; z-index: 4;
-      border: 1px solid rgba(56, 189, 248, 0.5); border-radius: 5px; padding: 3px 6px;
-      color: #7dd3fc; background: rgba(2, 6, 23, 0.8); font-size: 0.56rem;
-      font-weight: 800; cursor: pointer;
-    }
-    #resizerLivePerception { z-index: 40; }
 
     /* Feed / Pipeline Degraded Collapsible Toast (Top-Right Corner) */
     .feed-offline-overlay {
@@ -638,6 +609,19 @@
     .tab-btn.active { color: #38bdf8; background: #1e293b; border-bottom: 2px solid #0284c7; }
     .tab-content { display: none; flex: 1; flex-direction: column; overflow: hidden; height: calc(100% - 38px); }
     .tab-content.active { display: flex; }
+    /* Owner 2026-09-08: the 3D scene has no window of its own any more; the tab MAXIMIZES into an
+       overlay of ~85% of the window instead. The iframe stays where it is in the DOM, so nothing
+       reloads; only its box moves. */
+    #tabContentScene3d { position:relative; }   /* in CSS, not inline: the maximized class must be able to override it */
+    #scene3dMaxBtn { position:absolute; top:6px; right:8px; z-index:5; padding:3px 8px; cursor:pointer;
+      background:rgba(15,23,42,.88); color:#7dd3fc; border:1px solid rgba(56,189,248,.5); border-radius:5px;
+      font:800 0.6rem ui-monospace,monospace; letter-spacing:.04em; }
+    #scene3dMaxBtn:hover { background:rgba(56,189,248,.25); }
+    #tabContentScene3d.scene3d-max { display:flex !important; position:fixed; left:7.5vw; top:7.5vh;
+      width:85vw; height:85vh; z-index:99990; background:#090d16; border:1px solid rgba(56,189,248,.5);
+      border-radius:10px; box-shadow:0 12px 48px rgba(0,0,0,.7); }
+    #scene3dBackdrop { display:none; position:fixed; inset:0; z-index:99989; background:rgba(2,6,23,.6); }
+    #scene3dBackdrop.on { display:block; }
 
     /* Mobile / narrow viewports: stack panes vertically, drop drag-resizers */
     @media (max-width: 820px) {
@@ -659,10 +643,6 @@
       .feed-container { --hud-col: 234px; }
       .minimap-modal { width: 94vw; }
       .minimap-modal > div[style*="grid"] { grid-template-columns: 1fr !important; }
-      #panelFeed.standard-feed-grid {
-        height: auto !important; grid-template-columns: 1fr; grid-template-rows: 56vh 220px auto;
-        grid-template-areas: "cameras" "map" "controls"; overflow: auto;
-      }
     }
   </style>
 </head>
@@ -686,35 +666,32 @@
       <!-- Left Column: Feed + Graph & Details -->
       <div id="colLeft" class="col-pane" style="width: 58%; min-width: 350px;">
         <!-- Top Left: Live Simulator Feed -->
-        <div id="panelFeed" class="feed-container standard-feed-grid" style="height: 46%; min-height: 180px; position: relative;">
-          <div id="feedWrapper" class="standard-camera-strip" style="position:relative; height:100%; width:100%; padding:0 var(--hud-col); box-sizing:border-box;">
-            <section id="liveFeedPane" class="standard-camera-pane" aria-label="Live camera feed">
-              <span class="camera-pane-label"><i data-lucide="video" style="width:11px;height:11px;"></i> LIVE FEED</span>
-              <img id="habitatFeedImg" class="feed-img" src="/feed" alt="Live camera feed" />
+        <div id="panelFeed" class="feed-container" style="height: 46%; min-height: 180px; position: relative;">
+          <div id="feedWrapper" style="position:relative; height:100%; width:100%; padding:0 var(--hud-col); box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center;">
+            <img id="habitatFeedImg" class="feed-img" src="/feed" />
 
-              <!-- Collapsible Pipeline Warning Card (Top-Right Corner) -->
-              <div id="feedOfflineOverlay" class="feed-offline-overlay">
-                <div class="toast-header" onclick="toggleToastCollapse()" style="display:flex; align-items:center; justify-content:space-between; width:100%; cursor:pointer; gap:6px;">
-                  <span style="display:flex; align-items:center; gap:4px; font-weight:800; font-size:0.68rem; color:#ef4444; text-transform:uppercase;">
-                    <i data-lucide="alert-triangle" style="width:12px;height:12px;color:#ef4444;"></i> PIPELINE DEGRADED
-                  </span>
-                  <i id="toastChevron" data-lucide="chevron-down" style="width:12px;height:12px;color:#cbd5e1;transition:transform 0.2s;"></i>
-                </div>
-                <div id="overlayDetails" class="toast-body" style="display:block; color:#cbd5e1; font-size:0.65rem; line-height:1.3; margin-top:3px; border-top:1px solid rgba(255,255,255,0.08); padding-top:3px;">
-                  Component offline details
-                </div>
+            <!-- GA-379: the retained annotated cycle, beside the live camera. The bridge keeps the
+                 newest /image_with_bb frame (one per perception cycle) and serves it with an ETag,
+                 so an unchanged cycle costs a small JSON poll and no image. -->
+            <section id="lastPerceptionPane" aria-label="Last perception result">
+              <span class="pane-label"><i data-lucide="scan-search" style="width:11px;height:11px;"></i> LAST PERCEPTION</span>
+              <b id="lastPerceptionAge">WAITING</b>
+              <img id="lastPerceptionImg" class="feed-img" alt="Newest annotated perception frame" />
+              <div id="lastPerceptionEmpty">Waiting for the first annotated perception frame</div>
+            </section>
+
+            <!-- Collapsible Pipeline Warning Card (Top-Right Corner) -->
+            <div id="feedOfflineOverlay" class="feed-offline-overlay">
+              <div class="toast-header" onclick="toggleToastCollapse()" style="display:flex; align-items:center; justify-content:space-between; width:100%; cursor:pointer; gap:6px;">
+                <span style="display:flex; align-items:center; gap:4px; font-weight:800; font-size:0.68rem; color:#ef4444; text-transform:uppercase;">
+                  <i data-lucide="alert-triangle" style="width:12px;height:12px;color:#ef4444;"></i> PIPELINE DEGRADED
+                </span>
+                <i id="toastChevron" data-lucide="chevron-down" style="width:12px;height:12px;color:#cbd5e1;transition:transform 0.2s;"></i>
               </div>
-            </section>
-
-            <div id="resizerLivePerception" class="resizer-v" title="Drag to resize Live Feed / Last Perception Result"></div>
-
-            <section id="lastPerceptionPane" class="standard-camera-pane" aria-label="Last perception result">
-              <span class="camera-pane-label"><i data-lucide="scan-search" style="width:11px;height:11px;"></i> LAST PERCEPTION</span>
-              <b id="lastPerceptionAge" class="camera-pane-age">WAITING</b>
-              <img id="lastPerceptionImg" class="feed-img" alt="Latest annotated perception frame" />
-              <div id="lastPerceptionEmpty" class="last-perception-empty">Waiting for the first annotated perception frame</div>
-              <button class="last-perception-refresh" type="button" onclick="refreshLastPerception(true)" title="Reload the retained result">↻ REFRESH</button>
-            </section>
+              <div id="overlayDetails" class="toast-body" style="display:block; color:#cbd5e1; font-size:0.65rem; line-height:1.3; margin-top:3px; border-top:1px solid rgba(255,255,255,0.08); padding-top:3px;">
+                Component offline details
+              </div>
+            </div>
           </div>
 
           <!-- Aero Glass BEV Minimap -->
@@ -786,6 +763,8 @@
         <div class="viz-layer-bar-outside">
           <!-- Left: Feed Watchdog & Perception Status Badges -->
           <div style="display: flex; align-items: center; gap: 6px;">
+            <button id="btnTwoFeed" class="viz-btn" type="button" onclick="toggleTwoFeed()"
+                    title="Show the newest annotated perception cycle beside the live camera">2 FEEDS</button>
             <span id="feedStatusBadge" class="feed-heartbeat-badge live"><span class="pulse-dot"></span> <span id="feedStatusText">FEED • STREAMING</span></span>
             <!-- Ships phase-neutral: the stats poll sets both the class and the text. -->
             <span id="perceptionStatusBadge" class="perception-state-badge"><i data-lucide="activity" style="width:11px;height:11px;"></i> <span id="perceptionStatusText">&mdash;</span></span>
@@ -929,9 +908,11 @@
                owns its three.js, mesh loader and controls); the frame is in the DOM from page load
                so the 38 MB mesh streams in while the user is on another tab. -->
           <div id="tabContentScene3d" class="tab-content" style="padding: 0;">
+            <button id="scene3dMaxBtn" type="button" onclick="toggleScene3dMax()" title="Maximize the 3D scene into an overlay (Esc closes)">&#x2922; MAXIMIZE</button>
             <iframe id="scene3dFrame" src="/scene3d" title="Scene 3D" loading="eager"
                     style="flex:1; width:100%; height:100%; border:0; background:#090d16;"></iframe>
           </div>
+          <div id="scene3dBackdrop" onclick="toggleScene3dMax(false)"></div>
 
           <!-- Computation & Pipeline Stage Tracker Tab -->
           <div id="tabContentComputation" class="tab-content" style="padding: 10px; overflow-y: auto;">
@@ -978,7 +959,7 @@
 
               <div class="pipeline-step-card" id="stepAdmission">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span style="font-size:0.74rem; font-weight:bold; color:#f8fafc;">5. FOUND Ontological Admission Gate</span>
+                  <span style="font-size:0.74rem; font-weight:bold; color:#f8fafc;">5. Ontological Admission Gate</span>
                   <span style="font-size:0.68rem; font-family:monospace; color:#10b981; font-weight:bold;">ACTIVE</span>
                 </div>
                 <div style="font-size:0.65rem; color:var(--muted); margin-top:2px;">Prior verification, room co-occurrence & PROV-O audit</div>
@@ -1285,7 +1266,9 @@
     function toggleAutoMode() {
       const next = !isAutoMode;
       updateAutoModeUI(next);
-      fetch(`/auto_mode?enabled=${next ? 1 : 0}`)
+      // GA-380: a TEMPLATE literal, so neither the proxy's `fetch('/` rule nor my first sweep
+      // (which looked for that same literal) ever saw it. Backticks are the blind spot.
+      fetch(`${PFX}/auto_mode?enabled=${next ? 1 : 0}`)
         .then(r => r.json())
         .then(d => {
           if (d && typeof d.auto_mode === 'boolean') updateAutoModeUI(d.auto_mode);
@@ -1378,7 +1361,8 @@
       const statusEl = document.getElementById('teleopStatus');
       if (statusEl) statusEl.textContent = `SENDING ${act.toUpperCase()}…`;
       const query = new URLSearchParams({ act, ...extra }).toString();
-      fetch(`/action?${query}`)
+      // GA-380: same blind spot -- the direction pad was DEAD behind the prefix.
+      fetch(`${PFX}/action?${query}`)
         .then(r => r.json())
         .then(d => {
           if (statusEl) statusEl.textContent = `EXECUTED ${act.toUpperCase()}`;
@@ -1432,6 +1416,7 @@
     }
 
     function updateHealthStatus() {
+      if (window.REPLAY_DETACHED) return;   // GA-345: liveness badges are hidden while scrubbed; nothing to paint
       fetch('/health')
         .then(r => r.json())
         .then(data => {
@@ -1480,6 +1465,17 @@
     setInterval(updateHealthStatus, 2000);
     updateHealthStatus();
 
+    // GA-380: this page can be served under a path prefix (the droplet mounts the app under one).
+    // The proxy that adapts it rewrites literal src="/ and fetch('/ only, so every URL built at
+    // RUNTIME is invisible to it and resolves against the site root. Measured consequences on the
+    // public copy: the feed died whenever the heartbeat re-sourced it, and every crop thumbnail
+    // 404ed. One helper, used at each such site. Empty at the root, so the laptop is unchanged.
+    // Trailing slashes are stripped: from the start page the path is "/" or a prefix, and without
+    // that the result is "//feed", which a browser reads as a HOST rather than a path.
+    const PFX = location.pathname
+      .replace(new RegExp('/(dash|replay|scene3d|bundles|arch|blockers)/?$'), '')
+      .replace(new RegExp('/+$'), '');
+
     let logHistory = [];
     const MAX_LOG_LINES = 5000;
     const activeLogModules = { feed: true, feed_node: true, perception: true, object_manager: true, bridge: true };
@@ -1509,6 +1505,7 @@
     }
 
     function updateLogs() {
+      if (window.REPLAY_DETACHED) return;   // GA-345: a scrubbed live page shows the frame's own log window
       fetch('/logs')
         .then(r => r.json())
         .then(data => {
@@ -1712,7 +1709,96 @@
       el.__dock = { get: () => ({ ...state }), set: st => { state = { ...state, ...st }; apply(state); save(state); } };
     }
 
+    // ---- GA-379: the second feed pane -------------------------------------------------------
+    // Owner ruling 2026-09-08: side by side, not stacked, and behind a switch. Ported from
+    // saraian/GRAPH-API a7f5784 (yurimachine) with two deliberate differences: the layout is a
+    // row rather than that push's three-column grid, which would have made the minimap and the
+    // d-pad static and undone their docking (GA-348); and it is a toggle rather than always on.
+    //
+    // REPLAY HAS NO SECOND FEED and says so rather than showing an empty pane: the annotated
+    // frame comes from the running node, and a bundle does not record it. The button is disabled
+    // there with the reason on it -- rule 4, an absent thing must not look like a broken one.
+    let lastPerceptionRevision = null, twoFeedOn = false;
+    // The mode is stamped into the page ONCE, at serve time. A page served live and left open
+    // through the end of a run kept the switch enabled with nothing behind it, and a tab where
+    // ANOTHER viewer picked a bundle is deliberately not reloaded, so it stayed that way
+    // indefinitely. The pane's own poll already asks the server every 2 s, so let its answer carry
+    // the mode: `null` means nobody has told us yet, and the serve-time value stands until then.
+    let twoFeedMode = null;
+    function twoFeedAvailable() { return (twoFeedMode || window.DASH_MODE) !== 'replay'; }
+    function applyTwoFeed() {
+      const wrap = document.getElementById('feedWrapper');
+      const btn = document.getElementById('btnTwoFeed');
+      const on = twoFeedOn && twoFeedAvailable();
+      if (wrap) wrap.classList.toggle('two-feed', on);
+      if (btn) {
+        btn.classList.toggle('active', on);
+        btn.disabled = !twoFeedAvailable();
+        btn.title = twoFeedAvailable()
+          ? 'Show the newest annotated perception cycle beside the live camera'
+          : 'No second feed in a replay: the annotated frame comes from the running perception node and a bundle does not record it';
+      }
+      if (on) refreshLastPerception(true);
+      // The replay overlay measures itself against the live image's box, which just changed.
+      window.dispatchEvent(new Event('resize'));
+    }
+    function toggleTwoFeed() {
+      if (!twoFeedAvailable()) return;
+      twoFeedOn = !twoFeedOn;
+      try { localStorage.setItem('twoFeed', twoFeedOn ? '1' : '0'); } catch (e) {}
+      applyTwoFeed();
+    }
+    async function refreshLastPerception(force) {
+      if (!twoFeedOn || !twoFeedAvailable() || window.REPLAY_DETACHED) return;
+      const ageEl = document.getElementById('lastPerceptionAge');
+      const img = document.getElementById('lastPerceptionImg');
+      const empty = document.getElementById('lastPerceptionEmpty');
+      if (!ageEl || !img || !empty) return;
+      try {
+        const r = await fetch(PFX + '/last_perception/meta', { cache: 'no-store' });
+        // The BODY carries the reason -- which of the two failures this is, and the mode. Throwing
+        // on the status threw it away, so a carefully worded sentence had no reader and the pane
+        // showed a bare status code.
+        const meta = await r.json().catch(() => ({}));
+        if (meta.mode && meta.mode !== twoFeedMode) { twoFeedMode = meta.mode; applyTwoFeed(); }
+        if (!r.ok || !meta.available) {
+          ageEl.textContent = r.ok ? 'WAITING' : 'UNAVAILABLE';
+          empty.textContent = meta.error || (r.ok ? 'Waiting for the first annotated perception frame'
+                                                  : 'Last perception result unavailable: HTTP ' + r.status);
+          empty.style.display = 'flex';
+          return;
+        }
+        const fresh = typeof meta.same_as_live_until_s === 'number' && meta.age_s < meta.same_as_live_until_s;
+        // While this cycle is fresh the live feed serves the SAME image, so both panes show one
+        // picture. Said on the badge rather than left as a puzzle.
+        ageEl.textContent = Number(meta.age_s || 0).toFixed(0) + 's AGO' + (fresh ? ' \u00b7 same frame as the live feed' : '');
+        if (force || meta.revision !== lastPerceptionRevision) {
+          lastPerceptionRevision = meta.revision;
+          img.src = PFX + meta.url + '?v=' + encodeURIComponent(meta.revision);
+        }
+      } catch (err) {
+        // SAID, not swallowed: an unreachable second feed must not look like a scene with
+        // nothing in it. The age badge carries the state as well, so it is visible at a glance.
+        ageEl.textContent = 'UNAVAILABLE';
+        empty.textContent = 'Last perception result unavailable: ' + err.message;
+        empty.style.display = 'flex';
+        console.warn('[feed] last-perception poll failed: ' + err);
+      }
+    }
+    document.getElementById('lastPerceptionImg').addEventListener('load', () => {
+      document.getElementById('lastPerceptionEmpty').style.display = 'none';
+    });
+    document.getElementById('lastPerceptionImg').addEventListener('error', () => {
+      const empty = document.getElementById('lastPerceptionEmpty');
+      empty.textContent = 'Annotated frame could not be loaded';
+      empty.style.display = 'flex';
+    });
+    try { twoFeedOn = localStorage.getItem('twoFeed') === '1'; } catch (e) {}
+    applyTwoFeed();
+    setInterval(refreshLastPerception, 2000);
+
     function updateBEV() {
+      if (window.REPLAY_DETACHED) return;   // GA-345: a scrubbed live page keeps the minimap, cells and auto-mode as they were at the scrub
       fetch('/bev_data?floor_y=' + encodeURIComponent(selectedFloorY))
         .then(r => {
           if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -2082,7 +2168,11 @@
       // `image`, so the map is fetched once and browser-cached rather than
       // re-shipped inside every 500 ms /bev_data poll. `image` is still honoured
       // so an older bridge keeps working.
-      const mapSrc = activeMap && (activeMap.url || activeMap.image);
+      // GA-380: `url` is a PATH the bridge built (/bev_map/<hash>), so it needs the page's prefix;
+      // `image` may be a data: URI, which must never be prefixed. Measured behind a stand-in
+      // proxy: without this the minimap image 404ed and the map simply did not draw.
+      const mapSrcRaw = activeMap && (activeMap.url || activeMap.image);
+      const mapSrc = (typeof mapSrcRaw === 'string' && mapSrcRaw.startsWith('/')) ? PFX + mapSrcRaw : mapSrcRaw;
       if (mapSrc) {
         if (!topdownImgCache[mapSrc]) {
           const img = new Image();
@@ -2417,6 +2507,11 @@
     }
 
     function switchTab(tabId) {
+      // The maximized 3D overlay is a tab-content that is NOT hidden by the class sweep below, and
+      // this function is also called programmatically (a graph selection reaches it). Leaving the
+      // overlay up would pin it and its backdrop over whichever tab was just chosen, with the tab
+      // bar behind an unclickable backdrop. Reviewed 2026-09-08.
+      if (window.SCENE3D_MAXIMIZED && tabId !== 'scene3d') toggleScene3dMax(false);
       document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
 
@@ -2442,6 +2537,34 @@
       }
       if (window.lucide) lucide.createIcons();
     }
+
+    // Owner 2026-09-08: maximize the 3D tab into an ~85% overlay (the standalone /scene3d window
+    // and its menu link are gone). Same iframe, moved by CSS class only, so the mesh is not reloaded.
+    function toggleScene3dMax(on) {
+      const box = document.getElementById('tabContentScene3d');
+      const back = document.getElementById('scene3dBackdrop');
+      const btn = document.getElementById('scene3dMaxBtn');
+      if (!box) return;
+      const want = (typeof on === 'boolean') ? on : !box.classList.contains('scene3d-max');
+      box.classList.toggle('scene3d-max', want);
+      if (back) back.classList.toggle('on', want);
+      if (btn) btn.innerHTML = want ? '&#x2921; RESTORE' : '&#x2922; MAXIMIZE';
+      window.SCENE3D_MAXIMIZED = want;
+      const fr = document.getElementById('scene3dFrame');
+      // GA-397: the scene page shows its knowledge graph and objects table ONLY when maximized --
+      // in a quadrant they leave the 3D view too little room to be worth anything. Told EXPLICITLY
+      // rather than inferred from the viewport, so there is one rule and not two that can disagree.
+      // Same origin, so this is a direct call; a failure is said rather than swallowed.
+      requestAnimationFrame(() => {
+        try {
+          if (fr && fr.contentWindow) {
+            if (typeof fr.contentWindow.SCENE3D_SET_MAXIMIZED === 'function') fr.contentWindow.SCENE3D_SET_MAXIMIZED(want);
+            else fr.contentWindow.dispatchEvent(new Event('resize'));
+          }
+        } catch (e) { console.warn('[scene3d] could not tell the panel it was maximized: ' + e); }
+      });
+    }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && window.SCENE3D_MAXIMIZED) toggleScene3dMax(false); });
 
     let isGraphLocked = false;
     let lastFrameTimestamp = Date.now();
@@ -2486,6 +2609,7 @@
     // Item 1: one header saying which moment each panel is from. Ages come from
     // /health's stamp (server clock), so a skewed browser clock cannot fake freshness.
     let lastStamp = null, lastStampAt = 0;
+    let heartbeatPaused = false;   // GA-345: true while a live page shows a recorded frame
     function renderCycleStamp(stamp) {
       lastStamp = stamp || null;
       lastStampAt = Date.now();
@@ -2509,48 +2633,13 @@
       }
     }
 
-    // Keep the completed perception cycle visible while the live feed continues.
-    // Metadata polling avoids downloading the same annotated JPEG every two seconds.
-    let lastPerceptionRevision = null;
-    async function refreshLastPerception(force = false) {
-      const ageEl = document.getElementById('lastPerceptionAge');
-      const img = document.getElementById('lastPerceptionImg');
-      const empty = document.getElementById('lastPerceptionEmpty');
-      if (!ageEl || !img || !empty) return;
-      try {
-        const response = await fetch('/last_perception/meta', { cache: 'no-store' });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const meta = await response.json();
-        if (!meta.available) {
-          ageEl.textContent = 'WAITING';
-          empty.textContent = 'Waiting for the first annotated perception frame';
-          empty.style.display = 'flex';
-          return;
-        }
-        ageEl.textContent = `${Number(meta.age_s || 0).toFixed(0)}s AGO`;
-        if (force || meta.revision !== lastPerceptionRevision) {
-          lastPerceptionRevision = meta.revision;
-          img.src = `${meta.url}?v=${encodeURIComponent(meta.revision)}${force ? '&reload=' + Date.now() : ''}`;
-        }
-      } catch (err) {
-        ageEl.textContent = 'UNAVAILABLE';
-        empty.textContent = `Last perception result unavailable: ${err.message}`;
-        empty.style.display = 'flex';
-      }
-    }
-    document.getElementById('lastPerceptionImg')?.addEventListener('load', () => {
-      const empty = document.getElementById('lastPerceptionEmpty');
-      if (empty) empty.style.display = 'none';
-    });
-    document.getElementById('lastPerceptionImg')?.addEventListener('error', () => {
-      const empty = document.getElementById('lastPerceptionEmpty');
-      if (empty) {
-        empty.textContent = 'Annotated frame could not be loaded';
-        empty.style.display = 'flex';
-      }
-    });
-
     function checkFeedHeartbeat() {
+      // GA-345: while a live page shows a recorded frame the <img> must not be re-sourced. The
+      // health poller is paused too, so the stamp clock stops; on re-attach the clock is RESET,
+      // otherwise the whole scrub counted as silence and any scrub over ~6 s fired FEED OFFLINE
+      // and a re-source within a second of pressing LIVE (review 2026-09-08, finding on rev2).
+      if (window.REPLAY_DETACHED) { heartbeatPaused = true; return; }
+      if (heartbeatPaused) { heartbeatPaused = false; lastStamp = null; lastFrameTimestamp = Date.now(); return; }
       // An MJPEG <img> fires `load` ONCE, for its first part; every later frame repaints
       // without an event. Measured 2026-09-07 (run 152446, :8082): 1 load event, then
       // "FEED OFFLINE" at 6 s and a re-src every second while the stream was healthy. So the
@@ -2576,7 +2665,7 @@
         const img = document.getElementById('habitatFeedImg');
         // Silent re-src: say it happened rather than looking like a spontaneous recovery.
         setStatusLine(`Feed silent ${age} — reconnecting`, 'warn');
-        if (img) img.src = '/feed?t=' + Date.now();
+        if (img) img.src = PFX + '/feed?t=' + Date.now();
       } else if (elapsed > offlineMs / 2) {
         if (badge) badge.className = 'feed-heartbeat-badge stalled';
         if (textEl) textEl.textContent = `FEED STALLED · ${src} · ${age}`;
@@ -3499,12 +3588,32 @@
 
     // A room with no semantic label keeps its raw id — inventing a name would be worse —
     // but renders monospace and italic so it never reads as one.
+    // GA-399: the room id and its label come from the BUNDLE, and a bundle can be uploaded, so
+    // they are untrusted text rendered into an authenticated page. Escaped HERE rather than at the
+    // two call sites: one guard where both callers pass through, not one per caller.
+    // GA-399. ESCAPE BY DEFAULT, opt out on purpose. Six sites were fixed one at a time and
+    // TWELVE siblings in the same two templates were left raw, one of them a link address -- which
+    // is what per-site fixing gets you in a 40-substitution template. `h` is a tagged template:
+    // every ${...} is escaped unless it is wrapped in raw(), which marks a value as markup
+    // deliberately and is greppable. A bundle can be uploaded, so every string it carries is
+    // untrusted text arriving in a page the owner is authenticated on.
+    function raw(s) { return { __html: s == null ? '' : String(s) }; }
+    function h(strings, ...vals) {
+      let out = strings[0];
+      for (let i = 0; i < vals.length; i++) {
+        const v = vals[i];
+        out += (v && typeof v === 'object' && '__html' in v) ? v.__html : escHtml(v == null ? '' : v);
+        out += strings[i + 1];
+      }
+      return out;
+    }
+
     function roomCellHtml(roomId) {
       if (!roomId) return '<span style="color:var(--muted);">—</span>';
       const lbl = roomLabelFor(roomId);
-      if (lbl) return `<span title="room id: ${roomId}">${lbl}</span>`;
+      if (lbl) return `<span title="room id: ${escHtml(roomId)}">${escHtml(lbl)}</span>`;
       return `<span title="no semantic label recorded for this room — showing the raw id"
-                    style="font-family:monospace; font-size:0.68rem; color:var(--muted); font-style:italic;">${roomId}</span>`;
+                    style="font-family:monospace; font-size:0.68rem; color:var(--muted); font-style:italic;">${escHtml(roomId)}</span>`;
     }
 
     // GA-245. COLOUR BY CLASS when the room cannot differentiate anything.
@@ -3571,7 +3680,10 @@
     //
     // Cheap to repeat: the cache short-circuits every crop that already loaded, so the
     // steady state is one Map lookup per object.
-    setInterval(() => {
+    // Named, so the replay page's poller blocker can see it (it matches by function name), and
+    // guarded, so it does not re-request crops over a scrubbed live page (GA-345).
+    setInterval(function refreshCropBackgrounds() {
+      if (window.REPLAY_DETACHED) return;
       if (typeof cy === 'undefined' || !cy) return;
       if (typeof cropsShown !== 'undefined' && !cropsShown) return;
       applyCropBackgrounds();
@@ -3585,7 +3697,7 @@
         const c = cropBgCache.get(id);
         if (c && (c.ok || now - c.t < 30000)) return;
         cropBgCache.set(id, { ok: false, t: now });
-        const url = n.data('crop_url') || ('/crop/' + encodeURIComponent(n.data('label')));
+        const url = PFX + (n.data('crop_url') || ('/crop/' + encodeURIComponent(n.data('label'))));
         const img = new Image();
         img.onload = () => {
           cropBgCache.set(id, { ok: true, t: now });
@@ -3912,7 +4024,7 @@
 
     // The frontend used to carry a hardcoded ONTOLOGY_TAXONOMY and, for any label
     // not in it, fabricate a class: category 'PhysicalArtifact', synset
-    // '<label>.n.01', invented affordances. None of it came from FOUND, SOMA or
+    // '<label>.n.01', invented affordances. None of it came from the admission layer, SOMA or
     // envelopes.ttl, and it was rendered under captions calling them the aligned
     // classes. Deleted. The only source of a class is now the aligner's own verdict,
     // carried per node as `alignment` from hook_decisions.jsonl.
@@ -3955,7 +4067,7 @@
     const gradeOf = (outcome) => GRADE_OF[String(outcome === undefined || outcome === null ? '' : outcome).toLowerCase()] || 'unknown';
 
     // GA-275. READ THE FOUR-VALUED VERDICT, NOT THE THREE-VALUED PROJECTION.
-    // FOUND grades admit / hold / decline / no_grounds; the GRAPH-API seam it is projected
+    // The admission layer grades admit / hold / decline / no_grounds; the seam it is projected
     // onto has only ADMIT / REJECT / ABSTAIN, so `outcome` collapses HOLD and NO_GROUNDS
     // into one value and GRADE_OF maps abstain -> no_grounds. The table therefore printed
     // NO GROUNDS over objects the gate had HELD -- measured on run 20260902_221606, 11 of
@@ -4094,7 +4206,7 @@
 
 
 
-        content.innerHTML = `
+        content.innerHTML = h`
           <div style="display:flex; flex-direction:column; gap:8px;">
             <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(30,41,59,0.6); padding:6px 10px; border-radius:6px;">
               <span style="font-size:0.7rem; color:var(--muted); text-transform:uppercase;">ID</span>
@@ -4102,42 +4214,42 @@
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(30,41,59,0.6); padding:6px 10px; border-radius:6px;">
               <span style="font-size:0.7rem; color:var(--muted); text-transform:uppercase;">Room</span>
-              <span style="font-size:0.75rem; font-weight:bold; color:#f8fafc;">${data.room ? roomCellHtml(data.room) : 'Unknown'}</span>
+              <span style="font-size:0.75rem; font-weight:bold; color:#f8fafc;">${data.room ? raw(roomCellHtml(data.room)) : 'Unknown'}</span>
             </div>
 
             <!-- Room classification (semantic_label from the room VLM) -->
-            ${data.type === 'room' ? `
+            ${raw(data.type === 'room' ? h`
             <div style="background:rgba(30,41,59,0.7); padding:8px 10px; border-radius:6px; border:1px solid rgba(56,189,248,0.35);">
               <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.65rem; color:#38bdf8; font-weight:800; text-transform:uppercase; margin-bottom:4px;">
                 <span>Room Type</span>
                 <span style="padding:1px 6px; border-radius:6px; font-size:0.58rem; ${roomVlmBadge(data).style}">${roomVlmBadge(data).text}</span>
               </div>
               <div style="font-size:0.78rem; font-weight:bold; color:#f8fafc; margin-bottom:3px;">${data.detected ? data.semantic_label : 'Unclassified'}</div>
-              ${data.description ? `<div style="font-size:0.68rem; color:var(--muted); line-height:1.35;">${data.description}</div>` : ''}
-              ${(data.objects && data.objects.length) ? `<div style="font-size:0.62rem; color:var(--muted); margin-top:5px;">Inventory: ${data.objects.join(', ')}</div>` : ''}
+              ${raw(data.description ? h`<div style="font-size:0.68rem; color:var(--muted); line-height:1.35;">${data.description}</div>` : '')}
+              ${raw((data.objects && data.objects.length) ? h`<div style="font-size:0.62rem; color:var(--muted); margin-top:5px;">Inventory: ${data.objects.join(', ')}</div>` : '')}
             </div>
-            ` : ''}
+            ` : '')}
 
             <!-- Ontological alignment: the aligner's verdict, or its abstention -->
-            ${align && data.type !== 'room' ? `
+            ${raw(align && data.type !== 'room' ? h`
             <div style="background:rgba(30,41,59,0.7); padding:8px 10px; border-radius:6px; border:1px solid ${align.entity ? 'rgba(167,139,250,0.35)' : 'rgba(148,163,184,0.3)'};">
               <div style="display:flex; justify-content:space-between; font-size:0.65rem; color:${align.entity ? '#a78bfa' : 'var(--muted)'}; font-weight:800; text-transform:uppercase; margin-bottom:4px;">
                 <span>Ontological Alignment</span>
                 <span style="font-family:monospace;">${align.status}</span>
               </div>
-              ${align.entity ? `
+              ${raw(align.entity ? h`
                 <div style="font-size:0.75rem; font-weight:bold; color:#f8fafc;">${align.entity}</div>
-                ${align.iri ? `<div style="font-size:0.62rem; margin-top:2px; word-break:break-all;"><a href="${align.iri}" target="_blank" rel="noopener" style="color:#a78bfa;">${align.iri}</a></div>` : ''}
+                ${raw(align.iri ? h`<div style="font-size:0.62rem; margin-top:2px; word-break:break-all;"><a href="${align.iri}" target="_blank" rel="noopener" style="color:#a78bfa;">${align.iri}</a></div>` : '')}
                 <div style="font-size:0.68rem; color:var(--muted); margin-top:2px;">Score: <b style="color:#a78bfa;">${alignmentScoreText(align)}</b></div>
-              ` : `
+              ` : h`
                 <div style="font-size:0.72rem; color:var(--muted); font-style:italic;">No class assigned — the aligner abstained.</div>
-                ${typeof align.score === 'number' ? `<div style="font-size:0.68rem; color:var(--muted); margin-top:2px;">Best score: ${alignmentScoreText(align)}</div>` : ''}
-              `}
-              ${align.evidence ? `<div style="font-size:0.62rem; color:var(--muted); margin-top:5px; line-height:1.35;">${align.evidence}</div>` : ''}
+                ${raw(typeof align.score === 'number' ? h`<div style="font-size:0.68rem; color:var(--muted); margin-top:2px;">Best score: ${alignmentScoreText(align)}</div>` : '')}
+              `)}
+              ${raw(align.evidence ? h`<div style="font-size:0.62rem; color:var(--muted); margin-top:5px; line-height:1.35;">${align.evidence}</div>` : '')}
             </div>
-            ` : ''}
+            ` : '')}
 
-            ${data.type !== 'room' && data.type !== 'concept' ? `
+            ${raw(data.type !== 'room' && data.type !== 'concept' ? h`
             <div style="background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px;">
               <div style="display:flex; justify-content:space-between; font-size:0.7rem; color:var(--muted); text-transform:uppercase; margin-bottom:4px;">
                 <span>Detection Confidence</span>
@@ -4147,7 +4259,7 @@
                 <div style="width:${confPct === null ? 0 : confPct}%; height:100%; background:#10b981; border-radius:3px;"></div>
               </div>
             </div>
-            ` : ''}
+            ` : '')}
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
               <div style="background:rgba(30,41,59,0.6); padding:6px 10px; border-radius:6px;">
                 <div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase;">3D Position</div>
@@ -4158,19 +4270,19 @@
                 <div style="font-size:0.72rem; font-family:monospace; color:#f8fafc; margin-top:2px;">${bbox}</div>
               </div>
             </div>
-            ${typeof data.created_at === 'number' ? `<div style="background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px; display:flex; gap:16px;" title="creation_time and last_perception_timestamp of the object in the store (GA-361)">
+            ${raw(typeof data.created_at === 'number' ? h`<div style="background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px; display:flex; gap:16px;" title="creation_time and last_perception_timestamp of the object in the store (GA-361)">
               <div><div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase;">Added</div>
-                <div style="font-size:0.74rem; font-family:monospace; color:#f8fafc;">${new Date(data.created_at * 1000).toLocaleTimeString()}${(typeof window.REPLAY_T0 === 'number') ? ' <span style="color:var(--muted)">(t+' + Math.max(0, Math.round(data.created_at - window.REPLAY_T0)) + ' s)</span>' : ''}</div></div>
-              ${typeof data.last_seen === 'number' ? `<div><div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase;">Last seen</div>
-                <div style="font-size:0.74rem; font-family:monospace; color:#f8fafc;">${new Date(data.last_seen * 1000).toLocaleTimeString()}</div></div>` : ''}
-            </div>` : ''}
+                <div style="font-size:0.74rem; font-family:monospace; color:#f8fafc;">${new Date(data.created_at * 1000).toLocaleTimeString()}${raw((typeof window.REPLAY_T0 === 'number') ? ' <span style="color:var(--muted)">(t+' + Math.max(0, Math.round(data.created_at - window.REPLAY_T0)) + ' s)</span>' : '')}</div></div>
+              ${raw(typeof data.last_seen === 'number' ? h`<div><div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase;">Last seen</div>
+                <div style="font-size:0.74rem; font-family:monospace; color:#f8fafc;">${new Date(data.last_seen * 1000).toLocaleTimeString()}</div></div>` : '')}
+            </div>` : '')}
             <div style="background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px; display:flex; flex-direction:column; gap:4px;">
               <div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase;">Visual Attributes</div>
               <div style="font-size:0.74rem; color:#f8fafc; display:flex; gap:12px;">
                 <span>Color: <b style="color:${hasColor ? '#38bdf8' : 'var(--muted)'}">${hasColor ? data.color : 'Unspecified'}</b></span>
                 <span>Material: <b style="color:${hasMaterial ? '#38bdf8' : 'var(--muted)'}">${hasMaterial ? data.material : 'Unspecified'}</b></span>
               </div>
-              ${(!hasColor && !hasMaterial) ? '<div style="font-size:0.62rem; color:var(--muted); font-style:italic;">Open-vocabulary 3D detector bounds (VLM attributes optional)</div>' : ''}
+              ${raw((!hasColor && !hasMaterial) ? '<div style="font-size:0.62rem; color:var(--muted); font-style:italic;">Open-vocabulary 3D detector bounds (VLM attributes optional)</div>' : '')}
             </div>
             <!-- RGB Sensor Crop Thumbnail Preview -->
             <div style="background:rgba(30,41,59,0.7); padding:8px 10px; border-radius:6px; border:1px solid rgba(56,189,248,0.35);">
@@ -4179,20 +4291,20 @@
                 <span style="font-size:0.6rem; color:var(--muted); font-weight:normal;">2D Grounded Detection</span>
               </div>
               <div style="width:100%; height:110px; background:#0b1329; border-radius:6px; overflow:hidden; display:flex; align-items:center; justify-content:center; border:1px solid rgba(255,255,255,0.08); position:relative;">
-                <img src="${data.crop_url || ('/crop/' + encodeURIComponent(data.label))}" onerror="this.parentElement.innerHTML='<span style=\\'font-size:0.65rem; color:var(--muted);\\'>Crop pending dwell capture</span>'" style="max-width:100%; max-height:100%; object-fit:contain; border-radius:4px;" />
+                <img src="${PFX + (data.crop_url || ('/crop/' + encodeURIComponent(data.label)))}" onerror="this.parentElement.innerHTML='<span style=\\'font-size:0.65rem; color:var(--muted);\\'>Crop pending dwell capture</span>'" style="max-width:100%; max-height:100%; object-fit:contain; border-radius:4px;" />
               </div>
             </div>
 
-            ${data.decision ? `
+            ${raw(data.decision ? h`
             <div style="background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px;">
-              <div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase; margin-bottom:4px;">Ontological Admission (FOUND)</div>
+              <div style="font-size:0.65rem; color:var(--muted); text-transform:uppercase; margin-bottom:4px;">Ontological Admission</div>
               <div style="font-size:0.72rem; color:#f8fafc; display:flex; justify-content:space-between;">
                 <span>Filter: <b style="color:#38bdf8;">${data.decision.filter ?? '—'}</b></span>
                 <span style="color:${VERDICTS[gradeOfRecord(data.decision)].color}; font-weight:bold;">${VERDICTS[gradeOfRecord(data.decision)].text}</span>
               </div>
             </div>
-            ` : ''}
-            ${relationTagsHtml(data.id)}
+            ` : '')}
+            ${raw(relationTagsHtml(data.id))}
           </div>
         `;
       }
@@ -4219,23 +4331,23 @@
       const srcLabel = (srcNode && srcNode.length) ? srcNode.data('label') : edgeData.source;
       const tgtLabel = (tgtNode && tgtNode.length) ? tgtNode.data('label') : edgeData.target;
       const cropImg = (node, label) => (node && node.length && node.data('type') === 'object')
-        ? `<img src="${node.data('crop_url') || ('/crop/' + encodeURIComponent(label))}" onerror="this.remove()" style="width:46px; height:34px; object-fit:cover; border-radius:4px; border:1px solid rgba(255,255,255,0.12);" />`
+        ? `<img src="${PFX + (node.data('crop_url') || ('/crop/' + encodeURIComponent(label)))}" onerror="this.remove()" style="width:46px; height:34px; object-fit:cover; border-radius:4px; border:1px solid rgba(255,255,255,0.12);" />`
         : '';
       const color = RELATION_COLORS[edgeData.label] || '#94a3b8';
 
       if (content) {
-        content.innerHTML = `
+        content.innerHTML = h`
           <div style="display:flex; flex-direction:column; gap:10px;">
             <div style="text-align:center; padding:12px; background:rgba(30,41,59,0.6); border-radius:8px; border:1px solid ${color};">
               <span style="font-size:0.78rem; font-weight:800; color:${color}; text-transform:uppercase;">${edgeData.label || 'Spatial Relation'}</span>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px;">
               <span style="font-size:0.7rem; color:var(--muted); text-transform:uppercase;">Source</span>
-              <span style="display:flex; align-items:center; gap:8px;">${cropImg(srcNode, srcLabel)}<button onclick="selectGraphNodeById('${edgeData.source}')" class="viz-btn" style="padding:2px 8px; font-size:0.72rem; font-weight:bold;">${srcLabel}</button></span>
+              <span style="display:flex; align-items:center; gap:8px;">${raw(cropImg(srcNode, srcLabel))}<button onclick="selectGraphNodeById('${edgeData.source}')" class="viz-btn" style="padding:2px 8px; font-size:0.72rem; font-weight:bold;">${srcLabel}</button></span>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(30,41,59,0.6); padding:8px 10px; border-radius:6px;">
               <span style="font-size:0.7rem; color:var(--muted); text-transform:uppercase;">Target</span>
-              <span style="display:flex; align-items:center; gap:8px;">${cropImg(tgtNode, tgtLabel)}<button onclick="selectGraphNodeById('${edgeData.target}')" class="viz-btn" style="padding:2px 8px; font-size:0.72rem; font-weight:bold;">${tgtLabel}</button></span>
+              <span style="display:flex; align-items:center; gap:8px;">${raw(cropImg(tgtNode, tgtLabel))}<button onclick="selectGraphNodeById('${edgeData.target}')" class="viz-btn" style="padding:2px 8px; font-size:0.72rem; font-weight:bold;">${tgtLabel}</button></span>
             </div>
             <div style="font-size:0.72rem; color:var(--muted); line-height:1.4; padding:6px; background:rgba(15,23,42,0.6); border-radius:6px;">
               Assertion: <b>${srcLabel}</b> is related to <b>${tgtLabel}</b> via ontological predicate <code>${edgeData.label}</code>.
@@ -4248,6 +4360,7 @@
     }
 
     function refreshGraph() {
+      if (window.REPLAY_DETACHED) return;   // GA-345: the graph stays as it was at the viewed frame (GA-361), not the live store
       if (graphRefreshInFlight) return;
       graphRefreshInFlight = true;
       const statusEl = document.getElementById('graphStatus');
@@ -4541,7 +4654,7 @@
         // name and says so on hover, rather than implying one it does not have.
         const conceptName = (onto && onto.entity)
           ? (onto.iri
-              ? `<a href="/concept?iri=${encodeURIComponent(onto.iri)}" target="_blank" rel="noopener" title="${escHtml(onto.iri)}" style="color:#a78bfa; text-decoration:underline dotted;">${escHtml(onto.entity)}</a>`
+              ? `<a href="${PFX}/concept?iri=${encodeURIComponent(onto.iri)}" target="_blank" rel="noopener" title="${escHtml(onto.iri)}" style="color:#a78bfa; text-decoration:underline dotted;">${escHtml(onto.entity)}</a>`
               : `<span title="no IRI recorded by the aligner">${escHtml(onto.entity)}</span>`)
           : '—';
         if (!matchesTextFilters(r, onto && onto.entity)) return;
@@ -4619,9 +4732,6 @@
       const panelBottomLeft = document.getElementById('panelBottomLeft');
       const panelLogs = document.getElementById('panelLogs');
       const panelWidgets = document.getElementById('panelWidgets');
-      const feedWrapper = document.getElementById('feedWrapper');
-      const liveFeedPane = document.getElementById('liveFeedPane');
-      const lastPerceptionPane = document.getElementById('lastPerceptionPane');
 
       function saveResizerGeometry() {
         try {
@@ -4631,8 +4741,7 @@
             panelFeed: panelFeed ? panelFeed.style.height : null,
             panelBottomLeft: panelBottomLeft ? panelBottomLeft.style.height : null,
             panelLogs: panelLogs ? panelLogs.style.height : null,
-            panelWidgets: panelWidgets ? panelWidgets.style.height : null,
-            liveFeedPane: liveFeedPane ? liveFeedPane.style.flexBasis : null
+            panelWidgets: panelWidgets ? panelWidgets.style.height : null
           };
           localStorage.setItem(RESIZER_STORAGE_KEY, JSON.stringify(geom));
         } catch (err) {
@@ -4656,9 +4765,6 @@
           if (geom.panelLogs && geom.panelWidgets && panelLogs && panelWidgets) {
             panelLogs.style.height = geom.panelLogs;
             panelWidgets.style.height = geom.panelWidgets;
-          }
-          if (geom.liveFeedPane && liveFeedPane) {
-            liveFeedPane.style.flexBasis = geom.liveFeedPane;
           }
         } catch (err) {
           console.debug('[Resizer] Failed to restore geometry:', err);
@@ -4738,16 +4844,6 @@
         panelLogs.style.height = `${logsPct}%`;
         panelWidgets.style.height = `${100 - logsPct}%`;
       }, null, true);
-
-      // 4. Vertical Splitter: live feed vs retained perception result.
-      setupSplitter(document.getElementById('resizerLivePerception'), (cx, cyPos) => {
-        if (!feedWrapper || !liveFeedPane || !lastPerceptionPane) return;
-        const rect = feedWrapper.getBoundingClientRect();
-        const usableHeight = Math.max(1, rect.height - 6);
-        const minPane = Math.min(100, usableHeight * 0.35);
-        const liveHeight = Math.max(minPane, Math.min(usableHeight - minPane, cyPos - rect.top));
-        liveFeedPane.style.flexBasis = `${(liveHeight / usableHeight) * 100}%`;
-      }, null, true);
     }
 
     function startDashboard() {
@@ -4773,8 +4869,6 @@
         setAuditFilter('all');
       });
       initFeedInteraction();
-      refreshLastPerception();
-      setInterval(refreshLastPerception, 2000);
       setupBEVInteractions('bevCanvasHUD');
       makeDockable(document.getElementById('minimapHud'), 'minimap', { minW: 160, aspect: 250 / 300 });
       makeDockable(document.getElementById('teleopOverlay'), 'teleop', { minW: 170, aspect: null });

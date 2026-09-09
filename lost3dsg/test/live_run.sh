@@ -27,16 +27,16 @@ if [ -z "${MODAL_PERCEPTION_URL:-}" ] && [ "$(python3 -c "import sys,yaml;c=yaml
   echo "!! (env.local.sh is gitignored on purpose -- the URL is a credential, GA-319.)"
   exit 1
 fi
-# WHERE FOUND IS. Derived from this script's own location, not hardcoded: the submodule sits at
-# <FOUND>/vendor/graph-api, so two levels above $REPO is the FOUND checkout whatever it is called
-# and wherever it lives. $FOUND_ROOT was written into ten places and a clone anywhere else could
-# not run at all — the launcher would look for maps, results and the found/ package on a machine
-# that has none of them.
+# THE WORKSPACE. Maps, results and run bundles live here. Derived from this script's own
+# location, not hardcoded, so a clone anywhere works: two levels above $REPO is the directory the
+# checkout sits in.
 #
-# Override only to run against a FOUND checkout other than the one this submodule is inside.
-FOUND_ROOT=${FOUND_ROOT:-$(cd "$REPO/../.." && pwd)}
-[ -d "$FOUND_ROOT/found" ] || { echo "!! FOUND_ROOT=$FOUND_ROOT has no found/ package."; \
-  echo "   This script expects to live at <FOUND>/vendor/graph-api/lost3dsg/test, or FOUND_ROOT set."; exit 1; }
+# IT REQUIRES NO PARTICULAR PACKAGE. This used to insist on an extension's package directory being
+# present and EXIT when it was absent, so a clone of this stack alone could not launch at all --
+# a dependency pointing the wrong way, from the generic stack onto the thing that extends it.
+# Owner ruling 2026-09-09. An extension supplies itself through EXT_ENV_FILE and EXT_MOUNTS.
+WORKSPACE_ROOT=${WORKSPACE_ROOT:-$(cd "$REPO/../.." && pwd)}
+[ -d "$WORKSPACE_ROOT" ] || { echo "!! WORKSPACE_ROOT=$WORKSPACE_ROOT does not exist"; exit 1; }
 
 MON_PID=""
 FEED_PID=""
@@ -55,7 +55,7 @@ FEED_PID=""
 # CEILING, stated: this separates measured-nothing from measured-something. It CANNOT separate
 # truncated from complete -- that is the flow question and it belongs to a post-run check.
 _publish_map_if_earned() {
-  # The map library lives on the HOST at $FOUND_ROOT/maps/<scene>/, not inside a bundle — a
+  # The map library lives on the HOST at $WORKSPACE_ROOT/maps/<scene>/, not inside a bundle — a
   # library that lives in one run's output directory is not a library. The container cannot write
   # there, so it leaves a marker and the host copies.
   #
@@ -129,8 +129,8 @@ print('   spread: %.2f m, basis: %s' % (d['node_z_spread_m'], d['single_floor_ba
   local fl; fl=$(python3 -c "import json,sys
 d=json.load(open(sys.argv[1]))
 z=d.get('nearest_scene_floor'); z=d['floor_height_m'] if z is None else z
-print(f'floor_{z:+.2f}')" "${db}.floor.json")
-  local dest="$FOUND_ROOT/maps/${SCENE_ARG}/${fl}"
+print(f'floor_{round(z,2)+0.0:+.2f}')" "${db}.floor.json")   # +0.0 turns -0.0 into +0.00: the lookup side prints floor_+0.00 for FEED_SPAWN_FLOOR=0.00 (run 135714 published floor_-0.00)
+  local dest="$WORKSPACE_ROOT/maps/${SCENE_ARG}/${fl}"
   mkdir -p "$dest"
   # NEVER OVERWRITE A PUBLISHED MAP. The copy in the library is the only copy (GA-295), and the cp
   # below would replace it silently. A re-map of a floor moves the previous map aside under its
@@ -174,12 +174,19 @@ _point_latest_if_earned() {
   for f in hook_decisions.jsonl actual_perceptions.json perception_latencies.jsonl; do
     [ -s "$RUN_DIR/$f" ] && { measured="$f"; break; }
   done
-  if [ "$verdict" = "pass" ] && [ -n "$measured" ]; then
-    ln -sfn "$RUN_DIR" "$FOUND_RUNS_DIR/latest"
+  # GA-373. A live-mounted tree that moved DURING the run (a7 re-run at teardown) makes
+  # the bundle describe code it did not execute; such a bundle is never `latest`.
+  local teardown; teardown=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict','absent'))" \
+              "$RUN_DIR/a7_teardown.json" 2>/dev/null || echo absent)
+  if [ "$teardown" = "fail" ]; then
+    echo ">>> latest NOT moved: a7 at teardown reads '$teardown' — a live root changed during the run."
+    echo "    it still points at $(readlink "$RUNS_DIR/latest" 2>/dev/null || echo '<unset>')"
+  elif [ "$verdict" = "pass" ] && [ -n "$measured" ]; then
+    ln -sfn "$RUN_DIR" "$RUNS_DIR/latest"
     echo ">>> gate passed, measured output present ($measured) -- $RUN_DIR is now latest"
   else
     echo ">>> latest NOT moved: preflight '$verdict', measured artefact '${measured:-none}'."
-    echo "    it still points at $(readlink "$FOUND_RUNS_DIR/latest" 2>/dev/null || echo '<unset>')"
+    echo "    it still points at $(readlink "$RUNS_DIR/latest" 2>/dev/null || echo '<unset>')"
   fi
 }
 
@@ -188,6 +195,7 @@ cleanup() {
   # pkill here would let two concurrent live_run.sh instances destroy
   # each other's feed host (seen live 2026-08-25).
   [ -n "$MON_PID" ] && kill -9 "$MON_PID" 2>/dev/null || true
+  docker rm -f graphapi_rviz >/dev/null 2>&1 || true   # GA-371: the RViz sibling started below
   [ -n "$FEED_PID" ] && kill -9 "$FEED_PID" 2>/dev/null || true
   # Archive the HOST-written artefacts here rather than only after the container exits. The
   # per-frame viewpoint series and the feed host's own log are written on this side, and the
@@ -222,9 +230,115 @@ cleanup() {
     #
     # HOST SIDE, AFTER THE CONTAINER HAS EXITED. Ground truth must never be readable from the
     # runtime path; this runs here for the same reason analyse_run.py does.
-    ( cd "$FOUND_ROOT" && python3 -m tools.class_counts "$RUN_DIR" ) 2>&1 \
+    ( cd "$WORKSPACE_ROOT" && python3 -m tools.class_counts "$RUN_DIR" ) 2>&1 \
       | sed 's/^/    /' || echo "    class_counts failed (non-fatal)"
 
+    # GA-395. THE CAP IS NOT IN THE BUNDLE, and the envelope's cap condition therefore reads
+    # UNCHECKABLE on every bundle in the archive. run_capped.sh records it in the TESTING lane's
+    # directory (last_cap.json), which is not the bundle and does not travel with it. These three
+    # values are what a reader needs to say whether a run was cut short, and this script holds all
+    # three by the time the trap runs.
+    #
+    # `capped` is READ FROM THE DRIVER'S MARKER, NOT INFERRED. Inferring it from the elapsed time or
+    # from a non-zero container status would call a manual `docker stop` a cap and would call a cap
+    # that fired one second before a clean finish a clean finish (rule 5: a value that is not a
+    # measurement must not sit where measurements sit). The marker is checked for FRESHNESS against
+    # this run's own start: run_capped.sh removes a stale one at launch, but a run started WITHOUT
+    # the driver would otherwise inherit the previous run's marker and report itself capped.
+    _cap_marker="${CAP_FIRED_MARKER:-/DATA/GRAPH-API/.handoff/lanes/testing/.cap_fired}"
+    # The absent-marker case has TWO meanings and the note must not assert the wrong one. When a cap
+    # was armed and simply did not fire — the commonest healthy outcome — run_capped.sh never writes
+    # the marker, and the old single sentence ("no cap was armed or this run was not launched through
+    # run_capped.sh") was FALSE on both counts for exactly that run. The numbers were right and the
+    # sentence beside them was not, which is the shape that gets believed because its neighbours are
+    # trustworthy. Found by the testing lane reading the implementation rather than waiting for a bundle.
+    _capped=false; _cap_fired_at=null
+    if [ -n "${CAP_MIN:-}" ]; then
+      _cap_note="a cap was armed at ${CAP_MIN} min and did NOT fire: the run ended on its own"
+    else
+      _cap_note="no cap was armed (CAP_MIN unset), so nothing could fire"
+    fi
+    if [ -f "$_cap_marker" ]; then
+      _mt=$(stat -c %Y "$_cap_marker" 2>/dev/null || echo 0)
+      if [ "$_mt" -ge "${RUN_START_EPOCH:-0}" ]; then
+        _capped=true; _cap_fired_at=$(cat "$_cap_marker" 2>/dev/null || echo null)
+        _cap_note="the driver stopped the container at the cap"
+      else
+        _cap_note="a cap marker exists but PREDATES this run's start, so it belongs to an earlier run and was ignored"
+      fi
+    fi
+    # GA-430. The container names what ended the run in terminating_node.json; fold it into the
+    # metadata beside the cap block so a reader has a FIELD instead of grepping the stack log for a
+    # sentence. Absent means the container never reached its own end — killed, or it died before the
+    # watch loop — and that is itself worth recording rather than defaulting to "unknown".
+    python3 - "$RUN_DIR/run_metadata.json" "${CAP_MIN:-}" "$(( $(date +%s) - ${RUN_START_EPOCH:-0} ))" \
+             "$_capped" "$_cap_fired_at" "$_cap_note" "${START_AFTER_STACK:-0}" <<'PY' \
+      || echo "!! could not stamp the cap block into run_metadata.json — the bundle cannot state whether it was cut short"
+import json, os, sys
+p, cap, elapsed, capped, fired, note, anchor = sys.argv[1:8]
+d = json.load(open(p))
+term = os.path.join(os.path.dirname(p), "terminating_node.json")   # GA-430
+try:
+    d["terminating_node"] = json.load(open(term))
+except (OSError, ValueError) as exc:
+    d["terminating_node"] = {"node": None, "note": f"no terminating_node.json in the bundle ({exc.__class__.__name__}): "
+                                                   "the container did not reach its own end — killed from outside, or "
+                                                   "it died before the watch loop. Absent is not 'unknown'."}
+d["cap"] = {                                            # GA-395, keys ADDED (rule 6)
+    "cap_minutes": int(cap) if cap.strip().isdigit() else None,
+    "cap_anchor": "stack_up" if anchor == "1" else "launch",
+    "elapsed_seconds": int(elapsed),
+    "elapsed_note": "measured by live_run.sh from its own start to its exit trap; run_capped.sh's "
+                    "last_cap.json starts a few seconds earlier, so the two differ by the driver's startup",
+    "capped": capped == "true",
+    "cap_fired_at": None if fired in ("null", "") else int(fired),
+    "cap_note": note,
+}
+json.dump(d, open(p, "w"), indent=2)
+PY
+    # GA-293 + GA-401 (written by the ontology lane for this file, revision 3; applied here after
+    # two interactions with this trap that neither of us could see from one side alone). A killed
+    # container leaves two faults in one bundle: a Turtle short of its last records, and no
+    # prov:generated edges — both are written at close(), which a SIGKILL never reaches. One call
+    # repairs both, in the image, because neither the host NOR the image has pyoxigraph until the
+    # stack's own startup installs it from the vendored wheel (live_stack_container.sh:112), so this
+    # repeats that install rather than assuming it.
+    #
+    # GATED ON THE RUN'S CONFIGURATION, NOT ON THE STORE BEING ABSENT. MAPPING_ONLY runs no detector
+    # and no extension, so there is nothing to repair. Skipping on a MISSING STORE would collapse
+    # two states that mean opposite things: nothing was supposed to produce one, versus it ran and
+    # its store is gone — and the second is exactly what rc 2 exists to catch.
+    #
+    # NOTHING HERE EXITS. This runs inside the EXIT trap, and an exit would skip the two calls below
+    # it, so a bookkeeping failure would throw away a fifteen-minute map. Inside a trap, `exit` is
+    # not failing loudly: it is silently skipping whatever the trap had left to do.
+    if [ "${MAPPING_ONLY:-0}" = "1" ]; then
+      echo "GA-293 store repair: skipped, MAPPING_ONLY run has no extension store" >> "$RUN_DIR/logs/store_repair.log"
+    else
+      _kg="$RUN_DIR/knowledge_graph.ttl"
+      _kg_before=$( [ -f "$_kg" ] && wc -l < "$_kg" || echo 0 )
+      # NON-ROOT (revision 4). A root container rewrites knowledge_graph.ttl — the bundle's main
+      # artefact — as root, in a directory the host's own tooling then has to manage; I hit the same
+      # wall deleting a root-owned store from my scratch. EXERCISED here, which the author could not
+      # do: --user with PYTHONUSERBASE installs the wheel with pip --user and the artefacts come out
+      # owned by the invoking user. The one warning it prints is pip's cache being unwritable.
+      docker run --rm --entrypoint bash --user "$(id -u):$(id -g)" -e PYTHONUSERBASE=/tmp/pyuser \
+        -v "$WORKSPACE_ROOT":"$EXT_MOUNT_POINT":ro -v "$RUN_DIR":/ws/output "$IMAGE_TAG" -lc '
+          python3 -c "import pyoxigraph" 2>/dev/null ||
+            pip install --user --quiet --no-index --find-links="$EXT_MOUNT_POINT"/vendor/wheels pyoxigraph
+          cd "$EXT_MOUNT_POINT" && ${EXT_STORE_REPAIR:-true} /ws/output/knowledge_graph.ttl
+        ' >> "$RUN_DIR/logs/store_repair.log" 2>&1
+      _repair_rc=$?
+      _kg_after=$( [ -f "$_kg" ] && wc -l < "$_kg" || echo 0 )
+      echo "GA-293 store repair: rc=$_repair_rc, $_kg_before -> $_kg_after lines" >> "$RUN_DIR/logs/store_repair.log"
+      # rc 0 repaired-or-nothing-to-repair; 2 no store; 3 empty store; 4 the repair could not run.
+      # A SHRINKING file is never acceptable at any rc, so it folds into the same condition.
+      if [ "$_repair_rc" -ne 0 ] || [ "$_kg_after" -lt "$_kg_before" ]; then
+        echo "!! GA-293: store repair FAILED (rc=$_repair_rc, $_kg_before -> $_kg_after lines); see logs/store_repair.log" >&2
+        printf '{"rc": %s, "lines_before": %s, "lines_after": %s, "note": "the knowledge store was not repaired; prov:generated and the final dump may be short"}\n' \
+          "$_repair_rc" "$_kg_before" "$_kg_after" > "$RUN_DIR/store_repair_failed.json"
+      fi
+    fi
     _point_latest_if_earned
     _publish_map_if_earned
   fi
@@ -245,6 +359,31 @@ echo ">>> host habitat feed (scene renders on the host GPU)"
 # plus the MP3D example. Pick with the first argument, override with env vars.
 HM3D_ROOT=${HM3D_ROOT:-/DATA/habitat_matterport/hm3d_example}
 MP3D_ROOT=${MP3D_ROOT:-/DATA/habitat_matterport/versioned_data/mp3d_example_scene_1.1}
+# RANDOMISATION (owner ruling 2026-09-07 17:35, "random seed + scene per corpus run, fixed seed for A/B
+# arms"; this lane implements, after the mapping runs, which are done). OPT-IN via MAP_DRAW=1: an omitted
+# scene argument already MEANS hm3d_00861 in every existing recipe, so drawing on absence would silently
+# randomise every A/B arm that omits it.
+#
+# A (SCENE, FLOOR) PAIR IS DRAWN, NOT A BARE SCENE. Maps are published per floor, and a scene that has
+# per-floor maps with no FEED_SPAWN_FLOOR is REFUSED below, so drawing a scene name alone would refuse the
+# very run it had just chosen. The pool is read off the PUBLISHED maps, so a draw can only name something
+# that can actually be localised against. Each pin is honoured independently; the floor rides with the
+# scene, because pinning one and drawing the other yields a pair nobody published.
+SEED_SOURCE=pinned; SCENE_SOURCE=pinned
+if [ "${MAP_DRAW:-0}" = "1" ]; then
+  _pairs=$(ls -d "$WORKSPACE_ROOT"/maps/*/floor_* 2>/dev/null | sed "s|.*/maps/||")
+  [ -n "$_pairs" ] || { echo "!! MAP_DRAW=1 but no published per-floor map under $WORKSPACE_ROOT/maps — nothing to draw from"; exit 1; }
+  if [ "$#" -ge 1 ]; then
+    _pairs=$(printf "%s\n" "$_pairs" | grep "^$1/") \
+      || { echo "!! MAP_DRAW=1 with scene '$1' pinned, but it has no published per-floor map"; exit 1; }
+  fi
+  _pick=$(printf "%s\n" "$_pairs" | shuf -n 1)
+  _scene=${_pick%%/*}; _floor=${_pick#*/floor_}
+  [ "$#" -ge 1 ] || { set -- "$_scene"; SCENE_SOURCE=drawn; }
+  [ -n "${FEED_SPAWN_FLOOR:-}" ] || FEED_SPAWN_FLOOR="$_floor"
+  [ -n "${FEED_SEED:-}" ] || { FEED_SEED=$(shuf -i 1-2147483647 -n 1); SEED_SOURCE=drawn; }
+  echo "    draw: scene $1 floor $FEED_SPAWN_FLOOR seed $FEED_SEED (scene_source=$SCENE_SOURCE seed_source=$SEED_SOURCE, $(printf "%s\n" "$_pairs" | wc -l) mapped pairs)"
+fi
 case "${1:-hm3d_00861}" in
   hm3d_00861) DEF_SCENE=$HM3D_ROOT/00861-GLAQ4DNUx5U/GLAQ4DNUx5U.basis.glb
               DEF_DATASET=$HM3D_ROOT/hm3d_annotated_basis.scene_dataset_config.json ;;
@@ -275,14 +414,14 @@ fi
 export CFG_NAME
 echo "    config: $CFG_NAME"
 
-# Setup persistent FOUND run bundle (never overwritten across runs)
+# Setup the persistent run bundle (never overwritten across runs)
 RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SCENE_ARG=${1:-hm3d_00861}
 
-# Live run output. A TIMESTAMPED DIRECTORY under $FOUND_ROOT/results/, never /tmp.
+# Live run output. A TIMESTAMPED DIRECTORY under $WORKSPACE_ROOT/results/, never /tmp.
 # Owner ruling, relayed to this lane rather than given to it directly (rule 8's second half):
 #   "no output should go to the temp directory, always in a timestamped experiment results dir
-#    inside the results/ dir inside the $FOUND_ROOT directory."
+#    inside the results/ dir inside the $WORKSPACE_ROOT directory."
 #
 # Assigned HERE and not at the top of the file because the name needs RUN_TIMESTAMP and
 # SCENE_ARG. The only earlier references are inside cleanup(), a function body evaluated when
@@ -304,7 +443,7 @@ SCENE_ARG=${1:-hm3d_00861}
 # Found by the warning that replaced the fallback chain, on the first run after it landed.
 # The class is "two paths that agree by accident until one of them moves". Nothing else in this
 # tree reports it, so that warning is permanent.
-export OUT_DIR=${OUT_DIR:-$FOUND_ROOT/results/${RUN_TIMESTAMP}_${SCENE_ARG}}
+export OUT_DIR=${OUT_DIR:-$WORKSPACE_ROOT/results/${RUN_TIMESTAMP}_${SCENE_ARG}}
 mkdir -p "$OUT_DIR"
 echo "    live output: $OUT_DIR"
 # Stamped BEFORE the bundle directory is created, so every artefact the run legitimately
@@ -324,8 +463,8 @@ if [ -n "$(ls -A "$OUT_DIR" 2>/dev/null)" ]; then
 fi
 
 RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
-FOUND_RUNS_DIR=${FOUND_RUNS_DIR:-$FOUND_ROOT/runs}
-RUN_DIR="$FOUND_RUNS_DIR/$RUN_ID"
+RUNS_DIR=${RUNS_DIR:-$WORKSPACE_ROOT/runs}
+RUN_DIR="$RUNS_DIR/$RUN_ID"
 # GA-258b. EXPORTED, because the FEED HOST needs it. The host process reads
 # merge_pending.json to decide how long to dwell, and that file is written by the container
 # into /ws/output -- which is bind-mounted to $RUN_DIR, not to $OUT_DIR (/out). The feed host
@@ -335,7 +474,18 @@ RUN_DIR="$FOUND_RUNS_DIR/$RUN_ID"
 # ran to the 90-frame cap.
 export RUN_DIR
 mkdir -p "$RUN_DIR/logs" "$RUN_DIR/crops" "$RUN_DIR/snapshots"
-echo "    run bundle: $RUN_DIR (symlinked as $FOUND_RUNS_DIR/latest)"
+# GA-381. THE DIRECTORY IS CREATED BEFORE THE CHECKS RUN, so every early refusal (a10, the mapping
+# cap check, the missing-map refusal, a bad config) leaves a directory that a sweep cannot tell from
+# a genuine early run — and 67 bundles exist, the oldest of which predate the gate and have no
+# preflight.json either, so "no preflight.json" does not separate them. A marker written here and
+# removed at the last moment before `docker run` does separate them: anything still carrying it was
+# refused before the stack ever started. Cheap by choice; not creating the directory before the
+# checks is the expensive fix and would move every path that writes into it.
+printf "%s\n" \
+  "This run was REFUSED before the container started, or died before it. Not a run." \
+  "Written when the bundle directory was created; removed immediately before docker run." \
+  "run_id: $RUN_ID" "created: $(date -Is)" > "$RUN_DIR/NOT_STARTED"
+echo "    run bundle: $RUN_DIR (symlinked as $RUNS_DIR/latest)"
 
 # Snapshot calibration, config, and run metadata
 # GA-233. DERIVED, not a literal. This was a heredoc stating 640x480 with fx=320 while the
@@ -378,55 +528,37 @@ cp "$HERE/$CFG_NAME" "$RUN_DIR/config.yaml"
 # policy block was written as `"enforce": ,` and the validator aborted every run. A shell
 # variable's VALUE depends on where it is read, and a heredoc is read where it is written.
 
-# Every knob the admission policy reads, EXPORTED with its default rather than forwarded bare.
-# `docker run -e VAR` sends nothing when VAR is unset in the parent environment, so a bare
-# forward silently ships the container's own idea of the default while the bundle records the
-# launcher's. Exporting here makes the two the same value, and it is what lets the pre-flight
-# gate compare an intention against what actually arrived instead of echoing what it finds.
-export FOUND_ENFORCE="${FOUND_ENFORCE:-0}"
-export FOUND_HOLD_BAND="${FOUND_HOLD_BAND:-0.05}"
-# GA-263, owner ruling: 30 -> 4. See found/admission.py for why the floor stopped
-# doing anything once _envelope_key was made class-first.
-export FOUND_MIN_SUPPORT="${FOUND_MIN_SUPPORT:-4}"
-export FOUND_ROOM_ENFORCE="${FOUND_ROOM_ENFORCE:-0}"
-export FOUND_ALIGNER="${FOUND_ALIGNER:-kg}"
-# EMPTY means "use the built-in extension". found/kg_align.py:88-91 reads this as a PATH when
-# it is non-empty and raises FileNotFoundError if that path is absent — so the literal string
-# "default" was passed as a filename and every gated run failed a1 with
-# `FOUND_ONTOLOGY_EXT set to default, which does not exist`.
-#
-# The word came from run_metadata.json's policy block, where "default" is a human-readable
-# LABEL. I exported the label as the value. The bundle still records "default"; the process
-# receives the empty string that actually means it.
-# Owner rulings 13 and 15. EXPORTED AND PASSED, not merely stamped.
-#
-# These arrived recorded in run_metadata.json but neither exported nor on the docker run -e list.
-# Today that is harmless because both sides default to the same thing — found/dims.py's
-# _DEFAULT_CORPUS_ORDER is ("abo","metrictree") and kg_align defaults aliases to 1, matching the
-# ${VAR:-default} the bundle stamps. THE AGREEMENT IS COINCIDENTAL, which is the GA-99 shape
-# exactly: two paths that agree by accident until one of them moves.
-#
-# The live consequence is sharper than a future one. dims.py:60 says the point of making the
-# corpus order configurable is that an ablation arm can be attributed — "otherwise the arm would
-# be labelled and not applied". Without the passthrough that is the CURRENT state: setting
-# FOUND_CORPUS_ORDER host-side would be written into the bundle and never reach the code.
-export FOUND_CORPUS_ORDER="${FOUND_CORPUS_ORDER:-}"
-export FOUND_KG_ALIASES="${FOUND_KG_ALIASES:-}"
-export FOUND_ONTOLOGY_EXT="${FOUND_ONTOLOGY_EXT:-}"
-export FOUND_STORE_PATH="${FOUND_STORE_PATH:-/ws/output/knowledge_graph.ttl}"
-export FOUND_SCENE="${FOUND_SCENE:-$SCENE_ARG}"
-# GA-350 (ontology; owner-authorised set C, 2026-09-07). ROOM TYPING (P_room): one room-view frame
-# -> a room type, asked of the same multimodal endpoint the describer uses (regolo_config.yaml `vlm`),
-# read by found/room_type.py's RoomTyper from ITS OWN keys. Ported from GRAPH-API 3a5a818's launcher:
-# without these the first tagged room frame raises "no room-typing model configured" and ends the run.
-# The container path is /ws/output (the bundle mount); the -e list below forwards all four.
-export FOUND_ROOM_VLM_BASE_URL="${FOUND_ROOM_VLM_BASE_URL:-https://api.regolo.ai/v1}"
-export FOUND_ROOM_VLM_MODEL="${FOUND_ROOM_VLM_MODEL:-gemma4-31b}"
-export FOUND_ROOM_VLM_API_KEY="${FOUND_ROOM_VLM_API_KEY:-${OPENAI_API_KEY:-}}"
-export FOUND_ROOM_TYPES_PATH="${FOUND_ROOM_TYPES_PATH:-/ws/output/room_types.json}"
 # Room VIEW frames (perception's half of GA-350, vendor 4c0e0dc): object_manager_6 saves a room view
 # on room entry and every ROOM_FRAME_STRIDE_M metres of travel, at most ROOM_FRAME_MAX per room, and
 # the typer reads those. Defaults here equal object_manager_6.py:85-86 so the stamp says what ran.
+# WHERE AN EXTENSION IS MOUNTED INSIDE THE CONTAINER. One name, defaulted, so this repository
+# never writes another deployment's path. It was one hard-coded path in eleven places.
+EXT_MOUNT_POINT="${EXT_MOUNT_POINT:-/ext}"
+
+# ---- EXTENSION ENVIRONMENT ---------------------------------------------------------------
+# An extension package (an admission layer, a policy layer) has knobs of its own. They used to be
+# exported HERE, by name, so this launcher carried one deployment's policy vocabulary and could not
+# run without it. Owner ruling 2026-09-09: this repository names none of them.
+#
+# EXT_ENV_FILE is a shell file the extension ships. It exports whatever it needs and sets
+# EXT_ENV_PASS to the names that must cross into the container -- `docker run -e VAR` sends nothing
+# when VAR is unset in the parent, so a bare forward silently ships the container's own default
+# while the bundle records the launcher's. Exporting in that file makes the two the same value.
+#
+# EXT_MOUNTS holds any extra `-v` arguments the extension needs (its own tree, read-only).
+# EXT_POST_RUN is a command run once the bundle is closed.
+#
+# ABSENT IS NORMAL AND SILENT: a run with no extension is a valid run of this stack alone. A named
+# file that does not EXIST is an error, because somebody meant to load something and it is not there.
+if [ -n "${EXT_ENV_FILE:-}" ]; then
+  [ -r "$EXT_ENV_FILE" ] || { echo "!! EXT_ENV_FILE=$EXT_ENV_FILE is not readable"; exit 1; }
+  # shellcheck disable=SC1090
+  . "$EXT_ENV_FILE"
+  echo "    extension env: $EXT_ENV_FILE ($(echo ${EXT_ENV_PASS:-} | wc -w) variable(s) forwarded)"
+fi
+EXT_E_ARGS=""
+for _v in ${EXT_ENV_PASS:-}; do EXT_E_ARGS="$EXT_E_ARGS -e $_v"; done
+
 export ROOM_FRAME_MAX="${ROOM_FRAME_MAX:-5}"
 export ROOM_FRAME_STRIDE_M="${ROOM_FRAME_STRIDE_M:-1.5}"
 # GA-359 (owner 2026-09-07 ~18:20 "switch to rtabmap localised poses"; design plan/14). The pose
@@ -437,7 +569,6 @@ export ROOM_FRAME_STRIDE_M="${ROOM_FRAME_STRIDE_M:-1.5}"
 # by habitat_feed_node.py (once perception lands its half); stamped as pose_source.
 export FEED_POSE_SOURCE="${FEED_POSE_SOURCE:-simulator}"
 case "$FEED_POSE_SOURCE" in simulator|rtabmap) ;; *) echo "!! FEED_POSE_SOURCE=$FEED_POSE_SOURCE is neither simulator nor rtabmap"; exit 1 ;; esac
-echo "    room typing: $FOUND_ROOM_VLM_MODEL at $FOUND_ROOM_VLM_BASE_URL -> $FOUND_ROOM_TYPES_PATH (key $([ -n "$FOUND_ROOM_VLM_API_KEY" ] && echo set || echo UNSET))"
 
 # Feed geometry. These were interpolated ONLY into the launch line 160 lines below and appeared
 # NOWHERE in the bundle — a run recorded its seed and nothing else about how the agent moved.
@@ -494,7 +625,11 @@ export FEED_DWELL="${FEED_DWELL:-0}"
 # (raised from 45 on 2026-09-07 ~16:55: run 152446 capped 27 of 39 holds with pending work still owed).
 # Bundles at 90 are a new family against 152446 (45).
 # Adaptive bundles are a NEW FAMILY, stamped below as dwell_family.
-export FEED_DWELL_MODE="${FEED_DWELL_MODE:-adaptive}"
+# MAPPING_ONLY runs no object manager, so merge_pending.json never exists and every adaptive hold
+# caps at FEED_DWELL_MAX with the signal absent by construction: 360/450/360 stationary frames on the
+# three 8 Sep mapping runs, ~14 % of the tour (PLAN_1.3 §56.2, orchestrator follow-up 3). Fixed dwell
+# with FEED_DWELL 0 is the mapping default; an explicit FEED_DWELL_MODE still wins.
+export FEED_DWELL_MODE="${FEED_DWELL_MODE:-$([ "${MAPPING_ONLY:-0}" = "1" ] && echo fixed || echo adaptive)}"
 export FEED_DWELL_MIN="${FEED_DWELL_MIN:-18}"
 export FEED_DWELL_MAX="${FEED_DWELL_MAX:-90}"
 export FEED_DWELL_SIGNAL_MAX_AGE_S="${FEED_DWELL_SIGNAL_MAX_AGE_S:-10}"
@@ -536,9 +671,9 @@ if [ "${RTABMAP_SLAM:-0}" = "1" ]; then
 fi
 if [ "${MAPPING_ONLY:-0}" != "1" ] && [ "${RTABMAP_SLAM:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   if [ -n "$FEED_SPAWN_FLOOR" ]; then
-    _mapdir=$(printf "$FOUND_ROOT/maps/%s/floor_%+.2f" "$SCENE_ARG" "$FEED_SPAWN_FLOOR")
+    _mapdir=$(printf "$WORKSPACE_ROOT/maps/%s/floor_%+.2f" "$SCENE_ARG" "$FEED_SPAWN_FLOOR")
   else
-    _mapdir="$FOUND_ROOT/maps/$SCENE_ARG"
+    _mapdir="$WORKSPACE_ROOT/maps/$SCENE_ARG"
   fi
   # A CHECKED FALLBACK, not a guess. The canonical hm3d map lives at the SCENE level rather than
   # under floor_<z>, because it was published before per-floor publication existed. Falling back to
@@ -546,12 +681,12 @@ if [ "${MAPPING_ONLY:-0}" != "1" ] && [ "${RTABMAP_SLAM:-0}" != "1" ] && [ -z "$
   # fallback is allowed only when the map's OWN STAMP says it covers the requested floor — the
   # nearest_scene_floor that stamp_floor.py measured from its node poses.
   if [ ! -f "$_mapdir/rtabmap.db" ] && [ -n "$FEED_SPAWN_FLOOR" ] \
-     && [ -f "$FOUND_ROOT/maps/$SCENE_ARG/rtabmap.db.floor.json" ]; then
+     && [ -f "$WORKSPACE_ROOT/maps/$SCENE_ARG/rtabmap.db.floor.json" ]; then
     if python3 -c "import json,sys
 d=json.load(open(sys.argv[1]))
 sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2])) < 1e-6 else 1)" \
-        "$FOUND_ROOT/maps/$SCENE_ARG/rtabmap.db.floor.json" "$FEED_SPAWN_FLOOR" 2>/dev/null; then
-      _mapdir="$FOUND_ROOT/maps/$SCENE_ARG"
+        "$WORKSPACE_ROOT/maps/$SCENE_ARG/rtabmap.db.floor.json" "$FEED_SPAWN_FLOOR" 2>/dev/null; then
+      _mapdir="$WORKSPACE_ROOT/maps/$SCENE_ARG"
       echo "    scene-level map stamped for floor $FEED_SPAWN_FLOOR — using it"
     fi
   fi
@@ -586,6 +721,15 @@ sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2]
     export RTABMAP_LOCALIZE_DB="/out/localize_db_copy.db"
     export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-0}"
     echo "    localizing against a scratch COPY of $_canon_db (sha $LOCALIZE_DB_SHA, mapping phase 0s)"
+  elif ls -d "$WORKSPACE_ROOT/maps/$SCENE_ARG"/floor_* >/dev/null 2>&1; then
+    # GA-380 (2026-09-08). Maps are published PER FLOOR now and the scene-level rtabmap.db of
+    # hm3d_00861 was moved aside on 7 Sep, so an unpinned localisation run would have fallen
+    # through to "map from scratch" with a note nobody reads — a verification run that was meant
+    # to localise would have mapped for 150 s and measured a different regime (rule 14: the
+    # fallback is the defect). Refuse and name the floors that exist.
+    echo "!! NO map at $_mapdir, but this scene has per-floor maps: $(ls -d "$WORKSPACE_ROOT/maps/$SCENE_ARG"/floor_* | xargs -n1 basename | tr '\n' ' ')"
+    echo "   Pin FEED_SPAWN_FLOOR=<z> to localise against one of them (or set RTABMAP_LOCALIZE_DB). Refusing to map from scratch by accident."
+    exit 1
   else
     echo "    NO published map at $_mapdir — this run will MAP from scratch."
     echo "    That is the fallback, not the intent: publish a map for this scene and floor and"
@@ -594,6 +738,20 @@ sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2]
 fi
 if [ "$MAPPING_ONLY" = "1" ]; then
   export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-900}"
+  # THE CAP MUST COVER THE GATE AS WELL AS THE TOUR (rule 55: two settings that must agree get a
+  # probe). run_capped.sh counts CAP_MIN from the container appearing; the container's mapping
+  # deadline counts FEED_MAPPING_SECONDS + 60 from after build + gate, which took 1:21 / 2:52 / 4:32
+  # on the three 8 Sep launches; the close needs up to 150 s. Run 150019 was capped 1 s before its
+  # own timer and labelled capped=true with a finished tour. CAP_MIN is run_capped.sh's; it reaches
+  # here through the environment when the recipe sets it, and an unset CAP_MIN means no cap.
+  if [ -n "${CAP_MIN:-}" ]; then
+    case "$CAP_MIN" in (*[!0-9]*|"") echo "!! CAP_MIN='$CAP_MIN' is not a whole number of minutes. Refusing."; exit 1;; esac
+    _cap_need=$(( (${FEED_MAPPING_SECONDS%.*} + 60 + 300 + 150 + 59) / 60 ))
+    if [ "$CAP_MIN" -lt "$_cap_need" ]; then
+      echo "!! MAPPING_ONLY with CAP_MIN=$CAP_MIN: the cap must cover build+gate (<=5 min) + ${FEED_MAPPING_SECONDS%.*}+60 s tour deadline + 150 s close = CAP_MIN >= $_cap_need. Refusing to start a run whose finished tour would be labelled capped."
+      exit 1
+    fi
+  fi
 else
   export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-150}"
 fi
@@ -603,15 +761,15 @@ export FEED_SHOW="${FEED_SHOW:-1}"
 # What the launcher INTENDS the policy to be. The gate compares this against the environment
 # actually present inside the container, rather than echoing whatever it finds there — an echo
 # is what let an "enforcing" run be a pass-through for weeks.
-PREFLIGHT_EXPECT_POLICY="FOUND_ENFORCE=$FOUND_ENFORCE,FOUND_HOLD_BAND=$FOUND_HOLD_BAND"
-PREFLIGHT_EXPECT_POLICY="$PREFLIGHT_EXPECT_POLICY,FOUND_MIN_SUPPORT=$FOUND_MIN_SUPPORT"
-PREFLIGHT_EXPECT_POLICY="$PREFLIGHT_EXPECT_POLICY,FOUND_ROOM_ENFORCE=$FOUND_ROOM_ENFORCE"
-PREFLIGHT_EXPECT_POLICY="$PREFLIGHT_EXPECT_POLICY,FOUND_ALIGNER=$FOUND_ALIGNER"
-export PREFLIGHT_EXPECT_POLICY
-echo "    policy: enforce=$FOUND_ENFORCE hold_band=$FOUND_HOLD_BAND \
-min_support=$FOUND_MIN_SUPPORT rooms_enforced=$FOUND_ROOM_ENFORCE \
-aligner=$FOUND_ALIGNER ontology_ext=${FOUND_ONTOLOGY_EXT:-default} \
-corpus_order=${FOUND_CORPUS_ORDER:-<code default>} kg_aliases=${FOUND_KG_ALIASES:-1}"
+# The gate compares an INTENTION against what arrived. Which keys matter is the extension's
+# declaration (EXT_ENV_PASS), not a list this launcher carries -- it used to name one deployment's
+# five policy variables, so a different policy layer was silently unchecked.
+PREFLIGHT_EXPECT_POLICY=""
+for _v in ${EXT_ENV_PASS:-}; do
+  eval "_val=\${$_v-}"
+  PREFLIGHT_EXPECT_POLICY="${PREFLIGHT_EXPECT_POLICY:+$PREFLIGHT_EXPECT_POLICY,}$_v=$_val"
+done
+[ -n "$PREFLIGHT_EXPECT_POLICY" ] && echo "    policy: $PREFLIGHT_EXPECT_POLICY"
 
 # ---- provenance ---------------------------------------------------------------------------
 # WHICH CODE produced this bundle. The digests come from preflight_gate.py rather than from a
@@ -620,16 +778,25 @@ corpus_order=${FOUND_CORPUS_ORDER:-<code default>} kg_aliases=${FOUND_KG_ALIASES
 # plausible sixteen-hex provenance stamp for a hash that covered zero files.
 #
 # The roots are typed. Only $REPO/lost3dsg is copied into the container at startup, so only it
-# has a freeze point; $FOUND_ROOT/found is live on the path for the whole run and is SAMPLED,
+# has a freeze point; an extension's tree is live on the path for the whole run and is SAMPLED,
 # never asserted frozen. knowledge_bridge was a third root until GA-306 vendored the one class
-# FOUND used into found/concept_embedder.py; it is no longer read, mounted or sampled.
+# the extension used; it is no longer read, mounted or sampled.
 _tree_sha() {
   local out
   out=$(python3 "$HERE/preflight_gate.py" --print-tree-sha "$1")     || { echo "!! cannot hash $1 — aborting rather than stamping an unrecorded run"; exit 1; }
   echo "$out"
 }
 read -r SRC_SHA SRC_N   <<<"$(_tree_sha "$REPO/lost3dsg")"
-read -r FOUND_SHA FOUND_N <<<"$(_tree_sha $FOUND_ROOT/found)"
+# EXT_TREES is "name=path" pairs the extension asks to be hashed and stamped. This used to hash
+# one package by name, so a deployment without it stamped a digest of nothing.
+EXT_SRC_SHAS=""
+for _pair in ${EXT_TREES:-}; do
+  _n="${_pair%%=*}"; _p="${_pair#*=}"
+  [ -d "$_p" ] || { echo "!! EXT_TREES names $_n=$_p, which is not a directory"; exit 1; }
+  read -r _sha _cnt <<<"$(_tree_sha "$_p")"
+  EXT_SRC_SHAS="${EXT_SRC_SHAS:+$EXT_SRC_SHAS,}$_n=$_sha"
+  echo "    sources: $_n $_sha ($_cnt)"
+done
 CFG_SHA=$(sha256sum "$HERE/$CFG_NAME" | cut -c1-16)
 # GA-283. The worst frame age the PREVIOUS RUN REJECTED, read HOST-SIDE: preflight_gate.py
 # runs INSIDE the container, where /ws/output is the current bundle and previous ones are not
@@ -643,7 +810,7 @@ CFG_SHA=$(sha256sum "$HERE/$CFG_NAME" | cut -c1-16)
 #
 # Empty when the last run rejected nothing; a10 then passes and records that it asserted
 # nothing.
-PREFLIGHT_EXPECT_CYCLE_S=$(python3 "$HERE/last_frame_age_rejected.py" "$FOUND_RUNS_DIR" 2>/dev/null || echo "")
+PREFLIGHT_EXPECT_CYCLE_S=$(python3 "$HERE/last_frame_age_rejected.py" "$RUNS_DIR" 2>/dev/null || echo "")
 export PREFLIGHT_EXPECT_CYCLE_S
 [ -n "$PREFLIGHT_EXPECT_CYCLE_S" ] && \
   echo "    last run REJECTED a frame at ${PREFLIGHT_EXPECT_CYCLE_S}s (a10 checks max_frame_age_s against it)"
@@ -654,17 +821,17 @@ export PREFLIGHT_EXPECT_CYCLE_S
 # endpoint and model. Exported once here; the prefixes below stay as harmless restatements.
 export GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}"
 MERGED_SHA=$(GRAPH_API_CONFIG="$HERE/$CFG_NAME" python3 "$HERE/preflight_gate.py" --print-merged-sha)   || { echo "!! cannot compute the merged-config sha — aborting rather than passing an empty expectation"; exit 1; }
-echo "    sources: graph-api $SRC_SHA ($SRC_N)  found $FOUND_SHA ($FOUND_N)"
+echo "    sources: graph-api $SRC_SHA ($SRC_N)"
 echo "    config:  file $CFG_SHA  merged $MERGED_SHA"
 
 # Handed to the gate, which recomputes them INSIDE the container after the source copy. A
 # difference means an edit landed in the window and the run is not the code stamped here.
-export PREFLIGHT_EXPECT_SRC_SHA="graph_api=$SRC_SHA"
+export PREFLIGHT_EXPECT_SRC_SHA="graph_api=$SRC_SHA${EXT_SRC_SHAS:+,$EXT_SRC_SHAS}"   # GA-373: live roots compared too
 export PREFLIGHT_EXPECT_CFG_SHA="$CFG_SHA"
 export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 
 # WHICH ENVIRONMENT answered. The encoders are NOT in the image: live_stack_container.sh
-# exports HF_HOME=/found/.hf_cache, so weights come from a host cache at runtime and two runs
+# exports HF_HOME under the extension mount, so weights come from a host cache and two runs
 # on one image digest can load different weights. Resolved through refs/main, a floating tag —
 # recording them pins going forward and proves nothing about any earlier run.
 # DEFAULT IS THE PATCHED IMAGE, graphapi-run:humble-ga290: the rtabmap.cpp:4090 guard (GA-290,
@@ -676,7 +843,7 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # launched the pristine image while recording itself as the patched one.
 IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble-ga290}
 IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
-HF_CACHE=${HF_CACHE:-$FOUND_ROOT/.hf_cache}
+HF_CACHE=${HF_CACHE:-$WORKSPACE_ROOT/.hf_cache}
 # >>> TEST-EXTRACT _enc_rev  (test_env_stamp.sh sources the block between these markers.
 # It guessed the boundary with a sed pattern twice and was wrong twice: /^$/ swallowed the
 # call sites below, and /; }$/ ran to end-of-file because this definition is a single line,
@@ -687,17 +854,17 @@ _enc_rev() { cat "$HF_CACHE/hub/models--$1/refs/main" 2>/dev/null              |
 ENC_E5=$(_enc_rev intfloat--e5-small-v2)
 ENC_MINILM=$(_enc_rev sentence-transformers--all-MiniLM-L6-v2)
 
-# WHICH GROUND TRUTH the numbers will be scored against. found/gt.py reads FOUND_SCENE_INSTANCE
+# WHICH GROUND TRUTH the numbers will be scored against. The scorer reads GT_SCENE_INSTANCE
 # and has no default, so an unset or stale value silently rescopes every recall figure while the
 # bundle still looks complete.
-GT_PATH=${FOUND_SCENE_INSTANCE:-}
+GT_PATH=${GT_SCENE_INSTANCE:-}
 GT_SHA="unset"; GT_N="unset"
 if [ -n "$GT_PATH" ] && [ -f "$GT_PATH" ]; then
   GT_SHA=$(sha256sum "$GT_PATH" | cut -c1-16)
   GT_N=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1])).get('objects') or []))" "$GT_PATH" 2>/dev/null || echo unknown)
   [ "$GT_N" = "0" ] && echo "!! WARNING: ground truth $GT_PATH contains 0 objects — every recall figure will be vacuous"
 elif [ -n "$GT_PATH" ]; then
-  echo "!! FOUND_SCENE_INSTANCE=$GT_PATH does not exist — aborting"; exit 1
+  echo "!! GT_SCENE_INSTANCE=$GT_PATH does not exist — aborting"; exit 1
 fi
 echo "    ground truth: ${GT_PATH:-<unset>} sha=$GT_SHA objects=$GT_N"
 echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}"
@@ -710,12 +877,6 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 # under is the artefact nobody can detect later, and stamping the policy at all exists for the
 # ablation case — where a default would silently record neither arm. Same standard as
 # live_stack_container.sh refusing a guessed config: name what is missing and stop.
-: "${FOUND_ENFORCE:?not set at run_metadata.json — the policy exports must precede this heredoc}"
-: "${FOUND_HOLD_BAND:?not set at run_metadata.json}"
-: "${FOUND_MIN_SUPPORT:?not set at run_metadata.json}"
-: "${FOUND_ROOM_ENFORCE:?not set at run_metadata.json}"
-: "${FOUND_ALIGNER:?not set at run_metadata.json}"
-: "${FOUND_ONTOLOGY_EXT?not set at run_metadata.json}"   # no colon: empty is a legal value here
 # Six NUMERIC positions in the feed block below. An empty expansion yields `"dwell_frames": ,`
 # and the validator kills the run — which is the correct outcome, but these refuse first and say
 # which name is missing.
@@ -735,8 +896,6 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 : "${FEED_SPAWN_FLOOR?not set at run_metadata.json}"   # no colon: empty means "no floor requested"   # no colon: 0 is a legal value
 : "${SRC_SHA:?not set at run_metadata.json — the provenance block must precede this heredoc}"
 : "${SRC_N:?not set at run_metadata.json}"
-: "${FOUND_SHA:?not set at run_metadata.json}"
-: "${FOUND_N:?not set at run_metadata.json}"
 # GA-306: KB_SHA/KB_N are NOT asserted. e5294a2 removed the only code that set them, and these
 # two assertions then aborted every launch at 5 s, before the container existed. The bundle keeps
 # kb_src_sha256_16 / kb_files / kb_root as explicit nulls below; no variable is left to assert.
@@ -748,6 +907,12 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 # and that meaning is now stated: it is the name the LAUNCHER INTENDED. What the two processes
 # actually loaded is recorded separately — the container's in preflight.json (a2 reads
 # config.CFG_PATH, the file config.py actually read), the feed host's below.
+# Every variable the extension declared must be SET before this heredoc, or the bundle records a
+# value the process never received. This used to name one deployment's eight variables.
+for _v in ${EXT_ENV_PASS:-}; do
+  eval "_isset=\${$_v+yes}"
+  [ -n "${_isset:-}" ] || { echo "!! $_v is declared in EXT_ENV_PASS but not set at run_metadata.json"; exit 1; }
+done
 cat <<EOF > "$RUN_DIR/run_metadata.json"
 {
   "run_id": "$RUN_ID",
@@ -779,6 +944,9 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "mapping_seconds": $FEED_MAPPING_SECONDS,
     "mapping_only": $([ "$MAPPING_ONLY" = "1" ] && echo true || echo false),
     "spawn_floor_requested": $([ -n "$FEED_SPAWN_FLOOR" ] && echo "$FEED_SPAWN_FLOOR" || echo null),
+    "seed_source": "$SEED_SOURCE",
+    "scene_source": "$SCENE_SOURCE",
+    "draw_note": "drawn = this run chose it among the published per-floor maps (MAP_DRAW=1); pinned = the recipe named it. An A/B arm pins both.",
     "spawn_floor_note": "what was ASKED for. What the run actually mapped is measured from the map's own node poses into rtabmap.db.floor.json. If these two disagree the STAMP is right and this field records the intent that was not met.",
     "mapping_only_note": "true means NO DETECTOR RAN. A mapping bundle with zero detections is a mapping run, not a detection run that found nothing -- the two are otherwise indistinguishable from the artefacts, which is the failure that cost run 19 its merge question.",
     "overlay": $FEED_OVERLAY,
@@ -786,15 +954,12 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "note": "how the agent moved. ABSENT from every bundle before 2026-08-31, so a run's dwell setting cannot be recovered from an older bundle and must not be guessed from its date.",
     "dwell_note": "dwell_frames 0 means the agent never stops. Bundles with dwell_frames 0 are a DIFFERENT FAMILY from bundles with 60 and must not be pooled with them or differenced against them."
   },
-  "policy": {"enforce": $FOUND_ENFORCE, "hold_band": $FOUND_HOLD_BAND,
-             "min_support": $FOUND_MIN_SUPPORT, "rooms_enforced": $FOUND_ROOM_ENFORCE,
-    "corpus_order_note": "empty FOUND_CORPUS_ORDER means the code default in found/dims.py, standard,hssd,metrictree,abo,procthor as of GA-266, and the field then says so rather than naming an order. GA-282: this note claimed the hardcoded abo,metrictree fallback was PAST while line 638 still carried it, so every bundle up to and including 20260903_110622 records corpus_order abo,metrictree for a run that used standard(125) hssd(63) metrictree(56) abo(56) by its own decision records. The note outlived the fix it described. Read the corpus cited in each decision's margins, never this field, for any bundle stamped before 2026-09-03.",
+  `# The extension's own policy keys are interpolated HERE, inside this object, so the bundle's
+   # shape is unchanged and every reader of policy.<key> keeps working. This launcher does not
+   # know what they are: EXT_POLICY_JSON is a comma-terminated JSON fragment the extension
+   # supplies, or nothing at all when no extension is loaded. Owner ruling 2026-09-09.`
+  "policy": {${EXT_POLICY_JSON:-}
     "merge_min_consecutive": ${MERGE_MIN_CONSECUTIVE:-2},
-    "room_vlm_base_url": "$FOUND_ROOM_VLM_BASE_URL",
-    "room_vlm_model": "$FOUND_ROOM_VLM_MODEL",
-    "room_vlm_key_set": $([ -n "${FOUND_ROOM_VLM_API_KEY:-}" ] && echo true || echo false),
-    "room_types_path": "$FOUND_ROOM_TYPES_PATH",
-    "room_typing_note": "GA-350: the room typer (found/room_type.py) reads these four names itself. The key is never stamped, only whether one was set. Ported from GRAPH-API 3a5a818.",
     "pose_source": "$FEED_POSE_SOURCE",
     "rtabmap_pub_loc_pose_only_when_localizing": true,
     "rtabmap_launch": "direct ros2 run rtabmap_slam rtabmap since 2026-09-07 21:40 (GA-359 C): rtabmap.launch.py cannot set pub_loc_pose_only_when_localizing and every earlier bundle's rtabmap.log echoes it false, so /rtabmap/localization_pose was published on every frame, localised or not.",
@@ -802,20 +967,13 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "localization_pose_record_note": "ros2 topic echo --csv --full-length of /rtabmap/localization_pose for the whole run, no header: stamp sec, nanosec, frame_id, position xyz, orientation xyzw, 36 covariance values. Gaps are the not-localised intervals; the covariance gate's threshold (perception, GA-359 C) is to be read from here.",
     "pose_source_note": "GA-359: simulator = boxes placed through the feed node's identity map->odom (Habitat's true pose as odometry AND localisation); rtabmap = rtabmap's map->odom correction applied. Bundles before 2026-09-07 19:45 ran with BOTH authorities publishing (publish_tf was an undeclared launch argument; publish_tf_map defaulted true): run 152446 had 54 of 747 detection rows 2-4 m off. A bundle with this key set is single-authority.",
     "room_frames": {"max": $ROOM_FRAME_MAX, "stride_m": $ROOM_FRAME_STRIDE_M,
-                    "seam": "GA-350: object_manager_6 saves a room view on room entry and per stride_m of travel (at most max per room); the proposal carries room_frames/room_frame to the typer (vendor 4c0e0dc)."},
-             "aligner": "$FOUND_ALIGNER", "ontology_ext": "$FOUND_ONTOLOGY_EXT",
-             "corpus_order": "${FOUND_CORPUS_ORDER:-<code default: standard,hssd,metrictree,abo,procthor>}",
-             "kg_aliases": ${FOUND_KG_ALIASES:-1},
-             "kg_top": ${FOUND_KG_TOP:-0.87}, "kg_z": ${FOUND_KG_Z:-3.0},
-             "kg_thresholds_note": "GA-33: the aligner's placement rule (found/kg_align.py: top >= kg_top AND z >= kg_z). The defaults here are the code defaults kg_align applies when the variable is empty. ABSENT from every bundle before 2026-09-07; an older run's thresholds are 0.87 / 3.0 unless its notes say otherwise.",
-             "policy_note": "corpus_order and kg_aliases were added 2026-09-01 (owner rulings 13, 15). ABSENT from every earlier bundle, so an older run's corpus order is metrictree,abo and its alias count is 0 -- read, never guessed from the date."},
+                    "seam": "GA-350: object_manager_6 saves a room view on room entry and per stride_m of travel (at most max per room); the proposal carries room_frames/room_frame to the typer (vendor 4c0e0dc)."}},
   "provenance_intent": {
     "note": "host-side, taken BEFORE docker run. provenance_confirmed in preflight.json is taken after the container copies its sources, and is the authoritative record of what executed.",
     "graph_api_src_sha256_16": "$SRC_SHA", "graph_api_files": $SRC_N,
-    "found_src_sha256_16": "$FOUND_SHA", "found_files": $FOUND_N,
     "kb_src_sha256_16": null, "kb_files": null,
     "kb_root": null,
-    "kb_note": "GA-306, 2026-09-06: FOUND no longer imports knowledge_bridge -- the e5 ConceptEmbedder it used is vendored at found/concept_embedder.py. Nothing is mounted at /kb and KB_SRC is read nowhere. Explicit nulls, not removed keys: bundles before this date carry real digests here, and a reader joining across them must be able to tell 'not applicable' from 'never stamped'.",
+    "kb_note": "GA-306, 2026-09-06: the knowledge_bridge dependency is gone -- the e5 ConceptEmbedder it provided is vendored by the extension. Nothing is mounted at /kb and KB_SRC is read nowhere. Explicit nulls, not removed keys: bundles before this date carry real digests here, and a reader joining across them must be able to tell 'not applicable' from 'never stamped'.",
     "frozen_roots": ["graph_api"],
     "live_roots": ["found"],
     "live_root_note": "not copied into the container; on sys.path for the whole run, so sampled rather than asserted frozen"
@@ -918,6 +1076,34 @@ for i in $(seq 1 90); do grep -q "listening" "$OUT_DIR/feed_host.log" 2>/dev/nul
 grep -q "listening" "$OUT_DIR/feed_host.log" || { echo "feed host failed:"; tail -20 "$OUT_DIR/feed_host.log"; exit 1; }
 echo "    feed host up"
 
+# GA-371 (owner 2026-09-08 13:05): every launch also opens RViz, beside Habitat and the dashboard.
+# Sibling container graphapi_rviz on the host network (view_rviz.sh), started here so DDS discovery
+# sees the stack's topics as they appear. RVIZ=0 opts out (headless hosts). Absent display or
+# opt-out is RECORDED in run_metadata (rviz_started false + rviz_reason), never skipped silently.
+# The log rides the existing $OUT_DIR/*.log archive into logs/rviz.log. Stopped in cleanup().
+RVIZ="${RVIZ:-1}"; RVIZ_STARTED=false; RVIZ_REASON=""; RVIZ_DISPLAY="${DISPLAY:-:1}"   # same default the feed host uses
+if [ "$RVIZ" != "1" ]; then
+  RVIZ_REASON="RVIZ=$RVIZ opt-out"
+elif [ ! -S "/tmp/.X11-unix/X${RVIZ_DISPLAY#:}" ]; then
+  RVIZ_REASON="no X socket for DISPLAY=$RVIZ_DISPLAY"
+else
+  LOG="$OUT_DIR/rviz.log" DISPLAY="$RVIZ_DISPLAY" IMAGE_TAG="$IMAGE_TAG" \
+    setsid nohup bash "$HERE/view_rviz.sh" >/dev/null 2>&1 < /dev/null &
+  for _i in $(seq 1 15); do docker ps --format '{{.Names}}' | grep -qx graphapi_rviz && break; sleep 2; done
+  if docker ps --format '{{.Names}}' | grep -qx graphapi_rviz; then
+    RVIZ_STARTED=true; RVIZ_REASON="graphapi_rviz up (DISPLAY=$RVIZ_DISPLAY, dri=$([ -d /dev/dri ] && echo yes || echo no))"
+  else
+    RVIZ_REASON="graphapi_rviz not up 30 s after start; see logs/rviz.log"
+  fi
+fi
+echo "    rviz: started=$RVIZ_STARTED ($RVIZ_REASON)"
+python3 - "$RUN_DIR/run_metadata.json" "$RVIZ_STARTED" "$RVIZ_REASON" <<'PY'
+import json, sys
+p, started, reason = sys.argv[1], sys.argv[2] == "true", sys.argv[3]
+d = json.load(open(p)); d["rviz_started"] = started; d["rviz_reason"] = reason   # GA-371, keys ADDED (rule 6)
+json.dump(d, open(p, "w"), indent=2)
+PY
+
 # Asynchronous health & memory monitor
 (
   while true; do
@@ -945,44 +1131,40 @@ echo ">>> ROS stack in container (web viewer -> http://localhost:${BRIDGE_PORT:-
 # declared host-only. Do NOT put comments between the continued lines below — a comment after a
 # `\` swallows the continuation, and a backtick-comment terminates an assignment prefix. Both were
 # measured on 2026-08-31; both pass `bash -n`.
+rm -f "$RUN_DIR/NOT_STARTED"   # GA-381: past every check; from here the directory is a real attempt
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
   -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
   -e MERGE_MIN_CONSECUTIVE \
-  -e FOUND_ENFORCE -e FOUND_HOLD_BAND -e FOUND_MIN_SUPPORT -e FOUND_ROOM_ENFORCE \
-  -e FOUND_ALIGNER -e FOUND_ONTOLOGY_EXT -e FOUND_STORE_PATH -e FOUND_SCENE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
   -e MAPPING_ONLY -e FEED_MAPPING_SECONDS -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
-  -e FEED_SPAWN_FLOOR -e FOUND_CORPUS_ORDER -e FOUND_KG_ALIASES -e FOUND_KG_DISJOINT -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
-  -e FOUND_EMBED_MODEL -e FOUND_KG_TOP -e FOUND_KG_Z -e FOUND_LEXICAL -e FOUND_ONTOLOGY \
-  -e FOUND_ROOM_TYPES_PATH -e FOUND_ROOM_VLM_API_KEY -e FOUND_ROOM_VLM_BASE_URL \
+  -e FEED_SPAWN_FLOOR -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
   -e ROOM_FRAME_MAX -e ROOM_FRAME_STRIDE_M -e FEED_POSE_SOURCE \
-  -e FOUND_ROOM_VLM_MODEL -e FOUND_SCENE_INSTANCE -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \
+ -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \
   -e KG_BRIDGE_SRC \
   -e BRIDGE_PORT -e BRIDGE_RAW_MAX_AGE -e BRIDGE_ANNOTATED_MAX_AGE -e BRIDGE_FEED_PROBE_BACKOFF \
   -e FEED_HOST -e FEED_PORT -e LOST3DSG_OUTPUT_DIR \
   -e GRAPH_API_AUTOSTART -e GRAPH_API_BASE_URL -e GRAPH_API_TIMEOUT \
   -e ROOM_VLM_MODEL -e OPENROUTER_API_KEY -e REGOLO_API_KEY \
-  -e FOUND_ADJUDICATE -e FOUND_ADJUDICATE_BASE_URL -e FOUND_ADJUDICATE_MODEL \
   -e HABITAT_EXAMPLE_OBJECTS_DIR -e DISPLAY \
   -e PREFLIGHT_EXPECT_CFG_SHA -e PREFLIGHT_EXPECT_MERGED_SHA -e PREFLIGHT_EXPECT_SRC_SHA \
   -e PREFLIGHT_EXPECT_CYCLE_S \
   -e ARCHIVE_DEPTH -e FEED_HFOV -e BRIDGE_OVERLAY -e BRIDGE_OVERLAY_CAM_FRAME -e BRIDGE_OVERLAY_MAP_FRAME \
-  -e BRIDGE_OVERLAY_FAR -e BRIDGE_OVERLAY_MAX -e FOUND_ADJUDICATE_API_KEY -e FOUND_ADJUDICATE_MIN_CONF \
-  -e FOUND_ADJUDICATE_TIMEOUT -e FOUND_FLATNESS_CACHE -e FOUND_FLATNESS_MIN_CONF -e FOUND_STORE_DB \
-  -e FOUND_STORE_DUMP_SEC -e FOUND_WORDNET_DIR -e OPENAI_BASE_URL \
+  -e BRIDGE_OVERLAY_FAR -e BRIDGE_OVERLAY_MAX \
+ -e OPENAI_BASE_URL \
+  $EXT_E_ARGS \
   -v "$REPO":/graph_api:ro \
   -v graphapi_ws:/ws \
-  -v $FOUND_ROOT:/found \
+  ${EXT_MOUNTS:-} \
   `# GA-295. THE MAP LIBRARY IS READ-ONLY, AND UNTIL NOW ONLY THE COMMENT SAID SO.
    # live_stack_container.sh has claimed since GA-158 that "the map is mounted read-only, not
-   # copied", and printed a warning every run that it was writable. It was: /found carried no :ro,
+   # copied", and printed a warning every run that it was writable. It was: the mount carried no :ro,
    # and in localization mode rtabmap is handed the canonical map AS ITS OWN database_path, so its
-   # close path writes to it. /DATA/FOUND/maps/hm3d_00861/rtabmap.db is 24 MB (5,870 pages) larger
+   # close path writes to it. The canonical hm3d_00861/rtabmap.db is 24 MB (5,870 pages) larger
    # than the 1,197,514,752 its provenance recorded on 31 Aug, and was last modified 2026-09-03
    # 22:51:58, during a run. Node, Data and integrity still match (1096/1096/ok), so this is not a
    # claim that the geometry changed -- it is a claim that a published artefact is not immutable.
    # The deeper mount wins, so runs still read the library and can no longer write it.` \
-  -v "$FOUND_ROOT/maps":/found/maps:ro \
+  -v "$WORKSPACE_ROOT/maps":"$EXT_MOUNT_POINT"/maps:ro \
   -v "$RUN_DIR":/ws/output \
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
   -v "${HF_SHARED_CACHE:-/DATA/huggingface_cache}":/models/hf \

@@ -6,7 +6,8 @@ import sys
 from types import SimpleNamespace as NS
 
 os.environ["BRIDGE_SERVICE_TIMEOUT"] = "0.1"
-sys.path.insert(0, "/DATA/FOUND/vendor/graph-api/lost3dsg/src/perception_module")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               os.pardir, "src", "perception_module"))
 import rosstub  # noqa: E402
 
 rosstub.install()

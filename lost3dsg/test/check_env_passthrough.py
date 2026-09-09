@@ -20,6 +20,7 @@ default branch silently, so "the setting is off" and "the setting never arrived"
 observation.
 """
 import ast
+import os
 import pathlib
 import re
 import sys
@@ -59,15 +60,19 @@ def check(pkg: pathlib.Path):
     # Only the docker run -e list counts. A variable exported host-side but not listed here does
     # not cross into the container, which is the entire defect this checks for.
     passed = set(re.findall(r"-e ([A-Z_][A-Z0-9_]*)", launcher))
-    # BOTH TREES. Scanning only perception_module is what let FOUND_CORPUS_ORDER and
-    # FOUND_KG_ALIASES be recorded in the bundle and never passed: they are read in
-    # /DATA/FOUND/found, one tree over. That is the SAME blind-spot shape this checker was written
-    # for — it found the shell/python boundary and had a tree boundary of its own. The FOUND tree
-    # is mounted at /found and its modules run inside the container exactly like these do.
+    # EVERY TREE THAT RUNS, not just this one. Scanning only perception_module is what let two
+    # variables be recorded in a bundle and never passed: they are read in an extension package,
+    # one tree over, whose modules are mounted into the container and run exactly like these do.
+    # That is the SAME blind-spot shape this checker was written for — it found the shell/python
+    # boundary and had a tree boundary of its own.
+    #
+    # The extra trees are the CALLER's to name, in EXTRA_ENV_ROOTS (os.pathsep-separated). This
+    # file used to hard-code one deployment's path, so the check silently narrowed to a single
+    # tree anywhere else — passing, while scanning half of what runs.
     roots = [pkg / "src" / "perception_module"]
-    found_tree = pathlib.Path("/DATA/FOUND/found")
-    if found_tree.is_dir():
-        roots.append(found_tree)
+    for extra in os.environ.get("EXTRA_ENV_ROOTS", "").split(os.pathsep):
+        if extra and pathlib.Path(extra).is_dir():
+            roots.append(pathlib.Path(extra))
     reads = {}
     for root in roots:
         for py in sorted(root.glob("*.py")):

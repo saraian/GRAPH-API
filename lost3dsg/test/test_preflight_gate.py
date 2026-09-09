@@ -15,6 +15,9 @@ import os
 import subprocess
 import sys
 import tempfile
+
+# Derived, never hard-coded: the suite must run from a clone anywhere.
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 import time
 import types
 
@@ -46,21 +49,21 @@ def needs_container(reason):
 
 # --- a3: the policy comparison must compare, not echo -------------------------------------
 def test_a3_compares_rather_than_echoes():
-    os.environ["FOUND_ENFORCE"] = "1"
-    os.environ.pop("FOUND_HOLD_BAND", None)
+    os.environ["EXT_ENFORCE"] = "1"
+    os.environ.pop("EXT_HOLD_BAND", None)
 
-    ok, d = g.a3_policy_reached_container({"FOUND_ENFORCE": "1"})
+    ok, d = g.a3_policy_reached_container({"EXT_ENFORCE": "1"})
     check(ok is True, f"matching policy should pass: {d}")
 
-    ok, d = g.a3_policy_reached_container({"FOUND_ENFORCE": "0"})
+    ok, d = g.a3_policy_reached_container({"EXT_ENFORCE": "0"})
     check(ok is False, "a value that differs from the intended one must FAIL")
-    check(d["mismatches"]["FOUND_ENFORCE"] == {"intended": "0", "in_container": "1"}, d)
+    check(d["mismatches"]["EXT_ENFORCE"] == {"intended": "0", "in_container": "1"}, d)
 
     # The defect this probe exists for: the var never reached the container at all. Absent must
     # fail, not pass — an echo-style check would have reported the host's value and looked fine.
-    ok, d = g.a3_policy_reached_container({"FOUND_HOLD_BAND": "0.05"})
+    ok, d = g.a3_policy_reached_container({"EXT_HOLD_BAND": "0.05"})
     check(ok is False, "a var absent from the container must FAIL, not pass")
-    check(d["mismatches"]["FOUND_HOLD_BAND"]["in_container"] is None, d)
+    check(d["mismatches"]["EXT_HOLD_BAND"]["in_container"] is None, d)
 
     ok, d = g.a3_policy_reached_container({})
     check(ok is g.SKIPPED, "no intended values means nothing was asserted -> SKIPPED, not pass")
@@ -103,7 +106,7 @@ def test_a_skipped_probe_is_not_a_pass():
         check(rc == 0, "--allow-skip must downgrade a skip")
         check(json.load(open(out))["verdict"] == "pass", "--allow-skip verdict should be pass")
 
-        rc = g.main(["--only", "a3", "--out", out, "--expect-policy", "FOUND_ENFORCE=0"])
+        rc = g.main(["--only", "a3", "--out", out, "--expect-policy", "EXT_ENFORCE=0"])
         check(rc == 1, "a real mismatch must abort")
         rep = json.load(open(out))
         check(rep["failed"] == ["a3"] and rep["verdict"] == "fail", rep)
@@ -111,9 +114,22 @@ def test_a_skipped_probe_is_not_a_pass():
 
 # --- harness: a probe that raises is SKIPPED, never a pass --------------------------------
 def test_a_probe_that_raises_is_skipped_not_passed():
+    """The HARNESS is what is under test, so the raising probe is supplied HERE.
+
+    This used to run `--only a1` and rely on `found` being unimportable on the host: the test
+    asserted about the harness and depended on an extension package to make its subject raise.
+    When that probe moved out, the test broke for a reason that had nothing to do with what it
+    checks. A registered stub that raises on purpose cannot rot that way."""
+    def _raises():
+        raise RuntimeError("deliberate: the harness must record this, not pass it")
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "p.json")
-        rc = g.main(["--only", "a1", "--out", out])   # `found` is not importable on the host
+        saved = dict(g.PROBES)
+        g.PROBES["zz"] = ("deliberately_raises", _raises)
+        try:
+            rc = g.main(["--only", "zz", "--out", out])
+        finally:
+            g.PROBES.clear(); g.PROBES.update(saved)
         check(rc == 1, "a probe that raises must abort, not pass")
         rep = json.load(open(out))
         check(rep["probes"][0]["ok"] is None, rep)
@@ -238,7 +254,7 @@ def test_a1_records_the_discriminants_not_only_the_score():
 
 
 # --- a1: the field it reads, and a control that can actually fail --------------------------
-# a1 read `res.name` for a day. found.align.Alignment has label/aligned/score/evidence and NO
+# A probe read `res.name` for a day. The alignment result has label/aligned/score/evidence and NO
 # `name`, so getattr(res, "name", None) returned None for every input the aligner could produce:
 # the positive could never match "Sofa" and the negative control could never fail. A check that
 # cannot succeed, whose control cannot fail, inside the gate built to stop exactly that.
@@ -502,31 +518,31 @@ def test_a4_refuses_a_backend_that_cannot_answer():
 
 
 def test_run_output_lives_outside_every_hashed_root():
-    """Run output goes to $FOUND_ROOT/results/<timestamp>_<scene>, and it must move no digest.
+    """Run output goes to $WORKSPACE_ROOT/results/<timestamp>_<scene>, and it must move no digest.
 
     This is the property my own deny-list broke: `output/` was inside the hashed set, so running
     the stack moved the frozen root and "frozen" was unachievable while being reported achieved.
     A path ruling that quietly put run artefacts back inside a root would restore that, so it is
     asserted rather than assumed."""
-    roots = ("/DATA/FOUND/vendor/graph-api/lost3dsg", "/DATA/FOUND/found")
-    # $FOUND_ROOT, not /DATA/FOUND. The launcher derives its root from its own location so a
+    roots = (os.path.join(REPO_ROOT, "lost3dsg"), os.path.join(REPO_ROOT, os.pardir, "extension"))
+    # the launcher's own root variable, not a hard-coded path: it derives its root from its own location so a
     # clone anywhere can run; this assertion used to encode the one machine the code was written
     # on, and it failed the moment the hardcoding it was guarding against was removed.
-    out = "$FOUND_ROOT/results"
+    out = "$WORKSPACE_ROOT/results"
     for r in roots:
         check(not out.startswith(r.rstrip("/") + "/") and out != r,
               f"run output at {out} is inside hashed root {r} — the frozen root cannot hold still")
 
     # and the launcher must actually default there
     body = open(os.path.join(HERE, "live_run.sh")).read()
-    check("OUT_DIR=${OUT_DIR:-$FOUND_ROOT/results/" in body,
-          "live_run.sh must default OUT_DIR under $FOUND_ROOT/results/, never /tmp")
-    check("FOUND_ROOT=${FOUND_ROOT:-$(cd \"$REPO/../..\" && pwd)}" in body,
-          "FOUND_ROOT must be DERIVED from the script's location, not hardcoded — a clone "
+    check("OUT_DIR=${OUT_DIR:-$WORKSPACE_ROOT/results/" in body,
+          "live_run.sh must default OUT_DIR under $WORKSPACE_ROOT/results/, never /tmp")
+    check("WORKSPACE_ROOT=${WORKSPACE_ROOT:-$(cd \"$REPO/../..\" && pwd)}" in body,
+          "WORKSPACE_ROOT must be DERIVED from the script's location, not hardcoded — a clone "
           "anywhere else cannot run if it is")
 
 
-# --- the extension seam: GRAPH-API ships the harness, FOUND ships what asserts about FOUND ---
+# --- the extension seam: GRAPH-API ships the harness; an extension ships what asserts about itself ---
 def test_the_probe_blueprint_skips_rather_than_passing():
     """A blueprint that did nothing and returned True would make every deployment that has not
     supplied a probe report a pass for a check nobody wrote."""
@@ -626,97 +642,9 @@ def test_the_gate_is_importable_under_its_own_name_when_run_as_a_script():
     check(prog, "")   # keep the constructed argv referenced; the assertion above is the check
 
 
-def test_a1_actually_returns_False_on_each_way_it_can_be_wrong():
-    """GA-73. a1's suite tested `_aligned_name` and the control's INPUTS, and never called the
-    probe and asserted `ok is False`. **The probe built because a fallback answered for weeks,
-    which then spent a day unable to pass, still could not be shown refusing.**
-
-    Three ways it must refuse, exercised against stubs so no container is needed."""
-    import dataclasses
-    import types
-
-    @dataclasses.dataclass
-    class Alignment:
-        label: str
-        aligned: str | None
-        score: float
-        evidence: str
-
-    def run_with(aligner_cls, cfg_hooks=("/found",)):
-        fake_cfg = types.ModuleType("config")
-        fake_cfg.CFG = {"hooks": {"search_paths": list(cfg_hooks)}}
-        fake_dims = types.ModuleType("found.dims")
-        fake_dims.DimensionDB = lambda: types.SimpleNamespace(types=lambda: [])
-        fake_kg = types.ModuleType("found.kg_align")
-        fake_kg.make_aligner = lambda vocab: aligner_cls()
-        fake_found = types.ModuleType("found")
-        saved = {k: sys.modules.get(k) for k in
-                 ("config", "found", "found.dims", "found.kg_align")}
-        sys.modules.update({"config": fake_cfg, "found": fake_found,
-                            "found.dims": fake_dims, "found.kg_align": fake_kg})
-        try:
-            return g.a1_aligner_identity()
-        finally:
-            for k, v in saved.items():
-                if v is None:
-                    sys.modules.pop(k, None)
-                else:
-                    sys.modules[k] = v
-
-    class Healthy:
-        def align(self, label):
-            return (Alignment(label, "Sofa", 0.9032, "kg 0.90 (z=5.2) -> Sofa")
-                    if label == g.GOLDEN_LABEL else Alignment(label, None, 0.1, "gap"))
-
-    class WrongClass:
-        def align(self, label):
-            return Alignment(label, "Chair", 0.88, "kg 0.88 -> Chair")
-
-    class NamesEverything:
-        def align(self, label):
-            return Alignment(label, "Sofa", 0.99, "always Sofa")
-
-    # the constructed class is checked first: a stub is not KGAlignerAdapter, so with the
-    # default FOUND_ALIGNER=kg every case below refuses on identity before reaching the golden.
-    os.environ["FOUND_ALIGNER"] = "exemplar"      # expects a plain `Aligner`
-    try:
-        for cls, why in ((Healthy, "constructed class"), (WrongClass, "constructed class"),
-                         (NamesEverything, "constructed class")):
-            ok, d = run_with(cls)
-            check(ok is False, f"a stub is not an Aligner -> must FAIL on {why}: {d}")
-            check(d["constructed"] == cls.__name__, d)
-
-        # now let the class check pass, so the GOLDEN and the CONTROL are what decide
-        for cls in (Healthy, WrongClass, NamesEverything):
-            cls.__name__ = "Aligner"
-        ok, d = run_with(Healthy)
-        check(ok is True, f"the golden aligns and the control refuses -> PASS: {d}")
-
-        ok, d = run_with(WrongClass)
-        check(ok is False, "the golden aligning to the WRONG class must FAIL")
-        check("expected 'Sofa'" in d["why"], d)
-
-        ok, d = run_with(NamesEverything)
-        check(ok is False, "an aligner that names EVERYTHING must fail the control")
-        check("answers everything" in d["why"], d)
-    finally:
-        os.environ.pop("FOUND_ALIGNER", None)
-
-
-def _fake_frame():
-    """A stand-in for the shipped probe frame. The REAL frame is a 640x480 habitat render read
-    with cv2, which is container-only — so the host tests inject an array and exercise the
-    branch logic, and the frame's own effect is exercised in the container per rule 24."""
-    import numpy as np
-    return np.zeros((480, 640, 3), dtype=np.uint8)
-
-
-# --- a4: the two failure directions are not the same finding -------------------------------
-# Measured on the first gated run: attempt 1 timed out, attempt 2 returned in 20.5 s against a
-# remote backend. That is a cold start. The fault a4 was built for is the OPPOSITE order — the
-# CLIP text head built on the first call and never reused, so the service answered once and
-# 500'd after. Both fail the run; conflating them sends the operator to widen a timeout when
-# the finding was a broken service, or to restart a service when it only needed warming.
+# The a1 test is NOT here. It asserted about an ontology-identity probe that this repository
+# no longer ships; the probe and its tests belong to the package that implements the ontology,
+# which already carries them. A test kept here would assert about code this repo cannot import.
 def test_a4_tells_a_cold_start_apart_from_the_serve_once_fault():
     """Runs the real probe with the two container-only imports stubbed, so the branch logic
     is exercised rather than described."""
@@ -843,14 +771,14 @@ def test_a2_passes_when_every_expectation_matches_what_config_loaded():
 
 def test_a2_returns_False_when_no_config_file_was_loaded():
     # The silent defect: GRAPH_API_CONFIG names a file that is not there, config.py falls back
-    # to _DEFAULTS, hooks.filter is empty and FOUND is out of the loop.
+    # to _DEFAULTS, hooks.filter is empty and the extension is out of the loop.
     with tempfile.TemporaryDirectory() as td:
         missing = os.path.join(td, "not_here.yaml")
         _, ok, d = _a2_with(missing)
         check(ok is False, f"defaults in force must FAIL, not pass: {d}")
         check(d["loaded_path"] is None and d["config_file_sha256_16"] is None, d)
         check(d["env_path"] == missing and "no config file was loaded" in d["why"], d)
-        check(d["hooks_filter"] == "", f"on the defaults hooks.filter is empty, FOUND out of the loop: {d}")
+        check(d["hooks_filter"] == "", f"on the defaults hooks.filter is empty, extension out of the loop: {d}")
 
 
 def test_a2_returns_False_when_loaded_file_name_differs_from_expected():
@@ -1069,6 +997,68 @@ def test_observe_refuses_a_probe_id_that_does_not_exist():
                        capture_output=True, text=True)
     assert r.returncode == 2, f"an unknown probe id must be refused, got rc={r.returncode}"
     assert "do not exist" in r.stdout + r.stderr
+
+
+def test_a7_compares_a_live_root_against_the_launcher_stamp_and_blocks_only_when_exercised():
+    """GA-373. The live roots were sampled and compared with nothing; a write into a live-mounted tree
+    inside the freeze window refused nothing (run 20260908_131906). A differing live root is a
+    MISMATCH — blocking when the run executes extension code, recorded-only under MAPPING_ONLY."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "mount"); run = os.path.join(td, "install"); live = os.path.join(td, "found")
+        for d in (src, run, live):
+            os.makedirs(d)
+        open(os.path.join(src, "node.py"), "w").write("x = 1\n")
+        open(os.path.join(run, "node.py"), "w").write("x = 1\n")
+        open(os.path.join(live, "a.py"), "w").write("y = 1\n")
+        stamp, _ = g.tree_sha(live)
+        roots = {"found": live}
+        # unchanged live root: no mismatch either way
+        ok, d = g.a7_source_frozen({"graph_api": "x", "found": stamp}, executed_tree=run,
+                                   copy_source=src, live_roots=roots, found_exercised=True)
+        check(d["live_mismatches"] == {}, d)
+        # the live root moves after the stamp
+        open(os.path.join(live, "a.py"), "w").write("y = 2\n")
+        ok, d = g.a7_source_frozen({"graph_api": "x", "found": stamp}, executed_tree=run,
+                                   copy_source=src, live_roots=roots, found_exercised=True)
+        # ok is SKIPPED on the host (no frozen root outside the container); the verdict is exercised
+        # in the image. Here the MISMATCH record is what is asserted, as the a7 test above does.
+        check("found_live" in d["mismatches"], f"an exercised live tree must be a mismatch: {d['mismatches']}")
+        check(d["live_mismatches"]["found"]["blocking"] is True, d["live_mismatches"])
+        ok, d = g.a7_source_frozen({"graph_api": "x", "found": stamp}, executed_tree=run,
+                                   copy_source=src, live_roots=roots, found_exercised=False)
+        check("found_live" not in d["mismatches"], f"MAPPING_ONLY must not block: {d['mismatches']}")
+        check(d["live_mismatches"]["found"]["blocking"] is False and "why_recorded" in d, d)
+        # no stamp given for the live root: sampled, never compared (the pre-GA-373 behaviour, stated)
+        _, d = g.a7_source_frozen({"graph_api": "x"}, executed_tree=run, copy_source=src,
+                                  live_roots=roots, found_exercised=True)
+        check(d["live_mismatches"] == {} and "found" in d["live_sampled"], d)
+
+
+def test_a7_at_teardown_judges_only_the_live_roots():
+    """Run 20260908_135714: the teardown a7 re-judged the vendored MOUNT against the launch stamp
+    and failed on edits the lanes were allowed to make after the copied ping. At teardown only
+    the live roots are asserted; the mount reading is kept as information."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "mount"); run = os.path.join(td, "install"); live = os.path.join(td, "found")
+        for d in (src, run, live):
+            os.makedirs(d)
+        open(os.path.join(src, "node.py"), "w").write("x = 2\n")   # mount moved after the copy
+        open(os.path.join(run, "node.py"), "w").write("x = 1\n")   # what executed
+        open(os.path.join(live, "a.py"), "w").write("y = 1\n")
+        stamp, _ = g.tree_sha(live)
+        ok, d = g.a7_source_frozen({"graph_api": "stale", "found": stamp}, executed_tree=run,
+                                   copy_source=src, live_roots={"found": live}, found_exercised=True,
+                                   teardown=True)
+        check(d["mismatches"] == {}, f"a moved mount at teardown must not be a mismatch: {d['mismatches']}")
+        check("executed_vs_mount" in d["informational_at_teardown"]["mount_vs_stamp"], d)
+        open(os.path.join(live, "a.py"), "w").write("y = 2\n")   # a live tree moved during the run
+        ok, d = g.a7_source_frozen({"graph_api": "stale", "found": stamp}, executed_tree=run,
+                                   copy_source=src, live_roots={"found": live}, found_exercised=True,
+                                   teardown=True)
+        check(list(d["mismatches"]) == ["found_live"], f"a moved live root must be the only mismatch: {d['mismatches']}")
+
 
 if __name__ == "__main__":
     # Mirrors src/perception_module/test_config.py: every function is a pytest test AND

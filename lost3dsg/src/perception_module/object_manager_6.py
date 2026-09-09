@@ -100,7 +100,7 @@ REEVALUATION_MAX_FANOUT = int(CFG["association"].get("reevaluation_max_fanout", 
 # Measured 2026-09-03 over the six runs of the day (GA-190's rows): 368 comparisons, 95% of
 # them beyond 1.0 m, and all four winners at 1.000 -- a `faucet` seen in the second bathroom
 # attached to `faucet#1` in the first, 9.8 m away. Era (rule 34): geometry-blind since the
-# first import (3353c96, 2026-07-04; FOUND from 82745b2); the label-only 1.000 became
+# first import (3353c96, 2026-07-04; the extension from 82745b2); the label-only 1.000 became
 # reachable when GA-101 dropped absent terms from the divisor (2026-09-01) -- before that the
 # `continue` on a missing embedding made this loop unreachable in every run (GA-90).
 #
@@ -217,7 +217,7 @@ INPUT_SILENCE_MAX_STRIKES = CFG["association"].get("input_silence_max_strikes", 
 # dead. Detection only happens when the robot stops, so stops -- not seconds -- are the unit
 # in which "the producer had its chance" is measurable.
 INPUT_SILENCE_MIN_STOPS = CFG["association"].get("input_silence_min_stops", 3)
-# must match the bridge's own default (BRIDGE_PORT=8081); :8080 is the FOUND dashboard server
+# must match the bridge's own default (BRIDGE_PORT=8081); :8080 is the dashboard server
 # GA-267b. BRIDGE_PORT, honoured -- the SAME hardcoded 8081 that silenced the feed host's
 # belief poller, in a second place and with a far worse consequence.
 #
@@ -1547,7 +1547,7 @@ class ObjectManagerService(Node):
                 # Admission seam: the configured Filter sees exactly what would be
                 # sent to the Graph API and may refuse it (blueprint: never does).
                 room_id = self.room_manager.assign_room_by_geometry(bbox)
-                # GA-350: the file is written BEFORE the proposal is judged; the FOUND
+                # GA-350: the file is written BEFORE the proposal is judged; the extension
                 # reader raises on a room_frame path that does not exist.
                 room_frames = self._room_frames_for(room_id)
                 proposal = {
@@ -2305,7 +2305,7 @@ class ObjectManagerService(Node):
         # itself, which is the one thing known to have new evidence.
         #
         # Fixed HERE and deliberately NOT in hooks.py. hooks.py ships the generic
-        # blueprint that FOUND extends; widening on_update's contract would change it
+        # blueprint an extension implements; widening on_update's contract would change it
         # for every subclass and break the blueprint's self-test. WHICH nodes deserve a
         # second look is the caller's trigger policy, which is what this method is.
         self.reeval.mark(object_id, reason)

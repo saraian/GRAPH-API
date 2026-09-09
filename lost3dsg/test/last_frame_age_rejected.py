@@ -29,7 +29,7 @@ Prints an EMPTY LINE when the previous run rejected nothing, or when there is no
 Both mean "no evidence of a problem", and a10 then passes while recording that it asserted
 nothing. Neither is an error and neither must read as one.
 
-    python3 last_frame_age_rejected.py /DATA/FOUND/runs      # -> "8.52" or ""
+    python3 last_frame_age_rejected.py <RUNS_DIR>            # -> "8.52" or ""
 """
 import json
 import os
@@ -140,7 +140,7 @@ def _selfcheck():
     # EVERY CASE IS A LOCALIZATION RUN unless localize_db says otherwise -- the mode is part of
     # the sample. localize_db=None writes a SLAM/mapping-only bundle (resolved_config.localize_db
     # null); "NOMETA" writes no run_metadata.json at all.
-    def bundle(name, lines, localize_db="/found/maps/hm3d_00861/rtabmap.db"):
+    def bundle(name, lines, localize_db="/ext/maps/hm3d_00861/rtabmap.db"):
         d = os.path.join(root, name, "logs")
         os.makedirs(d, exist_ok=True)
         if lines is not None:

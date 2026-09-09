@@ -69,7 +69,7 @@ def main():
 
     # The container path is what a localization run will see; derived from the library layout,
     # not hardcoded, so a future floor or scene is covered the same way.
-    container_path = "/found/" + str(db).split("/maps/", 1)[-1]
+    container_path = os.environ.get("EXT_MOUNT_POINT", "/ext") + "/" + str(db).split("/maps/", 1)[-1]
 
     params_sha = params_file.read_text(errors="replace").strip() if (
         params_file and params_file.is_file()) else ""

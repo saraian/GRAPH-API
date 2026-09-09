@@ -2333,7 +2333,7 @@ if __name__ == "__main__":
     rclpy.init()
     _node = BridgeNode()
     threading.Thread(target=rclpy.spin, args=(_node,), daemon=True).start()
-    # 8081: host port 8080 belongs to the FOUND dashboard server; the object
+    # 8081: host port 8080 belongs to the dashboard server; the object
     # manager's GRAPH_API_BASE_URL default must match this.
     # GA-291. Loopback, not 0.0.0.0. The container runs --network=host, and another program
     # on this host holds <tailnet-ip>:8081; a wildcard bind collides with that (EADDRINUSE,

@@ -198,15 +198,6 @@ def fuse_orientation(obj, bbox):
         prior = getattr(obj, "bbox", None) if obj is not None else None
         if _is_oriented(prior):
             acc = _acc_add(acc, prior)
-            # _acc_add only updates the axial statistics.  The representative
-            # measured box must be initialized separately; otherwise a later
-            # yaw-less view leaves n > 0 with view == None and the code below
-            # dereferences None.
-            acc["view"] = {
-                "yaw": float(prior["yaw"]),
-                "oriented_center": [float(v) for v in prior["oriented_center"]],
-                "oriented_extents": [float(v) for v in prior["oriented_extents"]],
-            }
     out = dict(bbox)
     if _is_oriented(bbox):
         acc = _acc_add(acc, bbox)
@@ -214,23 +205,6 @@ def fuse_orientation(obj, bbox):
         acc = dict(acc)
     if acc["n"] == 0:
         return out, acc
-    # Be defensive with accumulators written by older code or restored from a
-    # partially persisted object.  An orientation count without a representative
-    # view is not enough to reconstruct the oriented center/extents.
-    if acc.get("view") is None:
-        prior = getattr(obj, "bbox", None) if obj is not None else None
-        if _is_oriented(prior):
-            acc["view"] = {
-                "yaw": float(prior["yaw"]),
-                "oriented_center": [float(v) for v in prior["oriented_center"]],
-                "oriented_extents": [float(v) for v in prior["oriented_extents"]],
-            }
-        elif not _is_oriented(bbox):
-            # Keep the AABB update, but do not manufacture oriented geometry.
-            acc["n"] = 0
-            acc["c"] = 0.0
-            acc["s"] = 0.0
-            return out, acc
     fused = 0.5 * math.atan2(acc["s"], acc["c"])
     view = acc["view"]
     if _is_oriented(bbox) and (view is None
@@ -270,7 +244,14 @@ def merge_rank(o):
     copies it beside `entity`), and it ranks FIRST: a declined box is the one the envelope
     says is not the object it claims to be, so it must not absorb a credible neighbour.
 
-    After the grade the pre-GA-314 rule stands unchanged (GA-25): a described object
+    GA-372. Equal grades are broken on `admission_filled` (owner ruling 2026-09-08): how many of
+    the verdict's eight property slots the proposal carried. Measured on 152446's 24
+    equal-grade merges: the alignment score ties on 23 (same class, same score), the
+    admission count is 1 on every object, sightings live only in memory; `filled` decides
+    17 and reverses 4 age picks. An object without the field ranks as 0 filled -- nothing
+    checked -- the same reading as an ungraded object.
+
+    After that the pre-GA-314 rule stands unchanged (GA-25): a described object
     outranks an undescribed one; then a KNOWN age ranks ahead of an unknown one, so an
     unstamped object cannot claim seniority it has no evidence for (reading absent as 0 is
     the GA-12 defect: the newcomer always wins); then the ESTABLISHED identity outlives the
@@ -278,9 +259,11 @@ def merge_rank(o):
     same tick still resolve deterministically.
     """
     grade = GRADE_RANK.get(getattr(o, "admission_grade", None), GRADE_RANK["no_grounds"])
+    filled = getattr(o, "admission_filled", None)
+    filled = -int(filled) if filled is not None else 0
     described = 0 if str(o.description).strip().lower() == 'unknown' else -1
     ct = getattr(o, "creation_time", None)
-    return (grade, described, 1 if ct is None else 0, ct if ct is not None else 0.0,
+    return (grade, filled, described, 1 if ct is None else 0, ct if ct is not None else 0.0,
             str(getattr(o, "object_id", "") or o.label))
 
 
@@ -502,6 +485,7 @@ def save_persistent_perceptions(node):
             # GA-314. The admission grade the survivor rule ranks on, so a bundle can show
             # which side of a merge was the credible one. Additive; None when ungraded.
             "admission_grade": getattr(obj, "admission_grade", None),
+            "admission_filled": getattr(obj, "admission_filled", None),
             "last_perception_timestamp": getattr(obj, "last_perception_time", None),
             "last_perception_datetime": (
                 datetime.fromtimestamp(obj.last_perception_time, tz=timezone.utc).isoformat()
@@ -996,6 +980,17 @@ class ObjectServices(Node):
                 "threshold_log_odds": round(float(thr), 3),
                 "threshold": round(float(thr), 3),
                 "min_consecutive": MERGE_MIN_CONSECUTIVE,
+                # GA-341 follow-up (orchestrator, 2026-09-08). The EFFECTIVE merge floor and
+                # reach of the arm that actually ran, so a bundle can attest them. Run 1's
+                # criterion "no merge row with threshold_similarity <= sim_threshold" read 0
+                # and that zero was VACUOUS: the similarity floor belongs to the legacy arm
+                # and the evidence arm emits `threshold_log_odds`, so NO row carried the key
+                # the criterion named. A check whose subject is absent asserts nothing. These
+                # keys are what a reader should test instead (rule 6, additive).
+                "engine": MERGE_ENGINE,
+                "min_similarity": MERGE_MIN_SIMILARITY,
+                "max_distance_m": MERGE_MAX_DISTANCE,
+                "sim_threshold": SIM_THRESHOLD,
                 "live_hypotheses": len(self._hypotheses),
                 "pending": len(pending),
                 # Capped: the feed host only needs the COUNT, and the list is for the viewer.
@@ -1099,7 +1094,7 @@ class ObjectServices(Node):
                     centroid=getattr(o, "centroid", None),
                     observations=getattr(o, "observations", None) or [],
                     room_id=getattr(o, "room_id", None),
-                    # GA-192: the type FOUND aligned this object to, and whether that
+                    # GA-192: the type the extension aligned this object to, and whether that
                     # alignment held. Absent stays absent -- channel_ontology abstains on an
                     # unaligned side rather than comparing labels the ontology never endorsed.
                     onto_type=getattr(o, "onto_type", None),
@@ -1209,6 +1204,19 @@ class ObjectServices(Node):
                     f"{request.min_similarity}; both must be > 0. A merge request cannot "
                     f"disable a gate -- send the values you mean (config defaults are "
                     f"{MERGE_MAX_DISTANCE} m and {MERGE_MIN_SIMILARITY}).")
+                return response
+            # GA-341. The load-time assertion above forbids a CONFIG merge floor at or below the
+            # match gate, but a REQUEST could still carry one: the bridge's body default was
+            # 0.75 against sim_threshold 0.85, so `POST /merge {}` merged pairs the association
+            # loop had just refused. Refuse it here, naming the bound, rather than clamp it.
+            if request.min_similarity <= SIM_THRESHOLD:
+                response.success = False
+                response.merged_count = 0
+                response.merge_log_json = "[]"
+                response.message = (
+                    f"refused: min_similarity={request.min_similarity} must be STRICTLY greater "
+                    f"than association.sim_threshold ({SIM_THRESHOLD}); the config merge floor "
+                    f"is {MERGE_MIN_SIMILARITY} (GA-341).")
                 return response
             MAX_DISTANCE   = request.max_distance
             MIN_SIMILARITY = request.min_similarity
@@ -1622,39 +1630,60 @@ class ObjectServices(Node):
             if to_remove_pairs and not dry_run:
                 print(f"\n🗑️ REMOVING: {len(to_remove_pairs)} duplicate objects:")
 
-                for pair in to_remove_pairs:
-                    keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
-                    # GA-20: `keeper.bbox = merged_bbox` stood here. The kept box IS the
-                    # keeper's own, so the write-back is a self-assignment; removed rather
-                    # than left as a line that looks like it changes something.
+                # GA-393, NARROWED per the owner's ruling ("keep the fix; reduce the guard to
+                # the part that writes"). The comparison sweep above runs on `objects`, a
+                # snapshot taken at entry, so holding the lock across it blocked the other
+                # executor threads for a median 569 ms and up to 2.8 s of a 7.4 s cycle. THIS
+                # is where the world model is actually mutated, and it was the only service
+                # callback in this file taking no lock at all while add, update, delete and
+                # query all take one.
+                #
+                # Because the sweep ran unlocked, a pair decided there may no longer be valid:
+                # another thread can have removed either side in between. BOTH are re-checked
+                # inside the lock -- the keeper was never checked before -- and a stale pair is
+                # skipped and COUNTED, never applied to an object that has left the map.
+                stale = 0
+                with wm.lock:
+                    for pair in to_remove_pairs:
+                        keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
+                        # GA-20: `keeper.bbox = merged_bbox` stood here. The kept box IS the
+                        # keeper's own, so the write-back is a self-assignment; removed rather
+                        # than left as a line that looks like it changes something.
 
-                    if discard in wm.persistent_perceptions:
-                        cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
-                        cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
-                        print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
-                        wm.persistent_perceptions.remove(discard)
-                        # GA-26: the store learns about the merge, or its row stays active
-                        # forever and the database disagrees with the map by one object.
-                        if hasattr(self, 'db'):
-                            try:
-                                self.db.on_object_merged(keeper, discard, step=self.tracking_step_counter)
-                            except Exception as e:
-                                self.get_logger().error(f"db.on_object_merged failed: {e}")
+                        if keeper not in wm.persistent_perceptions:
+                            stale += 1
+                            continue
+                        if discard in wm.persistent_perceptions:
+                            cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
+                            cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
+                            print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
+                            wm.persistent_perceptions.remove(discard)
+                            # GA-26: the store learns about the merge, or its row stays active
+                            # forever and the database disagrees with the map by one object.
+                            if hasattr(self, 'db'):
+                                try:
+                                    self.db.on_object_merged(keeper, discard, step=self.tracking_step_counter)
+                                except Exception as e:
+                                    self.get_logger().error(f"db.on_object_merged failed: {e}")
 
-                    discard_room = getattr(discard, 'room_id', None)
-                    if discard_room and discard_room in self.room_manager.scene_graph:
-                        objs = self.room_manager.scene_graph[discard_room]["objects"]
-                        if discard.label in objs:
-                            objs.remove(discard.label)
+                        discard_room = getattr(discard, 'room_id', None)
+                        if discard_room and discard_room in self.room_manager.scene_graph:
+                            objs = self.room_manager.scene_graph[discard_room]["objects"]
+                            if discard.label in objs:
+                                objs.remove(discard.label)
 
-                    self.room_manager.update_room_geometry(
-                        getattr(keeper, 'room_id', self.room_manager.current_room_id),
-                        merged_bbox
-                    )
+                        self.room_manager.update_room_geometry(
+                            getattr(keeper, 'room_id', self.room_manager.current_room_id),
+                            merged_bbox
+                        )
 
-                save_persistent_perceptions(self)
-                publish_persistent_bboxes(self, wm, self.persistent_bbox_pub)
-                publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
+                    save_persistent_perceptions(self)
+                    publish_persistent_bboxes(self, wm, self.persistent_bbox_pub)
+                    publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
+
+                if stale:
+                    self.log_both("warn", f"[MERGE] {stale} pair(s) skipped: an object left "
+                                          f"the map between the unlocked sweep and the write")
 
                 try:
                     with open(OPERATIONS_LOG, 'a') as f:
@@ -2031,7 +2060,8 @@ class ObjectServices(Node):
                     # that ever moved. Carry the identity-bearing state across.
                     for _attr in ("observations", "shape", "provisional", "ontologically_usable",
                                   "onto_aligned", "onto_type", "not_seen_in_pov_frames", "creation_time",
-                                  "clip_embedding", "_cycle_bbox_2d", "admission_grade"):
+                                  "clip_embedding", "_cycle_bbox_2d", "admission_grade",
+                                  "admission_filled"):
                         if hasattr(best_match, _attr):
                             setattr(updated_obj, _attr, getattr(best_match, _attr))
                     # GA-171: normalised, exactly as the add path does. This line used

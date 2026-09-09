@@ -241,7 +241,7 @@ def get_embedding(model, text):
         # material 0.15 renormalise to 0.10 / 0.60 / 0.30: colour has been deciding
         # associations at double its configured weight.
         #
-        # Era (rule 34): the in/[] pattern is pre-FOUND and was correct for the model it
+        # Era (rule 34): the in/[] pattern predates the extension and was correct for the model it
         # had; the None-state dates to 683a2b0, 2026-08-26, when the SemanticEmbedder
         # migration fixed semantic_similarity's call site and missed this one. That
         # function has had this isinstance branch ever since. This one did not.
