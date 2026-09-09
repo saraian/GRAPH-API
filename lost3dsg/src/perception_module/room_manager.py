@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simple 2D GVD room manager for ROS 2 and RTAB-Map.
+"""2D GVD room manager with conservative RTAB-Map 3D evidence fusion.
 
 This version keeps the pipeline intentionally small and standard:
 
@@ -11,9 +11,9 @@ This version keeps the pipeline intentionally small and standard:
 6. watershed the cut free space into room regions;
 7. extract polygons and track them over time.
 
-No cloud-map fusion, no corridor-specific heuristics, no extra shape
-classifiers. The goal is a clean baseline that is easy to understand and
-debug.
+The occupancy grid remains the source of navigability. Point clouds and
+depth-derived wall segments classify which occupied structures are credible
+room boundaries; they never create free space or close an observed doorway.
 """
 
 import json
@@ -31,7 +31,7 @@ import rclpy
 from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 from rclpy.duration import Duration
-from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
@@ -68,13 +68,17 @@ class RoomManager:
     def __init__(self, w2v_model=None, node=None, map_topic='/rtabmap/map',
                  cloud_map_topic='/rtabmap/cloud_map', live_obstacle_topic=None,
                  live_empty_topic=None, live_ground_topic=None,
-                 enable_live_local_grids=False):
+                 enable_live_local_grids=False,
+                 cloud_ground_topic='/rtabmap/cloud_ground',
+                 cloud_obstacles_topic='/rtabmap/cloud_obstacles'):
         self.w2v = w2v_model
         self.node = None
         self.tf_buffer = None
         self.tf_listener = None
         self.map_topic = map_topic
         self.cloud_map_topic = cloud_map_topic
+        self.cloud_ground_topic = cloud_ground_topic
+        self.cloud_obstacles_topic = cloud_obstacles_topic
 
         self.scene_graph: Dict[str, dict] = {}
         self.rooms = self.scene_graph
@@ -111,6 +115,11 @@ class RoomManager:
         self._latest_cloud_frame = None
         self._latest_cloud_stamp = None
         self._latest_cloud_received_at = None
+        self._latest_cloud_ground_points = None
+        self._latest_cloud_ground_received_at = None
+        self._latest_cloud_ground_mask = None
+        self._latest_cloud_obstacle_points = None
+        self._latest_cloud_obstacle_received_at = None
         self._latest_cloud_observed_mask = None
         self._latest_cloud_nonwall_mask = None
         self._last_cloud_warn_time = 0.0
@@ -151,12 +160,22 @@ class RoomManager:
             'gvd_3d_required_height_bands': 2,
             'gvd_3d_min_points_per_band': 1,
             'gvd_3d_max_age_s': 15.0,
+            'gvd_3d_floor_radius_m': 2.0,
+            'gvd_3d_floor_min_points': 20,
             'gvd_3d_min_support_ratio': 0.05,
             'gvd_3d_support_dilation_px': 1,
             # Temporally fused wall_detector evidence for conservative doorway support.
             'enable_detected_wall_support': True,
-            'detected_wall_reinforce_obstacles': False,
+            # Confirmed depth walls are stronger evidence than a compact 2D
+            # occupancy blob (which may be furniture).  They reinforce only
+            # occupied cells in _segment_regions_gvd, so an open doorway cannot
+            # be hallucinated as a closed wall.
+            'detected_wall_reinforce_obstacles': True,
             'detected_wall_min_observations': 1,
+            # Wall coordinates are expressed in ``map``.  Old observations may
+            # be invalid after an RTAB-Map graph optimisation, so require them
+            # to be seen again instead of reinforcing the topology forever.
+            'detected_wall_max_age_s': 300.0,
             'detected_wall_min_length_m': 1.50,
             'detected_wall_min_vertical_extent_m': 1.20,
             'detected_wall_max_rms_m': 0.03,
@@ -166,12 +185,22 @@ class RoomManager:
             'detected_wall_thickness_m': 0.12,
             'detected_wall_door_endpoint_radius_m': 0.20,
             'detected_wall_door_min_support': 0.16,
+            # A measured wall pair can delimit a wide/open doorway; the generic
+            # GVD door threshold remains conservative for clutter-induced gaps.
+            'detected_wall_door_max_m': 2.00,
             'detected_wall_bottleneck_ratio': 0.90,
-            'gvd_topo_fill_max_area_m2': 3.0,
-            'gvd_3d_nonwall_component_ratio': 0.05,
+            # Beds and sofas commonly occupy 3--6 m².  Leaving those compact,
+            # non-wall blobs in the topology makes the medial axis invent a room
+            # around them when the cloud is sparse or temporarily stale.
+            # Large furniture must be removed from the topology when obstacle
+            # cloud evidence confirms it, even if the 2D blob is bigger than a
+            # bed. Confirmed depth walls are protected separately.
+            'gvd_topo_fill_max_area_m2': 20.0,
+            'gvd_3d_nonwall_component_ratio': 0.01,
+            'gvd_3d_nonwall_min_cells': 8,
             'gvd_room_hole_fill_max_area_m2': 2.0,
-            'room_nested_merge_max_area_m2': 6.0,
-            'room_nested_merge_area_ratio': 0.20,
+            'room_nested_merge_max_area_m2': 8.0,
+            'room_nested_merge_area_ratio': 0.30,
             'room_nested_merge_wall_support_max_ratio': 0.20,
             # GVD construction / pruning
             'gvd_site_min_separation_m': 0.30,
@@ -189,7 +218,14 @@ class RoomManager:
             'max_region_misses': 8,
             'poly_approx_epsilon_m': 0.08,
             'room_assignment_tolerance_m': 0.12,
-            'room_partition_change_confirmations': 1,
+            # A split/merge must be stable across several map updates.  One
+            # frame is especially unreliable while RTAB-Map closes a wall or
+            # the depth wall detector is still accumulating evidence.
+            'room_partition_change_confirmations': 3,
+            # Compatible contour refinements below this IoU are also held;
+            # otherwise room polygons visibly breathe at every map callback.
+            'room_partition_stable_iou_min': 0.65,
+            'gvd_min_robot_component_ratio': 0.15,
             # GA-30: the nearest-room radius used to be the literal 0.45 in
             # `max(tolerance, 0.45)`, so the tolerance knob above never reached it.
             'room_nearest_fallback_m': 0.45,
@@ -214,6 +250,15 @@ class RoomManager:
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, node)
         qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        # cloud_ground/cloud_obstacles are often emitted by a live obstacle
+        # detector with sensor-data QoS (BEST_EFFORT + VOLATILE).  Requesting
+        # TRANSIENT_LOCAL here is incompatible with those publishers.  VOLATILE
+        # subscribers remain compatible with RTAB-Map's RELIABLE publishers.
+        cloud_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self._grid_sub = node.create_subscription(
             OccupancyGrid, self.map_topic, self._slow_map_callback, qos)
         self._marker_pub = node.create_publisher(MarkerArray, '/room_areas_array', qos)
@@ -223,10 +268,24 @@ class RoomManager:
         self._room_areas_pub = node.create_publisher(String, '/room_areas', 10)
         if self.cloud_map_topic:
             self._cloud_sub = node.create_subscription(
-                PointCloud2, self.cloud_map_topic, self._cloud_map_callback, qos)
+                PointCloud2, self.cloud_map_topic, self._cloud_map_callback, cloud_qos)
             self._log(
                 'info',
                 f'RoomManager: 3D structural filter enabled from {self.cloud_map_topic}')
+        self._cloud_ground_sub = None
+        if self.cloud_ground_topic:
+            self._cloud_ground_sub = node.create_subscription(
+                PointCloud2, self.cloud_ground_topic, self._cloud_ground_callback, cloud_qos)
+        self._cloud_obstacles_sub = None
+        if self.cloud_obstacles_topic:
+            self._cloud_obstacles_sub = node.create_subscription(
+                PointCloud2, self.cloud_obstacles_topic,
+                self._cloud_obstacles_callback, cloud_qos)
+        if self.cloud_ground_topic or self.cloud_obstacles_topic:
+            self._log(
+                'info',
+                f'RoomManager: floor/obstacle clouds enabled from '
+                f'{self.cloud_ground_topic}, {self.cloud_obstacles_topic}')
         self._log(
             'info',
             f'RoomManager: subscribed to {self.map_topic} (simple 2D GVD segmentation)')
@@ -312,6 +371,15 @@ class RoomManager:
         return int(round(x/grid.info.resolution)), int(round(y/grid.info.resolution))
 
     def _cloud_map_callback(self, msg: PointCloud2):
+        self._cloud_callback(msg, 'map')
+
+    def _cloud_ground_callback(self, msg: PointCloud2):
+        self._cloud_callback(msg, 'ground')
+
+    def _cloud_obstacles_callback(self, msg: PointCloud2):
+        self._cloud_callback(msg, 'obstacles')
+
+    def _cloud_callback(self, msg: PointCloud2, kind='map'):
         try:
             raw_pts = list(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True))
             if raw_pts:
@@ -324,10 +392,17 @@ class RoomManager:
 
         if points.size == 0:
             with self._lock:
-                self._latest_cloud_points = None
-                self._latest_cloud_frame = msg.header.frame_id or 'map'
-                self._latest_cloud_stamp = msg.header.stamp
-                self._latest_cloud_received_at = time.monotonic()
+                if kind == 'ground':
+                    self._latest_cloud_ground_points = None
+                    self._latest_cloud_ground_received_at = time.monotonic()
+                elif kind == 'obstacles':
+                    self._latest_cloud_obstacle_points = None
+                    self._latest_cloud_obstacle_received_at = time.monotonic()
+                else:
+                    self._latest_cloud_points = None
+                    self._latest_cloud_frame = msg.header.frame_id or 'map'
+                    self._latest_cloud_stamp = msg.header.stamp
+                    self._latest_cloud_received_at = time.monotonic()
             return
 
         if points.ndim == 1:
@@ -349,10 +424,18 @@ class RoomManager:
                 return
 
         with self._lock:
-            self._latest_cloud_points = points
-            self._latest_cloud_frame = 'map'
-            self._latest_cloud_stamp = msg.header.stamp
-            self._latest_cloud_received_at = time.monotonic()
+            received_at = time.monotonic()
+            if kind == 'ground':
+                self._latest_cloud_ground_points = points
+                self._latest_cloud_ground_received_at = received_at
+            elif kind == 'obstacles':
+                self._latest_cloud_obstacle_points = points
+                self._latest_cloud_obstacle_received_at = received_at
+            else:
+                self._latest_cloud_points = points
+                self._latest_cloud_frame = 'map'
+                self._latest_cloud_stamp = msg.header.stamp
+                self._latest_cloud_received_at = received_at
 
     # ------------------------------------------------------------------
     # Geometry helpers
@@ -505,11 +588,39 @@ class RoomManager:
         if cloud_support is not None:
             observed = self._latest_cloud_observed_mask
             if observed is not None and observed.shape == structural.shape:
-                # A 2D outline can make a bed or table look like a sparse wall network.
-                # Where the cloud actually observed the object but found no tall surface,
-                # height evidence is a veto on that purely plan-view classification.
-                structural[observed & ~cloud_support.astype(bool)] = 0
-            structural = np.maximum(structural, cloud_support.astype(np.uint8) * 255)
+                # Decide per connected 2D structure, never per cell. A wall is
+                # normally only partly observed in a depth cloud; the previous
+                # cell-wise veto punched holes through valid walls everywhere
+                # their samples missed one height band.
+                count, labels, stats, _ = cv2.connectedComponentsWithStats(
+                    (structural > 0).astype(np.uint8), 8)
+                min_support_ratio = float(self._params.get(
+                    'gvd_3d_min_support_ratio', 0.05))
+                min_nonwall_ratio = float(self._params.get(
+                    'gvd_3d_nonwall_component_ratio', 0.05))
+                min_nonwall_cells = max(1, int(self._params.get(
+                    'gvd_3d_nonwall_min_cells', 8)))
+                cloud_wall = cloud_support.astype(bool)
+                for i in range(1, count):
+                    component = labels == i
+                    area = max(1, int(stats[i, cv2.CC_STAT_AREA]))
+                    wall_ratio = np.count_nonzero(component & cloud_wall) / area
+                    nonwall_cells = np.count_nonzero(
+                        component & observed & ~cloud_wall)
+                    nonwall_ratio = nonwall_cells / area
+                    if (wall_ratio < min_support_ratio and
+                            nonwall_cells >= min_nonwall_cells and
+                            nonwall_ratio >= min_nonwall_ratio):
+                        structural[component] = 0
+
+            # cloud_support has already passed both vertical-height and
+            # plan-view wall-shape tests. Reinforce it only on cells which the
+            # occupancy map also marks occupied, never across observed free space.
+            structural[(cloud_support.astype(bool)) & (occupied > 0)] = 255
+            # Ground is used to estimate the floor datum, not as a negative
+            # obstacle vote. At a wall/floor junction both clouds legitimately
+            # occupy the same projected cell; treating ground as a veto erases
+            # real walls, especially after the support-mask dilation.
         return structural
 
     def _fill_nonstructural_obstacles(self, free, occupied, structural_occ, resolution):
@@ -590,18 +701,35 @@ class RoomManager:
             self._last_free_component_stats = {
                 'before': max(0, count-1), 'kept_label': 1 if count == 2 else 0,
                 'discarded_pixels': 0,
+                'kept_ratio': 1.0 if count == 2 else 0.0,
             }
             return free
 
         keep = 0
+        robot_label = 0
         if self.last_robot_xy is not None:
             pixel = self._world_to_grid(*self.last_robot_xy, grid)
             if pixel is not None:
                 x, y = pixel
                 if 0 <= y < labels.shape[0] and 0 <= x < labels.shape[1]:
-                    keep = int(labels[y, x])
+                    robot_label = int(labels[y, x])
+                    keep = robot_label
         if keep <= 0:
             keep = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+
+        largest_label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        robot_area = int(stats[robot_label, cv2.CC_STAT_AREA]) if robot_label > 0 else 0
+        largest_area = int(stats[largest_label, cv2.CC_STAT_AREA])
+        min_robot_ratio = float(self._params.get(
+            'gvd_min_robot_component_ratio', 0.15))
+        fallback_largest = (
+            robot_label > 0 and robot_label != largest_label and
+            robot_area < min_robot_ratio * max(1, largest_area))
+        if fallback_largest:
+            # A transient wall/door closure can isolate the robot in a tiny
+            # pocket. Using that pocket as the complete segmentation would erase
+            # every other room from the global map.
+            keep = largest_label
 
         result = np.zeros_like(free)
         result[labels == keep] = 255
@@ -610,6 +738,12 @@ class RoomManager:
             'kept_label': keep,
             'kept_pixels': int(stats[keep, cv2.CC_STAT_AREA]),
             'discarded_pixels': int(np.count_nonzero(free) - stats[keep, cv2.CC_STAT_AREA]),
+            'robot_component_pixels': robot_area,
+            'largest_component_pixels': largest_area,
+            'kept_ratio': round(
+                float(stats[keep, cv2.CC_STAT_AREA]) /
+                max(1, int(np.count_nonzero(free))), 4),
+            'fallback_largest_component': fallback_largest,
         }
         return result
 
@@ -666,6 +800,50 @@ class RoomManager:
 
         return kept
 
+    def _deduplicate_overlapping_candidates(self, candidates):
+        """Enforce one geometric region per room candidate.
+
+        Room masks are disjoint, but polygon extraction intentionally keeps only
+        the outer contour.  If a small label becomes a hole in a larger label,
+        that conversion can produce nested or duplicate polygons.  Such geometry
+        is never a valid room partition, so retain the largest candidate and drop
+        the contained/near-duplicate one before temporal tracking sees it.
+        """
+        if len(candidates) < 2:
+            return candidates
+
+        kept = []
+        removed_nested = 0
+        removed_duplicate = 0
+        for candidate in sorted(candidates, key=lambda item: float(item[1]), reverse=True):
+            polygon, area, centroid, flag = candidate
+            drop = False
+            for parent_polygon, parent_area, _, _ in kept:
+                ratio = float(area) / max(float(parent_area), 1e-6)
+                iou = self._polygon_iou(polygon, parent_polygon)
+                contained = self._point_in_polygon(parent_polygon, centroid)
+                # A valid room partition cannot contain another room polygon.  The
+                # IoU test also catches the same region emitted twice with slightly
+                # different contours.
+                if contained and ratio <= 0.50:
+                    drop = True
+                    removed_nested += 1
+                    break
+                if iou >= 0.55:
+                    drop = True
+                    removed_duplicate += 1
+                    break
+            if not drop:
+                kept.append(candidate)
+
+        self._last_overlap_cleanup_stats = {
+            'input_candidates': len(candidates),
+            'output_candidates': len(kept),
+            'removed_nested': removed_nested,
+            'removed_duplicate': removed_duplicate,
+        }
+        return kept
+
     def _detected_wall_support(self, grid):
         """Rasterise temporally confirmed depth walls as a 0..1 confidence image."""
         if not self._params.get('enable_detected_wall_support', True) or grid is None:
@@ -680,7 +858,14 @@ class RoomManager:
             'detected_wall_thickness_m', 0.12)) / max(float(grid.info.resolution), 1e-6))))
         segments = 0
         rejected = 0
+        expired = 0
+        max_age_s = float(self._params.get('detected_wall_max_age_s', 0.0))
+        now = time.time()
         for wall in self._detected_wall_map:
+            age_s = now - float(wall.get('last_seen', now))
+            if max_age_s > 0.0 and age_s > max_age_s:
+                expired += 1
+                continue
             observations = int(wall.get('observations', 1))
             if observations < min_obs:
                 continue
@@ -706,23 +891,95 @@ class RoomManager:
         self._last_detected_wall_stats = {
             'confirmed_segments': segments,
             'rejected_segments': rejected,
+            'expired_segments': expired,
             'support_cells': int(np.count_nonzero(support)),
         }
         return support
 
+    def _floor_height_from_ground(self, now_mono, max_age_s):
+        """Estimate this floor's map-frame height from ``cloud_ground``.
+
+        Using base_link.z as floor height shifts all wall-height gates by the
+        base mounting offset.  A local robust estimate also prevents points
+        belonging to another storey from winning a global median.
+        """
+        points = self._latest_cloud_ground_points
+        received_at = self._latest_cloud_ground_received_at
+        fresh = (
+            points is not None and points.shape[0] > 0 and
+            (max_age_s <= 0.0 or received_at is None or
+             now_mono - received_at <= max_age_s))
+        robot_z = self._robot_height()
+        if not fresh:
+            return robot_z, False, 0
+
+        finite = np.isfinite(points[:, 2])
+        # First isolate the robot's storey.  This remains valid when the ground
+        # cloud contains several floors projected into the same XY area.
+        finite &= np.abs(points[:, 2] - robot_z) <= 0.75
+        radius = float(self._params.get('gvd_3d_floor_radius_m', 2.0))
+        if self.last_robot_xy is not None and radius > 0.0:
+            dx = points[:, 0] - float(self.last_robot_xy[0])
+            dy = points[:, 1] - float(self.last_robot_xy[1])
+            finite &= dx * dx + dy * dy <= radius * radius
+        z = points[finite, 2]
+        min_points = max(1, int(self._params.get('gvd_3d_floor_min_points', 20)))
+        if z.size < min_points:
+            return robot_z, False, int(z.size)
+
+        # Median/MAD trimming rejects stair edges and occasional misclassified
+        # obstacle points without assuming a perfectly horizontal sensor cloud.
+        centre = float(np.median(z))
+        mad = float(np.median(np.abs(z - centre)))
+        if mad > 1e-6:
+            trimmed = z[np.abs(z - centre) <= max(0.03, 3.0 * 1.4826 * mad)]
+            if trimmed.size >= min_points:
+                centre = float(np.median(trimmed))
+        return centre, True, int(z.size)
+
     def _cloud_structural_support(self, grid):
-        points = self._latest_cloud_points
+        # The obstacle cloud is the cleanest source for vertical structure: it
+        # does not spend the point budget on the floor and therefore makes the
+        # height-band test much less sensitive to furniture/floor imbalance.
+        # Keep cloud_map as a fallback for setups where RTAB-Map does not publish
+        # cloud_obstacles continuously.
+        max_age_s = float(self._params.get('gvd_3d_max_age_s', 0.0))
+        now_mono = time.monotonic()
+        obstacle_fresh = (
+            self._latest_cloud_obstacle_points is not None and
+            (max_age_s <= 0.0 or self._latest_cloud_obstacle_received_at is None or
+             now_mono - self._latest_cloud_obstacle_received_at <= max_age_s))
+        map_fresh = (
+            self._latest_cloud_points is not None and
+            (max_age_s <= 0.0 or self._latest_cloud_received_at is None or
+             now_mono - self._latest_cloud_received_at <= max_age_s))
+        # Prefer RTAB-Map's already floor-filtered obstacle cloud. It is much
+        # less noisy than cloud_map for vertical-band classification. cloud_map
+        # remains the fallback for configurations where this topic is local or
+        # not published continuously.
+        if obstacle_fresh:
+            points = self._latest_cloud_obstacle_points
+            cloud_source = 'cloud_obstacles'
+            received_at = self._latest_cloud_obstacle_received_at
+        elif map_fresh:
+            points = self._latest_cloud_points
+            cloud_source = 'cloud_map_fallback'
+            received_at = self._latest_cloud_received_at
+        else:
+            points = None
+            cloud_source = 'none'
+            received_at = None
         if points is None or points.shape[0] == 0:
             self._latest_cloud_observed_mask = None
             self._latest_cloud_nonwall_mask = None
+            self._latest_cloud_ground_mask = None
+            self._last_3d_wall_stats = {'source': 'none', 'reason': 'no_fresh_cloud'}
             return None
         if grid is None or grid.info.resolution <= 0:
             return None
 
-        received_at = self._latest_cloud_received_at
-        max_age_s = float(self._params.get('gvd_3d_max_age_s', 0.0))
         if received_at is not None and max_age_s > 0.0:
-            age_s = time.monotonic() - received_at
+            age_s = now_mono - received_at
             if age_s > max_age_s:
                 self._latest_cloud_observed_mask = None
                 self._latest_cloud_nonwall_mask = None
@@ -749,20 +1006,59 @@ class RoomManager:
         height = int(grid.info.height)
         valid = (ix >= 0) & (iy >= 0) & (ix < width) & (iy < height)
         if not np.any(valid):
+            self._latest_cloud_observed_mask = None
+            self._latest_cloud_nonwall_mask = None
+            self._last_3d_wall_stats = {
+                'source': cloud_source, 'reason': 'cloud_outside_grid'}
             return None
 
         ix = ix[valid]
         iy = iy[valid]
         z = points[valid, 2].astype(np.float64, copy=False)
 
-        floor_z = self._robot_height()
+        floor_z, ground_fresh, ground_floor_points = self._floor_height_from_ground(
+            now_mono, max_age_s)
         relative_z = z - floor_z
+
+        # Keep a separate floor-observation mask.  It is deliberately not mixed
+        # into ``observed``: a ground return means "this is floor", whereas an
+        # obstacle return means "there is something standing here".
+        ground_points = self._latest_cloud_ground_points
+        ground_mask = np.zeros((height, width), dtype=bool)
+        if ground_fresh:
+            gxg = ground_points[:, 0] - float(origin.position.x)
+            gyg = ground_points[:, 1] - float(origin.position.y)
+            gix = np.floor((c * gxg + s * gyg) / resolution).astype(np.int64)
+            giy = np.floor((-s * gxg + c * gyg) / resolution).astype(np.int64)
+            gvalid = ((gix >= 0) & (giy >= 0) &
+                      (gix < width) & (giy < height))
+            if np.any(gvalid):
+                ground_flat = gix[gvalid] + giy[gvalid] * width
+                ground_counts = np.bincount(ground_flat, minlength=width * height)
+                ground_mask = (ground_counts >= 1).reshape((height, width))
+                dilation_px = max(0, int(self._params.get(
+                    'gvd_3d_support_dilation_px', 0)))
+                if dilation_px > 0:
+                    kernel = np.ones((2 * dilation_px + 1, 2 * dilation_px + 1),
+                                     dtype=np.uint8)
+                    ground_mask = cv2.dilate(
+                        ground_mask.astype(np.uint8), kernel, iterations=1) > 0
+        self._latest_cloud_ground_mask = ground_mask if ground_fresh else None
+
         min_height = float(self._params.get('gvd_3d_min_height_m', 0.25))
         mid_height = float(self._params.get('gvd_3d_mid_height_m', 0.80))
         high_height = float(self._params.get('gvd_3d_high_height_m', 1.40))
         max_height = float(self._params.get('gvd_3d_max_height_m', 2.20))
         floor_valid = (relative_z >= min_height) & (relative_z <= max_height)
         if not np.any(floor_valid):
+            self._latest_cloud_observed_mask = None
+            self._latest_cloud_nonwall_mask = None
+            self._last_3d_wall_stats = {
+                'source': cloud_source,
+                'floor_z': round(float(floor_z), 3),
+                'floor_points': ground_floor_points,
+                'reason': 'no_points_in_height_band',
+            }
             return None
         ix = ix[floor_valid]
         iy = iy[floor_valid]
@@ -795,14 +1091,10 @@ class RoomManager:
         support = support.reshape((height, width))
         observed = (counts >= min_points).reshape((height, width))
 
-        dilation_px = max(0, int(self._params.get('gvd_3d_support_dilation_px', 0)))
-        if dilation_px > 0 and np.any(support):
-            kernel = np.ones((2 * dilation_px + 1, 2 * dilation_px + 1), dtype=np.uint8)
-            support = cv2.dilate(support.astype(np.uint8), kernel, iterations=1) > 0
-            observed = cv2.dilate(observed.astype(np.uint8), kernel, iterations=1) > 0
-
         # Height separates walls from low furniture; plan-view shape separates walls from
-        # tall compact furniture such as wardrobes and refrigerators.
+        # tall compact furniture such as wardrobes and refrigerators. Classify
+        # BEFORE dilation: otherwise a one-cell wall becomes three cells thick
+        # and can fail its own maximum-thickness gate on coarse maps.
         count, labels, stats, _ = cv2.connectedComponentsWithStats(
             support.astype(np.uint8), 8)
         wall_support = np.zeros_like(support)
@@ -823,13 +1115,28 @@ class RoomManager:
                     (short_side <= max_thickness_px and aspect >= min_aspect) or
                     fill <= max_network_fill):
                 wall_support[labels == i] = True
+
+        dilation_px = max(0, int(self._params.get('gvd_3d_support_dilation_px', 0)))
+        if dilation_px > 0:
+            kernel = np.ones((2 * dilation_px + 1, 2 * dilation_px + 1), dtype=np.uint8)
+            if np.any(wall_support):
+                wall_support = cv2.dilate(
+                    wall_support.astype(np.uint8), kernel, iterations=1) > 0
+            if np.any(observed):
+                observed = cv2.dilate(
+                    observed.astype(np.uint8), kernel, iterations=1) > 0
         self._latest_cloud_observed_mask = observed
         self._latest_cloud_nonwall_mask = observed & ~wall_support
         self._last_3d_wall_stats = {
+            'source': cloud_source,
+            'floor_z': round(float(floor_z), 3),
+            'floor_points': ground_floor_points,
             'observed_cells': int(np.count_nonzero(observed)),
             'wall_cells': int(np.count_nonzero(wall_support)),
             'nonwall_cells': int(np.count_nonzero(observed & ~wall_support)),
         }
+        self._last_3d_wall_stats['ground_cloud_fresh'] = bool(ground_fresh)
+        self._last_3d_wall_stats['obstacle_points'] = int(points.shape[0])
         return wall_support
 
     def _compute_medial_axis(self, free_topo, structural_occupied):
@@ -1202,7 +1509,15 @@ class RoomManager:
             if narrowest is None or width_m < narrowest:
                 narrowest = width_m
 
-            if min_val > door_radius_px:
+            y, x = path[min_idx]
+            theta = float(self._branch_direction(path, min_idx))
+            wall_score = self._door_wall_support_score(
+                int(y), int(x), theta, min_val, resolution)
+            min_wall_support = float(self._params.get('detected_wall_door_min_support', 0.16))
+            wall_supported_width = (
+                wall_score >= min_wall_support and
+                width_m <= float(self._params.get('detected_wall_door_max_m', 2.0)))
+            if min_val > door_radius_px and not wall_supported_width:
                 rej["wider_than_door"] += 1
                 continue
             if min_idx < endpoint_margin_px or min_idx >= len(path)-endpoint_margin_px:
@@ -1211,14 +1526,10 @@ class RoomManager:
             if end_clearance <= 1e-6:
                 rej["no_end_clearance"] += 1
                 continue
-            y, x = path[min_idx]
-            theta = float(self._branch_direction(path, min_idx))
             base_bottleneck = (
                 min_val <= float(self._params['gvd_bottleneck_ratio']) * end_clearance)
-            wall_score = self._door_wall_support_score(
-                int(y), int(x), theta, min_val, resolution)
             wall_recovery = (
-                wall_score >= float(self._params.get('detected_wall_door_min_support', 0.16)) and
+                wall_score >= min_wall_support and
                 min_val <= float(self._params.get(
                     'detected_wall_bottleneck_ratio', 0.95)) * end_clearance)
             if not base_bottleneck and not wall_recovery:
@@ -1572,6 +1883,8 @@ class RoomManager:
                     candidates.append((polygon, polygon_area, self._centroid(polygon), False))
         merged_candidates = self._merge_nested_candidates(
             candidates, cloud_support=cloud_support, grid=grid)
+        merged_candidates = self._deduplicate_overlapping_candidates(merged_candidates)
+        overlap_stats = getattr(self, '_last_overlap_cleanup_stats', {}) or {}
         self.last_segmentation_stats = {
             'method': _method,
             'resolution_m': resolution,
@@ -1585,6 +1898,7 @@ class RoomManager:
             'polygon_candidates_before_nested_merge': len(candidates),
             'polygon_candidates_final': len(merged_candidates),
             'candidate_areas_m2': [round(float(item[1]), 3) for item in merged_candidates],
+            'overlap_cleanup': dict(overlap_stats),
             'critical_points': dict(_cstats),
             'topology_fill': dict(_fill_stats),
             'cloud_3d': dict(_wall_stats),
@@ -1619,7 +1933,7 @@ class RoomManager:
     def _partition_polygons(partition):
         return [item.polygon if isinstance(item, Region) else item[0] for item in partition]
 
-    def _partitions_compatible(self, left, right):
+    def _partitions_compatible(self, left, right, threshold=None):
         """One-to-one polygon compatibility for temporal partition hysteresis."""
         left_polys = self._partition_polygons(left)
         right_polys = self._partition_polygons(right)
@@ -1627,7 +1941,10 @@ class RoomManager:
             return False
         if not left_polys:
             return True
-        threshold = float(self._params.get('region_match_iou_min', 0.20))
+        if threshold is None:
+            threshold = float(self._params.get('region_match_iou_min', 0.20))
+        else:
+            threshold = float(threshold)
         used = set()
         for polygon in sorted(left_polys, key=self._polygon_area, reverse=True):
             choices = [(self._polygon_iou(polygon, other), i)
@@ -1645,20 +1962,25 @@ class RoomManager:
         active = [region for region in self.regions.values() if region.misses == 0]
         required = max(1, int(self._params.get(
             'room_partition_change_confirmations', 1)))
+        stable_iou = float(self._params.get(
+            'room_partition_stable_iou_min',
+            self._params.get('region_match_iou_min', 0.20)))
         base = {
             'candidate_regions': len(candidates),
             'active_regions': len(active),
             'required_confirmations': required,
         }
-        # Bootstrap and ordinary shape refinement do not need a delay.
-        if not active or self._partitions_compatible(candidates, active):
+        # Bootstrap is immediate.  A genuinely small contour refinement is also
+        # immediate; a larger geometry change, split, or merge is debounced.
+        if not active or self._partitions_compatible(candidates, active, stable_iou):
             self._pending_partition = None
             self._pending_partition_count = 0
             return True, {**base, 'accepted': True, 'confirmations': 0,
                           'reason': 'bootstrap' if not active else 'compatible_update'}
 
         if (self._pending_partition is not None and
-                self._partitions_compatible(candidates, self._pending_partition)):
+                self._partitions_compatible(candidates, self._pending_partition,
+                                             stable_iou)):
             self._pending_partition_count += 1
         else:
             self._pending_partition_count = 1
@@ -1753,6 +2075,7 @@ class RoomManager:
         self.regions = updated
 
         observed_rooms = [self.scene_graph[rid] for rid in observed_room_ids]
+        stale_rooms_retired = 0
         for room_id in list(self.scene_graph.keys()):
             if room_id in observed_room_ids:
                 self.scene_graph[room_id]['active'] = True
@@ -1761,25 +2084,20 @@ class RoomManager:
                 continue
             room = self.scene_graph[room_id]
             room['currently_detected'] = False
-            polygon = room.get('polygon', [])
-            centroid = room.get('centroid') or (self._centroid(polygon) if polygon else None)
-            # Leaving a room is not evidence that it stopped existing. Retire old geometry
-            # only if a newly observed polygon occupies the same physical area.
-            superseded = False
-            for observed in observed_rooms:
-                other = observed.get('polygon', [])
-                if len(polygon) < 3 or len(other) < 3:
-                    continue
-                other_centroid = observed.get('centroid') or self._centroid(other)
-                if (self._polygon_iou(polygon, other) >= self._params['region_match_iou_min'] or
-                        (centroid is not None and self._point_in_polygon(other, centroid)) or
-                        self._point_in_polygon(polygon, other_centroid)):
-                    superseded = True
-                    break
-            room['active'] = not superseded
-            room['retired_at'] = time.time() if superseded else None
-            if superseded and self.current_room_id == room_id:
+            # The occupancy grid is global: an accepted re-segmentation describes
+            # the current partition of the mapped floor, not only the robot's local
+            # view. Keeping old unmatched regions active caused stale bed-sized
+            # rooms and overlapping room IDs to survive indefinitely in room.json.
+            # Preserve them in the registry for history, but never expose them as
+            # current geometry or use them as assignment fallbacks.
+            was_active = bool(room.get('active', True))
+            room['active'] = False
+            room['retired_at'] = time.time() if was_active else room.get('retired_at')
+            stale_rooms_retired += int(was_active)
+            if was_active and self.current_room_id == room_id:
                 self.current_room_id = None
+
+        self.last_segmentation_stats['stale_rooms_retired'] = stale_rooms_retired
 
         return list(updated.values())
 
@@ -2201,8 +2519,15 @@ class RoomManager:
                               float(observed.get("z_max", 0.0)))
         stored["observations"] = support + 1
         stored["last_seen"] = time.time()
-        stored["n_points"] = int(observed.get("n_points", 0))
-        stored["inlier_rms_m"] = float(observed.get("inlier_rms_m", 0.0))
+        # A repeated observation can be noisier than the original fit (partial
+        # occlusion, grazing angle, or a temporarily sparse depth image).  The
+        # persistent marker is a fused wall, so one bad frame must not make an
+        # already confirmed wall fail the RMS gate and disappear from RViz.
+        stored["n_points"] = max(
+            int(stored.get("n_points", 0)), int(observed.get("n_points", 0)))
+        old_rms = float(stored.get("inlier_rms_m", float("inf")))
+        new_rms = float(observed.get("inlier_rms_m", float("inf")))
+        stored["inlier_rms_m"] = min(old_rms, new_rms)
         return True
 
     def _assign_detected_walls_to_rooms(self):
@@ -2227,6 +2552,13 @@ class RoomManager:
     def ingest_detected_walls(self, walls):
         """Fuse observations globally, then project them onto the current room partition."""
         with self._lock:
+            max_age_s = float(self._params.get('detected_wall_max_age_s', 0.0))
+            if max_age_s > 0.0:
+                now = time.time()
+                self._detected_wall_map = [
+                    wall for wall in self._detected_wall_map
+                    if now - float(wall.get('last_seen', now)) <= max_age_s
+                ]
             for observed in walls:
                 self._wall_geometry(observed)
                 if not any(self._merge_detected_wall(old, observed)
@@ -2257,9 +2589,14 @@ class RoomManager:
         min_length = float(self._params.get('detected_wall_min_length_m', 1.50))
         min_vertical = float(self._params.get('detected_wall_min_vertical_extent_m', 1.20))
         max_rms = float(self._params.get('detected_wall_max_rms_m', 0.03))
+        max_age_s = float(self._params.get('detected_wall_max_age_s', 0.0))
+        now = time.time()
         for wall in self._detected_wall_map:
             observations = max(1, int(wall.get("observations", 1)))
             if observations < min_obs:
+                continue
+            if (max_age_s > 0.0 and
+                    now - float(wall.get('last_seen', now)) > max_age_s):
                 continue
             try:
                 p0, p1, _, length = self._wall_geometry(wall)

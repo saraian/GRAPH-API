@@ -111,7 +111,11 @@ DESCRIPTION_FIELDS = ("description", "color", "material", "shape")
 
 # WN1. Where the latency record lives -- the same two paths detection_pipeline writes, kept
 # as one constant so the cycle-time stamp and the detection-span stamp land in one file.
-LATENCY_JSON_PATHS = ("/tmp/perception_latencies.json", "/ws/output/perception_latencies.json")
+_METRICS_OUTPUT_ROOT = os.environ.get("GRAPH_API_OUTPUT_DIR", "/root/exchange/output")
+LATENCY_JSON_PATHS = (
+    "/tmp/perception_latencies.json",
+    os.path.join(_METRICS_OUTPUT_ROOT, "perception_latencies.json"),
+)
 # GA-334. The per-cycle series beside the snapshot: one JSON line per completed cycle, the
 # snapshot's keys plus `t`, `cycle`, `frame_id`, `n_detections`. graph_api_bridge._cycle_seq
 # counts its lines as the cycle number; until 2026-09-07 nothing wrote it.

@@ -78,12 +78,21 @@ rooms:
   gvd_3d_required_height_bands: 2
   gvd_3d_min_points_per_band: 1
   gvd_3d_max_age_s: 15.0
+  # Estimate map-frame floor z from nearby /rtabmap/cloud_ground points.
+  # This avoids using the base_link mounting height as if it were the floor.
+  gvd_3d_floor_radius_m: 2.0
+  gvd_3d_floor_min_points: 20
   gvd_3d_support_dilation_px: 1
-  # Use only stable, wall-scale surfaces to support an existing GVD doorway hypothesis.
-  # Direct obstacle reinforcement is deliberately off: tall furniture can also be planar.
+  # Use stable, wall-scale depth surfaces as structural evidence.  The detector
+  # already requires wall height/length and the room manager also checks RMS.
+  # Confirmed segments therefore reinforce the occupancy topology instead of
+  # being used only as a doorway hint.
   enable_detected_wall_support: true
-  detected_wall_reinforce_obstacles: false
+  detected_wall_reinforce_obstacles: true
   detected_wall_min_observations: 1
+  # RTAB-Map loop closures can move map-frame geometry. Re-observe old wall
+  # segments instead of letting a stale/false line constrain rooms forever.
+  detected_wall_max_age_s: 300.0
   detected_wall_min_length_m: 1.50
   detected_wall_min_vertical_extent_m: 1.20
   detected_wall_max_rms_m: 0.03
@@ -93,23 +102,33 @@ rooms:
   detected_wall_thickness_m: 0.12
   detected_wall_door_endpoint_radius_m: 0.20
   detected_wall_door_min_support: 0.16
+  detected_wall_door_max_m: 2.00
   detected_wall_bottleneck_ratio: 0.90
   gvd_wall_network_max_fill_ratio: 0.35
-  gvd_3d_nonwall_component_ratio: 0.05
+  # Compact furniture (beds/sofas/tables) is not a room boundary.  Keep it out
+  # of the GVD topology even when the 3D cloud is temporarily sparse.
+  gvd_topo_fill_max_area_m2: 20.0
+  room_nested_merge_max_area_m2: 8.0
+  room_nested_merge_area_ratio: 0.30
+  gvd_3d_nonwall_component_ratio: 0.01
+  # Sparse depth evidence must abstain: at least this many projected cells
+  # are required before 3D may veto a 2D structural component.
+  gvd_3d_nonwall_min_cells: 8
   gvd_door_nms_m: 1.20
   gvd_critical_endpoint_margin_m: 0.20
   min_room_area_m2: 1.5
-  # A split/merge or incompatible replacement must persist across this many map updates.
-  # Compatible boundary refinements still apply immediately.
-  room_partition_change_confirmations: 1
+  # A split/merge or large boundary change must persist across several map updates.
+  room_partition_change_confirmations: 3
+  room_partition_stable_iou_min: 0.65
+  gvd_min_robot_component_ratio: 0.15
 
 habitat:
   localization_mode: rtabmap  # rtabmap | ground_truth
-  scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb
+  scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
   scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb
+  nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
   nav_scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00808-y9hTuugGdiq/y9hTuugGdiq.basis.navmesh
+  nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.navmesh
   # keep the simulated agent on the floor it starts on: the 2D grid cannot separate
   # storeys and HM3D navmeshes join them through the stairs (goal filter on height)
   single_floor: true

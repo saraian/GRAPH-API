@@ -198,6 +198,15 @@ def fuse_orientation(obj, bbox):
         prior = getattr(obj, "bbox", None) if obj is not None else None
         if _is_oriented(prior):
             acc = _acc_add(acc, prior)
+            # _acc_add only updates the axial statistics.  The representative
+            # measured box must be initialized separately; otherwise a later
+            # yaw-less view leaves n > 0 with view == None and the code below
+            # dereferences None.
+            acc["view"] = {
+                "yaw": float(prior["yaw"]),
+                "oriented_center": [float(v) for v in prior["oriented_center"]],
+                "oriented_extents": [float(v) for v in prior["oriented_extents"]],
+            }
     out = dict(bbox)
     if _is_oriented(bbox):
         acc = _acc_add(acc, bbox)
@@ -205,6 +214,23 @@ def fuse_orientation(obj, bbox):
         acc = dict(acc)
     if acc["n"] == 0:
         return out, acc
+    # Be defensive with accumulators written by older code or restored from a
+    # partially persisted object.  An orientation count without a representative
+    # view is not enough to reconstruct the oriented center/extents.
+    if acc.get("view") is None:
+        prior = getattr(obj, "bbox", None) if obj is not None else None
+        if _is_oriented(prior):
+            acc["view"] = {
+                "yaw": float(prior["yaw"]),
+                "oriented_center": [float(v) for v in prior["oriented_center"]],
+                "oriented_extents": [float(v) for v in prior["oriented_extents"]],
+            }
+        elif not _is_oriented(bbox):
+            # Keep the AABB update, but do not manufacture oriented geometry.
+            acc["n"] = 0
+            acc["c"] = 0.0
+            acc["s"] = 0.0
+            return out, acc
     fused = 0.5 * math.atan2(acc["s"], acc["c"])
     view = acc["view"]
     if _is_oriented(bbox) and (view is None

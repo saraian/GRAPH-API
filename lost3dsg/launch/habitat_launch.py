@@ -48,10 +48,11 @@ from launch.actions import (
     ExecuteProcess,
     TimerAction,
     DeclareLaunchArgument,
+    SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration, PythonExpression, PathJoinSubstitution
 from launch_ros.actions import Node
 
 
@@ -62,9 +63,7 @@ def generate_launch_description():
     # ------------------------------------------------------------
     graph_api_bridge_dir_arg = DeclareLaunchArgument(
         'graph_api_bridge_dir',
-        default_value=os.path.expanduser(
-            '~/exchange/lost3dsg/src/perception_module'
-        ),
+        default_value='/root/exchange/lost3dsg/src/perception_module',
         description="Cartella contenente graph_api_bridge.py",
     )
 
@@ -78,6 +77,18 @@ def generate_launch_description():
         'use_wall_detector',
         default_value='false',
         description="Avvia wall_detector.py se true",
+    )
+
+    collect_metrics_arg = DeclareLaunchArgument(
+        'collect_metrics',
+        default_value='true',
+        description='Raccoglie e salva automaticamente le metriche operative alla chiusura',
+    )
+
+    metrics_output_dir_arg = DeclareLaunchArgument(
+        'metrics_output_dir',
+        default_value='/root/exchange/output',
+        description='Directory condivisa degli artefatti e del report operativo',
     )
 
     perception_delay_arg = DeclareLaunchArgument(
@@ -115,6 +126,8 @@ def generate_launch_description():
     graph_api_bridge_dir = LaunchConfiguration('graph_api_bridge_dir')
     use_rviz = LaunchConfiguration('use_rviz')
     use_wall_detector = LaunchConfiguration('use_wall_detector')
+    collect_metrics = LaunchConfiguration('collect_metrics')
+    metrics_output_dir = LaunchConfiguration('metrics_output_dir')
     perception_delay = LaunchConfiguration('perception_delay')
     bridge_delay = LaunchConfiguration('bridge_delay')
     rtabmap_output = LaunchConfiguration('rtabmap_output')
@@ -195,6 +208,20 @@ def generate_launch_description():
         name='graph_api_bridge',
     )
 
+    metrics_collector = ExecuteProcess(
+        cmd=[
+            'python3', 'habitat_metrics_collector.py',
+            '--run-dir', metrics_output_dir,
+            '--output', PathJoinSubstitution([
+                metrics_output_dir, 'risultati_operativi.json'
+            ]),
+        ],
+        cwd=graph_api_bridge_dir,
+        output='screen',
+        name='habitat_metrics_collector',
+        condition=IfCondition(collect_metrics),
+    )
+
     # ------------------------------------------------------------
     # 4) rviz2
     # ------------------------------------------------------------
@@ -229,9 +256,13 @@ def generate_launch_description():
         graph_api_bridge_dir_arg,
         use_rviz_arg,
         use_wall_detector_arg,
+        collect_metrics_arg,
+        metrics_output_dir_arg,
         perception_delay_arg,
         bridge_delay_arg,
         rtabmap_output_arg,
+        SetEnvironmentVariable('GRAPH_API_OUTPUT_DIR', metrics_output_dir),
+        metrics_collector,
         rtabmap_launch,
         delayed_perception,
         delayed_bridge,

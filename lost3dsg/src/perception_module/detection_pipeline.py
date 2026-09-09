@@ -289,7 +289,10 @@ class DetectionPipelineMixin:
         self.latest_latencies = latencies
         try:
             import json
-            for target_path in ("/tmp/perception_latencies.json", "/ws/output/perception_latencies.json"):
+            metrics_root = os.environ.get("GRAPH_API_OUTPUT_DIR", "/root/exchange/output")
+            for target_path in (
+                    "/tmp/perception_latencies.json",
+                    os.path.join(metrics_root, "perception_latencies.json")):
                 try:
                     os.makedirs(os.path.dirname(target_path), exist_ok=True)
                     with open(target_path, "w") as f:
