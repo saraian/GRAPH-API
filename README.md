@@ -150,7 +150,7 @@ are loaded by dotted path from config; this tree never imports the package.
 ```yaml
 hooks:
   search_paths: ["/path/to/extension"]
-  filter:  "found.filter:OntologicalFilter"   # per-proposal admission: ADMIT / REJECT / ABSTAIN
+  filter:  "<pkg>.filter:<Class>"            # per-proposal admission: ADMIT / REJECT / ABSTAIN
   refiner: "pkg.module:ClassName"            # second look at a node + neighbours (default: none)
   store:   "pkg.module:ClassName"            # persistence adapter (default: SQLite temporal map)
 ```

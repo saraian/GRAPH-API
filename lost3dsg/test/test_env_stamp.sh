@@ -184,3 +184,9 @@ _ovr=$(RUN_TIMESTAMP=t SCENE_ARG=s OUT_DIR=/tmp/explicit bash -c \
 [ "$_ovr" = "/tmp/explicit" ] || fail "an explicit OUT_DIR must override the default, got '$_ovr'"
 
 echo "test_env_stamp.sh: OK (parse, cache layouts, ORDERING, JSON validity, keys kept, provenance) | $(date -Iseconds)"
+
+# THE BOUNDARY, CHECKED. A ruling with no check is a preference: the 2026-08-28 ruling that this
+# launcher names nothing of an extension's survived eleven days and reversed itself into 112
+# references, which then reached this repository through an ordinary merge.
+python3 "$HERE/check_no_extension_refs.py" \
+  || fail "this repository names a package that extends it; move it behind the EXT_* seam"

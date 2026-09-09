@@ -636,8 +636,8 @@ def graph_data(request: Request = None):
         return {
             "entity": entity,
             # The IRI the ALIGNER recorded, never one built from the label. It exists
-            # only inside its own evidence string ("... -> Bed
-            # (https://w3id.org/parsec/found/home#Bed)"), so it is extracted from there
+            # only inside its own evidence string ("... -> Bed (<the aligner's own IRI>)"),
+            # so it is extracted from there
             # and then checked: the fragment must match the entity the aligner settled
             # on. Constructing `home#<label>` instead would mint a plausible IRI for
             # every object including ones the aligner declined -- the fake ontology

@@ -46,7 +46,7 @@ habitat:
 
 hooks:
   search_paths: ["/found"]
-  filter: "found.filter:OntologicalFilter"
+  filter: ""   # no extension in the smoke config: this repository ships none
 
 perception:
   backend: "modal"
