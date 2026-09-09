@@ -1,4 +1,4 @@
-"""Perception Backend Adapters for Local and Cloud Inference.
+"""Segmentation backend adapters for local and cloud inference.
 
 Provides unified interface for:
 1. Modal Serverless GPU Endpoint (`ModalPerceptionBackend`)
@@ -79,14 +79,12 @@ class PerceptionBackend(ABC):
         pass
 
     @abstractmethod
-    def detect_and_segment(
+    def segment_scene(
         self,
         rgb_image: np.ndarray,
-        labels: List[str],
-        score_threshold: float = 0.15,
-        nms_threshold: float = 0.50,
+        scene_objects: List[Any],
     ) -> Tuple[List[Detection], Dict[str, float]]:
-        """Run open-vocab detection, segmentation, and crop embeddings.
+        """Segment the boxes supplied by the whole-scene VLM response.
 
         Returns:
             (detections_list, timing_breakdown_dict)
@@ -104,7 +102,7 @@ class ModalPerceptionBackend(PerceptionBackend):
     #
     # Those seven are a `curl` GET against the endpoint — a request that carries no
     # payload and asks for no inference. The call this timeout governs sends an image
-    # and waits for detection and segmentation. They are not the same distribution, and
+    # and waits for segmentation. They are not the same distribution, and
     # 60.0 has since been exceeded TWICE on the inference path.
     #
     # 60.0 stands because two exceedances are not a distribution and no measured
@@ -136,7 +134,7 @@ class ModalPerceptionBackend(PerceptionBackend):
         connect and 0.34 s to finish TLS before the first byte moves; the same request on
         an already-open connection answers in 0.15 s. urlopen opened a new connection per
         cycle, so every cycle paid ~0.35 s for nothing. The server is unchanged and the
-        bytes on the wire are the same, so the detections are the same.
+        bytes on the wire are the same, so the segmentation result is the same.
 
         A keep-alive connection can be closed by the far side while the client idles
         between cycles; that surfaces as RemoteDisconnected / BadStatusLine / a reset on
@@ -200,67 +198,37 @@ class ModalPerceptionBackend(PerceptionBackend):
             self.last_health = {"reachable": False, "error": str(exc)}
             return self.last_health
 
-    def detect_and_segment(
+    def segment_scene(
         self,
         rgb_image: np.ndarray,
-        labels: List[str],
-        score_threshold: float = 0.15,
-        nms_threshold: float = 0.50,
-        containment_threshold: float = None,
+        scene_objects: List[Any],
     ) -> Tuple[List[Detection], Dict[str, float]]:
-        if not labels:
+        if not scene_objects:
             return [], {}
 
-        # GA-286. Defaulted from config rather than in the signature, so the LOCAL path
-        # (utils.apply_nms) and the CLOUD path read the same number from the same place. Two
-        # NMS implementations disagreeing about what counts as a duplicate is a defect
-        # waiting to happen, and this one already happened once in the other direction: the
-        # containment fix went into the local path only and was inert for every cloud run.
-        if containment_threshold is None:
-            try:
-                from config import CFG
-                containment_threshold = float(
-                    (CFG.get("perception", {}) or {}).get("containment_threshold", 0.85))
-            except Exception:
-                containment_threshold = 0.85
-
         t_encode = time.time()
-        # 1. Encode image to JPEG base64
-        # GA-13: this applied COLOR_RGB2BGR before encoding. The array is ALREADY BGR —
-        # utils.py:161 asks cv_bridge for 'bgr8' — and imencode expects BGR, so the
-        # conversion swapped red and blue in every JPEG sent to the cloud, and every
-        # VLM label and embedding from that path was computed on a colour-swapped
-        # image. The parameter is named `rgb_image` and the dict key is "rgb"; neither
-        # is. The names are what misled the author, and renaming them is a separate
-        # change across three files.
-        # GA-278. DOWNSCALE BEFORE THE WIRE. Measured 2026-09-02 against this endpoint:
-        # the request is BANDWIDTH-bound, not latency-bound, up to a floor around 1.76 s --
-        # 1280x960 (180 KB) took 2820 ms, 960x720 (87 KB) took 1793 ms, and 640x480 (46 KB)
-        # took 1759 ms. So 0.75x captures the whole saving and going smaller buys 34 ms.
-        #
-        # THE QUALITY COST, MEASURED RATHER THAN ASSUMED. One frame showed 6 detections at
-        # full and 4 at 0.75x, which looked like a third of them lost. Across SIX frames it
-        # is 45 vs 43 (-4%) for -21% request time, and two frames GAINED detections at the
-        # smaller size (6->8, 3->5). The per-frame variance is larger than the difference,
-        # so this is noise, not a systematic loss -- but n=6, and it is a trade, not a
-        # free win. `cloud.send_scale: 1.0` restores the previous behaviour exactly.
-        #
-        # The backend resizes to its models' native inputs anyway (OWLv2 960x960, SAM
-        # 1024x1024), so the pixels dropped here were being discarded server-side.
+        # Encode the image and transform the VLM boxes into the transmitted image's
+        # coordinates. Returned Detection objects retain the original boxes verbatim.
         try:
             from config import CFG
             _scale = float((CFG.get("cloud", {}) or {}).get("send_scale", 0.75))
         except Exception:
             _scale = 0.75
         _orig_h, _orig_w = rgb_image.shape[:2]
-        _sent_scale = 1.0
         if 0.1 < _scale < 0.999:
             rgb_image = cv2.resize(rgb_image, (int(_orig_w * _scale), int(_orig_h * _scale)),
                                    interpolation=cv2.INTER_AREA)
-            # The ACTUAL scale, recomputed from the integer size the resize produced. Using
-            # the requested float instead would drift by up to a pixel per axis, and that
-            # error lands straight in the 3D projection.
-            _sent_scale = rgb_image.shape[1] / float(_orig_w)
+        scale_x = rgb_image.shape[1] / float(_orig_w)
+        scale_y = rgb_image.shape[0] / float(_orig_h)
+        wire_boxes = [
+            [
+                float(scene_object.bbox[0]) * scale_x,
+                float(scene_object.bbox[1]) * scale_y,
+                float(scene_object.bbox[2]) * scale_x,
+                float(scene_object.bbox[3]) * scale_y,
+            ]
+            for scene_object in scene_objects
+        ]
         success, buffer = cv2.imencode(".jpg", rgb_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not success:
             raise ValueError("Failed to encode RGB frame to JPEG")
@@ -268,21 +236,7 @@ class ModalPerceptionBackend(PerceptionBackend):
 
         payload = {
             "image_b64": b64_image,
-            "labels": labels,
-            "score_threshold": score_threshold,
-            "nms_threshold": nms_threshold,
-            # GA-286. SENT EXPLICITLY. Without this the server's own default governs, and the
-            # bundle's config would record a containment threshold the run did not use -- the
-            # same shape as the corpus_order field that recorded an order no run applied.
-            #
-            # INERT UNTIL MODAL IS REDEPLOYED, and that is measured, not assumed: the deployed
-            # PerceptionRequest does not declare this field, so pydantic IGNORES it. Verified
-            # 2026-09-03 against the live endpoint -- requests with and without it both
-            # succeed and return the same detections. So sending it is SAFE now and takes
-            # effect only when modal_perception.py is redeployed. Until then the cloud path
-            # runs plain IoU NMS and nested duplicates survive; the LOCAL path (utils.apply_nms)
-            # already suppresses them.
-            "containment_threshold": containment_threshold,
+            "boxes": wire_boxes,
         }
 
         # 2. Call Modal predict endpoint
@@ -308,7 +262,7 @@ class ModalPerceptionBackend(PerceptionBackend):
         except Exception as exc:
             waited = time.time() - t_request
             note = (f"{exc} [perception request waited {waited:.1f}s of a "
-                    f"{self.timeout_seconds:.1f}s timeout, {len(labels)} labels, "
+                    f"{self.timeout_seconds:.1f}s timeout, {len(scene_objects)} boxes, "
                     f"{len(req_data) / 1024:.0f} KiB payload]")
             try:
                 enriched = type(exc)(note)
@@ -320,29 +274,34 @@ class ModalPerceptionBackend(PerceptionBackend):
                 raise RuntimeError(note) from exc
             raise enriched from exc
 
+        segments = result.get("segments")
+        if not isinstance(segments, list) or len(segments) != len(scene_objects):
+            returned = len(segments) if isinstance(segments, list) else "an invalid response"
+            raise RuntimeError(
+                f"segmentation backend returned {returned} for "
+                f"{len(scene_objects)} VLM boxes"
+            )
+        segments_by_index = {item.get("index"): item for item in segments}
+        expected_indices = set(range(len(scene_objects)))
+        if set(segments_by_index) != expected_indices:
+            raise RuntimeError("segmentation backend returned missing or duplicate box indices")
+
         detections = []
-        # BACK TO THE ORIGINAL FRAME. The backend answered in the coordinates of the image
-        # it was SENT. Everything downstream -- crop construction, the segmentation overlay,
-        # and the 3D projection through the full-resolution camera intrinsics -- works in
-        # the ORIGINAL frame. Returning a 0.75x box unscaled would shrink every object by a
-        # third and shift its centroid, silently, in a way no gate could detect: the boxes
-        # would still be plausible boxes, just of the wrong things in the wrong places.
-        _inv = 1.0 / _sent_scale if _sent_scale else 1.0
-        for item in result.get("detections", []):
+        for index, scene_object in enumerate(scene_objects):
+            item = segments_by_index[index]
             mask_np = rle_decode(item["mask_rle"])
-            if _sent_scale != 1.0:
-                bx = [float(v) * _inv for v in item["bbox"]]
-                # INTER_NEAREST: a mask is a label field, not an image. Interpolating it
-                # would invent fractional membership at every boundary pixel.
+            if mask_np.shape != (_orig_h, _orig_w):
                 mask_np = cv2.resize(mask_np.astype("uint8"), (_orig_w, _orig_h),
                                      interpolation=cv2.INTER_NEAREST)
-            else:
-                bx = [float(v) for v in item["bbox"]]
             det = Detection(
-                bbox=tuple(bx),
-                label=item["label"],
-                score=float(item["score"]),
+                bbox=tuple(scene_object.bbox),
+                label=scene_object.label,
+                score=None,
                 mask=mask_np[..., None],
+                description=scene_object.description,
+                color=scene_object.color,
+                material=scene_object.material,
+                shape=scene_object.shape,
             )
             det.clip_embedding = item.get("clip_embedding")
             detections.append(det)
@@ -380,7 +339,7 @@ class ModalPerceptionBackend(PerceptionBackend):
             "request_ms": round((time.time() - t_request) * 1000.0, 1),
             "payload_bytes": len(req_data),
             "response_bytes": len(raw),
-            "labels": len(labels),
+            "boxes": len(scene_objects),
         }
         return detections, timings
 
@@ -399,12 +358,10 @@ class ManagedPerceptionBackend(PerceptionBackend):
             "has_api_key": bool(self.api_key),
         }
 
-    def detect_and_segment(
+    def segment_scene(
         self,
         rgb_image: np.ndarray,
-        labels: List[str],
-        score_threshold: float = 0.15,
-        nms_threshold: float = 0.50,
+        scene_objects: List[Any],
     ) -> Tuple[List[Detection], Dict[str, float]]:
         t_start = time.time()
         if not self.api_key:
@@ -413,35 +370,31 @@ class ManagedPerceptionBackend(PerceptionBackend):
         # GA-19. The `fal` branch used to pay for a real Florence-2 grounding call
         # (`fal_client.subscribe`), bind the answer to `_res` and return `[]` -- a paid
         # request whose result was thrown away, read downstream as an empty scene. No
-        # provider has a parser yet, so no provider may place a call: refuse before the
-        # network, not after. Wiring one needs the provider's box/label envelope parsed
-        # into `Detection` AND a mask source (Florence-2 grounding returns boxes only).
+        # provider has a box-conditioned mask endpoint yet, so no provider may place a
+        # call: refuse before the network rather than substitute another detector.
         del t_start
         raise NotImplementedError(
-            f"managed perception provider '{self.provider}' has no response parser; "
+            f"managed perception provider '{self.provider}' cannot segment supplied boxes; "
             "set perception.backend to 'modal' or 'local'"
         )
 
 
 class LocalPerceptionBackend(PerceptionBackend):
-    """Wraps local onboard PyTorch models (OWLv2 + VitSam)."""
+    """Marker for VitSAM segmentation in the perception process."""
 
     def health(self) -> Dict[str, Any]:
         # GA-19. `models_loaded` was computed from constructor arguments the only
         # construction site (get_perception_backend) never passed, so it read False by
-        # accident. It IS False: this backend holds no models -- detect_and_segment is a
+        # accident. It IS False: this backend holds no models -- segment_scene is a
         # stub, and test/preflight_gate.py refuses it by class name.
         return {"reachable": True, "type": "local", "models_loaded": False}
 
-    def detect_and_segment(
+    def segment_scene(
         self,
         rgb_image: np.ndarray,
-        labels: List[str],
-        score_threshold: float = 0.15,
-        nms_threshold: float = 0.50,
+        scene_objects: List[Any],
     ) -> Tuple[List[Detection], Dict[str, float]]:
-        # Handled in-line by standard detection_pipeline.py methods
-        return [], {}
+        raise RuntimeError("local segmentation is handled by DetectionPipelineMixin")
 
 
 def get_perception_backend(cfg: Dict[str, Any]) -> PerceptionBackend:
@@ -470,9 +423,8 @@ def get_perception_backend(cfg: Dict[str, Any]) -> PerceptionBackend:
         return ManagedPerceptionBackend(provider=provider)
     elif backend_type == "local":
         return LocalPerceptionBackend()
-    # GA-19. Any other string used to fall through to the local stub, whose
-    # detect_and_segment is `return [], {}` -- so a typo in perception.backend produced
-    # an empty scene that read as "nothing was there". Working rule 14: refuse.
+    # GA-19. Any other string used to fall through to the local marker and produce
+    # an empty scene that read as "nothing was there". Refuse unknown backends.
     raise ValueError(
         f"perception.backend={backend_type!r} is not one of "
         "'modal', 'local', 'managed', 'fal', 'replicate'"

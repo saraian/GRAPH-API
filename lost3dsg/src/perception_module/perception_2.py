@@ -70,7 +70,7 @@ from cv_utils import (  # noqa: E402
 )
 from detection_pipeline import DetectionPipelineMixin  # noqa: E402
 from input_output import PerceptionIOMixin  # noqa: E402
-from models import OWLv2, VitSam  # noqa: E402
+from models import VitSam  # noqa: E402
 from object_info import Object  # noqa: E402
 from perception_utils import compute_fov_volume_from_depth, get_project_root  # noqa: E402
 from tf_transformations import euler_from_quaternion, quaternion_inverse, quaternion_multiply  # noqa: E402
@@ -235,8 +235,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.perception_backend = get_perception_backend(CFG)
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
         if backend_type == "local":
-            self.detector = OWLv2()
+            # The unified VLM response supplies the 2D boxes, so this path does
+            # not need to load a separate OWLv2 detector.
+            self.detector = None
             self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
+            self.file_logger.info("Using unified whole-scene VLM boxes with local VitSAM")
         else:
             self.detector = None
             self.vitsam = None
@@ -777,7 +780,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         _mark("archive")
         self._attach_crop_embeddings(detections, crops_data)
         _mark("embeddings")
-        vlm_results = self._run_crop_vlm_batch(crops_data)
+        # All perception backends consume the same whole-frame VLM reply. Reuse its
+        # attributes here so the VLM workflow remains one request regardless of where
+        # detection and segmentation are supplied.
+        vlm_results = self._unified_scene_description_results(detections)
         descriptions = self._build_descriptions(detections, vlm_results, crops_data)
         _mark("describer_queue")
         self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp)
@@ -1120,6 +1126,25 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
         self.log_both("info", f"[VLM] queued {len(valid_crops)} crop(s), "
                               f"{len(results)} landed, {len(self._vlm_pending)} in flight")
+        return results
+
+    def _unified_scene_description_results(self, detections):
+        """Adapt same-call scene attributes to the existing description seam."""
+        results = {}
+        model = CFG.get("vlm", {}).get("model", "unknown")
+        unknown = {"", "unknown", "none", "n/a"}
+        for det in detections:
+            values = {
+                field: str(getattr(det, field, "unknown") or "unknown")
+                for field in DESCRIPTION_FIELDS
+            }
+            has_answer = any(value.strip().lower() not in unknown for value in values.values())
+            values["provenance"] = {
+                "model": model,
+                "status": "ok" if has_answer else "model_abstained",
+                "source": "unified_scene_call",
+            }
+            results[det.instance_label] = values
         return results
 
     def _vlm_remember_origin(self, crop):

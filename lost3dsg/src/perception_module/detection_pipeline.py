@@ -8,7 +8,6 @@ import torch
 from config import CFG
 from cv_utils import _apply_transform, _filter_object_points
 from detection_types import Detection
-from utils import apply_nms
 
 
 def mask_touches_border(mask, margin_px=2):
@@ -121,119 +120,69 @@ class DetectionPipelineMixin:
         if self._abort_if_moving("detection startup"):
             return []
 
-        t0 = time.time()
-        labels = self._extract_detection_labels(camera_data["rgb"])
-        t_vlm = time.time() - t0
-        if not labels:
-            return []
-
         # None on the local path, and None is the honest value there: a local backend makes
         # no request, so there is no wire time to report. 0.0 would read as "measured zero".
         client_timings = None
         backend = getattr(self, "perception_backend", None)
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
-        if backend and backend_type != "local":
+
+        t0 = time.time()
+        # Scene analysis is a VLM operation, independent of where detection and
+        # segmentation run. Every perception backend therefore starts from the same
+        # single structured VLM response rather than selecting a VLM workflow by
+        # backend type.
+        scene_objects = self._extract_scene_objects(camera_data["rgb"])
+        if not scene_objects:
+            return []
+        t_vlm = time.time() - t0
+
+        if backend_type != "local":
+            if backend is None:
+                raise RuntimeError(
+                    f"perception backend {backend_type!r} was selected but no backend was constructed"
+                )
             t0 = time.time()
-            detections, cloud_timings = backend.detect_and_segment(
-                camera_data["rgb"],
-                labels,
-                score_threshold=CFG.get("perception", {}).get("score_threshold", 0.15),
-                nms_threshold=CFG.get("perception", {}).get("nms_threshold", 0.50),
-            )
+            detections, cloud_timings = backend.segment_scene(
+                camera_data["rgb"], scene_objects)
             t_cloud = time.time() - t0
             client_timings = cloud_timings.get("client")
-            # GA-14: these defaulted to 40% of the wall clock, a constant 10 ms, and 50%
-            # of the wall clock — three invented numbers written into the same record as
-            # real measurements, where the fractions even sum to 0.9. A missing stage
-            # timing is a broken contract with the perception service, not a value to
-            # guess, and a measurement path is where a silent estimate does most damage.
-            #
-            # SETTLED by the raise below, run 15, first cycle: the server emits
-            # `detector`, `sam2` and `total`. The two checkouts disagreed on these names
-            # and nothing on disk said which was right, so this read THIS tree's names
-            # and put `sorted(cloud_timings)` in the error. The first mismatch then named
-            # the truth on its first occurrence rather than being papered over by an
-            # estimate — which is what the message is for, and it is the only reason the
-            # question is now answered instead of guessed.
-            # This return used to sit AFTER the stage-timing check below, and that order
-            # killed run 19 on its fourth cycle. When the detector finds nothing the server
-            # returns early and SAM never runs, so there IS no `sam2` stage to report — the
-            # check demanded a measurement of work that was not done. Zero detections is a
-            # result, not a contract violation, and the run must not die on one.
-            #
-            # The reported keys go in the log line because they are the discriminant. Run 19
-            # reported ['total', 'yolo_world'] here while its three earlier cycles reported
-            # detector/sam2 on the non-empty path — the deployed Modal build names the empty
-            # path's detector timing `yolo_world`, which `modal_perception.py:188` renames to
-            # `detector` ("same key as the non-empty path") in a build that is not deployed.
-            # Reading no key on this path makes the client correct under BOTH builds, so no
-            # redeploy is needed; without the log line the next skew is invisible again.
-            #
-            # NO stage timing is recorded for this cycle. GA-14's rule is unchanged: a value
-            # that is not a measurement must not sit where measurements live, and that holds
-            # for a cycle with nothing to measure as much as for one with a missing number.
             if len(detections) == 0:
-                self.log_both("info", "Cloud perception backend found no objects "
-                                      f"(reported timing keys: {sorted(cloud_timings)})")
-                return []
-            # Detections WITHOUT stage timings is the genuine contract violation and still
-            # raises: the server did the work and did not say what it cost.
-            missing = [k for k in ("detector", "sam2") if k not in cloud_timings]
+                raise RuntimeError(
+                    "segmentation backend returned no masks for a non-empty VLM scene"
+                )
+            # Masks without a segmentation timing are a broken backend contract. There
+            # is deliberately no detector timing: the VLM supplied the only boxes.
+            missing = [k for k in ("sam2",) if k not in cloud_timings]
             if missing:
                 raise RuntimeError(
                     f"perception backend returned no timing for {missing}; refusing to "
                     f"estimate it from the wall clock "
                     f"(reported keys: {sorted(cloud_timings)})"
                 )
-            t_owlv2 = cloud_timings["detector"] / 1000.0   # output field stays owlv2_ms
-            # NMS does NOT raise: on this backend it runs inside the detector and is never
-            # reported separately, so 0.0 is the correct value. But 0.0 alone means BOTH
-            # "measured as zero" and "not reported", and a reader cannot tell them apart —
-            # so which one it is is recorded as its own key. Additive, because three
-            # consumers read this record by key.
-            nms_reported = "nms" in cloud_timings
-            t_nms = cloud_timings.get("nms", 0.0) / 1000.0
-            t_sam = cloud_timings["sam2"] / 1000.0         # output field stays sam_ms
-            # The unattributed majority of a cloud cycle lives here, and it was invisible
-            # while the three stage timings above were invented: those are the SERVER's
-            # numbers, t_cloud is the wall clock, and nobody recorded the difference. On
-            # the 26 Aug run the stages summed to 328 ms of a 1,288 ms median cycle; the
-            # missing 857 ms was never a slow function, it was this subtraction. Keep
-            # both — the server times say what compute cost, the remainder says what the
-            # round trip cost, and only the second responds to moving the backend.
+            t_owlv2 = 0.0
+            t_nms = 0.0
+            nms_reported = False
+            t_sam = cloud_timings["sam2"] / 1000.0
             t_backend_overhead = max(0.0, t_cloud - (t_owlv2 + t_nms + t_sam))
-            # The server also reports `total`, which splits that remainder in two: what
-            # the server spent outside the three stages, and what the wire cost. Ours
-            # minus theirs is network and serialisation; only that half responds to
-            # moving the backend. Recorded as None rather than 0.0 when the server does
-            # not report `total`, with a flag beside it, because a 0.0 there would mean
-            # both "no wire time" and "not reported" — the ambiguity this file just
-            # removed from nms_ms.
             server_total = cloud_timings.get("total")
             server_total_reported = server_total is not None
             t_wire = max(0.0, t_cloud - server_total / 1000.0) if server_total_reported else None
         else:
-            t0 = time.time()
-            bboxs, labels, scores = self._run_open_vocab_detector(camera_data["rgb"], labels)
-            t_owlv2 = time.time() - t0
-            if len(bboxs) == 0:
-                self.log_both("info", "OWLv2 found no objects")
-                return []
-
-            t0 = time.time()
-            bboxs, labels, scores = self._apply_detection_nms(bboxs, labels, scores)
-            t_nms = time.time() - t0
-            nms_reported = True        # measured directly on this path
+            # The VLM already produced one box per object instance. Keep the legacy
+            # timing fields well-defined for stages that were deliberately not run.
+            t_owlv2 = 0.0
+            t_nms = 0.0
+            nms_reported = False
             t_backend_overhead = 0.0   # no round trip on the local path: measured, not assumed
             t_wire = 0.0               # likewise: no wire
             server_total_reported = False
-            if len(bboxs) == 0:
-                self.log_both("info", "OWLv2 found no objects after NMS")
-                return []
 
             t0 = time.time()
-            detections = self._segment_detections(camera_data["rgb"], bboxs, labels, scores)
+            detections = self._segment_scene_objects(camera_data["rgb"], scene_objects)
             t_sam = time.time() - t0
+            if not detections:
+                self.log_both("warn", "VitSAM returned no masks for the VLM scene boxes")
+                return []
 
         if self._abort_if_moving("SAM segmentation"):
             return []
@@ -246,9 +195,6 @@ class DetectionPipelineMixin:
         self._refresh_room_geometry_if_available()
 
         vlm_info = dict(getattr(self, "_vlm_status", {"status": "unknown"}))
-        if hasattr(self, "vlm") and hasattr(self.vlm, "cache"):
-            vlm_info["crop_cache"] = self.vlm.cache.stats
-            vlm_info["crop_concurrency"] = CFG.get("vlm", {}).get("crop_concurrency", 4)
 
         latencies = {
             "vlm_ms": round(t_vlm * 1000.0, 1),
@@ -317,44 +263,22 @@ class DetectionPipelineMixin:
             if hasattr(self, "log_both"):
                 self.log_both("warn", f"Room geometry refresh skipped: {exc}")
 
-    def _extract_detection_labels(self, rgb_image):
+    def _extract_scene_objects(self, rgb_image):
+        """Return boxes and attributes from exactly one whole-frame VLM call."""
         t0 = time.time()
-        prompt_path = CFG["paths"]["identification_prompt"] or os.path.join(
-            os.path.dirname(__file__), "prompts", "object_identification_prompt.txt")
-        current_room = getattr(self, "current_room_id", "unknown")
-        room_evidence = getattr(self, "current_room_labels_str", "none")
+        prompt_path = CFG["paths"].get("scene_analysis_prompt") or os.path.join(
+            os.path.dirname(__file__), "prompts", "scene_analysis_prompt.txt")
         try:
-            labels = self.vlm.call_labels(
-                prompt_path,
-                rgb_image,
-                current_room=current_room,
-                room_evidence=room_evidence,
-            )
+            scene_objects = self.vlm.call_scene(prompt_path, rgb_image)
             self._vlm_status = {
                 "status": "ok",
                 "model": CFG.get("vlm", {}).get("model", "unknown"),
                 "latency_ms": round((time.time() - t0) * 1000.0, 1),
-                "room_belief": getattr(self.vlm, "last_room_belief", None),
             }
         except Exception as exc:
-            # GA-53: a config seam stood here. With `vlm.fallback_labels` set, an
-            # unreachable VLM was replaced by a static open-vocabulary list and the
-            # cycle continued — so every downstream detection, association and verdict
-            # came from labels no model produced, and the bundle recorded a completed
-            # run. Working rule 14: a handler that SUBSTITUTES is a mute. That fix made
-            # this branch re-raise unconditionally.
-            #
-            # GA-288 (owner ruling 2026-09-03): re-raising unconditionally was the OTHER
-            # extreme. Run 20260903_135823 died at 18 cycles on a sub-second DNS blip --
-            # the exception propagated through the timer callback into executor.spin()
-            # and the node exited 1. A transient fault ended a 55-minute run.
-            #
-            # So this now mirrors object_manager_6's input-silence watchdog, which the
-            # owner approved for the same shape: a failed cycle is SKIPPED, LOUDLY --
-            # logged at ERROR, counted, and recorded in the bundle's vlm status -- and
-            # the next cycle retries. `perception.vlm_strikes_max` consecutive failures
-            # end the run the same way om6 does. Nothing substitutes for the VLM and
-            # nothing is muted; what changed is that one failure is no longer fatal.
+            # Match the current label-call outage policy: a transient failure skips
+            # this cycle loudly, while repeated failures stop a run. Crucially, no
+            # fallback detector or static labels substitute for a failed scene call.
             self._vlm_strikes = getattr(self, "_vlm_strikes", 0) + 1
             strikes_max = int(CFG.get("perception", {}).get("vlm_strikes_max", 3))
             self._vlm_status = {
@@ -364,69 +288,76 @@ class DetectionPipelineMixin:
                 "consecutive_failures": self._vlm_strikes,
                 "strikes_max": strikes_max,
             }
-            self.log_both("error", f"[VLM] label call FAILED ({type(exc).__name__}: "
-                                   f"{str(exc)[:160]}); cycle skipped; strike "
-                                   f"{self._vlm_strikes}/{strikes_max}")
+            self.log_both(
+                "error",
+                f"[VLM] unified scene call FAILED ({type(exc).__name__}: "
+                f"{str(exc)[:160]}); cycle skipped; strike "
+                f"{self._vlm_strikes}/{strikes_max}",
+            )
             if strikes_max > 0 and self._vlm_strikes >= strikes_max:
-                self.log_both("error", f"[VLM] ENDING THE RUN: the VLM label call failed on "
-                                       f"{self._vlm_strikes} consecutive cycles. The VLM is "
-                                       f"gone, not blinking, and this node cannot make "
-                                       f"progress without it.")
-                for h in list(logging.getLogger().handlers):
+                self.log_both(
+                    "error",
+                    f"[VLM] ENDING THE RUN: the unified scene call failed on "
+                    f"{self._vlm_strikes} consecutive cycles.",
+                )
+                for handler in list(logging.getLogger().handlers):
                     try:
-                        h.flush()
+                        handler.flush()
                     except Exception:
                         pass
-                sys.stdout.flush(); sys.stderr.flush()
-                # os._exit, as in om6: this runs on an executor thread, where SystemExit
-                # unwinds that thread only and leaves the process spinning.
+                sys.stdout.flush()
+                sys.stderr.flush()
                 os._exit(1)
             if strikes_max <= 0:
-                raise          # the guard is disabled: crash-on-first-failure, as before
+                raise
             return []
+
         self._vlm_strikes = 0
-        self.log_both("info", f"[PROFILE] VLM labels: {time.time() - t0:.3f}s")
-        self.log_both("info", f"[PROFILE] Labels: {labels}")
-
-        if self._abort_if_moving("VLM label extraction"):
+        self.log_both(
+            "info",
+            f"[PROFILE] Unified VLM scene analysis: {time.time() - t0:.3f}s; "
+            f"{len(scene_objects)} object(s)",
+        )
+        if self._abort_if_moving("unified VLM scene analysis"):
             return []
-        if not labels:
-            self.log_both("warn", "VLM returned no labels")
+        if not scene_objects:
+            self.log_both("warn", "Unified VLM scene analysis returned no objects")
             return []
-        return labels
+        return scene_objects
 
-    def _run_open_vocab_detector(self, rgb_image, labels):
-        self.detector.set_classes(labels)
+    def _segment_scene_objects(self, rgb_image, scene_objects):
+        """Run local VitSAM on VLM boxes and retain their same-call attributes."""
         t0 = time.time()
-        # H10. The LOCAL backend was detecting at predict()'s hardcoded 0.35 while the
-        # cloud path forwards `perception.score_threshold` (0.15) -- the same run config
-        # meant different detections on different backends. The config value is passed
-        # here now, same read as the cloud path.
+        detections = []
         with torch.inference_mode():
-            bboxs, detected_labels, scores = self.detector.predict(
-                rgb_image, box_threshold=CFG.get("perception", {}).get("score_threshold", 0.15))
-        self.log_both("info", f"[PROFILE] OWLv2 predict: {time.time() - t0:.3f}s")
+            for scene_object in scene_objects:
+                masks, _ = self.vitsam(rgb_image, scene_object.bbox)
+                masks_np = np.asarray(masks)
+                if masks_np.ndim == 2:
+                    masks_np = masks_np[None, :, :]
+                elif masks_np.ndim == 3 and masks_np.shape[-1] == 1:
+                    masks_np = np.transpose(masks_np, (2, 0, 1))
 
-        if self._abort_if_moving("OWLv2 detection"):
-            return [], [], []
-        return bboxs, detected_labels, scores
-
-    def _apply_detection_nms(self, bboxs, labels, scores):
-        t0 = time.time()
-        # H11. The local path hardcoded IoU 0.5 while the cloud backend reads
-        # `perception.nms_threshold` -- same config, different suppression per backend.
-        # Same read as the cloud path now.
-        bboxs, labels, scores = apply_nms(
-            bboxs, labels, scores,
-            iou_threshold=CFG.get("perception", {}).get("nms_threshold", 0.50))
-        self.log_both("info", f"[PROFILE] NMS: {time.time() - t0:.3f}s")
-        return bboxs, labels, scores
-
-    def _segment_detections(self, rgb_image, bboxs, labels, scores):
-        t0 = time.time()
-        with torch.inference_mode():
-            detections = self._run_vitsam(rgb_image, bboxs, labels, scores)
-        self.log_both("info", f"[PROFILE] SAM/mask + Detection build: {time.time() - t0:.3f}s")
+                for mask in masks_np:
+                    mask = (np.squeeze(np.asarray(mask)) > 0).astype(np.uint8)
+                    detections.append(
+                        Detection(
+                            bbox=tuple(scene_object.bbox),
+                            label=scene_object.label,
+                            # This VLM schema provides no calibrated detector
+                            # confidence. None is honest; 1.0 would be invented.
+                            score=None,
+                            mask=mask[..., None],
+                            description=scene_object.description,
+                            color=scene_object.color,
+                            material=scene_object.material,
+                            shape=scene_object.shape,
+                        )
+                    )
+        self.log_both(
+            "info",
+            f"[PROFILE] VitSAM on unified VLM boxes: {time.time() - t0:.3f}s",
+        )
         return detections
 
     def _publish_detection_pointclouds(self, detections, camera_data):
@@ -481,35 +412,6 @@ class DetectionPipelineMixin:
                     bbox.update(obb)
             except Exception as exc:
                 self.log_both("warn", f"PCA orientation failed for {det.instance_label}: {exc}")
-
-    def _run_vitsam(self, rgb_image, bboxs, labels, scores):
-        detections = []
-        if len(bboxs) == 0:
-            return detections
-
-        for bbox, label_name, score in zip(bboxs, labels, scores):
-            masks, _ = self.vitsam(rgb_image, bbox)
-            masks_np = np.asarray(masks)
-
-            if masks_np.ndim == 2:
-                masks_np = masks_np[None, :, :]
-            elif masks_np.ndim == 3 and masks_np.shape[-1] == 1:
-                masks_np = np.transpose(masks_np, (2, 0, 1))
-
-            for mask in masks_np:
-                mask = np.asarray(mask)
-                mask = np.squeeze(mask)
-                mask = (mask > 0).astype(np.uint8)
-                detections.append(
-                    Detection(
-                        bbox=tuple(bbox),
-                        label=label_name,
-                        score=float(score),
-                        mask=mask[..., None],
-                    )
-                )
-        return detections
-
 
 if __name__ == "__main__":
     # Self-check for pca_oriented_box (run inside the perception container).
