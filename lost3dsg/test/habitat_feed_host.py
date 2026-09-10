@@ -972,6 +972,32 @@ TOUR_ALL_FLOORS = os.environ.get(
 TOUR_END_SETTLE_S = float(os.environ.get("FEED_TOUR_END_SETTLE_S",
                                          hab_cfg.get("tour_end_settle_s", 90.0)))
 
+# GA-441. THE PRECOMPUTED EXPLORATION SCHEDULE. A schedule is one storey's roadmap and the order to
+# walk it, built offline from the navmesh by lost3dsg/test/voronoi_roadmap.py: waypoints on the
+# generalized Voronoi diagram -- the line equidistant from two or more walls, which runs down the
+# middle of corridors -- visited depth-first from the busiest junction, with a 360 degree scan at
+# each first arrival.
+#
+# WHY PRECOMPUTED AND NOT SAMPLED PER RUN. The old policy drew random navigable points and walked to
+# them, and MEASURED on 20260909_004443 it covered 4.8 m in 18.7 minutes: 6 of every 96 frames were
+# allowed to move, and 84% of those went into a 36-frame look-around on arrival. A schedule also
+# makes two runs of one scene visit the SAME places in the SAME order, which is what makes them
+# comparable at all.
+#
+# WITH NO SCHEDULE CONFIGURED NOTHING CHANGES: the run takes the walk/dwell path it always took.
+SCHEDULE_PATH = os.environ.get("FEED_SCHEDULE", hab_cfg.get("schedule", "") or "").strip()
+EXPLORATION_LAPS = int(os.environ.get("FEED_EXPLORATION_LAPS",
+                                      hab_cfg.get("exploration_laps", 3)))
+# The function that drives between two stops. Modular on purpose: the follower plans over the
+# navmesh and is what the stack has always used, but a schedule's legs are already known to be
+# clear, so a straight drive is available and cheaper. Add one by name to MOVERS.
+MOVE_FN = os.environ.get("FEED_MOVE_FN", hab_cfg.get("move_function", "follower") or "").strip()
+# module:function called after every completed 360 degree scan. The dynamic dataset update belongs
+# here: the scan is the moment the world model has just been shown a place, so it is the moment a
+# change to that place is worth making.
+POST_SCAN_HOOK = os.environ.get("FEED_POST_SCAN_HOOK",
+                                hab_cfg.get("post_scan_hook", "") or "").strip()
+
 # GA-258. DYNAMIC DWELL: stay while merges are still waiting to be confirmed.
 #
 # A merge commits only after `merge_min_consecutive` consecutive sweeps over the evidence
@@ -1289,6 +1315,188 @@ def topdown_map_payload(sim, floor_y, mpp=0.05):
     except Exception as exc:
         print(f"[feed] topdown map skipped: {exc}")
         return None
+
+
+# --- movers: how the agent gets from one stop to the next ---
+#
+# EACH RETURNS True WHEN THE STOP IS REACHED. Keep the contract that narrow: a mover decides how to
+# travel, never when to scan or where to go next, so a new one cannot quietly change the schedule.
+def _move_follower(sim, agent, goal, follower):
+    """The navmesh path follower. What the stack has always used; it goes round furniture."""
+    try:
+        action = follower.next_action_along(np.asarray(goal, dtype=np.float32))
+    except Exception:
+        action = None
+    if action is None:
+        return True
+    sim.step(action)
+    return False
+
+
+def _move_straight(sim, agent, goal, follower):
+    """Turn towards the stop, then drive at it.
+
+    A schedule's legs run along the Voronoi ridge and every one was checked against the free space
+    when the schedule was built, so the straight line between consecutive points is known to be
+    clear. This is cheaper than planning and it cannot wander. It is NOT safe for an arbitrary goal.
+    """
+    st = agent.get_state()
+    here = np.asarray(st.position, dtype=np.float64)
+    to = np.asarray(goal, dtype=np.float64) - here
+    if float(np.hypot(to[0], to[2])) < 0.15:
+        return True
+    q = st.rotation
+    yaw = math.atan2(2.0 * (q.w * q.y + q.x * q.z), 1.0 - 2.0 * (q.y ** 2 + q.z ** 2))
+    want = math.atan2(-to[0], -to[2])
+    err = math.degrees((want - yaw + math.pi) % (2 * math.pi) - math.pi)
+    if abs(err) > 10.0:
+        agent.act("turn_left" if err > 0 else "turn_right")
+    else:
+        agent.act("move_forward")
+    return False
+
+
+MOVERS = {"follower": _move_follower, "straight": _move_straight}
+
+
+def _fire_post_scan(ctx):
+    """Called once per completed 360 degree scan. -> what the hook returned, or None.
+
+    THE EVENT IS RECORDED WHETHER OR NOT A HOOK IS CONFIGURED. A trigger nobody can see afterwards
+    is not a trigger; scan_events.jsonl in the bundle is the record that a stop was scanned, when,
+    and what the hook did about it.
+
+    THE HOOK IS NAMED, NOT WIRED IN. `module:function` in FEED_POST_SCAN_HOOK or habitat.post_scan_hook.
+    The dynamic dataset update goes here: the scan is the moment the world model has just been shown
+    a place, so it is the moment to change that place and let the next lap find the difference.
+    A hook that raises STOPS THE RUN rather than being swallowed -- a dataset update that silently
+    failed would leave a bundle whose laps claim a change that never happened.
+    """
+    out = None
+    if POST_SCAN_HOOK:
+        mod_name, _, fn_name = POST_SCAN_HOOK.partition(":")
+        if not fn_name:
+            raise SystemExit(f"FEED_POST_SCAN_HOOK={POST_SCAN_HOOK!r} is not module:function")
+        import importlib
+        out = getattr(importlib.import_module(mod_name), fn_name)(ctx)
+    try:
+        with open(STATS_DIR / "scan_events.jsonl", "a") as fh:
+            fh.write(json.dumps({**ctx, "hook": POST_SCAN_HOOK or None,
+                                 "hook_result": out, "t": time.time()}) + "\n")
+    except (OSError, TypeError) as exc:
+        print(f"[feed] scan event not recorded: {exc}", flush=True)
+    return out
+
+
+class ScheduledTour:
+    """Drives a precomputed schedule. Same interface as Tour: step(agent) and house_done.
+
+    ONE LAP IS THE FILE; the run repeats it EXPLORATION_LAPS times. Laps are identical by design
+    (owner, 2026-09-10): the same trajectory driven again, so a difference between two laps is a
+    difference in the WORLD, not in the route.
+    """
+
+    def __init__(self, sim, schedule, laps, move_fn):
+        self.sim = sim
+        self.follower = sim.make_greedy_follower(0, goal_radius=0.4)
+        self.points = list(schedule["trajectory"])
+        self.laps = max(1, int(laps))
+        self.move = MOVERS[move_fn]
+        self.move_name = move_fn
+        self.i = 0
+        self.lap = 0
+        self.scan_left = 0
+        self.scans_done = 0
+        self.stalled = 0
+        self.house_done = False
+        self.floor_order = [round(float(schedule.get("height", 0.0)), 2)]
+        self._tour_reached = 0
+        self._tour_planned_total = len(self.points)
+        print(f"[feed] SCHEDULE: {len(self.points)} points, "
+              f"{sum(1 for p in self.points if p['scan_deg'])} stops, {self.laps} lap(s), "
+              f"mover {move_fn}", flush=True)
+
+    def _scan_frames(self, deg):
+        return max(1, int(round(deg / 10.0)))     # the turn action is 10 degrees
+
+    def step(self, agent):
+        if self.house_done:
+            agent.act("turn_left")
+            return
+        if self.scan_left > 0:
+            self.scan_left -= 1
+            agent.act("turn_left")
+            if self.scan_left == 0:
+                self.scans_done += 1
+                pt = self.points[self.i]
+                _fire_post_scan({"event": "scan_complete", "lap": self.lap,
+                                 "stop": pt.get("stop"), "point_index": self.i,
+                                 "xyz": pt["xyz"], "scan_deg": pt["scan_deg"],
+                                 "scans_done": self.scans_done,
+                                 "stops_total": sum(1 for p in self.points if p["scan_deg"]),
+                                 "laps_total": self.laps})
+                self._advance()
+            return
+
+        pt = self.points[self.i]
+        if self.move(self.sim, agent, pt["xyz"], self.follower):
+            self.stalled = 0
+            if pt["scan_deg"]:
+                self._tour_reached += 1
+                self.scan_left = self._scan_frames(pt["scan_deg"])
+            else:
+                self._advance()
+            return
+        # A LEG THAT NEVER ARRIVES MUST NOT HOLD THE RUN. The follower returns None both for
+        # "arrived" and for "no path", and a schedule point can sit a few centimetres off the
+        # navmesh. Give up on a leg after a bounded number of frames, say so, and take the next
+        # point rather than spinning here for the rest of the run.
+        self.stalled += 1
+        if self.stalled > 240:
+            print(f"[feed] SCHEDULE: point {self.i} unreachable after {self.stalled} frames "
+                  f"({pt['xyz']}), skipping", flush=True)
+            self.stalled = 0
+            self._advance()
+
+    def _advance(self):
+        self.i += 1
+        if self.i < len(self.points):
+            return
+        self.i = 0
+        self.lap += 1
+        if self.lap >= self.laps:
+            self.house_done = True
+            print(f"[feed] SCHEDULE COMPLETE: {self.laps} lap(s), {self.scans_done} scans",
+                  flush=True)
+        else:
+            print(f"[feed] SCHEDULE: lap {self.lap + 1} of {self.laps}", flush=True)
+
+    def report(self):
+        return {"schedule_points": len(self.points), "laps": self.laps, "lap_reached": self.lap,
+                "scans_done": self.scans_done, "mover": self.move_name}
+
+
+def load_schedule(path, floor_y, tol=0.75):
+    """-> the storey's schedule from a scene schedule file, or None.
+
+    The file holds every storey of the scene; the run wants the one it is standing on. Matched on
+    height rather than on order, because the order in the file is the histogram's, not the run's.
+    """
+    with open(path) as fh:
+        doc = json.load(fh)
+    entries = [e for e in doc.get("schedule", []) if "skipped" not in e]
+    if not entries:
+        raise SystemExit(f"[feed] {path} holds no usable storey schedule")
+    best = min(entries, key=lambda e: abs(float(e["height"]) - float(floor_y)))
+    if abs(float(best["height"]) - float(floor_y)) > tol:
+        raise SystemExit(
+            f"[feed] FEED_SCHEDULE={path} has no storey within {tol} m of the spawn height "
+            f"{floor_y:+.2f}; its storeys are "
+            + ", ".join(f"{e['height']:+.2f}" for e in entries)
+            + ". Refusing to tour a different storey than the one the agent stands on.")
+    print(f"[feed] schedule storey {best['height']:+.2f} for spawn {floor_y:+.2f} "
+          f"({len(entries)} storey(s) in {os.path.basename(path)})", flush=True)
+    return best
 
 
 # --- motion ---
@@ -1611,7 +1819,17 @@ def main():
             rp, _ = habitat_pose_to_ros(p, [0, 0, 0, 1])
             cached_navmesh_pts.append([float(rp[0]), float(rp[1]), float(rp[2])])
 
-    tour = Tour(sim, rng) if have_nav else None
+    # GA-441. A CONFIGURED SCHEDULE REPLACES THE SAMPLING TOUR. Same interface -- step(agent) and
+    # house_done -- so the mapping branch, the walk step, the floor guard and the end-of-run settle
+    # all keep working without knowing which one they hold.
+    if have_nav and SCHEDULE_PATH:
+        if MOVE_FN not in MOVERS:
+            raise SystemExit(f"[feed] FEED_MOVE_FN={MOVE_FN!r} is not one of {sorted(MOVERS)}")
+        _floor_now = float(agent.get_state().position[1])
+        tour = ScheduledTour(sim, load_schedule(SCHEDULE_PATH, _floor_now),
+                             EXPLORATION_LAPS, MOVE_FN)
+    else:
+        tour = Tour(sim, rng) if have_nav else None
     poller = None
     if SHOW and OVERLAY:
         poller = BeliefPoller()
@@ -1917,6 +2135,14 @@ def main():
                 tour.step(agent)
             else:
                 agent.act("move_forward")
+        elif SCHEDULE_PATH and tour is not None:
+            # THE SCHEDULE OWNS THE MOTION, so the walk/dwell cycle does not apply to it. Under the
+            # adaptive cycle the agent moves for FEED_WALK frames then holds for up to
+            # FEED_DWELL_MAX with no action -- 6 frames in 96 -- and the schedule's own stops and
+            # scans already say when to stand still. Running both would spend 30 s frozen between
+            # every pair of trajectory points.
+            label = "SCHEDULE"
+            tour.step(agent)
         elif DWELL_MODE == "adaptive":
             # GA-339. Walk `walk_frames`, then HOLD (no action) until the signal releases or the cap.
             if hold.active:
@@ -1997,6 +2223,13 @@ def main():
                 # the last storey only, and a full-house run must not be read as a short one.
                 "tour_waypoints_planned_all_floors": getattr(tour, "_tour_planned_total", 0) if tour else 0,
                 "tour_all_floors": TOUR_ALL_FLOORS,
+                # GA-441. WHICH POLICY DROVE THIS RUN. Two exist and their coverage is not
+                # comparable: "schedule" walks a precomputed Voronoi roadmap, "sampled" draws random
+                # navigable goals. A bundle read as the wrong one misreports coverage by 20x.
+                "motion_policy": "schedule" if SCHEDULE_PATH else "sampled",
+                "schedule_path": SCHEDULE_PATH or None,
+                "schedule": tour.report() if (SCHEDULE_PATH and tour is not None) else None,
+                "post_scan_hook": POST_SCAN_HOOK or None,
                 "tour_floors_planned": (1 + len(getattr(tour, "floors_todo", []))
                                         + max(0, len(getattr(tour, "floor_order", [])) - 1)) if tour else 0,
                 "tour_floors_toured": len(getattr(tour, "floor_order", [])) if tour else 0,
