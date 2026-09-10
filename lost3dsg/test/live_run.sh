@@ -35,7 +35,12 @@ fi
 # present and EXIT when it was absent, so a clone of this stack alone could not launch at all --
 # a dependency pointing the wrong way, from the generic stack onto the thing that extends it.
 # Owner ruling 2026-09-09. An extension supplies itself through EXT_ENV_FILE and EXT_MOUNTS.
-WORKSPACE_ROOT=${WORKSPACE_ROOT:-$(cd "$REPO/../.." && pwd)}
+# THE CHECKOUT IS THE WORKSPACE. Owner instruction 2026-09-10: results live in <repo>/results and
+# there is no separate workspace directory. So the default is the repository itself, and the
+# "two levels above the checkout" derivation is GONE -- from /DATA/GRAPH-API it computed to "/",
+# the -d test passed, and a run would have written its bundle to /runs and published maps to
+# /maps. A default that cannot be wrong beats a check that catches it being wrong.
+WORKSPACE_ROOT=${WORKSPACE_ROOT:-$REPO}
 [ -d "$WORKSPACE_ROOT" ] || { echo "!! WORKSPACE_ROOT=$WORKSPACE_ROOT does not exist"; exit 1; }
 # GA-434 (2026-09-10). EXISTING IS NOT ENOUGH, and "/" exists.
 #
@@ -223,8 +228,9 @@ cleanup() {
   # post-run copy below never runs when the script is stopped with Ctrl-C — which is the
   # documented way to stop it. feed_host.log reached 1 of 21 shipped bundles for this reason.
   if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
-    cp "$OUT_DIR"/*.json "$OUT_DIR"/*.jsonl "$RUN_DIR/" 2>/dev/null || true
-    cp "$OUT_DIR"/*.log "$RUN_DIR/logs/" 2>/dev/null || true
+    # NOTHING TO COPY: $OUT_DIR IS $RUN_DIR since 2026-09-10. These two lines copied the scratch
+    # directory into the bundle; with one directory per run they would copy files onto themselves,
+    # and `cp` reporting "are the same file" into /dev/null is how a no-op looks like a step.
     # GA-336. Delete the scratch localization copy (~1.2 GB). Here, not earlier: the container
     # holds it open until rtabmap closes, and this trap runs after `docker run` has returned.
     # Its identity is preserved in run_metadata.json (localize_db_source + sha), so deleting the
@@ -236,7 +242,7 @@ cleanup() {
     # input_output.prepare_crops honours that variable -- which was the actual fix -- the
     # crops are written straight into $RUN_DIR/cropped_images and there is nothing to move.
     #
-    # $OUT_DIR is a DIFFERENT mount (/out). Copying from there would always find nothing and
+    # $OUT_DIR was a DIFFERENT mount (/out) until 2026-09-10; it is now the bundle itself, so
     # would print "no crops to harvest" over a bundle that has them, which is worse than
     # silence: it would have sent the next reader looking for a perception failure that did
     # not happen. Counted and reported instead, so the run states what it retained.
@@ -531,28 +537,32 @@ SCENE_ARG=${1:-hm3d_00861}
 # Found by the warning that replaced the fallback chain, on the first run after it landed.
 # The class is "two paths that agree by accident until one of them moves". Nothing else in this
 # tree reports it, so that warning is permanent.
-export OUT_DIR=${OUT_DIR:-$WORKSPACE_ROOT/results/${RUN_TIMESTAMP}_${SCENE_ARG}}
-mkdir -p "$OUT_DIR"
-echo "    live output: $OUT_DIR"
-# Stamped BEFORE the bundle directory is created, so every artefact the run legitimately
-# writes is newer than it. The gate's a5 probe fails on anything older — a scratch directory
-# left dirty by the previous run, or a file copied in by hand.
+# ONE DIRECTORY PER RUN, IN THE REPOSITORY. Owner instruction 2026-09-10: "results should be
+# stored in /DATA/GRAPH-API/results. The live output should be part of the run results in the
+# results/ folder (so no /DATA/workspace folder and no duplicate directories to hold the output)."
+#
+# WHAT THIS REPLACES. There were TWO directories per run: $WORKSPACE_ROOT/runs/<id> (the bundle,
+# mounted at /ws/output) and $WORKSPACE_ROOT/results/<id> (the "live output", mounted at /out),
+# whose *.json, *.jsonl and *.log were COPIED into the bundle at the end. Measured on
+# 20260910_141811: every file in results/ also existed in the bundle, so the second directory was
+# 7 MB of duplicate per run and 37 of the 93 results directories had no bundle at all.
+#
+# OUT_DIR IS NOW THE BUNDLE. /out and /ws/output become two mount points onto ONE host directory,
+# so nothing needs copying and nothing can be left behind in a scratch directory. The a5 probe is
+# unaffected: it asserts that no artefact predates run start in each directory it is given, and it
+# does not compare the two against each other.
+RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
+RESULTS_DIR=${RESULTS_DIR:-$REPO/results}
+RUN_DIR="$RESULTS_DIR/$RUN_ID"
+# Stamped BEFORE the directory is created, so every artefact the run legitimately writes is newer
+# than it. The gate's a5 probe fails on anything older -- a directory left dirty by a previous run,
+# or a file copied in by hand.
 RUN_START_EPOCH=$(date +%s)
 export RUN_START_EPOCH
+export OUT_DIR="$RUN_DIR"
+mkdir -p "$RUN_DIR/logs"
+echo "    run results: $RUN_DIR (live output and bundle are the same directory)"
 
-# The scratch directory is never cleared between runs, and its *.json and *.jsonl are copied
-# into the bundle below. A run that dies early therefore archives its PREDECESSOR's files
-# under its own source hashes. Rename rather than delete: if the previous run's archiving
-# failed, this is the only copy of its artefacts, and an inode costs nothing against that.
-if [ -n "$(ls -A "$OUT_DIR" 2>/dev/null)" ]; then
-  mv "$OUT_DIR" "${OUT_DIR}.prev-${RUN_START_EPOCH}"
-  mkdir -p "$OUT_DIR"
-  echo "    scratch: previous contents moved to ${OUT_DIR}.prev-${RUN_START_EPOCH}"
-fi
-
-RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
-RUNS_DIR=${RUNS_DIR:-$WORKSPACE_ROOT/runs}
-RUN_DIR="$RUNS_DIR/$RUN_ID"
 # A bundle directory that already holds a run is never reused: two runs in one directory produce a
 # bundle whose files come from both and whose metadata describes one.
 if [ -n "$(ls -A "$RUN_DIR" 2>/dev/null)" ]; then
@@ -1203,11 +1213,11 @@ HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
 DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
 GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
   nohup "$HOME/miniconda3/envs/habitat_env/bin/python" "$HERE/habitat_feed_host.py" \
-  > "$OUT_DIR/feed_host.log" 2>&1 &
+  > "$RUN_DIR/logs/feed_host.log" 2>&1 &
 FEED_PID=$!
 # habitat import + scene load can take >2 min on cold caches
-for i in $(seq 1 90); do grep -q "listening" "$OUT_DIR/feed_host.log" 2>/dev/null && break; sleep 2; done
-grep -q "listening" "$OUT_DIR/feed_host.log" || { echo "feed host failed:"; tail -20 "$OUT_DIR/feed_host.log"; exit 1; }
+for i in $(seq 1 90); do grep -q "listening" "$RUN_DIR/logs/feed_host.log" 2>/dev/null && break; sleep 2; done
+grep -q "listening" "$RUN_DIR/logs/feed_host.log" || { echo "feed host failed:"; tail -20 "$RUN_DIR/logs/feed_host.log"; exit 1; }
 echo "    feed host up"
 
 # GA-464 (owner 2026-09-10). ONE RVIZ, AND IT IS THE LAUNCH FILE'S. Two were being started and
@@ -1221,6 +1231,50 @@ echo "    feed host up"
 # to the docker run below. GA-371's opt-out and its record are kept: RVIZ=0 for a headless host, no
 # X socket means use_rviz:=false rather than a launch that dies, and run_metadata still carries
 # rviz_started and rviz_reason so a bundle says whether anybody was watching.
+# GA-465 (owner 2026-09-10). THE EXPLORATION SCHEDULE IS CACHED PER SCENE AND BUILT WHEN ABSENT.
+# A schedule is one scene's roadmap and the order to walk it: waypoints on the generalized Voronoi
+# diagram of the navmesh -- the line equidistant from two or more walls, so it runs down the middle
+# of corridors -- visited depth-first from the busiest junction, with a 360 degree scan at each.
+#
+#   A) CACHED when $SCHEDULE_DIR holds a file for this scene whose recorded settings match this run.
+#   B) BUILT when it is missing, when the settings differ, or when habitat.regenerate_schedule is
+#      true in config.yaml. THE DIGEST DECIDES, NOT THE FILE NAME: a schedule built at
+#      merge_radius 0.75 is not the schedule for 1.5, and reusing it because a file happens to exist
+#      would run one geometry while the config describes another.
+#
+# EXTERNAL, per the owner's storage instruction: $WORKSPACE_ROOT/schedules, beside maps and runs.
+# The navmesh sits next to the scene mesh; a scene shipped without one gets no schedule and the run
+# falls back to the sampling policy, which is SAID rather than left for a reader to infer.
+SCHEDULE_DIR=${SCHEDULE_DIR:-$WORKSPACE_ROOT/schedules}
+if [ -z "${FEED_SCHEDULE:-}" ]; then
+  _scene_glb="${HABITAT_SCENE:-$DEF_SCENE}"
+  _navmesh="${_scene_glb%.glb}.navmesh"
+  _regen=$(python3 -c "
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    print('1' if (c.get('habitat') or {}).get('regenerate_schedule') else '0')
+except Exception:
+    print('0')" "$HERE/$CFG_NAME" 2>/dev/null || echo 0)
+  if [ ! -f "$_navmesh" ]; then
+    echo "    schedule: NONE — no navmesh at $_navmesh; the run uses the sampling policy"
+  else
+    _sched_out=$("${SCHEDULE_PY:-$HOME/miniconda3/envs/habitat_env/bin/python}" \
+      "$HERE/schedule_batch.py" --navmesh "$_navmesh" --scene-id "$SCENE_ARG" \
+      --ensure --out-dir "$SCHEDULE_DIR" \
+      $([ "$_regen" = "1" ] && echo --regenerate) 2>&1) || {
+        echo "!! schedule generation FAILED for $SCENE_ARG:"; echo "$_sched_out" | tail -15
+        echo "   Refusing to fall back to the sampling policy silently: it covers a different"
+        echo "   amount of the storey, so its bundles are not comparable with a scheduled run."
+        exit 1; }
+    echo "$_sched_out" | grep -E "^\[schedule\]|^  y=" | sed 's/^/    /'
+    FEED_SCHEDULE=$(echo "$_sched_out" | sed -n 's/^SCHEDULE_FILE=//p' | tail -1)
+    export FEED_SCHEDULE
+  fi
+else
+  echo "    schedule: $FEED_SCHEDULE (given, not generated)"
+fi
+
 RVIZ="${RVIZ:-1}"; RVIZ_STARTED=false; RVIZ_REASON=""; RVIZ_DISPLAY="${DISPLAY:-:1}"
 if [ "$RVIZ" != "1" ]; then
   RVIZ_REASON="RVIZ=$RVIZ opt-out"
@@ -1243,9 +1297,9 @@ PY
 # Asynchronous health & memory monitor
 (
   while true; do
-    echo "=== $(date) ===" >> "$OUT_DIR/system_health.log"
-    free -m >> "$OUT_DIR/system_health.log"
-    docker stats --no-stream graphapi_live >> "$OUT_DIR/system_health.log" 2>/dev/null || true
+    echo "=== $(date) ===" >> "$RUN_DIR/logs/system_health.log"
+    free -m >> "$RUN_DIR/logs/system_health.log"
+    docker stats --no-stream graphapi_live >> "$RUN_DIR/logs/system_health.log" 2>/dev/null || true
     # per-process VRAM/CPU + per-model location inventory (JSON snapshot)
     python3 "$HERE/resource_monitor.py" --out "$OUT_DIR/model_resources.json" 2>/dev/null || true
     sleep 30
@@ -1313,9 +1367,9 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   "$IMAGE_TAG" /graph_api/lost3dsg/test/live_stack_container.sh
 
 # Post-run archive
-cp "$OUT_DIR"/*.log "$RUN_DIR/logs/" 2>/dev/null || true
-cp "$OUT_DIR"/*.json "$RUN_DIR/" 2>/dev/null || true
-cp "$OUT_DIR"/*.jsonl "$RUN_DIR/" 2>/dev/null || true
+# NOTHING TO COPY: $OUT_DIR IS $RUN_DIR since 2026-09-10 (one directory per run). The host-side
+# logs are written into $RUN_DIR/logs/ directly, so there is no scratch directory to drain and no
+# way for a run to archive its predecessor's files under its own source hashes.
 
 # `latest` means THE LAST BUNDLE WORTH READING, so it moves here and only on a passing gate.
 #
