@@ -1363,6 +1363,16 @@ function contentBox() {
   const b = new THREE.Box3();
   for (const m of OBJMESH) b.expandByObject(m);
   for (const m of G.wall.children) b.expandByObject(m);
+  // THE ROUTE AND THE DETECTED WALLS COUNT AS CONTENT. They did not, and on a bundle whose
+  // only content IS the route the view framed nothing: measured on 20260910_185402_hm3d_00861,
+  // which has 0 objects and 0 GT walls -- the schedule group held 36 drawables (a 179-point
+  // path plus 34 stop rings and the root) and the camera pointed away from all of them, so a
+  // layer that WAS drawing looked like a layer that was broken.
+  //
+  // `isEmpty()` in fitView is the tell: an empty box means "nothing to look at", and that
+  // claim has to be made over everything the scene can show, not over two of its groups.
+  for (const m of G.sched.children) b.expandByObject(m);
+  for (const m of G.dwall.children) b.expandByObject(m);
   return b;
 }
 
