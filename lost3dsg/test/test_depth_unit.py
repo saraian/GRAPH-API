@@ -1,7 +1,9 @@
 """GA-42: the depth unit follows the encoding, not the frame's largest pixel."""
 # ruff: noqa: E402, I001  -- rosstub must be installed before the module under test is imported
+import os
 import sys
-sys.path.insert(0, "/DATA/FOUND/vendor/graph-api/lost3dsg/src/perception_module")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               os.pardir, "src", "perception_module"))
 import rosstub; rosstub.install()  # noqa: E702
 import numpy as np
 

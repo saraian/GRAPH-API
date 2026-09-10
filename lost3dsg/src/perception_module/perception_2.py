@@ -681,7 +681,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
     # TODO (Lazy Two-Stage Crop Refinement & Property Separation):
     # - Stage 1 (Hot Detection Cycle): Detector produces primary class noun (e.g. "chair").
     # - Stage 2 (Lazy on Admission/Ambiguity): When an object is admitted or contested
-    #   by the ontological layer (found.admission), trigger this asynchronous crop VLM
+    #   by the ontological layer, trigger this asynchronous crop VLM
     #   query to refine the noun (e.g. "office chair") and extract extended traits.
     # - Standard properties ("color", "material", "shape", "description") remain in the
     #   primary metadata schema, while extended attributes ("style", "affordances", "state")

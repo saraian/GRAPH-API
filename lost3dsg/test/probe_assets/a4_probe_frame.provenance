@@ -1,6 +1,6 @@
 a4's probe frame. A REAL habitat render at run resolution, shipped with the gate.
 
-  source     /DATA/FOUND/runs/20260826_112549_hm3d_00861/room_frames/
+  source     <runs>/20260826_112549_hm3d_00861/room_frames/
              room_0@1787736474.679392067.jpg
   copied     2026-08-31, archive read-only (rule 12)
   sha256_16  e3e009c51ead2dad

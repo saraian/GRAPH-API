@@ -1,4 +1,4 @@
-"""Draw what the pipeline has FOUND onto the frame the dashboard is showing.
+"""Draw what the pipeline detected onto the frame the dashboard is showing.
 
 WHY THIS EXISTS. The dashboard's live frames come from the simulator host, which draws its
 belief overlay only into its own GUI window copy (`if SHOW and OVERLAY:` in
@@ -261,5 +261,5 @@ def _self_check(bundle):
 
 if __name__ == "__main__":
     import sys
-    target = sys.argv[1] if len(sys.argv) > 1 else "/DATA/FOUND/runs/20260903_230232_hm3d_00861"
+    target = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("RUN_DIR", "")
     _self_check(target)

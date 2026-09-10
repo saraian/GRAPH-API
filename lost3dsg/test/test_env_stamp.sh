@@ -14,7 +14,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # 1. The whole script still parses.
 bash -n "$SRC" || fail "live_run.sh does not parse"
 
-# 2. _enc_rev resolves BOTH cache layouts. /DATA/FOUND/.hf_cache holds MiniLM flat AND
+# 2. _enc_rev resolves BOTH cache layouts. A host cache can hold MiniLM flat AND
 #    under hub/ at the same revision today; which one loads depends on the env var the
 #    process sets, so a resolver that only knew one layout would return "unknown" for a
 #    model that is present — a silent gap in the provenance record, not a loud one.
@@ -66,14 +66,14 @@ ORDER
 #    downstream analysis tool fail on a bundle that otherwise looks complete.
 RUN_ID=t SCENE_ARG=s CFG_NAME=c.yaml CFG_SHA=0f9e8d7c6b5a4938 MERGED_SHA=44c1d0aa9b3e2f57 \
 FEED_SEED=7 RUN_DIR=/x HERE=/here \
-SRC_SHA=aaaa1111 SRC_N=122 FOUND_SHA=bbbb2222 FOUND_N=40 \
+SRC_SHA=aaaa1111 SRC_N=122 EXT_SRC_SHAS=ext=bbbb2222 \
 IMAGE_TAG=img IMAGE_DIGEST=sha256:dead ENC_E5=e5 ENC_MINILM=mini \
 GT_PATH=/gt/hm3d_00861.json GT_SHA=beef1234 GT_N=870 \
-FOUND_ENFORCE=1 FOUND_HOLD_BAND=0.05 FOUND_MIN_SUPPORT=30 FOUND_ROOM_ENFORCE=0 \
-FOUND_ALIGNER=kg FOUND_ONTOLOGY_EXT=default \
+EXT_POLICY_JSON='"enforce": 1, "hold_band": 0.05,' \
+
 FEED_WALK=6 FEED_DWELL=0 FEED_FPS=3 FEED_MAPPING_SECONDS=150 FEED_OVERLAY=1 FEED_SHOW=1 \
 FEED_DWELL_MODE=adaptive FEED_DWELL_MIN=18 FEED_DWELL_MAX=90 FEED_DWELL_SIGNAL_MAX_AGE_S=10 \
-ROOM_FRAME_MAX=5 ROOM_FRAME_STRIDE_M=1.5 FEED_POSE_SOURCE=simulator FOUND_ROOM_VLM_BASE_URL=x FOUND_ROOM_VLM_MODEL=m FOUND_ROOM_TYPES_PATH=/ws/output/room_types.json \
+ROOM_FRAME_MAX=5 ROOM_FRAME_STRIDE_M=1.5 FEED_POSE_SOURCE=simulator \
 MAPPING_ONLY=0 \
   bash -c "$(sed -n '/^cat <<EOF > "\$RUN_DIR\/run_metadata.json"/,/^EOF$/p' "$SRC" \
              | sed 's|> "\$RUN_DIR/run_metadata.json"||')" > "$TMP/meta.json"
@@ -96,13 +96,19 @@ grep -q '"sha256_16": "beef1234"'               "$TMP/meta.json" || fail "ground
 grep -q '"merged_sha256_16": "44c1d0aa9b3e2f57"' "$TMP/meta.json" || fail "merged-config sha not stamped; a file hash alone misses a _DEFAULTS change"
 
 # 6b. The policy block records the human LABEL "default"; the process receives the empty string,
-#     because found/kg_align.py reads FOUND_ONTOLOGY_EXT as a PATH when non-empty and raises if
+#     because an extension read that variable as a PATH when non-empty and raised if
 #     that path is absent. Exporting the label as the value made a1 fail every gated run with
-#     `FOUND_ONTOLOGY_EXT set to default, which does not exist`. The two must not be re-merged.
-FOUND_ONTOLOGY_EXT="" bash -c 'v="${FOUND_ONTOLOGY_EXT:-default}"; [ "$v" = "default" ]' \
-  || fail "an empty FOUND_ONTOLOGY_EXT must still record the label 'default' in the bundle"
-grep -q 'export FOUND_ONTOLOGY_EXT="\${FOUND_ONTOLOGY_EXT:-}"' "$SRC" \
-  || fail "FOUND_ONTOLOGY_EXT must default to EMPTY, not to the literal string 'default'"
+#     `... set to default, which does not exist`. The two must not be re-merged.
+# The ontology-extension default and the aligner thresholds are an EXTENSION's to declare and to
+# test. They used to be asserted here, against variables this launcher exported -- so this file
+# tested a policy vocabulary the repository no longer carries. What is asserted instead is the
+# SEAM: that the launcher forwards whatever the extension declared, and stamps it.
+grep -q 'for _v in ${EXT_ENV_PASS:-}; do EXT_E_ARGS=' "$SRC" \
+  || fail "the launcher must forward every variable the extension declared in EXT_ENV_PASS"
+grep -q 'EXT_MOUNT_POINT="${EXT_MOUNT_POINT:-/ext}"' "$SRC" \
+  || fail "the extension mount point must be a defaulted variable, never a written path"
+grep -q '"policy": {${EXT_POLICY_JSON:-}' "$SRC" \
+  || fail "the extension's policy keys must be interpolated INSIDE policy, so the bundle shape is unchanged"
 
 # 7. The two loaders are recorded separately. One field cannot describe two processes, and a
 #    single config_name is what let a run report a configuration only half of it used.
@@ -122,9 +128,7 @@ grep -q '"mapping_seconds": 150' "$TMP/meta.json" || fail "mapping_seconds not s
 # a detection run that found nothing are the same artefact -- the indistinguishability that cost
 # run 19 its merge question.
 grep -q '"mapping_only": false' "$TMP/meta.json" || fail "mapping_only not stamped for a normal run"
-# GA-33 residual: the container reads FOUND_KG_TOP / FOUND_KG_Z (found/kg_align.py); the bundle must say what they were.
-grep -q '"kg_top": 0.87' "$TMP/meta.json" || fail "kg_top not stamped (code default 0.87 when FOUND_KG_TOP is empty)"
-grep -q '"kg_z": 3.0'    "$TMP/meta.json" || fail "kg_z not stamped (code default 3.0 when FOUND_KG_Z is empty)"
+# GA-33 residual: the extension declares its aligner thresholds; the bundle must say what they were.
 grep -q 'export OUT_DIR=' "$SRC" || fail "GA-99: OUT_DIR must be EXPORTED or the feed host never sees it and writes its stats outside the bundle"
 grep -q 'export FEED_DWELL="\${FEED_DWELL:-0}"' "$SRC" \
   || fail "FEED_DWELL must default to 0 (owner ruling 2026-08-31). A 60 here silently re-bases the family."
@@ -166,17 +170,23 @@ python3 "$HERE/check_env_passthrough.py" "$HERE/.." >/dev/null \
 # 8. The run's live output path. RESULTS/, never /tmp — owner ruling, relayed. The path needs
 #    RUN_TIMESTAMP and SCENE_ARG, both defined 99 lines below where OUT_DIR used to sit, so the
 #    assignment moved rather than the value changing. Evaluated here rather than eyeballed.
-#    FOUND_ROOT is now DERIVED from the script's location so a clone anywhere can run, so this
+#    WORKSPACE_ROOT is now DERIVED from the script's location so a clone anywhere can run, so this
 #    supplies one rather than expecting the machine this was written on.
-_out=$(RUN_TIMESTAMP=20260831_140000 SCENE_ARG=hm3d_00861 FOUND_ROOT=/tmp/fake_found bash -c \
-       'eval "$(sed -n "/^export OUT_DIR=\${OUT_DIR:-\$FOUND_ROOT\/results/p" '"$SRC"')"; echo "$OUT_DIR"')
+_out=$(RUN_TIMESTAMP=20260831_140000 SCENE_ARG=hm3d_00861 WORKSPACE_ROOT=/tmp/fake_ws bash -c \
+       'eval "$(sed -n "/^export OUT_DIR=\${OUT_DIR:-\$WORKSPACE_ROOT\/results/p" '"$SRC"')"; echo "$OUT_DIR"')
 [ "$_out" = "/tmp/fake_found/results/20260831_140000_hm3d_00861" ] \
-  || fail "OUT_DIR default is '$_out', expected \$FOUND_ROOT/results/<timestamp>_<scene>"
+  || fail "OUT_DIR default is '$_out', expected \$WORKSPACE_ROOT/results/<timestamp>_<scene>"
 
 #    and an explicit OUT_DIR must still win, because the scratch-rename guard exists for the
 #    operator who reuses one. The default got safer; the hazard did not go away.
 _ovr=$(RUN_TIMESTAMP=t SCENE_ARG=s OUT_DIR=/tmp/explicit bash -c \
-       'eval "$(sed -n "/^export OUT_DIR=\${OUT_DIR:-\/DATA\/FOUND\/results/p" '"$SRC"')"; echo "$OUT_DIR"')
+       'eval "$(sed -n "/^export OUT_DIR=\${OUT_DIR:-\/tmp\/fake_ws\/results/p" '"$SRC"')"; echo "$OUT_DIR"')
 [ "$_ovr" = "/tmp/explicit" ] || fail "an explicit OUT_DIR must override the default, got '$_ovr'"
 
 echo "test_env_stamp.sh: OK (parse, cache layouts, ORDERING, JSON validity, keys kept, provenance) | $(date -Iseconds)"
+
+# THE BOUNDARY, CHECKED. A ruling with no check is a preference: the 2026-08-28 ruling that this
+# launcher names nothing of an extension's survived eleven days and reversed itself into 112
+# references, which then reached this repository through an ordinary merge.
+python3 "$HERE/check_no_extension_refs.py" \
+  || fail "this repository names a package that extends it; move it behind the EXT_* seam"

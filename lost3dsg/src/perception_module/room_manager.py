@@ -171,7 +171,7 @@ class RoomManager:
             # occupied cells in _segment_regions_gvd, so an open doorway cannot
             # be hallucinated as a closed wall.
             'detected_wall_reinforce_obstacles': True,
-            'detected_wall_min_observations': 1,
+            'detected_wall_min_observations': 2,
             # Wall coordinates are expressed in ``map``.  Old observations may
             # be invalid after an RTAB-Map graph optimisation, so require them
             # to be seen again instead of reinforcing the topology forever.
@@ -197,7 +197,6 @@ class RoomManager:
             # bed. Confirmed depth walls are protected separately.
             'gvd_topo_fill_max_area_m2': 20.0,
             'gvd_3d_nonwall_component_ratio': 0.01,
-            'gvd_3d_nonwall_min_cells': 8,
             'gvd_room_hole_fill_max_area_m2': 2.0,
             'room_nested_merge_max_area_m2': 8.0,
             'room_nested_merge_area_ratio': 0.30,
@@ -588,35 +587,15 @@ class RoomManager:
         if cloud_support is not None:
             observed = self._latest_cloud_observed_mask
             if observed is not None and observed.shape == structural.shape:
-                # Decide per connected 2D structure, never per cell. A wall is
-                # normally only partly observed in a depth cloud; the previous
-                # cell-wise veto punched holes through valid walls everywhere
-                # their samples missed one height band.
-                count, labels, stats, _ = cv2.connectedComponentsWithStats(
-                    (structural > 0).astype(np.uint8), 8)
-                min_support_ratio = float(self._params.get(
-                    'gvd_3d_min_support_ratio', 0.05))
-                min_nonwall_ratio = float(self._params.get(
-                    'gvd_3d_nonwall_component_ratio', 0.05))
-                min_nonwall_cells = max(1, int(self._params.get(
-                    'gvd_3d_nonwall_min_cells', 8)))
-                cloud_wall = cloud_support.astype(bool)
-                for i in range(1, count):
-                    component = labels == i
-                    area = max(1, int(stats[i, cv2.CC_STAT_AREA]))
-                    wall_ratio = np.count_nonzero(component & cloud_wall) / area
-                    nonwall_cells = np.count_nonzero(
-                        component & observed & ~cloud_wall)
-                    nonwall_ratio = nonwall_cells / area
-                    if (wall_ratio < min_support_ratio and
-                            nonwall_cells >= min_nonwall_cells and
-                            nonwall_ratio >= min_nonwall_ratio):
-                        structural[component] = 0
-
-            # cloud_support has already passed both vertical-height and
-            # plan-view wall-shape tests. Reinforce it only on cells which the
-            # occupancy map also marks occupied, never across observed free space.
-            structural[(cloud_support.astype(bool)) & (occupied > 0)] = 255
+                # A 2D outline can make a bed or table look like a sparse wall network.
+                # Where the cloud actually observed the object but found no tall surface,
+                # height evidence is a veto on that purely plan-view classification.
+                structural[observed & ~cloud_support.astype(bool)] = 0
+            # cloud_obstacles is evidence that an obstacle exists, not a wall
+            # detector.  Real wall reinforcement is supplied separately by
+            # detected_wall_support below.  Keeping this out of structural_occ
+            # prevents a tall wardrobe/table from becoming a room divider merely
+            # because it has a vertical point cloud.
             # Ground is used to estimate the floor datum, not as a negative
             # obstacle vote. At a wall/floor junction both clouds legitimately
             # occupy the same projected cell; treating ground as a veto erases
@@ -953,18 +932,18 @@ class RoomManager:
             self._latest_cloud_points is not None and
             (max_age_s <= 0.0 or self._latest_cloud_received_at is None or
              now_mono - self._latest_cloud_received_at <= max_age_s))
-        # Prefer RTAB-Map's already floor-filtered obstacle cloud. It is much
-        # less noisy than cloud_map for vertical-band classification. cloud_map
-        # remains the fallback for configurations where this topic is local or
-        # not published continuously.
-        if obstacle_fresh:
-            points = self._latest_cloud_obstacle_points
-            cloud_source = 'cloud_obstacles'
-            received_at = self._latest_cloud_obstacle_received_at
-        elif map_fresh:
+        # cloud_map is global and must remain the basis of a global room
+        # partition. cloud_obstacles may be only the latest local sensor frame;
+        # use it as the clean fallback, never as a reason to discard the global
+        # structural evidence while the latter is fresh.
+        if map_fresh:
             points = self._latest_cloud_points
-            cloud_source = 'cloud_map_fallback'
+            cloud_source = 'cloud_map'
             received_at = self._latest_cloud_received_at
+        elif obstacle_fresh:
+            points = self._latest_cloud_obstacle_points
+            cloud_source = 'cloud_obstacles_fallback'
+            received_at = self._latest_cloud_obstacle_received_at
         else:
             points = None
             cloud_source = 'none'

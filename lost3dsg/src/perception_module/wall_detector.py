@@ -72,71 +72,130 @@ def _walls_cfg():
 
 _WCFG = _walls_cfg()
 MIN_INTERVAL_S = float(_WCFG.get("min_interval_s", 0.5))
-RANSAC_ITERS = int(_WCFG.get("ransac_iters", 60))
-RANSAC_TOL_M = 0.05               # inlier distance to the fitted line
+LINE_INLIER_TOL_M = 0.05          # source-point distance to a Hough candidate
 MIN_INLIERS = 60
 MIN_SEGMENT_LEN_M = 0.5
 MAX_SEGMENTS = int(_WCFG.get("max_segments", 12))
-METHOD = str(_WCFG.get("method", "grid_hough"))
 GRID_RESOLUTION_M = float(_WCFG.get("grid_resolution_m", 0.05))
 VERTICAL_BANDS = int(_WCFG.get("vertical_bands", 4))
 MIN_VERTICAL_BANDS = int(_WCFG.get("min_vertical_bands", 3))
 MIN_CELL_POINTS = int(_WCFG.get("min_cell_points", 3))
 HOUGH_THRESHOLD = int(_WCFG.get("hough_threshold", 8))
 MAX_LINE_GAP_M = float(_WCFG.get("max_line_gap_m", 0.20))
+# A wall is a *surface*, not merely a tall collection of points that happens to be
+# collinear in the floor projection.  Once a candidate vertical plane has been
+# fitted, test its occupancy in its intrinsic (along-wall, height) coordinates.
+# This is deliberately coarser than the 5 cm Hough raster: it measures surface
+# support and tolerates individual depth holes, without turning a few shelf/leg
+# returns into a wall.
+SUPPORT_CELL_M = float(_WCFG.get("support_cell_m", 0.20))
+MIN_ALONG_COVERAGE = float(_WCFG.get("min_along_coverage", 0.60))
+MIN_HEIGHT_COVERAGE = float(_WCFG.get("min_height_coverage", 0.70))
+MIN_SURFACE_COVERAGE = float(_WCFG.get("min_surface_coverage", 0.30))
+# Parameters of the landmark association in plane space.  They are intentionally
+# tighter than room_manager's multi-frame association: this stage only removes
+# duplicate Hough hypotheses from one depth frame.
+PLANE_CLUSTER_ANGLE_DEG = float(_WCFG.get("plane_cluster_angle_deg", 4.0))
+PLANE_CLUSTER_DISTANCE_M = float(_WCFG.get("plane_cluster_distance_m", 0.08))
+PLANE_CLUSTER_MIN_OVERLAP = float(_WCFG.get("plane_cluster_min_overlap", 0.35))
 
 
-def _fit_segments_ransac(xy, z):
-    """Top-down RANSAC line fitting. -> list of (p0, p1, z_min, z_max, n_inliers, rms).
+def _refine_vertical_wall(pts, zs):
+    """Fit and validate one gravity-aligned planar wall patch.
 
-    Returns segments in the order found (longest support first, since each pass takes the
-    largest inlier set remaining).
+    In a gravity-aligned ``map`` frame a vertical plane has normal ``(nx, ny,
+    0)``.  TLS estimates that normal from its horizontal trace, while the
+    occupancy test below verifies that the inliers cover a 2-D patch in the
+    plane's own coordinates (distance along the trace and height).  This is a
+    constrained plane fit, rather than the old "long top-down line" heuristic.
     """
-    out = []
-    remaining = np.ones(len(xy), dtype=bool)
-    rng = np.random.default_rng(0)          # deterministic: a run must be reproducible
-    for _ in range(MAX_SEGMENTS):
-        idx = np.flatnonzero(remaining)
-        if len(idx) < MIN_INLIERS:
-            break
-        # All RANSAC_ITERS hypotheses at once. They are independent -- scoring them in a
-        # Python loop cost 435 ms/frame on 8k points and starved rtabmap of a core; the
-        # arithmetic was never the problem, the 720 sequential numpy calls were.
-        # Determinism is kept (same seeded rng) but the DRAW ORDER differs from the loop
-        # version, so a given frame can yield a different equally-valid segment set.
-        pairs = rng.choice(idx, size=(RANSAC_ITERS, 2), replace=True)
-        pa, pb = xy[pairs[:, 0]], xy[pairs[:, 1]]
-        d = pb - pa
-        n = np.hypot(d[:, 0], d[:, 1])
-        ok = n >= 1e-6                       # a pair that drew the same point twice
-        if not ok.any():
-            break
-        d = d[ok] / n[ok, None]
-        pa = pa[ok]
-        normals = np.stack([-d[:, 1], d[:, 0]], axis=1)          # (H, 2)
-        # (H, N): distance from every candidate point to every hypothesis line.
-        dist = np.abs(np.einsum("nj,hj->hn", xy[idx], normals)
-                      - np.einsum("hj,hj->h", pa, normals)[:, None])
-        counts = (dist <= RANSAC_TOL_M).sum(axis=1)
-        h = int(counts.argmax())
-        if counts[h] < MIN_INLIERS:
-            break
-        best_inliers = idx[dist[h] <= RANSAC_TOL_M]
-        best_dir, best_p = d[h], pa[h]
-        pts = xy[best_inliers]
-        t = (pts - best_p) @ best_dir
-        p0, p1 = best_p + best_dir * t.min(), best_p + best_dir * t.max()
-        length = math.hypot(*(p1 - p0))
-        zs = z[best_inliers]
-        extent = float(zs.max() - zs.min())
-        normal = np.array([-best_dir[1], best_dir[0]])
-        rms = float(np.sqrt(np.mean(((pts - best_p) @ normal) ** 2)))
-        remaining[best_inliers] = False
-        # A surface, not a silhouette: it must be long enough AND tall enough. Dropping the
-        # vertical test would readmit exactly what the polygon edges already give.
-        if length >= MIN_SEGMENT_LEN_M and extent >= MIN_VERTICAL_EXTENT_M:
-            out.append((p0, p1, float(zs.min()), float(zs.max()), int(len(best_inliers)), rms))
-    return out
+    if len(pts) < MIN_INLIERS:
+        return None
+    centre = pts.mean(axis=0)
+    _, _, vh = np.linalg.svd(pts - centre, full_matrices=False)
+    direction = vh[0]
+    t = (pts - centre) @ direction
+    # Robust endpoints make isolated depth outliers unable to extend a wall.
+    lo, hi = np.percentile(t, [2.0, 98.0])
+    length = float(hi - lo)
+    zlo, zhi = np.percentile(zs, [5.0, 95.0])
+    if length < MIN_SEGMENT_LEN_M or zhi - zlo < MIN_VERTICAL_EXTENT_M:
+        return None
+
+    # Surface support in the fitted vertical plane.  A real wall populates both
+    # axes; a sparse vertical edge, a ladder, or points from unrelated objects
+    # aligned in bird's-eye view does not.
+    cell = max(SUPPORT_CELL_M, 1e-6)
+    nt = max(1, int(math.ceil(length / cell)))
+    nz = max(1, int(math.ceil((zhi - zlo) / cell)))
+    ti = np.clip(((t - lo) / cell).astype(np.int32), 0, nt - 1)
+    zi = np.clip(((zs - zlo) / cell).astype(np.int32), 0, nz - 1)
+    occupied = np.zeros((nz, nt), dtype=bool)
+    occupied[zi, ti] = True
+    along_coverage = float(occupied.any(axis=0).mean())
+    height_coverage = float(occupied.any(axis=1).mean())
+    surface_coverage = float(occupied.mean())
+    if (along_coverage < MIN_ALONG_COVERAGE or
+            height_coverage < MIN_HEIGHT_COVERAGE or
+            surface_coverage < MIN_SURFACE_COVERAGE):
+        return None
+
+    normal = np.array([-direction[1], direction[0]])
+    rms = float(np.sqrt(np.mean(((pts - centre) @ normal) ** 2)))
+    return (centre + direction * lo, centre + direction * hi,
+            float(zlo), float(zhi), int(len(pts)), rms)
+
+
+def _same_plane_landmark(first, second):
+    """Whether two finite segments are duplicate observations of one plane.
+
+    A canonical wall landmark is the vertical plane ``n·(x,y)=rho`` plus a
+    finite interval along its tangent.  Comparing angle and signed normal
+    distance alone would collapse distinct parallel walls; requiring interval
+    overlap prevents that and also preserves doorway-separated wall pieces.
+    """
+    a0, a1 = first[:2]
+    b0, b1 = second[:2]
+    avec = a1 - a0
+    alen = float(np.linalg.norm(avec))
+    bvec = b1 - b0
+    blen = float(np.linalg.norm(bvec))
+    if alen < 1e-9 or blen < 1e-9:
+        return False
+    adir, bdir = avec / alen, bvec / blen
+    if abs(float(adir @ bdir)) < math.cos(math.radians(PLANE_CLUSTER_ANGLE_DEG)):
+        return False
+    normal = np.array([-adir[1], adir[0]])
+    if abs(float((((b0 + b1) - (a0 + a1)) * 0.5) @ normal)) > PLANE_CLUSTER_DISTANCE_M:
+        return False
+    bproj = (np.stack((b0, b1)) - a0) @ adir
+    overlap = min(alen, float(bproj.max())) - max(0.0, float(bproj.min()))
+    return overlap / min(alen, blen) >= PLANE_CLUSTER_MIN_OVERLAP
+
+
+def _consolidate_plane_landmarks(xy, z, candidates):
+    """Cluster overlapping Hough candidates in (theta, rho, interval) space.
+
+    Each cluster is re-estimated from the union of its source points, so the
+    published segment is a single TLS plane estimate, not one selected raster
+    stroke.  ``candidates`` contains ``(segment, source_indices)`` pairs.
+    """
+    clusters = []
+    for segment, source_idx in sorted(
+            candidates, key=lambda item: (-item[0][4], -float(np.linalg.norm(item[0][1] - item[0][0])))):
+        for cluster in clusters:
+            if _same_plane_landmark(cluster["segment"], segment):
+                cluster["indices"].append(source_idx)
+                merged_idx = np.unique(np.concatenate(cluster["indices"]))
+                refined = _refine_vertical_wall(xy[merged_idx], z[merged_idx])
+                # The original cluster remains valid if a partial overlap has
+                # too little 2-D support after de-duplication.
+                if refined is not None:
+                    cluster["segment"] = refined
+                break
+        else:
+            clusters.append({"segment": segment, "indices": [source_idx]})
+    return [cluster["segment"] for cluster in clusters[:MAX_SEGMENTS]]
 
 
 def _fit_segments_grid_hough(xy, z):
@@ -213,7 +272,7 @@ def _fit_segments_grid_hough(xy, z):
         line_len = float(np.linalg.norm(b - a))
         along = (xy - a) @ direction
         distance = np.abs((xy - a) @ normal)
-        near_idx = np.flatnonzero(distance <= max(RANSAC_TOL_M, GRID_RESOLUTION_M))
+        near_idx = np.flatnonzero(distance <= max(LINE_INLIER_TOL_M, GRID_RESOLUTION_M))
         if len(near_idx) < MIN_INLIERS:
             continue
         # Extend the Hough seed over its connected support, but never bridge a door/gap.
@@ -228,56 +287,11 @@ def _fit_segments_grid_hough(xy, z):
             continue
         pts, zs = xy[group], z[group]
 
-        # Total least squares removes the one-degree angular quantisation of Hough.
-        centre = pts.mean(axis=0)
-        _, _, vh = np.linalg.svd(pts - centre, full_matrices=False)
-        fitted_dir = vh[0]
-        t = (pts - centre) @ fitted_dir
-        lo, hi = np.percentile(t, [2.0, 98.0])
-        p0, p1 = centre + fitted_dir * lo, centre + fitted_dir * hi
-        length = float(hi - lo)
-        zlo, zhi = np.percentile(zs, [5.0, 95.0])
-        fitted_normal = np.array([-fitted_dir[1], fitted_dir[0]])
-        rms = float(np.sqrt(np.mean(((pts - centre) @ fitted_normal) ** 2)))
-        if length >= MIN_SEGMENT_LEN_M and zhi - zlo >= MIN_VERTICAL_EXTENT_M:
-            candidates.append((p0, p1, float(zlo), float(zhi), int(len(group)), rms))
+        refined = _refine_vertical_wall(pts, zs)
+        if refined is not None:
+            candidates.append((refined, group))
 
-    # Hough commonly returns several nearly identical strokes for a thick raster line.
-    candidates.sort(key=lambda s: (-s[4], -float(np.linalg.norm(s[1] - s[0]))))
-    out = []
-    for candidate in candidates:
-        cp0, cp1 = candidate[:2]
-        cmid, cdir = (cp0 + cp1) * 0.5, cp1 - cp0
-        clen = float(np.linalg.norm(cdir))
-        cdir /= max(clen, 1e-9)
-        duplicate = False
-        for accepted in out:
-            ap0, ap1 = accepted[:2]
-            adir = ap1 - ap0
-            adir /= max(float(np.linalg.norm(adir)), 1e-9)
-            amid = (ap0 + ap1) * 0.5
-            angle_cos = abs(float(cdir @ adir))
-            line_distance = abs(float((cmid - amid) @ np.array([-adir[1], adir[0]])))
-            axial_distance = abs(float((cmid - amid) @ adir))
-            alen = float(np.linalg.norm(ap1 - ap0))
-            if (angle_cos > math.cos(math.radians(5.0)) and
-                    line_distance < GRID_RESOLUTION_M * 1.5 and
-                    axial_distance <= (clen + alen) * 0.5 + MAX_LINE_GAP_M):
-                duplicate = True
-                break
-        if not duplicate:
-            out.append(candidate)
-            if len(out) >= MAX_SEGMENTS:
-                break
-    return out
-
-
-def _fit_segments(xy, z):
-    if METHOD == "ransac":
-        return _fit_segments_ransac(xy, z)
-    if METHOD != "grid_hough":
-        raise ValueError(f"unknown walls.method={METHOD!r}")
-    return _fit_segments_grid_hough(xy, z)
+    return _consolidate_plane_landmarks(xy, z, candidates)
 
 
 def _node_class():
@@ -340,7 +354,7 @@ def _node_class():
             status["camera_info_received"] = self.camera_info is not None
             status["fit_pending"] = self._pending is not None
             status["depth_waiting_for_tf"] = self._deferred_depth is not None
-            status["method"] = METHOD
+            status["method"] = "grid_hough"
             self.status_pub.publish(String(data=json.dumps(status)))
 
         def _depth_cb(self, msg):
@@ -435,7 +449,7 @@ def _node_class():
                     continue
                 try:
                     fit_start = time.perf_counter()
-                    walls = segments_to_wall_dicts(_fit_segments(job[0], job[1]))
+                    walls = segments_to_wall_dicts(_fit_segments_grid_hough(job[0], job[1]))
                 except Exception:
                     self._stats["last_reason"] = "fit_exception"
                     # A worker thread that dies silently leaves a node that looks healthy and
@@ -506,12 +520,31 @@ def segments_to_wall_dicts(segments):
     against THAT mixin, and the old wall_detector was the odd one out — two producers, one
     schema each, and the consumer matched the one that was never wired. This function converged
     on the same shape independently, by reading the consumer; the dead file confirms it."""
-    return [{"start": {"x": float(p0[0]), "y": float(p0[1])},
-             "end": {"x": float(p1[0]), "y": float(p1[1])},
-             "z_min": zmin, "z_max": zmax,
-             "n_points": n, "inlier_rms_m": round(rms, 4),
-             "source": "depth"}
-            for p0, p1, zmin, zmax, n, rms in segments]
+    walls = []
+    for p0, p1, zmin, zmax, n, rms in segments:
+        direction = p1 - p0
+        direction /= max(float(np.linalg.norm(direction)), 1e-9)
+        normal = np.array([-direction[1], direction[0]])
+        offset = float(normal @ ((p0 + p1) * 0.5))
+        # Equivalent signs describe the same plane.  Canonicalise them so a
+        # consumer can compare models directly across frames.
+        if (offset < -1e-9 or
+                (abs(offset) <= 1e-9 and
+                 (normal[0] < 0.0 or
+                  (abs(normal[0]) <= 1e-9 and normal[1] < 0.0)))):
+            normal, offset = -normal, -offset
+        walls.append({
+            "start": {"x": float(p0[0]), "y": float(p0[1])},
+            "end": {"x": float(p1[0]), "y": float(p1[1])},
+            "z_min": zmin, "z_max": zmax,
+            "n_points": n, "inlier_rms_m": round(rms, 4),
+            # Formal, gravity-constrained vertical-plane representation:
+            # normal.x*x + normal.y*y = offset_m.
+            "plane": {"normal": {"x": round(float(normal[0]), 6),
+                                  "y": round(float(normal[1]), 6)},
+                      "offset_m": round(offset, 4)},
+            "source": "depth"})
+    return walls
 
 
 def _selfcheck():
@@ -522,21 +555,35 @@ def _selfcheck():
     n = 4000
     xy = np.column_stack([rng.uniform(0, 3, n), rng.normal(0, 0.01, n)])
     z = rng.uniform(0.5, 1.9, n)
-    segs = _fit_segments(xy, z)
+    segs = _fit_segments_grid_hough(xy, z)
     assert len(segs) == 1, f"one wall expected, got {len(segs)}"
     p0, p1, zmin, zmax, npts, rms = segs[0]
     assert math.hypot(*(p1 - p0)) > 2.5, "the wall should span its length"
     assert zmax - zmin > MIN_VERTICAL_EXTENT_M, "vertical extent should be recovered"
-    assert rms < RANSAC_TOL_M, f"a plane should fit tightly, rms={rms}"
+    assert rms < LINE_INLIER_TOL_M, f"a plane should fit tightly, rms={rms}"
+
+    # Two raster strokes of the same physical plane consolidate, whereas a
+    # parallel plane and a doorway-separated interval stay distinct.
+    duplicate = (p0 + np.array([0.01, 0.015]), p1 + np.array([0.01, 0.015]),
+                 zmin, zmax, npts, rms)
+    assert _same_plane_landmark(segs[0], duplicate)
+    assert len(_consolidate_plane_landmarks(
+        xy, z, [(segs[0], np.arange(n)), (duplicate, np.arange(n))])) == 1
+    parallel = (p0 + np.array([0.0, 0.15]), p1 + np.array([0.0, 0.15]),
+                zmin, zmax, npts, rms)
+    assert not _same_plane_landmark(segs[0], parallel)
+    separated = (p0 + np.array([4.0, 0.0]), p1 + np.array([4.0, 0.0]),
+                 zmin, zmax, npts, rms)
+    assert not _same_plane_landmark(segs[0], separated)
 
     # A sofa back: same footprint, observed over 0.3 m of height. A 2D polygon edge cannot tell
     # this from the wall above -- that is exactly what room_manager's edges cannot do, and
     # refusing it here is why this node is worth having.
     z_low = rng.uniform(0.45, 0.75, n)
-    assert _fit_segments(xy, z_low) == [], "a low obstacle must NOT be reported as a wall"
+    assert _fit_segments_grid_hough(xy, z_low) == [], "a low obstacle must NOT be reported as a wall"
 
     # Unobserved space contributes nothing: no points, no walls, no silhouette.
-    assert _fit_segments(np.zeros((0, 2)), np.zeros(0)) == []
+    assert _fit_segments_grid_hough(np.zeros((0, 2)), np.zeros(0)) == []
 
     # Collinear walls separated by a door must not be joined across the opening.
     left_x = rng.uniform(0.0, 1.1, n // 2)
@@ -547,8 +594,19 @@ def _selfcheck():
     assert len(door_segments) == 2, f"door must split collinear walls, got {len(door_segments)}"
     assert all(math.hypot(*(p1 - p0)) < 1.5 for p0, p1, *_ in door_segments)
 
-    assert segments_to_wall_dicts(segs)[0]["start"].keys() >= {"x", "y"}
-    print("wall_detector selfcheck OK: wall found, low obstacle refused, empty input empty")
+    # A diagonal chain has the same top-down line and vertical extent as a wall,
+    # but covers only a one-dimensional trace in the fitted plane (for example a
+    # stair rail or coincidental returns).  Plane-patch support must reject it.
+    t = rng.uniform(0.0, 3.0, n)
+    xy_chain = np.column_stack([t, rng.normal(0, 0.01, n)])
+    z_chain = 0.45 + 1.45 * t / 3.0 + rng.normal(0, 0.01, n)
+    assert _fit_segments_grid_hough(xy_chain, z_chain) == [], "a 1-D vertical trace is not a wall"
+
+    wall = segments_to_wall_dicts(segs)[0]
+    assert wall["start"].keys() >= {"x", "y"}
+    assert abs(math.hypot(wall["plane"]["normal"]["x"],
+                          wall["plane"]["normal"]["y"]) - 1.0) < 1e-5
+    print("wall_detector selfcheck OK: plane patch found; low, sparse and empty inputs refused")
 
 
 def _benchmark():
@@ -557,16 +615,14 @@ def _benchmark():
     for n in (4000, 8000, 20000):
         xy = np.column_stack((rng.uniform(0, 5, n), rng.normal(0, 0.015, n)))
         z = rng.uniform(0.4, 2.0, n)
-        for name, fn in (("grid_hough", _fit_segments_grid_hough),
-                         ("ransac", _fit_segments_ransac)):
-            fn(xy, z)  # warm imports and native-library thread pools
-            samples = []
-            for _ in range(7):
-                start = time.perf_counter()
-                fn(xy, z)
-                samples.append((time.perf_counter() - start) * 1000.0)
-            print(f"{n:5d} points  {name:10s}  median={np.median(samples):6.2f} ms "
-                  f"p95={np.percentile(samples, 95):6.2f} ms")
+        _fit_segments_grid_hough(xy, z)  # warm imports and native-library thread pools
+        samples = []
+        for _ in range(7):
+            start = time.perf_counter()
+            _fit_segments_grid_hough(xy, z)
+            samples.append((time.perf_counter() - start) * 1000.0)
+        print(f"{n:5d} points  grid_hough  median={np.median(samples):6.2f} ms "
+              f"p95={np.percentile(samples, 95):6.2f} ms")
 
 
 def main(args=None):

@@ -5,6 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "perception_module"))
+import rosstub  # noqa: E402
+rosstub.install()   # cloud.client imports cv2, which is container-only; the finder stubs it
 import numpy as np  # noqa: E402
 from cloud.client import (  # noqa: E402
     LocalPerceptionBackend,

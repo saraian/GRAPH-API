@@ -34,6 +34,8 @@ from hooks import DecisionLog, load_hooks
 from nav_msgs.msg import Path
 from nlp_utils import get_embedding, lost_similarity, lost_similarity_detailed, world2vec
 from object_services import (
+    MERGE_MAX_DISTANCE,
+    MERGE_MIN_SIMILARITY,
     ObjectServices,
     ensure_relations,
     fuse_orientation,
@@ -100,7 +102,7 @@ REEVALUATION_MAX_FANOUT = int(CFG["association"].get("reevaluation_max_fanout", 
 # Measured 2026-09-03 over the six runs of the day (GA-190's rows): 368 comparisons, 95% of
 # them beyond 1.0 m, and all four winners at 1.000 -- a `faucet` seen in the second bathroom
 # attached to `faucet#1` in the first, 9.8 m away. Era (rule 34): geometry-blind since the
-# first import (3353c96, 2026-07-04; FOUND from 82745b2); the label-only 1.000 became
+# first import (3353c96, 2026-07-04; the extension from 82745b2); the label-only 1.000 became
 # reachable when GA-101 dropped absent terms from the divisor (2026-09-01) -- before that the
 # `continue` on a missing embedding made this loop unreachable in every run (GA-90).
 #
@@ -217,7 +219,7 @@ INPUT_SILENCE_MAX_STRIKES = CFG["association"].get("input_silence_max_strikes", 
 # dead. Detection only happens when the robot stops, so stops -- not seconds -- are the unit
 # in which "the producer had its chance" is measurable.
 INPUT_SILENCE_MIN_STOPS = CFG["association"].get("input_silence_min_stops", 3)
-# must match the bridge's own default (BRIDGE_PORT=8081); :8080 is the FOUND dashboard server
+# must match the bridge's own default (BRIDGE_PORT=8081); :8080 is the dashboard server
 # GA-267b. BRIDGE_PORT, honoured -- the SAME hardcoded 8081 that silenced the feed host's
 # belief poller, in a second place and with a far worse consequence.
 #
@@ -1547,7 +1549,7 @@ class ObjectManagerService(Node):
                 # Admission seam: the configured Filter sees exactly what would be
                 # sent to the Graph API and may refuse it (blueprint: never does).
                 room_id = self.room_manager.assign_room_by_geometry(bbox)
-                # GA-350: the file is written BEFORE the proposal is judged; the FOUND
+                # GA-350: the file is written BEFORE the proposal is judged; the extension
                 # reader raises on a room_frame path that does not exist.
                 room_frames = self._room_frames_for(room_id)
                 proposal = {
@@ -1634,6 +1636,12 @@ class ObjectManagerService(Node):
                     # generic annotation, so the merge survivor rule (`merge_rank`) can put
                     # credibility before age. None when the hook wrote no verdict.
                     new_obj.admission_grade = (ann.get("verdict") or {}).get("grade")
+                    # GA-372 (GA-314 tie-break, owner ruling 2026-09-08). How many of the verdict's
+                    # property slots the proposal filled (0-8: dimensions, entity, colour,
+                    # material, description, orientation, room, relations). Equal grades are
+                    # broken on this before age, so the better-observed identity survives.
+                    # None when the hook wrote no gaps block.
+                    new_obj.admission_filled = (ann.get("gaps") or {}).get("filled")
 
                     new_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                     current_perception_objects.append(new_obj)
@@ -1854,12 +1862,19 @@ class ObjectManagerService(Node):
         if not room_frame_due(frames, xy, ROOM_FRAME_STRIDE_M, ROOM_FRAME_MAX, timestamp_sec):
             return frames
 
+        # Called from the pose callback and from the admission loop: a full mount or a
+        # re-negotiated encoding must cost this one frame, not the pose stream. (From 47dce0b.)
         out_dir = os.path.join(os.environ.get("GRAPH_API_OUTPUT_DIR", "/tmp"), "room_frames")
-        os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, f"{key}@{stamp.sec}.{stamp.nanosec}.jpg")
-        rgb = self._room_bridge.imgmsg_to_cv2(latest_rgb, 'bgr8')
-        if not cv2.imwrite(path, rgb):
-            raise RuntimeError(f"could not write the room frame for {key} to {path}")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            rgb = self._room_bridge.imgmsg_to_cv2(latest_rgb, 'bgr8')
+            if not cv2.imwrite(path, rgb):
+                raise RuntimeError("cv2.imwrite returned False")
+        except Exception as e:
+            self.object_services.log_both(
+                'warn', f"[P_room] room frame for {key} not written to {path}: {e}")
+            return frames
         frames.append({
             "path": path,
             "stamp": timestamp_sec,
@@ -1960,9 +1975,11 @@ class ObjectManagerService(Node):
             # 0.8 and 0.75 against a sim_threshold of 0.85, so merge fused pairs the
             # association loop had just refused. object_services asserts the ordering at
             # load; these are read from the same block.
-            "max_distance": CFG["association"].get("merge_max_distance_m", 0.8),
-            "min_similarity": CFG["association"].get(
-                "merge_min_similarity", SIM_THRESHOLD + (1.0 - SIM_THRESHOLD) / 2.0),
+            # GA-341: ONE source. object_services owns the five merge thresholds (it reads the
+            # config and asserts the ordering at load); this client no longer carries its own
+            # copy of the fallbacks, which could drift from the service's.
+            "max_distance": MERGE_MAX_DISTANCE,
+            "min_similarity": MERGE_MIN_SIMILARITY,
             "dry_run": False,
         }
 
@@ -2305,7 +2322,7 @@ class ObjectManagerService(Node):
         # itself, which is the one thing known to have new evidence.
         #
         # Fixed HERE and deliberately NOT in hooks.py. hooks.py ships the generic
-        # blueprint that FOUND extends; widening on_update's contract would change it
+        # blueprint an extension implements; widening on_update's contract would change it
         # for every subclass and break the blueprint's self-test. WHICH nodes deserve a
         # second look is the caller's trigger policy, which is what this method is.
         self.reeval.mark(object_id, reason)

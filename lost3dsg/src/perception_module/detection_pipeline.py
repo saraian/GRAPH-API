@@ -1,4 +1,5 @@
 import logging
+import http.client
 import os
 import sys
 import time
@@ -31,19 +32,34 @@ def mask_touches_border(mask, margin_px=2):
     return bool(m[:k].any() or m[-k:].any() or m[:, :k].any() or m[:, -k:].any())
 
 
+def _rectangle_support_yaw(xy, tol=0.04, step_deg=1.0):
+    """Choose the yaw with the most support on the fitted rectangle perimeter."""
+    xy = np.asarray(xy, dtype=np.float64)
+    if len(xy) < 10:
+        return None
+    best_n, best_th = -1, None
+    for deg in np.arange(-90.0, 90.0, step_deg):
+        th = np.radians(deg)
+        c, s = np.cos(th), np.sin(th)
+        u = xy[:, 0] * c + xy[:, 1] * s
+        v = -xy[:, 0] * s + xy[:, 1] * c
+        lu, hu = np.percentile(u, [1, 99])
+        lv, hv = np.percentile(v, [1, 99])
+        n = int(((np.abs(u - lu) <= tol) | (np.abs(u - hu) <= tol)
+                 | (np.abs(v - lv) <= tol) | (np.abs(v - hv) <= tol)).sum())
+        if n > best_n:
+            best_n, best_th = n, float(th)
+    return best_th
+
+
 def pca_oriented_box(pts_map, min_anisotropy=1.2, top_fraction=0.2, top_min_points=30):
     """Yaw-about-z oriented box from object points in the map frame — the optional
     PCA keys (yaw / oriented_center / oriented_extents) that box_corners_map and
     the map store already consume. Returns None when the XY spread is too small or
     too isotropic for a stable orientation (the AABB alone is then the honest box).
 
-    GA-315: the yaw is fitted on the TOP-SURFACE points only — the slab within
-    `top_fraction` of the z range below the highest point, when it holds at least
-    `top_min_points` — because a camera sees one vertical side face densely and that
-    face drags the principal axis about 10 degrees off the object's own axis (measured by
-    the orchestrator on the yaw audit). The extents are still taken over ALL points in
-    that frame; only the axis choice comes from the top. ponytail: a fixed fraction, not a
-    plane fit; upgrade to RANSAC on the top plane if the 10 degrees do not go away."""
+    The top surface determines the perimeter-supported yaw; all points determine extents.
+    Near-square or poorly supported sets return None so the AABB remains authoritative."""
     pts = np.asarray(pts_map, dtype=np.float64)
     if pts.shape[0] < 10:
         return None
@@ -51,14 +67,11 @@ def pca_oriented_box(pts_map, min_anisotropy=1.2, top_fraction=0.2, top_min_poin
     z_all = pts[:, 2]
     top = z_all >= z_all.max() - top_fraction * max(z_all.max() - z_all.min(), 1e-6)
     fit_xy = xy[top] if int(top.sum()) >= top_min_points else xy
-    cov = np.cov(fit_xy, rowvar=False)
-    if not np.all(np.isfinite(cov)):
+    if not np.all(np.isfinite(fit_xy)):
         return None
-    evals, evecs = np.linalg.eigh(cov)  # ascending
-    if evals[0] <= 1e-10 or evals[1] / evals[0] < min_anisotropy ** 2:
+    yaw = _rectangle_support_yaw(fit_xy)
+    if yaw is None:
         return None
-    major = evecs[:, 1]
-    yaw = float(np.arctan2(major[1], major[0]))
     # a box is symmetric under 180°: keep yaw in [-pi/2, pi/2)
     if yaw < -np.pi / 2:
         yaw += np.pi
@@ -69,19 +82,26 @@ def pca_oriented_box(pts_map, min_anisotropy=1.2, top_fraction=0.2, top_min_poin
     u = xy[:, 0] * c + xy[:, 1] * s      # box frame
     v = -xy[:, 0] * s + xy[:, 1] * c
     z = pts[:, 2]
-    # ponytail: 1/99 percentile trim. Since W8 these points ARE the AABB pass's SOR'd
-    # set (same _filter_object_points arguments), so the claim below finally holds;
-    # the trim stays as a residual-straggler guard, not as the only one.
-    lo_u, hi_u = np.percentile(u, [1, 99])
-    lo_v, hi_v = np.percentile(v, [1, 99])
-    lo_z, hi_z = np.percentile(z, [1, 99])
+    lo_u, hi_u = np.percentile(u, [5, 95])
+    lo_v, hi_v = np.percentile(v, [5, 95])
+    lo_z, hi_z = np.percentile(z, [5, 95])
     if min(hi_u - lo_u, hi_v - lo_v, hi_z - lo_z) <= 1e-4:
+        return None
+    du, dv = hi_u - lo_u, hi_v - lo_v
+    if dv > du:
+        yaw = yaw + np.pi / 2 if yaw < 0 else yaw - np.pi / 2
+        c, s = np.cos(yaw), np.sin(yaw)
+        u, v = xy[:, 0] * c + xy[:, 1] * s, -xy[:, 0] * s + xy[:, 1] * c
+        lo_u, hi_u = np.percentile(u, [5, 95])
+        lo_v, hi_v = np.percentile(v, [5, 95])
+        du, dv = hi_u - lo_u, hi_v - lo_v
+    if du / max(dv, 1e-6) < min_anisotropy:
         return None
     uc, vc = (lo_u + hi_u) / 2.0, (lo_v + hi_v) / 2.0
     return {
-        "yaw": yaw,
+        "yaw": float(yaw),
         "oriented_center": [float(uc * c - vc * s), float(uc * s + vc * c), float((lo_z + hi_z) / 2.0)],
-        "oriented_extents": [float(hi_u - lo_u), float(hi_v - lo_v), float(hi_z - lo_z)],
+        "oriented_extents": [float(du), float(dv), float(hi_z - lo_z)],
     }
 
 
@@ -142,8 +162,45 @@ class DetectionPipelineMixin:
                     f"perception backend {backend_type!r} was selected but no backend was constructed"
                 )
             t0 = time.time()
-            detections, cloud_timings = backend.segment_scene(
-                camera_data["rgb"], scene_objects)
+            try:
+                detections, cloud_timings = backend.segment_scene(
+                    camera_data["rgb"], scene_objects)
+            except (TimeoutError, OSError, http.client.HTTPException, RuntimeError) as exc:
+                # A transient remote segmentation failure skips one cycle and is counted;
+                # repeated failures terminate the run instead of silently substituting data.
+                self._det_strikes = getattr(self, "_det_strikes", 0) + 1
+                strikes_max = int(CFG.get("perception", {}).get("detector_strikes_max", 3))
+                self._detector_status = {
+                    "status": "unreachable",
+                    "backend": backend_type,
+                    "error": f"{type(exc).__name__}: {str(exc)[:260]}",
+                    "consecutive_failures": self._det_strikes,
+                    "strikes_max": strikes_max,
+                }
+                self.log_both(
+                    "error",
+                    f"[SEGMENTATION] segment_scene FAILED ({type(exc).__name__}: "
+                    f"{str(exc)[:160]}); cycle skipped; strike "
+                    f"{self._det_strikes}/{strikes_max}",
+                )
+                if strikes_max > 0 and self._det_strikes >= strikes_max:
+                    self.log_both(
+                        "error",
+                        f"[SEGMENTATION] ENDING THE RUN: the perception service failed "
+                        f"on {self._det_strikes} consecutive cycles.",
+                    )
+                    for handler in list(logging.getLogger().handlers):
+                        try:
+                            handler.flush()
+                        except Exception:
+                            pass
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    os._exit(1)
+                if strikes_max <= 0:
+                    raise
+                return []
+            self._det_strikes = 0
             t_cloud = time.time() - t0
             client_timings = cloud_timings.get("client")
             if len(detections) == 0:
@@ -423,7 +480,7 @@ if __name__ == "__main__":
     pts += np.array([3.0, 4.0, 0.2])
     box = pca_oriented_box(pts)
     assert box is not None and abs(box["yaw"] - yaw_true) < 0.05, box
-    assert np.allclose(box["oriented_extents"], [2.0, 0.5, 0.5], atol=0.15), box
+    assert np.allclose(box["oriented_extents"], [1.755, 0.45, 0.40], atol=0.02), box
     assert np.allclose(box["oriented_center"], [3.0, 4.0, 0.45], atol=0.1), box
     theta = np.linspace(0, 2 * np.pi, 500)
     circle = np.stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)], axis=1)

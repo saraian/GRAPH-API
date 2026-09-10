@@ -40,6 +40,17 @@ def get(port, path):
         return json.loads(r.read().decode())
 
 
+def post(port, path, payload):
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=2) as r:
+        return json.loads(r.read().decode())
+
+
 def test_ctrl_server():
     httpd = h.ThreadingHTTPServer(("127.0.0.1", 0), h.CtrlHandler)
     h.threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -116,6 +127,33 @@ def test_ctrl_server():
 
     h.CTRL.bev = {"agent": {"x": 0}}
     assert get(port, "/bev_data") == {"agent": {"x": 0}}
+
+    h.CTRL.object_catalog = {"templates": ["banana", "mug"]}
+    assert get(port, "/object_catalog") == {"templates": ["banana", "mug"]}
+
+    # HTTP threads only enqueue scene mutations. Mimic one simulator-loop
+    # iteration and verify that the synchronous ROS-facing response preserves
+    # action and request identity.
+    def execute_one_object_command():
+        import time
+        deadline = time.monotonic() + 1.0
+        while not h.CTRL.object_commands and time.monotonic() < deadline:
+            time.sleep(0.005)
+        item = h.CTRL.object_commands.popleft()
+        item["result"] = {
+            "success": True, "action": item["command"]["action"],
+            "object_id": 17, "request_id": item["command"]["request_id"],
+        }
+        item["done"].set()
+
+    worker = h.threading.Thread(target=execute_one_object_command)
+    worker.start()
+    assert post(port, "/object_command", {
+        "action": "spawn", "template": "banana", "request_id": "req-1",
+    }) == {"success": True, "action": "spawn", "object_id": 17,
+           "request_id": "req-1"}
+    worker.join(timeout=1.0)
+    assert not worker.is_alive()
 
     # frame.jpg: 503 without a frame, 200 with one
     try:

@@ -48,7 +48,7 @@ class Decision:
     # until something else resolves it.
     #
     # WHY A THIRD STATE AND NOT A CHANGE TO `admitted`. Two outcomes were being made to carry
-    # three meanings. FOUND maps hold and no-grounds onto ABSTAIN in order to keep them OUT of
+    # three meanings. An extension maps hold and no-grounds onto ABSTAIN in order to keep them OUT of
     # the map (found/filter.py:8-13, "nothing enters the map except an admit"), while this
     # seam defines ABSTAIN as admissible on purpose -- a blueprint filter that abstains must
     # not empty the map. Both are right for their own side, and the collision put 296 objects

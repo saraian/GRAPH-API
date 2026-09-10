@@ -52,8 +52,6 @@ tf:
   lookup_timeout: 0.1  # seconds to wait for a transform before dropping the frame
 walls:
   # Fast 2.5D detector: metric cells with vertical support, Hough candidates, TLS refinement.
-  # Set method: ransac to compare with the previous point-wise implementation.
-  method: grid_hough
   min_interval_s: 0.5
   grid_resolution_m: 0.05
   vertical_bands: 4
@@ -61,6 +59,17 @@ walls:
   min_cell_points: 3
   hough_threshold: 8
   max_line_gap_m: 0.20
+  # TLS validation in each candidate's vertical-plane coordinates.  This
+  # rejects tall but one-dimensional returns that share a top-down line.
+  support_cell_m: 0.20
+  min_along_coverage: 0.60
+  min_height_coverage: 0.70
+  min_surface_coverage: 0.30
+  # Consolidate duplicate Hough strokes only when they describe the same
+  # finite vertical-plane landmark (orientation, offset and overlap).
+  plane_cluster_angle_deg: 4.0
+  plane_cluster_distance_m: 0.08
+  plane_cluster_min_overlap: 0.35
   max_segments: 12
 rooms:
   default_room_id: ""   # empty = strict: no room known -> object rejected (needs SLAM rooms)
@@ -89,7 +98,7 @@ rooms:
   # being used only as a doorway hint.
   enable_detected_wall_support: true
   detected_wall_reinforce_obstacles: true
-  detected_wall_min_observations: 1
+  detected_wall_min_observations: 2
   # RTAB-Map loop closures can move map-frame geometry. Re-observe old wall
   # segments instead of letting a stale/false line constrain rooms forever.
   detected_wall_max_age_s: 300.0
@@ -111,9 +120,6 @@ rooms:
   room_nested_merge_max_area_m2: 8.0
   room_nested_merge_area_ratio: 0.30
   gvd_3d_nonwall_component_ratio: 0.01
-  # Sparse depth evidence must abstain: at least this many projected cells
-  # are required before 3D may veto a 2D structural component.
-  gvd_3d_nonwall_min_cells: 8
   gvd_door_nms_m: 1.20
   gvd_critical_endpoint_margin_m: 0.20
   min_room_area_m2: 1.5
@@ -141,8 +147,13 @@ habitat:
 hooks:
   # extension seam (hooks.py): admission Filter / node Refiner loaded from another
   # package by dotted path; empty = the pass-through blueprints (today's behaviour)
-  search_paths: []        # prepended to sys.path, e.g. ["/path/to/that/package"]
-  filter: ""              # "pkg.module:ClassName", subclass of hooks.Filter
+  # EMPTY IN THE TRACKED CONFIG, and that is deliberate rather than an oversight. These two lines
+  # named an extension package and a path on one machine, so the shared repository depended on a
+  # checkout nobody else has and the boundary check failed on a clean clone. A DEPLOYMENT wires its
+  # own extension -- through a local config that is not committed, or through the launcher's
+  # EXT_ENV_FILE seam -- and the repository ships the seam, not the wiring.
+  search_paths: []        # where to look for the packages named below
+  filter: ""              # "pkg.module:ClassName", subclass of hooks.Filter; empty = pass-through
   refiner: ""             # "pkg.module:ClassName", subclass of hooks.Refiner
   store: ""               # "pkg.module:ClassName", subclass of hooks.Store; empty = SQLite map
   decisions_log: ""       # JSONL of decisions/revisions; empty -> output/hook_decisions.jsonl

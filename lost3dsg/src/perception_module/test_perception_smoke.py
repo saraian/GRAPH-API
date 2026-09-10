@@ -113,6 +113,194 @@ def reassign_rooms():
     assert obj.room_id == "room_1", "an unplaceable object must not be re-filed"
 
 
+def merge_request_below_match_gate_refused():
+    """GA-341: a merge request whose similarity floor sits at or below the match gate is
+    REFUSED with the bound named -- never clamped, never merged at the bridge's old 0.75."""
+    svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
+    svc.get_logger = lambda: rosstub.Any()
+    svc.log_both = lambda *a, **k: None
+    svc.room_manager = room_manager.RoomManager.__new__(room_manager.RoomManager)
+    svc.room_manager.scene_graph = {}
+    svc.room_manager.room_at_bbox = lambda bbox: None
+    svc.decision_log = rosstub.Any()
+    wm.persistent_perceptions.clear()
+
+    req, resp = rosstub.Any(), rosstub.Any()
+    req.max_distance, req.min_similarity, req.dry_run = 0.8, 0.75, True
+    object_services.ObjectServices._cb_merge_objects(svc, req, resp)
+    assert resp.success is False, "0.75 sits below sim_threshold 0.85 and must be refused"
+    assert "sim_threshold" in resp.message and "0.85" in resp.message, resp.message
+    req.min_similarity = object_services.SIM_THRESHOLD
+    object_services.ObjectServices._cb_merge_objects(svc, req, resp)
+    assert resp.success is False, "equal to the gate is not STRICTLY greater"
+    req.min_similarity = object_services.MERGE_MIN_SIMILARITY
+    object_services.ObjectServices._cb_merge_objects(svc, req, resp)
+    assert resp.success is True, resp.message
+    assert object_services.MERGE_MIN_SIMILARITY > object_services.SIM_THRESHOLD
+
+
+def detector_failure_skips_the_cycle():
+    """GA-427: a transient detector failure SKIPS the cycle, counted and named; it does not
+    end the run on the first one and it does not pass silently. Run 20260909_004443 lost
+    itself at 19m56s to one 180 s timeout on a service that answered 3 minutes later.
+
+    NOT ASSERTED HERE, and the first draft of this check proved why: the run-ending path
+    calls os._exit, so driving the counter to the limit kills the test process with no
+    summary and no traceback. The limit is set above the number of failures driven, and the
+    threshold itself needs a subprocess to exercise."""
+    import detection_pipeline
+    import numpy as _np
+
+    class Boom:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def detect_and_segment(self, *a, **k):
+            raise self.exc
+
+    class Node:
+        """A REAL object, not rosstub.Any: the stub answers every attribute with a
+        placeholder, so `getattr(self, "_det_strikes", 0)` would never take its default and
+        the first-failure path -- the one that matters -- could not be exercised."""
+        log_both = staticmethod(lambda *a, **k: None)
+
+        def _extract_detection_labels(self, rgb):
+            return ["chair"]
+
+        def _abort_if_moving(self, *a, **k):
+            return False
+
+        def __getattr__(self, name):
+            # No-op for the pipeline's other collaborators, but NEVER for the strike
+            # counter: that one must reach `getattr(..., 0)`'s default, which is the
+            # first-failure path this check exists to exercise.
+            if name.startswith("_det"):
+                raise AttributeError(name)
+            return lambda *a, **k: None
+
+    node = Node()
+    node.perception_backend = Boom(TimeoutError("read operation timed out"))
+    cam = {"rgb": _np.zeros((4, 4, 3), _np.uint8)}
+
+    original = dict(detection_pipeline.CFG.get("perception", {}))
+    detection_pipeline.CFG["perception"] = {**original, "backend": "modal", "detector_strikes_max": 5}
+    try:
+        out = detection_pipeline.DetectionPipelineMixin.run_detection(node, cam)
+        assert out == [], "a failed detector call must skip the cycle, not return junk"
+        assert node._det_strikes == 1, node._det_strikes
+        assert node._detector_status["status"] == "unreachable", node._detector_status
+        assert node._detector_status["consecutive_failures"] == 1
+        detection_pipeline.DetectionPipelineMixin.run_detection(node, cam)
+        assert node._det_strikes == 2, "consecutive failures accumulate"
+        # a DIFFERENT transport fault counts the same way
+        node.perception_backend = Boom(ConnectionResetError("peer went away"))
+        detection_pipeline.DetectionPipelineMixin.run_detection(node, cam)
+        assert node._det_strikes == 3, node._det_strikes
+        # guard disabled -> the old behaviour, crash on the first failure
+        detection_pipeline.CFG["perception"] = {**original, "backend": "modal", "detector_strikes_max": 0}
+        node._det_strikes = 0
+        try:
+            detection_pipeline.DetectionPipelineMixin.run_detection(node, cam)
+            raise AssertionError("with the guard disabled the failure must propagate")
+        except ConnectionResetError:
+            pass
+    finally:
+        detection_pipeline.CFG["perception"] = original
+
+
+def merge_lock_covers_writes_only():
+    """GA-393 narrowed: the world-model lock is held for the WRITES and not for the sweep.
+
+    Both halves can fail. If someone re-decorates the callback or widens the guard back over
+    the comparison, the sweep probe sees the lock held. If someone drops the guard, the write
+    probe sees it unheld. The merge callback was the only service callback in this file
+    taking no lock at all, while add, update, delete and query all take one."""
+    import threading
+
+    import object_services as osv
+
+    svc = osv.ObjectServices.__new__(osv.ObjectServices)
+    svc.get_logger = lambda: rosstub.Any()
+    svc.log_both = lambda *a, **k: None
+    svc.tracking_step_counter = 0
+    svc.room_manager = room_manager.RoomManager.__new__(room_manager.RoomManager)
+    svc.room_manager.scene_graph = {}
+    svc.room_manager.current_room_id = "room_1"
+    svc.room_manager.room_at_bbox = lambda bbox: None
+    svc.room_manager.update_room_geometry = lambda *a, **k: None
+    svc.decision_log = rosstub.Any()
+    svc.persistent_bbox_pub = rosstub.Any()
+    svc.persistent_centroids_pub = rosstub.Any()
+
+    class CountingRLock:
+        """Delegates to a REENTRANT lock, because the write block re-enters it through
+        save_persistent_perceptions -> wm.snapshot(). Substituting a plain Lock here
+        deadlocks the suite, which is how this test learned the property it now documents."""
+
+        def __init__(self):
+            self._lock = threading.RLock()
+            self.depth = 0
+
+        def __enter__(self):
+            self._lock.acquire()
+            self.depth += 1
+            return self
+
+        def __exit__(self, *exc):
+            self.depth -= 1
+            self._lock.release()
+            return False
+
+        def acquire(self, *a, **k):
+            got = self._lock.acquire(*a, **k)
+            if got:
+                self.depth += 1
+            return got
+
+        def release(self):
+            self.depth -= 1
+            self._lock.release()
+
+        @property
+        def held(self):
+            return self.depth > 0
+
+    held_during_sweep = []
+    real_lock, osv.wm.lock = osv.wm.lock, CountingRLock()
+    real_sim = osv.lost_similarity_detailed
+
+    def probe(*a, **k):
+        held_during_sweep.append(osv.wm.lock.held)
+        return real_sim(*a, **k)
+
+    osv.lost_similarity_detailed = probe
+    original_root = osv.PROJECT_ROOT
+    try:
+        a = object_info.Object("chair", None, BOX, description="a chair", color="red", material="wood")
+        b = object_info.Object("chair", None, BOX, description="a chair", color="red", material="wood")
+        a.object_id, b.object_id = "obj_keep", "obj_drop"
+        a.creation_time, b.creation_time = 1.0, 2.0
+        osv.wm.persistent_perceptions.clear()
+        osv.wm.persistent_perceptions.extend([a, b])
+        req, resp = rosstub.Any(), rosstub.Any()
+        req.max_distance, req.min_similarity, req.dry_run = 0.8, 0.95, False
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            osv.PROJECT_ROOT = tmp
+            osv.ObjectServices._cb_merge_objects(svc, req, resp)
+        assert held_during_sweep, "the probe never ran: the sweep did not compare the pair"
+        assert not any(held_during_sweep), \
+            f"the lock was held during the SWEEP on {sum(held_during_sweep)} comparison(s) — the guard is too wide"
+        assert len(osv.wm.persistent_perceptions) == 1, osv.wm.persistent_perceptions
+        assert osv.wm.persistent_perceptions[0].object_id == "obj_keep"
+        assert not osv.wm.lock.held, "the lock must be released when the callback returns"
+    finally:
+        osv.lost_similarity_detailed = real_sim
+        osv.wm.lock = real_lock
+        osv.PROJECT_ROOT = original_root
+        osv.wm.persistent_perceptions.clear()
+
+
 # --- the merge path ----------------------------------------------------------------
 def merge_path():
     svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
@@ -139,7 +327,8 @@ def merge_path():
     wm.persistent_perceptions.extend([a, b])
 
     req = rosstub.Any()
-    req.max_distance, req.min_similarity, req.dry_run = 0.8, 0.75, True
+    # GA-341: the request's floor must sit ABOVE sim_threshold (0.85) or the service refuses it.
+    req.max_distance, req.min_similarity, req.dry_run = 0.8, 0.9, True
     resp = rosstub.Any()
     object_services.ObjectServices._cb_merge_objects(svc, req, resp)
 
@@ -168,7 +357,7 @@ def merge_path():
     sim_rows = [r for r in refused_rows if r.get("reason") == "similarity"]
     assert sim_rows, f"the disagreeing pair must be refused on similarity: {[r.get('reason') for r in refused_rows]}"
     sr = sim_rows[0]
-    assert sr.get("threshold_similarity") == 0.75, sr         # from request.min_similarity
+    assert sr.get("threshold_similarity") == 0.9, sr          # from request.min_similarity
     assert "threshold" not in sr, "the legacy key is retired on the similarity arm"
     assert "threshold_distance_m" not in sr, "the similarity arm must not carry the distance key"
 
@@ -724,10 +913,21 @@ def merge_survivor_by_grade():
     old.admission_grade = "decline"
     assert merge_rank(ungraded) < merge_rank(old), "an ungraded object outranks a declined one"
 
+    # GA-372 (owner ruling 2026-09-08): equal grades fall to admission_filled before age.
+    old.admission_grade, new.admission_grade = "admit", "admit"
+    old.admission_filled, new.admission_filled = 3, 6
+    assert merge_rank(new) < merge_rank(old), "equal grades: more filled slots beats age"
+    new.admission_filled = 3
+    assert merge_rank(old) < merge_rank(new), "equal grades and filled: the older identity survives"
+    del new.admission_filled
+    assert merge_rank(old) < merge_rank(new), "a missing filled count ranks as 0"
+    old.admission_grade = "decline"
+    assert merge_rank(new) < merge_rank(old), "the grade still comes before filled"
+
     original = object_services.PROJECT_ROOT
     wm.persistent_perceptions.clear()
     a = object_info.Object("chair", [0.0, 0.0, 0.0], BOX)
-    a.object_id, a.admission_grade = "obj_g", "hold"
+    a.object_id, a.admission_grade, a.admission_filled = "obj_g", "hold", 5
     wm.persistent_perceptions.append(a)
     with tempfile.TemporaryDirectory() as tmp:
         object_services.PROJECT_ROOT = tmp
@@ -738,6 +938,7 @@ def merge_survivor_by_grade():
         finally:
             object_services.PROJECT_ROOT = original
     assert on_disk[0]["admission_grade"] == "hold", "the grade must reach the bundle"
+    assert on_disk[0]["admission_filled"] == 5, "the filled count must reach the bundle"
 
 
 def orientation_fusion():
@@ -793,6 +994,22 @@ def orientation_fusion():
     n = Obj()
     n.bbox, n._yaw_acc = fuse_orientation(n, dict(unoriented))
     assert "yaw" not in n.bbox and n._yaw_acc["n"] == 0
+
+    # A persisted/previously accepted oriented box followed by a clipped view used
+    # to crash because initialization incremented the accumulator without storing
+    # its representative view.
+    prior = Obj()
+    prior.bbox = view(15.0)
+    prior.bbox, prior._yaw_acc = fuse_orientation(prior, dict(unoriented))
+    assert prior.bbox["has_orientation"] is True
+    assert "oriented_center" in prior.bbox and prior._yaw_acc["view"] is not None
+
+    # Also tolerate a legacy accumulator that has n/c/s but no representative.
+    legacy = Obj()
+    legacy.bbox = view(20.0)
+    legacy._yaw_acc = {"n": 1, "c": 1.0, "s": 0.0, "view": None}
+    legacy.bbox, legacy._yaw_acc = fuse_orientation(legacy, dict(unoriented))
+    assert legacy.bbox["has_orientation"] is True
 
 
 def ontology_veto_seam():
@@ -873,7 +1090,12 @@ def overlap_null_uses_larger_box():
 
 def merge_pending_blob():
     """GA-339 (a)+(b): needs_max rides in merge_pending.json (0 when nothing is pending), and a
-    non-serialisable value RAISES instead of being warned away (rule 14)."""
+    non-serialisable value RAISES instead of being warned away (rule 14).
+
+    GA-341 follow-up: the blob also carries the EFFECTIVE floor of the arm that ran
+    (engine, min_similarity, max_distance_m, sim_threshold), because run 1 showed the
+    similarity floor reaches no other artefact — the evidence arm emits threshold_log_odds
+    and a criterion naming threshold_similarity had no subject to test."""
     import tempfile
 
     import association as assoc
@@ -896,6 +1118,13 @@ def merge_pending_blob():
             with open(os.path.join(tmp, "merge_pending.json")) as fh:
                 blob = json.load(fh)
             assert blob["pending"] == 2 and blob["needs_max"] == object_services.MERGE_MIN_CONSECUTIVE, blob
+            # GA-341 follow-up: the blob carries the EFFECTIVE floor of the arm that ran.
+            for k, want in (("engine", object_services.MERGE_ENGINE),
+                            ("min_similarity", object_services.MERGE_MIN_SIMILARITY),
+                            ("max_distance_m", object_services.MERGE_MAX_DISTANCE),
+                            ("sim_threshold", object_services.SIM_THRESHOLD)):
+                assert blob[k] == want, (k, blob.get(k), want)
+            assert blob["min_similarity"] > blob["sim_threshold"], blob
             svc._hypotheses = {}
             object_services.ObjectServices._publish_merge_pending(svc)
             with open(os.path.join(tmp, "merge_pending.json")) as fh:
@@ -1034,7 +1263,7 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("inside_area", inside_area),
                  ("save_uncertain_objects", save_uncertain),
                  ("reassign_objects_by_geometry", reassign_rooms),
-                 ("merge survivor: credibility before age (GA-314)", merge_survivor_by_grade),
+                 ("merge survivor: credibility, then filled slots, before age (GA-314, GA-372)", merge_survivor_by_grade),
                  ("yaw fused over accepted views, extents from one (GA-315 part 2)", orientation_fusion),
                  ("ontology veto reaches the channel and names its source (GA-309)", ontology_veto_seam),
                  ("overlap null charges the larger box, not the sliver (GA-307)", overlap_null_uses_larger_box),
@@ -1042,6 +1271,9 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("oriented boxes are yaw-only: two z levels, vertical edges (GA-360)", oriented_boxes_are_yaw_only),
                  ("localisation gate: stale pose skips and counts, simulator arm open (GA-359)", localisation_gate),
                  ("merge_pending carries needs_max; a bad blob raises (GA-339)", merge_pending_blob),
+                 ("merge request below the match gate is refused (GA-341)", merge_request_below_match_gate_refused),
+                 ("detector failure skips the cycle, counted (GA-427)", detector_failure_skips_the_cycle),
+                 ("merge lock covers the writes, not the sweep (GA-393)", merge_lock_covers_writes_only),
                  ("merge path (dry run)", merge_path)]:
     check(name, fn)
 

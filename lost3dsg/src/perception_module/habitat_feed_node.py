@@ -11,20 +11,26 @@ of a frame shares one stamp, so TF-at-image-stamp lookups resolve exactly.
 """
 import json
 import array
+import base64
+import io
 import math
 import os
 import pickle
 import socket
 import struct
 import time
+import urllib.request
+import zlib
 
 import numpy as np
 import rclpy
+from PIL import Image as PILImage
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
+from std_msgs.msg import String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 FRAME_MAP = "map"
@@ -139,6 +145,18 @@ class HabitatFeedNode(Node):
         self.pub_depth = self.create_publisher(Image, "/camera/depth", qos)
         self.pub_info = self.create_publisher(CameraInfo, "/camera/camera_info", qos)
         self.pub_odom = self.create_publisher(Odometry, "/odom", qos)
+        self.pub_object_capture = self.create_publisher(
+            Image, "/habitat/object_capture/rgb", qos)
+        self.pub_object_result = self.create_publisher(
+            String, "/habitat/object_command_result", qos)
+        catalog_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+        )
+        self.pub_object_catalog = self.create_publisher(
+            String, "/habitat/object_catalog", catalog_qos)
         # GT-ONLY CHANNEL. habitat's semantic sensor renders its own instance id per pixel,
         # which is the join a detection needs to be labelled with ground truth. The feed host
         # has been putting it in the payload under `gt_semantic_instance` whenever
@@ -176,18 +194,108 @@ class HabitatFeedNode(Node):
 
         self._host = os.environ.get("FEED_HOST", "127.0.0.1")
         self._port = int(os.environ.get("FEED_PORT", "7799"))
+        self._ctrl_host = os.environ.get("FEED_CTRL_HOST", self._host)
+        self._ctrl_port = int(os.environ.get("FEED_CTRL_PORT", "7790"))
         self.sock = None
         self.buf = b""
         self.frames = 0
         self._last_frame_id = None
         self._reconnects = 0
         self._connect()
+        self.create_subscription(
+            String, "/habitat/spawn_object",
+            lambda msg: self._forward_object_command("spawn", msg), qos)
+        self.create_subscription(
+            String, "/habitat/set_object_position",
+            lambda msg: self._forward_object_command("move", msg), qos)
+        self.create_subscription(
+            String, "/habitat/remove_object",
+            lambda msg: self._forward_object_command("remove", msg), qos)
+        self.create_subscription(
+            String, "/habitat/capture_object_view",
+            lambda msg: self._forward_object_command("capture", msg), qos)
+        self._publish_object_catalog()
         self.create_timer(0.01, self.poll)
         # GA-200: a heartbeat carrying the FRAME COUNT. The run that produced this fix sat
         # for six minutes with one frame relayed and no further log line, and every liveness
         # signal said healthy -- the process was up, the port was open, the preflight was
         # green. A frozen counter has to be visible from the log, not only from `docker exec`.
         self.create_timer(10.0, self._heartbeat)
+
+    def _object_url(self, path):
+        return f"http://{self._ctrl_host}:{self._ctrl_port}{path}"
+
+    def _publish_object_catalog(self):
+        """Relay the templates loaded by the host as a transient-local topic."""
+        try:
+            with urllib.request.urlopen(
+                self._object_url("/object_catalog"), timeout=5.0
+            ) as response:
+                catalog = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            self.get_logger().warn(f"object catalog unavailable from feed host: {exc}")
+            return
+        msg = String()
+        msg.data = json.dumps(catalog)
+        self.pub_object_catalog.publish(msg)
+        self.get_logger().info(
+            f"object catalog relayed: {len(catalog.get('templates', []))} templates")
+
+    def _forward_object_command(self, action, msg):
+        """Forward run_habitat_script commands to the host-side simulator."""
+        request_id = None
+        try:
+            payload = json.loads(msg.data) if msg.data.strip() else {}
+            if not isinstance(payload, dict):
+                raise ValueError("il comando deve essere un oggetto JSON")
+            request_id = payload.get("request_id")
+            payload["action"] = action
+            body = json.dumps(payload).encode("utf-8")
+            request = urllib.request.Request(
+                self._object_url("/object_command"), data=body,
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(request, timeout=12.0) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            encoded = result.pop("rgb_jpeg", None)
+            if encoded is not None:
+                rgb = np.asarray(
+                    PILImage.open(io.BytesIO(base64.b64decode(encoded))).convert("RGB"),
+                    dtype=np.uint8,
+                )
+            else:
+                encoded = result.pop("rgb_zlib", None)
+                if encoded is not None:
+                    width = int(result.pop("rgb_width"))
+                    height = int(result.pop("rgb_height"))
+                    raw = zlib.decompress(base64.b64decode(encoded))
+                    expected = width * height * 3
+                    if len(raw) != expected:
+                        raise ValueError(
+                            f"invalid object capture size: {len(raw)} != {expected}")
+                    rgb = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3)
+            if encoded is not None:
+                capture = Image()
+                capture.header.stamp = self.get_clock().now().to_msg()
+                capture.header.frame_id = (
+                    f"object_capture_{result.get('object_id', 'removed')}")
+                capture.height, capture.width = rgb.shape[:2]
+                capture.encoding = "rgb8"
+                capture.is_bigendian = False
+                capture.step = capture.width * 3
+                capture.data = _u8(np.ascontiguousarray(rgb).tobytes())
+                self.pub_object_capture.publish(capture)
+        except Exception as exc:
+            result = {
+                "success": False,
+                "action": action,
+                "message": f"feed host object command failed: {exc}",
+            }
+            if request_id is not None:
+                result["request_id"] = str(request_id)
+            self.get_logger().warn(result["message"])
+        result_msg = String()
+        result_msg.data = json.dumps(result)
+        self.pub_object_result.publish(result_msg)
 
     def _connect(self):
         """Open the feed socket. Raises on failure; the caller decides whether to retry."""

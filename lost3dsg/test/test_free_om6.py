@@ -205,7 +205,8 @@ def cycle(n, limit, frames):
     n.last_room_check_time = 1e12
     n._vlm_status_counts, n.uncertain_objects, n.latest_bboxes = {}, [], {}
     n.room_manager = NS(current_room_id="room_1", assign_room_by_geometry=lambda b: "room_1",
-                        update_current_room_semantics=lambda objs: None)
+                        update_current_room_semantics=lambda objs: None,
+                        update_all_rooms_semantics=lambda objs: None)
     n.tracking_activated_pub = n.kb_add_pub = rosstub.Any()
     n.decision_log = NS(write=lambda *a, **k: None)
     n.filter_hook = NS(name="t", judge=lambda p: NS(admitted=False, outcome="refused", reason="t", annotation={}))

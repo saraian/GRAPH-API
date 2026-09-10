@@ -623,7 +623,7 @@ def channel_appearance(descs_a, descs_b, cone_half_angle_rad, spread_a=None, spr
     if sigma is None:
         return Abstain("descriptor spread not measurable; no scale for the comparison")
 
-    best = None
+    best, best_kind = None, None
     for da, db in pairs:
         if da.vector.shape != db.vector.shape:
             continue
@@ -633,11 +633,16 @@ def channel_appearance(descs_a, descs_b, cone_half_angle_rad, spread_a=None, spr
         # the descriptor is spread over its own range, so a match this close is unlikely.
         # Ratio of a standard normal density to a diffuse one over the descriptor's range.
         llr = -0.5 * z * z + math.log(max(1e-6, 1.0 / sigma))
-        best = llr if best is None else max(best, llr)
+        if best is None or llr > best:
+            best, best_kind = llr, da.kind
     if best is None:
         return Abstain("comparable views had incompatible descriptor shapes")
+    # GA-342. `kind` names the descriptor family the score came from ("visual" = a CLIP crop
+    # embedding, "extent" = the box-ratio stand-in). Without it a scored row cannot say WHICH
+    # descriptor answered (rule 2), and the confirm-by `channels.appearance.kind == "visual"`
+    # was unmeasurable on every bundle. Additive key (rule 6).
     return float(np.clip(best, -MAX_CHANNEL_LOG_ODDS, MAX_CHANNEL_LOG_ODDS)), {
-        "comparable_pairs": len(pairs), "sigma": sigma}
+        "comparable_pairs": len(pairs), "sigma": sigma, "kind": best_kind}
 
 
 def cone_ok_vec(bearing_a, bearing_b, half_angle_rad):
@@ -1176,6 +1181,21 @@ def demo():
     assert h3.decide(thr)[0] == "abstain", h3.decide(thr)
     print(f"  nothing measurable : evidence_count 0, {len(s3.abstentions)} abstentions "
           f"-> {h3.decide(thr)[0].upper()} (never 1.0)")
+
+    # --- 3b. GA-342: a scored appearance row NAMES the descriptor family it scored on ----------
+    bearing = np.array([1.0, 0.0, 0.0])
+    vis_a = AssocObject("v1", bbox=None, centroid=[0, 0, 0],
+                        descriptors=[ViewDescriptor(bearing, np.ones(4), kind="visual")],
+                        descriptor_spread=0.5)
+    vis_b = AssocObject("v2", bbox=None, centroid=[0.1, 0, 0],
+                        descriptors=[ViewDescriptor(bearing, np.ones(4) * 1.1, kind="visual")],
+                        descriptor_spread=0.5)
+    s3b = score_pair(vis_a, vis_b, ctx)
+    assert "appearance" in s3b.channels, s3b.as_record()
+    assert s3b.channels["appearance"]["kind"] == "visual", s3b.channels["appearance"]
+    assert s3b.channels["appearance"]["comparable_pairs"] == 1, s3b.channels["appearance"]
+    print(f"  appearance scored  : kind={s3b.channels['appearance']['kind']}, "
+          f"log_odds {s3b.channels['appearance']['log_odds']:+.2f}")
 
     # --- 4. the search radius WIDENS with uncertainty -------------------------------------
     tight = AssocObject("t", bbox=_box(0, 0, 0, 0.2, 0.2, 0.2),
