@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import os
+import urllib.parse
+import re
 import numpy as np
 from sensor_msgs.msg import CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
@@ -7,11 +9,13 @@ from matplotlib.colors import to_rgb
 import cv2
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Header, String, ColorRGBA
+from std_msgs.msg import Header, String
 from sensor_msgs.msg import PointField
 import json
 from geometry_msgs.msg import Point
 from utils import statistical_outlier_removal, get_distinct_color
+from box_view import BOX_EDGES, box_corners_map, project_visible
+from config import CFG
 import struct
 from openai import OpenAI
 import base64
@@ -19,52 +23,119 @@ from rclpy.duration import Duration
 from rclpy.time import Time
 from rclpy.duration import Duration as ROS2Duration
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
-import ollama
+from builtin_interfaces.msg import Time as TimeMsg
 file_path = os.path.abspath(__file__)
-from groq import Groq
 import time
 import itertools
+import tf2_ros
+
+def _filter_object_points(mask, depth_image, fx, fy, cx, cy,
+                           max_points_per_obj=20000,
+                           remove_outliers=True, sor_k=15, sor_std=1.5):
+    mask = np.array(mask)
+    mask2d = mask[:, :, 0] if mask.ndim == 3 else mask
+    ys, xs = np.nonzero(mask2d.astype(bool))
+
+    if len(xs) == 0:
+        return None
+
+    if len(xs) > max_points_per_obj:
+        idx = np.linspace(0, len(xs) - 1, max_points_per_obj).astype(int)
+        xs, ys = xs[idx], ys[idx]
+
+    zs = depth_image[ys, xs].astype(np.float64)
+    valid = np.isfinite(zs) & (zs > 0.0)
+    if not valid.any():
+        return None
+    xs, ys, zs = xs[valid], ys[valid], zs[valid]
+
+    depth_min, depth_max = _depth_bounds(zs)
+    keep = (zs >= depth_min) & (zs <= depth_max)
+    xs, ys, zs = xs[keep], ys[keep], zs[keep]
+    if len(xs) == 0:
+        return None
+
+    pts = _pixels_to_points_habitat_camera(xs, ys, zs, fx, fy, cx, cy)
+
+    if remove_outliers and len(pts) > 20:
+        keep_idx = statistical_outlier_removal(pts, k=sor_k, std_ratio=sor_std)
+        pts = pts[keep_idx]
+        if len(pts) == 0:
+            return None
+
+    return pts
+
+
+def _pixels_to_points_habitat_camera(xs, ys, zs, fx, fy, cx, cy):
+    xs = np.asarray(xs, dtype=np.float64)
+    ys = np.asarray(ys, dtype=np.float64)
+    zs = np.asarray(zs, dtype=np.float64)
+
+    # Standard pinhole camera coordinates:
+    # X points right, Y points down, Z points forward from the camera.
+    X = (xs - cx) * zs / fx
+    Y = (ys - cy) * zs / fy
+    Z = zs
+
+    return np.column_stack([X, Y, Z]).astype(np.float32)
 
 
 def _get_R_and_T(trans):
     t = trans.transform
-    T = np.array([t.translation.x, t.translation.y, t.translation.z])
-    qx, qy, qz, qw = t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w
-    R = 2 * np.array([
-        [qw**2 + qx**2 - 0.5,  qx*qy - qw*qz,  qw*qy + qx*qz],
-        [qw*qz + qx*qy,        qw**2 + qy**2 - 0.5,  qy*qz - qw*qx],
-        [qx*qz - qw*qy,        qw*qx + qy*qz,  qw**2 + qz**2 - 0.5]
-    ])
+    T = np.array([t.translation.x, t.translation.y, t.translation.z], dtype=np.float64)
+
+    qx = float(t.rotation.x)
+    qy = float(t.rotation.y)
+    qz = float(t.rotation.z)
+    qw = float(t.rotation.w)
+
+    n = qx*qx + qy*qy + qz*qz + qw*qw
+    if n < 1e-12:
+        R = np.eye(3, dtype=np.float64)
+        return R, T
+
+    s = 2.0 / n
+
+    xx = qx * qx * s
+    yy = qy * qy * s
+    zz = qz * qz * s
+    xy = qx * qy * s
+    xz = qx * qz * s
+    yz = qy * qz * s
+    wx = qw * qx * s
+    wy = qw * qy * s
+    wz = qw * qz * s
+
+    R = np.array([
+        [1.0 - (yy + zz), xy - wz,         xz + wy],
+        [xy + wz,         1.0 - (xx + zz), yz - wx],
+        [xz - wy,         yz + wx,         1.0 - (xx + yy)],
+    ], dtype=np.float64)
+
     return R, T
 
 
-def _transform_point_xyz(pt_xyz, source_frame, target_frame, timeout=1.0, node=None, tf_buffer=None):
+def _transform_point_xyz(pt_xyz, source_frame, target_frame, stamp=None, timeout=None, node=None, tf_buffer=None):
+    if timeout is None:
+        timeout = CFG["tf"]["lookup_timeout"]
     if target_frame == source_frame:
         return np.array(pt_xyz).reshape(3)
-
-    if node is not None:
-        trans = getattr(node, 'current_transforms', {}).get((source_frame, target_frame))
-        if trans:
-            R, T = _get_R_and_T(trans)
-            return R.dot(np.array(pt_xyz)) + T
 
     tf_buffer = tf_buffer or getattr(node, 'tf_buffer', None)
     if tf_buffer is None:
         raise ValueError("tf_buffer or node with tf_buffer required")
 
-    # MODIFICA QUI: Usiamo Time() vuoto per chiedere "l'ultima trasformata disponibile"
-    # invece di Time(seconds=0) che in simulazione punta al passato e fallisce.
+    lookup_time = stamp if stamp is not None else Time()
+
     try:
-        trans = tf_buffer.lookup_transform(
-            target_frame, 
-            source_frame,
-            Time(),  
-            timeout=ROS2Duration(seconds=timeout)
-        )
+        trans = tf_buffer.lookup_transform(target_frame, source_frame, lookup_time,
+                                            timeout=ROS2Duration(seconds=timeout))
+    except tf2_ros.ExtrapolationException as e:
+        # Dato ormai troppo vecchio (o troppo nel futuro oltre il buffer): non aspettare, fallisci subito
+        raise RuntimeError(f"TF unavailable (extrapolation) for {source_frame}->{target_frame} "
+                            f"al tempo {lookup_time}: {e}")
     except Exception as e:
-        if node:
-            node.get_logger().error(f"Errore TF critico: impossibile trasformare da {source_frame} a {target_frame}. Errore: {e}")
-        raise e
+        raise RuntimeError(f"TF lookup fallito per {source_frame}->{target_frame} al tempo {lookup_time}: {e}")
 
     R, T = _get_R_and_T(trans)
     return R.dot(np.array(pt_xyz)) + T
@@ -105,17 +176,41 @@ def _depth_bounds(depth_values):
     return (median - 4.5*mad, median + 4.5*mad) if mad > 0.001 else (median*0.5, median*1.5)
 
 
-def mask_list_to_pointcloud2(masks, depth_image, camera_info, node, labels=None,
-                              topic="/pcl_objects", max_points_per_obj=20000,
-                              remove_outliers=True, sor_k=30, sor_std=1.0,
-                              publisher=None, labels_publisher=None):
-    if not isinstance(camera_info, CameraInfo):
-        raise TypeError('camera_info must be CameraInfo')
+def _robust_bounds_from_points(points_xyz, lower_q=5.0, upper_q=95.0):
+    pts = np.asarray(points_xyz, dtype=np.float64)
+    if pts.size == 0:
+        return None, None
 
-    labels       = labels or [f"obj_{i}" for i in range(len(masks))]
+    lower = np.percentile(pts, lower_q, axis=0)
+    upper = np.percentile(pts, upper_q, axis=0)
+    return lower, upper
+
+
+def mask_list_to_pointcloud2(
+    masks,
+    depth_image,
+    camera_info,
+    node,
+    labels=None,
+    topic="/pcl_objects",
+    max_points_per_obj=20000,
+    publisher=None,
+    labels_publisher=None,
+    transform=None,
+):
+    """Per-object coloured cloud. With `transform` (map<-optical of this frame, the
+    same one the boxes are lifted with) the cloud is published in the map frame;
+    without it, in CFG frames.camera — which must then be the OPTICAL frame, or the
+    cloud renders rotated (depth into the height axis) and looks absent in rviz."""
+    if not isinstance(camera_info, CameraInfo):
+        raise TypeError("camera_info must be CameraInfo")
+
+    labels = labels or [f"obj_{i}" for i in range(len(masks))]
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
-    #camera_frame = "head_front_camera_color_optical_frame"
-    camera_frame= "habitat_camera"
+    # Depth pixels are expressed in the OPTICAL pinhole frame; the config default
+    # is the optical frame for exactly that reason.
+    camera_frame = CFG["frames"]["camera"]
+
     current_points, id_to_label = [], {}
 
     for obj_idx, mask in enumerate(masks):
@@ -125,80 +220,66 @@ def mask_list_to_pointcloud2(masks, depth_image, camera_info, node, labels=None,
 
         if len(xs) == 0:
             continue
+
         if len(xs) > max_points_per_obj:
-            idx = np.linspace(0, len(xs)-1, max_points_per_obj).astype(int)
+            idx = np.linspace(0, len(xs) - 1, max_points_per_obj).astype(int)
             xs, ys = xs[idx], ys[idx]
 
-        # Depth values + bounds
-        zs = depth_image[ys, xs].astype(float)
-        valid = (zs > 0) & np.isfinite(zs)
+        zs = depth_image[ys, xs].astype(np.float32)
+        valid = np.isfinite(zs) & (zs > 0.0)
         if not valid.any():
             node.get_logger().warn(f"Mask {obj_idx}: no valid depth, skip")
             continue
 
-        depth_min, depth_max = _depth_bounds(zs[valid])
-        in_range = valid & (zs >= depth_min) & (zs <= depth_max)
-        xs, ys, zs = xs[in_range], ys[in_range], zs[in_range]
+        xs, ys, zs = xs[valid], ys[valid], zs[valid]
 
-        if len(xs) == 0:
+        # unused — superseded by _pixels_to_points_habitat_camera below
+        # x = (xs - cx) * zs / fx
+        # y = (ys - cy) * zs / fy
+        pts = _pixels_to_points_habitat_camera(xs, ys, zs, fx, fy, cx, cy)
+
+        if len(pts) == 0:
             continue
+        if transform is not None:
+            pts = _apply_transform(pts, transform)
 
-        # Project to camera-frame 3D
-        Xs = (xs - cx) * zs / fx
-        Ys = (ys - cy) * zs / fy
-        points = np.column_stack([Xs, Ys, zs])
-
-        # Statistical outlier removal
-        if remove_outliers and len(points) > 20:
-            mask_sor = statistical_outlier_removal(points, k=sor_k, std_ratio=sor_std)
-            points   = points[mask_sor]
-
-        if len(points) == 0:
-            node.get_logger().warn(f"Obj {obj_idx}: all points removed by filter")
-            continue
-
-        # Color + unique ID
-        unique_id  = node.pcl_object_id_counter
+        unique_id = node.pcl_object_id_counter
         rgb_packed = _pack_rgb(get_distinct_color(unique_id))
 
-        # Transform to map frame (vectorised where possible)
-        mapped = []
-        for pt in points:
-            try:
-                p = _transform_point_xyz(pt, camera_frame, "map", node=node)
-                mapped.append((*p, rgb_packed, unique_id))
-            except Exception as e:
-                node.get_logger().warn(f"Transform failed for point {pt}: {e}")
+        for pt in pts:
+            current_points.append((float(pt[0]), float(pt[1]), float(pt[2]), rgb_packed, unique_id))
 
-        current_points.extend(mapped)
         id_to_label[unique_id] = labels[obj_idx]
         node.pcl_object_id_counter += 1
 
     if not current_points:
-        node.get_logger().warn("mask_list_to_pointcloud2: no points to publish")
+        node.get_logger().warn("mask_list_to_pointcloud2_debug: no points to publish")
         return
 
-    # Build and publish PointCloud2
     fields = [
-        PointField(name='x',         offset=0,  datatype=PointField.FLOAT32, count=1),
-        PointField(name='y',         offset=4,  datatype=PointField.FLOAT32, count=1),
-        PointField(name='z',         offset=8,  datatype=PointField.FLOAT32, count=1),
-        PointField(name='rgb',       offset=12, datatype=PointField.FLOAT32, count=1),
-        PointField(name='object_id', offset=16, datatype=PointField.INT32,   count=1),
+        PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name="rgb", offset=12, datatype=PointField.FLOAT32, count=1),
+        PointField(name="object_id", offset=16, datatype=PointField.INT32, count=1),
     ]
-    header = Header(stamp=node.get_clock().now().to_msg(), frame_id="map")
+
+    if transform is not None:
+        header = Header(stamp=camera_info.header.stamp, frame_id="map")
+    else:
+        header = Header(stamp=camera_info.header.stamp, frame_id=camera_frame)
     cloud_msg = point_cloud2.create_cloud(header, fields, current_points)
 
     qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
     (publisher or node.create_publisher(PointCloud2, topic, qos)).publish(cloud_msg)
 
     try:
-        lbl_msg = String(); lbl_msg.data = json.dumps(id_to_label)
-        (labels_publisher or node.create_publisher(String, topic+"_labels", qos)).publish(lbl_msg)
+        lbl_msg = String()
+        lbl_msg.data = json.dumps(id_to_label)
+        (labels_publisher or node.create_publisher(String, topic + "_labels", qos)).publish(lbl_msg)
     except Exception:
         node.get_logger().warn("Could not publish pcl labels")
-
-    node.get_logger().info(f"Published {len(current_points)} points, {len(id_to_label)} objects")
+    
 
 def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, labels=None,
                                           frame_id="camera_link", topic_prefix="/pcl_id",
@@ -211,7 +292,7 @@ def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, 
     labels       = labels or [f"obj_{i}" for i in range(len(masks))]
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
     #camera_frame = "head_front_camera_color_optical_frame"
-    camera_frame = "habitat_camera"
+    camera_frame = CFG["frames"]["camera"]
     palette      = [to_rgb(c) for c in ('red','green','blue','magenta','cyan','yellow','orange','purple','brown','pink')]
     qos          = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
     stamp        = timestamp or node.get_clock().now().to_msg()
@@ -226,38 +307,13 @@ def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, 
 
     for obj_idx, mask in enumerate(masks):
         obj_id = id_counter_start + obj_idx
-        mask   = np.array(mask)
-        mask2d = mask[:, :, 0] if mask.ndim == 3 else mask
-        ys, xs = np.nonzero(mask2d.astype(bool))
-
-        if len(xs) == 0:
+        pts = _filter_object_points(mask, depth_image, fx, fy, cx, cy,
+                             max_points_per_obj=max_points_per_obj,
+                             remove_outliers=remove_outliers, sor_k=sor_k, sor_std=sor_std)
+        if pts is None:
+            node.get_logger().warn(f"{labels[obj_idx]}: no valid points after filtering")
             continue
-        if len(xs) > max_points_per_obj:
-            idx = np.linspace(0, len(xs)-1, max_points_per_obj).astype(int)
-            xs, ys = xs[idx], ys[idx]
-
-        # Color
-        col = palette[obj_idx % len(palette)]
-        rgb_packed = struct.unpack('f', struct.pack('I',
-            (int(col[0]*255) << 16) | (int(col[1]*255) << 8) | int(col[2]*255)))[0]
-
-        # Depth filter
-        zs    = depth_image[ys, xs].astype(float)
-        valid = (zs > 0) & np.isfinite(zs)
-        if not valid.any():
-            continue
-        depth_min, depth_max = _depth_bounds(zs[valid])
-        keep = valid & (zs >= depth_min) & (zs <= depth_max)
-        xs, ys, zs = xs[keep], ys[keep], zs[keep]
-
-        if len(xs) == 0:
-            continue
-
-        # Project to 3D
-        Xs = (xs - cx) * zs / fx
-        Ys = (ys - cy) * zs / fy
-        pts = np.column_stack([Xs, Ys, zs])
-
+        
         # Transform if needed
         if frame_id != camera_frame:
             transformed = []
@@ -279,6 +335,8 @@ def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, 
             node.get_logger().warn(f"Obj {obj_id} ({labels[obj_idx]}): no points after filtering")
             continue
 
+        r, g, b = (int(c * 255) for c in palette[obj_id % len(palette)])
+        rgb_packed = struct.unpack('f', struct.pack('I', (r << 16) | (g << 8) | b))[0]
         points = [(float(p[0]), float(p[1]), float(p[2]), rgb_packed, obj_id) for p in pts]
 
         # Publish
@@ -295,7 +353,8 @@ def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, 
 
 
 def points_list_to_rviz_3d(points, node, centroid_marker_pub=None, labels=None,
-                            frame_id="map", topic="/centroid_markers", marker_scale=0.06):
+                            frame_id="map", topic="/centroid_markers", marker_scale=0.06,
+                            stamp=None):
     if centroid_marker_pub is None:
         centroid_marker_pub = node.create_publisher(
             MarkerArray, topic, QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -304,18 +363,21 @@ def points_list_to_rviz_3d(points, node, centroid_marker_pub=None, labels=None,
         node._centroid_marker_id_counter = 0
 
     ma    = MarkerArray()
-    stamp = node.get_clock().now().to_msg()
+    stamp = stamp if stamp is not None else node.get_clock().now().to_msg()   # <-- unica riga cambiata
 
     for i, point in enumerate(points):
         if point is None:
             continue
         uid   = node._centroid_marker_id_counter
-        label = labels[i] if labels and i < len(labels) else f"obj_{i}"
+        # unused — markers carry no text; restore if a TEXT_VIEW_FACING label marker is added
+        # label = labels[i] if labels and i < len(labels) else f"obj_{i}"
         m = Marker()
         m.header.frame_id = frame_id
         m.header.stamp    = stamp
         m.ns, m.id, m.type, m.action = "centroid_spheres", uid, Marker.SPHERE, Marker.ADD
-        m.pose.position.x, m.pose.position.y, m.pose.position.z = point
+        m.pose.position.x = float(point[0])   # <-- fix del bug precedente, già discusso
+        m.pose.position.y = float(point[1])
+        m.pose.position.z = float(point[2])
         m.pose.orientation.w = 1.0
         m.scale.x = m.scale.y = m.scale.z = marker_scale
         m.color    = get_distinct_color(uid)
@@ -334,15 +396,140 @@ def init_bbox_publisher(node):
     centroid_pub = node.create_publisher(MarkerArray, '/centroid_markers', qos)
     time.sleep(0.5)
     return bbox_pub, centroid_pub
-  
+
+def _apply_transform(pts, transform):
+    """Applica in un colpo solo una trasformazione tf2 già risolta a un array (N,3)."""
+    R, T = _get_R_and_T(transform)
+    pts = np.asarray(pts, dtype=np.float64)
+    return pts.dot(R.T) + T
+
+
+def draw_cloud(img, points_map, camera_info, transform, max_points=6000, radius=1):
+    """Project map-frame points into this frame and dot them in. GA-218.
+
+    THE SAME PROJECTION `draw_boxes_3d` USES, on a point set instead of eight corners: the
+    map<-optical transform of THIS frame, then the pinhole. Reusing it is the point -- a
+    second implementation of the projection would drift from the first, and a cloud drawn
+    with a stale or mismatched transform looks plausible while being wrong, which is the
+    failure mode a debugging view must not have.
+
+    Coloured by HEIGHT, not by a flat tint: a uniform overlay hides whether the cloud is
+    lying on the floor or floating, and floating geometry is exactly what a bad localisation
+    produces. Points BEHIND the camera are dropped rather than wrapped -- a negative z
+    through a pinhole projects to a plausible pixel on the wrong side of the image.
+    """
+    if points_map is None or len(points_map) == 0 or transform is None:
+        return img
+    pts = np.asarray(points_map, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] < 3:
+        return img
+    pts = pts[:, :3]
+    if len(pts) > max_points:
+        # Deterministic stride, not a random draw: the same cloud should dot the same way on
+        # consecutive frames, or the overlay shimmers and looks like motion that is not there.
+        pts = pts[:: max(1, len(pts) // max_points)][:max_points]
+
+    # _get_R_and_T is what draw_boxes_3d itself uses, and `(p - T) @ R` is its exact
+    # expression for map -> optical. Written by hand the first time as a `transform_to_matrix`
+    # that DOES NOT EXIST -- checked before applying rather than discovered at runtime.
+    R, T = _get_R_and_T(transform)
+    cam = (pts - T) @ R
+    front = cam[:, 2] > 0.05
+    cam = cam[front]
+    if not len(cam):
+        return img
+    k = camera_info.k
+    fx, fy, cx, cy = float(k[0]), float(k[4]), float(k[2]), float(k[5])
+    u = (fx * cam[:, 0] / cam[:, 2] + cx).astype(np.int32)
+    v = (fy * cam[:, 1] / cam[:, 2] + cy).astype(np.int32)
+    h, w = img.shape[:2]
+    inside = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    u, v, z = u[inside], v[inside], pts[front][inside][:, 2]
+    if not len(u):
+        return img
+    lo, hi = float(z.min()), float(z.max())
+    span = max(hi - lo, 1e-6)
+    shade = ((z - lo) / span * 255).astype(np.uint8)
+    for uu, vv, ss in zip(u, v, shade):
+        img[max(0, vv - radius):vv + radius + 1, max(0, uu - radius):uu + radius + 1] = (
+            int(255 - ss), int(ss), 90)
+    return img
+
+
+# How strongly a 3D box's faces are tinted. Deliberately low: the point is a depth cue,
+# not a highlight, and the camera image underneath has to stay readable through it.
+BOX_FACE_ALPHA = 0.13
+
+
+def draw_boxes_3d(img, bboxes_3d, labels, camera_info, transform, depth=None, min_visible_points=1,
+                  tol_abs=0.10, tol_rel=0.05):
+    """Draw each 3D box (map frame) as a wireframe in the image it was measured from.
+
+    `transform` is the map<-optical transform of this very frame (the one the points
+    were lifted with), so this is the exact inverse of _apply_transform followed by the
+    pinhole. Orange = PCA-oriented box, blue = axis-aligned fallback. With `depth`
+    the box is subject to the same visibility rule as the simulator overlay
+    (box_view.project_visible): not drawn when out of view or occluded, thin when
+    only partially visible.
+    """
+    fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
+    h, w = img.shape[:2]
+    R, T = _get_R_and_T(transform)
+    for bbox, label in zip(bboxes_3d, labels):
+        corners, oriented = box_corners_map(bbox)
+        if not corners:
+            continue
+        cam = (np.asarray(corners + [np.mean(corners, axis=0)]) - T) @ R   # R^T (p - T): map -> optical
+        px, n_vis = project_visible(cam, depth, fx, fy, cx, cy, w, h, tol_abs=tol_abs, tol_rel=tol_rel)
+        if n_vis < min_visible_points:
+            continue
+        colour = (0, 165, 255) if oriented else (255, 160, 0)
+        thick = 2 if n_vis >= 5 else 1
+
+        # Faces, lightly shaded, UNDER the wireframe.
+        #
+        # A wireframe alone reads as a flat tangle once a few boxes overlap: there is no
+        # cue for which face is toward the camera, so two boxes at different depths look
+        # like one lattice. A low-alpha fill gives the solid back without hiding the
+        # image behind it -- the edges are still drawn on top at full strength, so
+        # nothing that was legible before becomes less so.
+        #
+        # Corner order comes from box_corners_map's nested comprehension,
+        # `for sx in (-ex, ex) for sy in (-ey, ey) for sz in (-ez, ez)`, so the index is
+        # 4*ix + 2*iy + iz. Each quad below is therefore a genuine face in cyclic order;
+        # listing them in the wrong order would fill bow-ties rather than faces.
+        if n_vis >= min_visible_points:
+            quads = np.array([[px[0], px[1], px[3], px[2]],    # x-
+                              [px[4], px[5], px[7], px[6]],    # x+
+                              [px[0], px[1], px[5], px[4]],    # y-
+                              [px[2], px[3], px[7], px[6]],    # y+
+                              [px[0], px[2], px[6], px[4]],    # z-
+                              [px[1], px[3], px[7], px[5]]],   # z+
+                             dtype=np.int32)
+            overlay = img.copy()
+            cv2.fillPoly(overlay, quads, colour, cv2.LINE_AA)
+            cv2.addWeighted(overlay, BOX_FACE_ALPHA, img, 1.0 - BOX_FACE_ALPHA, 0, dst=img)
+
+        for i, j in BOX_EDGES:
+            cv2.line(img, px[i], px[j], colour, thick, cv2.LINE_AA)
+        top = min(px, key=lambda p: p[1])
+        cv2.putText(img, str(label), (top[0], max(14, top[1] - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, thick, cv2.LINE_AA)
+    return img
+
+
 def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, node,
                                     bbox_marker_pub=None, centroid_marker_pub=None,
                                     max_points_per_obj=20000, remove_outliers=True,
-                                    sor_k=30, sor_std=1.0):
+                                    sor_k=30, sor_std=1.5, transform=None,
+                                    output_frame="map", points_out=None):
+    """`points_out`, when a list, receives one entry per mask: the map-frame points the
+    box was measured from, or None where no box was produced. The PCA stage reads them
+    instead of re-running the projection and the outlier removal on the same mask."""
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
-    #camera_frame   = "head_front_camera_color_optical_frame"
-    camera_frame = "habitat_camera"
+    camera_frame = CFG["frames"]["camera"]
     centroids_3d, bboxes_3d, all_markers = [], [], []
+    stamp = camera_info.header.stamp
 
     if not hasattr(node, '_bbox_marker_id_counter'):
         node._bbox_marker_id_counter = 0
@@ -350,85 +537,106 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
     for mask_idx, mask in enumerate(mask_list):
         label = labels[mask_idx] if labels and mask_idx < len(labels) else f"obj_{mask_idx}"
 
-        mask  = np.array(mask)
-        mask2d = mask[:, :, 0] if mask.ndim == 3 else mask
-        ys, xs = np.nonzero(mask2d.astype(bool))
+        pts = _filter_object_points(
+            mask, depth_image, fx, fy, cx, cy,
+            max_points_per_obj=max_points_per_obj,
+            remove_outliers=remove_outliers,
+            sor_k=sor_k, sor_std=sor_std
+        )
 
-        if len(xs) == 0:
-            centroids_3d.append(None); bboxes_3d.append(None); continue
-
-        if len(xs) > max_points_per_obj:
-            idx = np.linspace(0, len(xs)-1, max_points_per_obj).astype(int)
-            xs, ys = xs[idx], ys[idx]
-
-        # Depth filter
-        zs    = depth_image[ys, xs].astype(float)
-        valid = (zs > 0) & np.isfinite(zs)
-        if not valid.any():
-            centroids_3d.append(None); bboxes_3d.append(None); continue
-
-        depth_min, depth_max = _depth_bounds(zs[valid])
-        keep = valid & (zs >= depth_min) & (zs <= depth_max)
-        xs, ys, zs = xs[keep], ys[keep], zs[keep]
-
-        if len(xs) == 0:
-            centroids_3d.append(None); bboxes_3d.append(None); continue
-
-        # Project to 3D
-        pts = np.column_stack([(xs - cx) * zs / fx, (ys - cy) * zs / fy, zs])
-
-        if remove_outliers and len(pts) > 20:
-            pts = pts[statistical_outlier_removal(pts, k=sor_k, std_ratio=sor_std)]
-
-        if len(pts) == 0:
-            centroids_3d.append(None); bboxes_3d.append(None); continue
-
-        # Centroid
-        centroid = np.mean(pts, axis=0)
-        centroids_3d.append(tuple(centroid))
-
-        if centroid_marker_pub is not None:
-            c_map = _transform_point_xyz(tuple(centroid), camera_frame, "map", node=node)
-            points_list_to_rviz_3d([c_map], node, centroid_marker_pub=centroid_marker_pub,
-                                   labels=[label], frame_id="map", marker_scale=0.05)
-
-        # BBox corners → map frame
-        mins, maxs = pts.min(axis=0), pts.max(axis=0)
-        corners = list(itertools.product(*zip(mins, maxs)))  # 8 corners
-        try:
-            corners_map = np.array([_transform_point_xyz(c, camera_frame, "map", node=node) for c in corners])
-            bbox_dict = {f"{ax}_{k}": float(fn(corners_map[:, i]))
-                        for i, ax in enumerate("xyz")
-                        for k, fn in [("min", np.min), ("max", np.max)]}
-            bboxes_3d.append(bbox_dict)
-        except Exception as e:
-            node.get_logger().warn(f"BBox transform failed for mask {mask_idx}: {e}, using camera frame")
-            bbox_dict = {f"{k}_{ax}": float(fn(pts[:, i]))
-                        for i, ax in enumerate("xyz")
-                        for k, fn in [("min", np.min), ("max", np.max)]}
-            bboxes_3d.append(bbox_dict)
+        if pts is None:
+            node.get_logger().warn(f"{label}: no valid points after filtering")
+            centroids_3d.append(None)
+            bboxes_3d.append(None)
+            if points_out is not None:
+                points_out.append(None)
             continue
 
-        # Bbox marker
-        m = Marker()
-        m.header.frame_id = "map"
-        m.header.stamp    = node.get_clock().now().to_msg()
-        m.ns, m.id        = "bbox_markers", node._bbox_marker_id_counter
-        m.type, m.action  = Marker.SPHERE_LIST, Marker.ADD
-        m.scale.x = m.scale.y = m.scale.z = 0.02
-        m.color   = get_distinct_color(node._bbox_marker_id_counter)
-        m.lifetime = Duration(seconds=0).to_msg()
-        m.points  = [Point(x=float(p[0]), y=float(p[1]), z=float(p[2])) for p in corners_map]
-        all_markers.append(m)
-        node._bbox_marker_id_counter += 1
+        try:
+            if output_frame == camera_frame:
+                pts_map = pts
+            elif transform is not None:
+                pts_map = _apply_transform(pts, transform)
+            else:
+                pts_map = np.array([
+                    _transform_point_xyz(tuple(p), camera_frame, output_frame, stamp=stamp, node=node)
+                    for p in pts
+                ])
+
+
+            centroid_map = np.mean(pts_map, axis=0)
+
+            if centroid_marker_pub is not None:
+                points_list_to_rviz_3d(
+                    [centroid_map],
+                    node,
+                    centroid_marker_pub=centroid_marker_pub,
+                    labels=[label],
+                    frame_id=output_frame,
+                    marker_scale=0.05
+                )
+
+            mins_map, maxs_map = _robust_bounds_from_points(pts_map)
+            if mins_map is None or maxs_map is None:
+                raise ValueError("empty bbox after robust filtering")
+
+            if np.any((maxs_map - mins_map) <= 1e-4):
+                raise ValueError("degenerate bbox after robust filtering")
+
+            bbox_dict = {
+                "x_min": float(mins_map[0]), "x_max": float(maxs_map[0]),
+                "y_min": float(mins_map[1]), "y_max": float(maxs_map[1]),
+                "z_min": float(mins_map[2]), "z_max": float(maxs_map[2]),
+            }
+            corners_map = np.array(list(itertools.product(*zip(mins_map, maxs_map))))
+
+            # ALL THREE appends together, as the LAST statements of the try. The centroid used
+            # to be appended before the two raises above, so on an empty or degenerate box
+            # the except path's None made it TWO entries for one mask and every later
+            # centroid was read against the wrong detection by _archive_detections
+            # (positional). Found by agent1 in review 2026-09-06, shown red-first on a
+            # one-pixel-row mask, GA-327. Kept adjacent so that nothing inserted above them
+            # can ever leave the three lists at different lengths.
+            centroids_3d.append(tuple(float(v) for v in centroid_map))
+            bboxes_3d.append(bbox_dict)
+            if points_out is not None:
+                points_out.append(pts_map)
+
+        except Exception as e:
+            node.get_logger().warn(f"{label}: transform to map failed: {e}")
+            centroids_3d.append(None)
+            bboxes_3d.append(None)
+            if points_out is not None:
+                points_out.append(None)
+            continue
+
+        if bbox_marker_pub is not None:
+            m = Marker()
+            m.header.frame_id = output_frame
+            m.header.stamp = stamp
+            m.ns = "bbox_markers"
+            m.id = node._bbox_marker_id_counter
+            m.type = Marker.SPHERE_LIST
+            m.action = Marker.ADD
+            m.scale.x = m.scale.y = m.scale.z = 0.02
+            m.color = get_distinct_color(node._bbox_marker_id_counter)
+            m.lifetime = Duration(seconds=0).to_msg()
+            m.points = [Point(x=float(p[0]), y=float(p[1]), z=float(p[2])) for p in corners_map]
+            all_markers.append(m)
+            node._bbox_marker_id_counter += 1
+
+            if 'pts_map' in locals():
+                del pts_map
 
     if bbox_marker_pub is not None and all_markers:
-        ma = MarkerArray(); ma.markers = all_markers
+        ma = MarkerArray()
+        ma.markers = all_markers
         bbox_marker_pub.publish(ma)
         node.get_logger().info(f"Published {len(all_markers)} bbox markers on /bbox_marker")
 
-    return centroids_3d, bboxes_3d
+    node.get_logger().info(f"Total bboxes_3d={len(bboxes_3d)}")
 
+    return centroids_3d, bboxes_3d
 
 def _make_marker(frame_id, stamp, ns, mid, mtype, scale, color, position, lifetime_sec=0):
     """Helper to build a basic RViz Marker."""
@@ -464,13 +672,27 @@ def _centroid_from_bbox(bbox):
     return [(bbox[f"{k}_min"] + bbox[f"{k}_max"]) / 2.0 for k in "xyz"]
 
 
+def _stamp_from_seconds(timestamp_sec):
+    stamp = TimeMsg()
+    sec = int(timestamp_sec)
+    nanosec = int(round((timestamp_sec - sec) * 1e9))
+    if nanosec >= 1_000_000_000:
+        sec += 1
+        nanosec -= 1_000_000_000
+    stamp.sec = sec
+    stamp.nanosec = nanosec
+    return stamp
+
+
 def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix=""):
     if not pub:
         return
-    ma, stamp = MarkerArray(), node.get_clock().now().to_msg()
+    ma = MarkerArray()
     for i, obj in enumerate(objects):
         if obj.bbox is None:
             continue
+        obj_stamp = getattr(obj, "last_perception_time", None)
+        stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
         cx, cy, cz = _centroid_from_bbox(obj.bbox)
         ma.markers.append(_make_marker("map", stamp, ns, i, Marker.SPHERE, 0.08, color, (cx, cy, cz)))
         ma.markers.append(_make_text_marker("map", stamp, ns+"_labels", i+10000,
@@ -509,10 +731,12 @@ def publish_uncertain_centroids(node, uncertain_objects, uncertain_centroids_pub
 def _publish_bbox_markers(node, objects, pub, ns, color):
     if not pub:
         return
-    ma, stamp = MarkerArray(), node.get_clock().now().to_msg()
+    ma = MarkerArray()
     for i, obj in enumerate(objects):
         if obj.bbox is None:
             continue
+        obj_stamp = getattr(obj, "last_perception_time", None)
+        stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
         cx, cy, cz = _centroid_from_bbox(obj.bbox)
         m = _make_marker("map", stamp, ns, i * 2, Marker.CUBE, None, color, (cx, cy, cz))
         m.scale.x = obj.bbox["x_max"] - obj.bbox["x_min"]
@@ -548,7 +772,7 @@ groq_client = Groq(api_key=groq_api_key)
 def vlm_call(prompt, encoded_image):
     resp = groq_client.chat.completions.create(
         # Ho cambiato il modello qui sotto. 
-        # Puoi usare anche "llama-3.2-90b-vision-preview" se hai abbastanza quota
+        # "llama-3.2-90b-vision-preview" also works if the quota allows
         model="llama-3.2-11b-vision-preview", 
         messages=[{"role": "user", "content": [
             {"type": "text",      "text": prompt},
@@ -558,29 +782,138 @@ def vlm_call(prompt, encoded_image):
     return resp.choices[0].message.content
 
 '''
-with open(os.path.join(os.path.dirname(file_path), "api.txt"), "r") as f:
-    api_key = f.read().strip()
 
-client = OpenAI(api_key=api_key)
+_client = None
 
 
-def vlm_call(prompt, encoded_image):
-    agent = client.chat.completions.create(
-        model="gpt-5-nano",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"})
+
+_KEY_SOURCES = ("config vlm.api_key", "$OPENAI_API_KEY", "$REGOLO_API_KEY",
+                "$OPENROUTER_API_KEY", "the legacy api.txt beside cv_utils.py")
+
+
+def _endpoint_is_local(base_url):
+    """A local server ignores the key entirely; a remote one does not.
+
+    Split out and named so the distinction is testable without constructing a client, and so
+    the reason the placeholder survives is written down rather than inferred from a string.
+    """
+    try:
+        host = urllib.parse.urlparse(str(base_url)).hostname
+    except Exception:
+        return False
+    return host in _LOCAL_HOSTS
+
+
+def _resolve_api_key():
+    key = (
+        CFG.get("vlm", {}).get("api_key")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("REGOLO_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY", "")
+    )
+    if not key:
+        legacy = os.path.join(os.path.dirname(__file__), "api.txt")
+        if os.path.exists(legacy):
+            key = open(legacy).read().strip()
+    if key:
+        return key
+
+    # GA-136. This chain ended `return key or "ollama"`, so with no key anywhere the client
+    # was handed the literal string "ollama" as its credential.
+    #
+    # The placeholder is NOT arbitrary and is kept: the DEFAULT base_url is
+    # http://localhost:11434/v1 and config.py:18 documents the fallback -- "else 'ollama'
+    # (local server ignores it)". Deleting it outright would break the documented default.
+    #
+    # What it must not do is travel to a REMOTE endpoint. Every config that has actually run
+    # points at https://api.regolo.ai/v1, which authenticates: there, "ollama" produces a 401
+    # that reads as "the key you configured was rejected" when the truth is that no key was
+    # ever found. The misdirection is the defect, not the placeholder -- a wrong credential
+    # and an absent one are different faults and were indistinguishable at the call site.
+    base_url = CFG.get("vlm", {}).get("base_url", "")
+    if _endpoint_is_local(base_url):
+        return "ollama"
+    raise RuntimeError(
+        f"no VLM API key found for {base_url!r}, which is not a local endpoint. "
+        f"Searched, in order: {', '.join(_KEY_SOURCES)}. Refusing to send the literal "
+        f'string "ollama" as a credential: the 401 it produces reads as a rejected key '
+        f"rather than a missing one."
+    )
+
+
+def _vlm_client():
+    # Lazy: no api.txt read and no client construction at import time.
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            base_url=CFG["vlm"]["base_url"],
+            api_key=_resolve_api_key(),
+            timeout=CFG["vlm"]["timeout"],
+            max_retries=0,  # vlm_call owns retries (cfg vlm.retries); SDK backoff just adds latency
+        )
+    return _client
+
+
+def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_detail=None):
+    """One VLM round-trip. Transport failures (timeout, malformed envelope)
+    retry up to cfg vlm.retries times, then raise — never silently degraded.
+    A well-formed response is returned as-is (may be empty: a semantic outcome
+    the callers already handle).
+
+    `timeout` (seconds) bounds THIS call; None keeps the client's cfg vlm.timeout.
+    GA-303: the crop describer passes cfg vlm.crop_timeout here.
+
+    `response_format` and `image_detail` are optional so existing label/crop callers
+    keep byte-for-byte request semantics. The unified scene caller uses both to ask
+    the configured OpenAI-compatible endpoint for one strict JSON object containing
+    the boxes and attributes for the entire frame.
+    """
+    last_err = None
+    for attempt in range(CFG["vlm"]["retries"] + 1):
+        # GA-288. BACKOFF, because there was none. Run 20260903_135823 died at 18 cycles on
+        # a DNS blip ("Temporary failure in name resolution") that lasted under a second:
+        # three attempts fired back-to-back inside that second, all failed, and the raise
+        # below propagated through the timer callback into executor.spin(). 1 s / 2 s / 4 s
+        # lets a transient fault pass; a real outage still exhausts the attempts and raises.
+        if attempt:
+            time.sleep(min(2 ** (attempt - 1), 8))
+        try:
+            image_url = {"url": f"data:image/png;base64,{encoded_image}"}
+            if image_detail is not None:
+                image_url["detail"] = image_detail
+            request = {
+                "model": CFG["vlm"]["model"],
+                "messages": [
                     {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{encoded_image}"}
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": image_url,
+                            }
+                        ],
                     }
                 ],
             }
-        ]
-    )
-    return agent.choices[0].message.content
+            if timeout is not None:
+                request["timeout"] = timeout
+            if response_format is not None:
+                request["response_format"] = response_format
+            agent = _vlm_client().chat.completions.create(**request)
+            if not getattr(agent, "choices", None) or agent.choices[0].message is None:
+                raise RuntimeError(f"malformed VLM response: {agent!r:.200}")
+            message = agent.choices[0].message
+            refusal = getattr(message, "refusal", None)
+            if refusal:
+                raise RuntimeError(f"VLM refused the image request: {refusal}")
+            if not message.content:
+                raise RuntimeError("VLM returned an empty response")
+            return message.content
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"VLM unreachable after {CFG['vlm']['retries'] + 1} attempts") from last_err
 
 def numpy_to_base64(img, fmt='.png'):
     _, buf = cv2.imencode(fmt, img)

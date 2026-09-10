@@ -7,6 +7,29 @@ __pycache__/
 build/
 install/
 log/
-utils/
+# ANCHORED. A bare `utils/` matches at ANY depth, and it silently amputated two
+# subpackages of the vendored efficientvit -- models/utils and apps/utils -- so the
+# perception node died on `from models import OWLv2, VitSam` while the tree looked
+# complete. The partial success is what hid it: everything else imported fine.
+/utils/
 tiago_habitat/
 lost3dsg/word2vec-google-news-300/
+.codegraph/
+.handoff/
+*.pdf
+.pytest_cache/
+
+# Local working files
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+PRE_PR.md
+
+# Local credentials: the Modal endpoint URL is a bearer credential (GA-319). Never commit.
+lost3dsg/test/env.local.sh
+
+# a deployment's own wiring: the tracked config ships the seam empty
+lost3dsg/src/perception_module/config.local.yaml
+
+# Per-machine Claude Code settings (hooks); never committed.
+.claude/settings.local.json

@@ -1,0 +1,67 @@
+# GA-290 — rtabmap 0.23.7 local guard for the Rtabmap.cpp:4090 localization abort
+#
+# UPSTREAM DEFECT (diagnosed from source in PLAN_1.3 §28, 4 Sep, by the simulator lane;
+# owner ruling ~15:55 same day: PATCH LOCALLY):
+#   In localization mode, process() replaces the optimized-pose map wholesale with the
+#   optimizer's output (Rtabmap.cpp:3912 optimizeCurrentMap; :4082 `_optimizedPoses = poses`),
+#   guarded only by `poses.empty()` (:3917). A NON-EMPTY result that omits the current node
+#   passes that check, drops the node inserted at :1735 this same iteration, and hits the
+#   UNCONDITIONAL `UASSERT(_optimizedPoses.find(signature->id()) != _optimizedPoses.end())`
+#   at :4090 — a SIGABRT that killed runs 20260903_110622, _144312 and _230232 (all at
+#   iteration 1417-1485, all localization, all preceded by localization rejections at :3418).
+#   optimizeCurrentMap itself checks `uContains(optimizedPoses, id)` for its own log at :5424;
+#   sixty lines later the caller asserts. Not fixed upstream: master carries the identical
+#   assertion at its line 4119. No parameter disables it.
+#
+# LOCAL GUARD (this patch): inserted immediately before `if(updateConstraints)` at :4081.
+#   If the optimizer's non-empty result omits the current node, keep the previous
+#   _optimizedPoses (which hold the node) and set updateConstraints = false — the same
+#   recovery as any rejected loop closure; _mapCorrection is then computed from the node's
+#   previous pose. Guard message: "Optimization result (%d poses) does not include current
+#   node %d, keeping previous optimized poses" (grep rtabmap.log for it — a fired guard is
+#   INFORMATION, evidence the defect was live in that run).
+#
+# REBUILD PROVENANCE (build 2026-09-04, simulator lane; image graphapi-run:humble-ga290):
+#   source: introlab/rtabmap tag 0.23.7
+#           tarball https://github.com/introlab/rtabmap/archive/refs/tags/0.23.7.tar.gz
+#           sha256 ab13187949c75ea1fb8aeb33496a4c677305395e058330b5f53de73123972e73
+#   apply:   patch -p1 < lost3dsg/test/patches/rtabmap-0.23.7-ga290-guard.patch
+#            (patch(1) ignores this leading commentary; git apply is stricter — use patch)
+#   build (inside graphapi-run:humble, which carries ALL dev deps: OpenCV 4.5.4,
+#   Eigen 3.4, PCL 1.12 headers, ros-humble-libg2o 2020.5.29 and ros-humble-gtsam 4.2.0
+#   with their cmake configs — g2o AND gtsam MUST stay enabled or the optimizer silently
+#   changes in exactly the runs this guard protects):
+#           source /opt/ros/humble/setup.bash
+#           cmake -S rtabmap-0.23.7 -B build -DCMAKE_BUILD_TYPE=Release
+#           cmake --build build --target rtabmap_core -j 22
+#   swap:    build/bin/librtabmap_core.so.0.23.7 -> /opt/ros/humble/lib/x86_64-linux-gnu/
+#           as a Dockerfile layer FROM graphapi-run:humble (only the core .so is replaced;
+#           utilite is unpatched and stays the apt build).
+#   verified: SONAME identical (librtabmap_core.so.0.23); ldd fully resolved against the
+#           image's own g2o/gtsam/pcl/opencv; exported-symbol diff vs the apt deb = 21 weak
+#           PCL/boost typeinfo symbols present in the deb and absent here, and NO rtabmap
+#           lib in the image references any of them (nm -D -u scan over every
+#           /opt/ros/humble/lib/*rtabmap*so*); the rtabmap_slam node loads, initializes and
+#           runs on the patched core; the guard string is present in the installed .so.
+#   THE PATCH IS NOT VERIFIED BY A RUN until a >17 min localization run passes iteration
+#   1485 (the abort band) — that run is PROPOSED to the orchestrator, who holds run
+#   authorization. Until it exists, the image carries an unverified patch.
+--- a/corelib/src/Rtabmap.cpp
++++ b/corelib/src/Rtabmap.cpp
+@@ -4077,6 +4077,16 @@
+ 				}
+ 			}
+ 
++			// GA-290 guard (local patch): the optimizer can return a non-empty map that omits the
++			// current node (upstream Rtabmap.cpp:4090 asserts unconditionally; optimizeCurrentMap
++			// itself checks uContains at :5424). Keep the previous _optimizedPoses (which hold the
++			// node inserted this iteration) instead of asserting - same recovery as updateConstraints=false.
++			if(updateConstraints && !poses.empty() && !uContains(poses, signature->id()))
++			{
++				UWARN("Optimization result (%d poses) does not include current node %d, keeping previous optimized poses",
++						(int)poses.size(), signature->id());
++				updateConstraints = false;
++			}
+ 			if(updateConstraints)
+ 			{
+ 				UINFO("Updated local map (old size=%d, new size=%d)", (int)_optimizedPoses.size(), (int)poses.size());

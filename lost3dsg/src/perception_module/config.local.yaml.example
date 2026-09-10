@@ -1,0 +1,9 @@
+# Copy to config.local.yaml (gitignored) and edit. It merges over config.yaml key by key, and the
+# run PRINTS which keys it changed, so a bundle can never carry a value nothing recorded.
+#
+# This file exists so a deployment wires ITS OWN extension. The tracked config ships the seam
+# EMPTY: it named one machine's package and path, and a clean clone then depended on a checkout
+# nobody else had. The repository ships the seam; the deployment ships the wiring.
+hooks:
+  search_paths: ["/path/to/your/extension/checkout"]   # wherever the extension is mounted
+  filter: "yourpkg.filter:YourFilterClass"             # module:Class, as the extension exports it

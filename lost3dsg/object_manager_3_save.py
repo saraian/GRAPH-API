@@ -5,9 +5,8 @@ Tracks objects and automatically transitions from EXPLORATION to TRACKING when
 an object is seen again in a different position.
 Includes Topological Semantic Mapping (Room Manager) with Scene Graph generation.
 """
-import rclpy, json, os, time, threading, re
+import rclpy, json, os, time
 from rclpy.node import Node
-from rclpy.duration import Duration
 from rclpy.qos import QoSProfile, DurabilityPolicy
 import numpy as np
 from openai import OpenAI
@@ -17,14 +16,12 @@ from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Bool
 from object_info import Object
 from world_model import wm
-import gensim.downloader as api
 from utils import *
 from nlp_utils import *
 from datetime import datetime
 from cv_utils import *
 from map_database import MapDatabase
 from gensim.models import KeyedVectors
-from std_msgs.msg import String
 
 # =============  EXPLORATION PARAMETERS =============
 EXPLORATION_IOU_THRESHOLD = 0.18
@@ -225,8 +222,6 @@ def save_scene_graph(node, step, is_exploration=False):
     """Generate and save a 3D scene graph image for the current step."""
     import matplotlib
     matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
 
     output_dir = os.path.join(PROJECT_ROOT, "output")
     os.makedirs(output_dir, exist_ok=True)
@@ -815,7 +810,7 @@ class ObjectManagerService(Node):
                 )
                 
                 if transition:
-                    self.log_both('warn', f"🔴 [TRANSITION] Switching from EXPLORATION to TRACKING mode")
+                    self.log_both('warn', "🔴 [TRANSITION] Switching from EXPLORATION to TRACKING mode")
                     self.exploration_mode = False
                     self.tracking_step_counter = 1
                     tracking_activated = True
@@ -880,7 +875,7 @@ class ObjectManagerService(Node):
                 objects_modified = True
 
         if in_exploration and self.exploration_frame_counter >= EXPLORATION_FRAME_LIMIT and len(request.descriptions.descriptions) > 0:
-            self.log_both('warn', f"🔴 [TRANSITION] Exploration frame limit reached - switching to TRACKING mode")
+            self.log_both('warn', "🔴 [TRANSITION] Exploration frame limit reached - switching to TRACKING mode")
             self.exploration_mode = False
             self.tracking_step_counter = 1
             tracking_activated = True

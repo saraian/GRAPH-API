@@ -1,114 +1,765 @@
 [
     {
-        "label": "desk",
-        "description": "The desk is a long rectangular wooden surface with a brown finish and visible grain running along its length. Toward the rear edge sits a small white cloth, and several small items are arranged along the top, giving the desk a lived-in workspace appearance.",
-        "color": "brown",
-        "material": "wood",
-        "shape": "",
-        "bbox": {
-            "x_min": 2.1698250770568848,
-            "x_max": 4.3911895751953125,
-            "y_min": -1.3228896856307983,
-            "y_max": -0.6813052296638489,
-            "z_min": -1.49735689163208,
-            "z_max": -0.684587299823761
-        },
-        "room_id": "room_0"
-    },
-    {
-        "label": "sofa#1",
-        "description": "A long beige fabric sofa with multiple back cushions sits against a wall, accented by a floral-patterned square pillow on the left. The upholstery shows a small worn spot on the front-left seat cushion, distinguishing it from pristine examples of the same style.",
-        "color": "beige",
-        "material": "fabric",
-        "shape": "",
-        "bbox": {
-            "x_min": 0.6037930250167847,
-            "x_max": 2.4397668838500977,
-            "y_min": 2.088470458984375,
-            "y_max": 3.4747750759124756,
-            "z_min": -1.332914113998413,
-            "z_max": -0.5874086618423462
-        },
-        "room_id": "room_0"
-    },
-    {
-        "label": "sofa#2",
-        "description": "This elongated sofa is upholstered in brown fabric with a low-profile rectangular silhouette and visible textured weave. A cylindrical bolster cushion sits along the seating area, creating a distinctive curved accent on the otherwise straight lines of the sofa.",
-        "color": "brown",
-        "material": "fabric",
-        "shape": "",
-        "bbox": {
-            "x_min": 0.8114653825759888,
-            "x_max": 1.652814269065857,
-            "y_min": -0.35562556982040405,
-            "y_max": 0.6295347809791565,
-            "z_min": -1.2006503343582153,
-            "z_max": -0.5881140232086182
-        },
-        "room_id": "room_0"
-    },
-    {
-        "label": "lamp#1",
+        "object_id": "obj_649b0a6932d449a68319e637fc21e44a",
+        "label": "headboard",
         "description": "unknown",
         "color": "unknown",
         "material": "unknown",
         "shape": "",
         "bbox": {
-            "x_min": 3.408933162689209,
-            "x_max": 3.7325549125671387,
-            "y_min": 1.13363516330719,
-            "y_max": 1.6255371570587158,
-            "z_min": -1.4665366411209106,
-            "z_max": 0.44370391964912415
+            "x_min": -1.316089153289795,
+            "x_max": 0.24168728291988373,
+            "y_min": 8.165560722351074,
+            "y_max": 8.177382469177246,
+            "z_min": 0.666654646396637,
+            "z_max": 1.2041443586349487
         },
-        "room_id": "room_0"
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [
+                "obj_3011e210ab44468182db07748dfe8058",
+                "obj_38773d14abcd44c09a4924d263c72f9f",
+                "obj_4365b16ea4894c0d8417eb2f20cad12e",
+                "obj_98a2729e43e84fca9d2e714ecf385886"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449622.4365246,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
     },
     {
-        "label": "lamp#1",
+        "object_id": "obj_6757a61342aa42c39dd290084fd66a5e",
+        "label": "curtains#2",
         "description": "unknown",
         "color": "unknown",
         "material": "unknown",
         "shape": "",
         "bbox": {
-            "x_min": 5.061150074005127,
-            "x_max": 5.342473030090332,
-            "y_min": -0.8577898740768433,
-            "y_max": -0.5133447051048279,
-            "z_min": 0.23860710859298706,
-            "z_max": 0.5354120135307312
+            "x_min": 1.1024789810180664,
+            "x_max": 1.1977453231811523,
+            "y_min": 5.47624397277832,
+            "y_max": 5.697798728942871,
+            "z_min": 0.2140113264322281,
+            "z_max": 2.068485736846924
         },
-        "room_id": "room_0"
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [
+                "obj_12792bef70104f559bb2c0c2167afe76"
+            ],
+            "isOn": [],
+            "isNextTo": [
+                "obj_dd98a769294a4a65b0c344a672ebc8a0"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449622.4964535,
+        "last_perception_timestamp": 1788449750.3581924,
+        "last_perception_datetime": "2026-09-03T15:35:50.358192+00:00"
     },
     {
-        "label": "lamp#2",
-        "description": "A pink fabric lampshade with a cylindrical silhouette sits atop a slender dark metal base. The shade features a subtle vertical ribbed texture, and the base shows a matte finish with a small visible joint where the shade attaches.",
-        "color": "pink",
-        "material": "metal",
+        "object_id": "obj_b6bbe8add9fb433ba0e443b9af84bdeb",
+        "label": "nightstand#1",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
         "shape": "",
         "bbox": {
-            "x_min": 0.8114653825759888,
-            "x_max": 1.652814269065857,
-            "y_min": -0.35562556982040405,
-            "y_max": 0.6295347809791565,
-            "z_min": -1.2006503343582153,
-            "z_max": -0.5881140232086182
+            "x_min": 0.5741581916809082,
+            "x_max": 1.0053791999816895,
+            "y_min": 7.692684650421143,
+            "y_max": 7.728493690490723,
+            "z_min": 0.14621634781360626,
+            "z_max": 0.6193990111351013
         },
-        "room_id": "room_0"
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [
+                "obj_497b8421a13c4d7591d364e15b564625"
+            ],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449622.5553174,
+        "last_perception_timestamp": 1788449750.3581924,
+        "last_perception_datetime": "2026-09-03T15:35:50.358192+00:00"
     },
     {
-        "label": "window",
-        "description": "The window is a white rectangular frame with clear glass and a simple sash. Outside the glass, a suburban lawn with a tree is visible, situating the window in a domestic living room.",
+        "object_id": "obj_2bab7ec3979946f491ea56a8467dd2c8",
+        "label": "nightstand#2",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -1.9674949645996094,
+            "x_max": -1.421339750289917,
+            "y_min": 7.671380996704102,
+            "y_max": 8.2373628616333,
+            "z_min": 0.07386896014213562,
+            "z_max": 0.6381731629371643
+        },
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449622.6109118,
+        "last_perception_timestamp": 1788449750.3581924,
+        "last_perception_datetime": "2026-09-03T15:35:50.358192+00:00"
+    },
+    {
+        "object_id": "obj_2b656e337529443f8426ea1ad208221d",
+        "label": "bed",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -1.289294958114624,
+            "x_max": -0.056972090154886246,
+            "y_min": 6.033409595489502,
+            "y_max": 6.045960426330566,
+            "z_min": 0.06893744319677353,
+            "z_max": 0.438786119222641
+        },
+        "room_id": "room_1",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449622.6674383,
+        "last_perception_timestamp": 1788449750.3581924,
+        "last_perception_datetime": "2026-09-03T15:35:50.358192+00:00"
+    },
+    {
+        "object_id": "obj_3011e210ab44468182db07748dfe8058",
+        "label": "pillows#1",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -1.1828129291534424,
+            "x_max": -0.5965345501899719,
+            "y_min": 7.869543552398682,
+            "y_max": 8.107303619384766,
+            "z_min": 0.7023623585700989,
+            "z_max": 0.9942935109138489
+        },
+        "room_id": "room_1",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [
+                "obj_4365b16ea4894c0d8417eb2f20cad12e",
+                "obj_649b0a6932d449a68319e637fc21e44a",
+                "obj_dd98a769294a4a65b0c344a672ebc8a0"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449707.8808143,
+        "last_perception_timestamp": 1788449726.8538756,
+        "last_perception_datetime": "2026-09-03T15:35:26.853876+00:00"
+    },
+    {
+        "object_id": "obj_12792bef70104f559bb2c0c2167afe76",
+        "label": "curtains#1",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": 1.1024789810180664,
+            "x_max": 1.1977453231811523,
+            "y_min": 5.47624397277832,
+            "y_max": 5.697798728942871,
+            "z_min": 0.2140113264322281,
+            "z_max": 2.068485736846924
+        },
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [
+                "obj_6757a61342aa42c39dd290084fd66a5e"
+            ],
+            "isOn": [],
+            "isNextTo": [
+                "obj_dd98a769294a4a65b0c344a672ebc8a0"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449622.3800685,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_4365b16ea4894c0d8417eb2f20cad12e",
+        "label": "pillows#2",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -1.0523707866668701,
+            "x_max": -0.5588913559913635,
+            "y_min": 7.705380439758301,
+            "y_max": 7.7954511642456055,
+            "z_min": 0.6515756249427795,
+            "z_max": 0.8309778571128845
+        },
+        "room_id": "room_1",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [
+                "obj_3011e210ab44468182db07748dfe8058",
+                "obj_649b0a6932d449a68319e637fc21e44a",
+                "obj_dd98a769294a4a65b0c344a672ebc8a0"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449707.9984417,
+        "last_perception_timestamp": 1788449726.8538756,
+        "last_perception_datetime": "2026-09-03T15:35:26.853876+00:00"
+    },
+    {
+        "object_id": "obj_49043832d72740b48a318da488f92d9a",
+        "label": "curtains#1",
+        "description": "The curtain features vertical pleats or folds running along its length, creating a textured surface and soft draping. The material exhibits a matte finish and soft texture, typical of woven textile used for window coverings.",
         "color": "white",
+        "material": "fabric",
+        "shape": "",
+        "bbox": {
+            "x_min": 1.0817409753799438,
+            "x_max": 1.1925146579742432,
+            "y_min": 6.816789627075195,
+            "y_max": 7.194488048553467,
+            "z_min": 0.091042660176754,
+            "z_max": 2.0117387771606445
+        },
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [
+                "obj_dd98a769294a4a65b0c344a672ebc8a0"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449730.6152499,
+        "last_perception_timestamp": 1788449776.035773,
+        "last_perception_datetime": "2026-09-03T15:36:16.035773+00:00"
+    },
+    {
+        "object_id": "obj_98a2729e43e84fca9d2e714ecf385886",
+        "label": "lamp#1",
+        "description": "unknown",
+        "color": "unknown",
         "material": "unknown",
         "shape": "",
         "bbox": {
-            "x_min": 0.8114653825759888,
-            "x_max": 1.652814269065857,
-            "y_min": -0.35562556982040405,
-            "y_max": 0.6295347809791565,
-            "z_min": -1.2006503343582153,
-            "z_max": -0.5881140232086182
+            "x_min": 0.4877068102359772,
+            "x_max": 0.7565183043479919,
+            "y_min": 7.844847679138184,
+            "y_max": 8.009076118469238,
+            "z_min": 0.6981326341629028,
+            "z_max": 1.1926313638687134
         },
-        "room_id": "room_0"
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [],
+            "isOn": [
+                "obj_497b8421a13c4d7591d364e15b564625"
+            ],
+            "isNextTo": [
+                "obj_649b0a6932d449a68319e637fc21e44a",
+                "obj_dd98a769294a4a65b0c344a672ebc8a0"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449787.2768087,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_38773d14abcd44c09a4924d263c72f9f",
+        "label": "lamp#2",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -1.753275752067566,
+            "x_max": -1.455664873123169,
+            "y_min": 7.792497634887695,
+            "y_max": 7.943702220916748,
+            "z_min": 0.7013775110244751,
+            "z_max": 1.1966526508331299
+        },
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [],
+            "isOn": [
+                "obj_2bab7ec3979946f491ea56a8467dd2c8"
+            ],
+            "isNextTo": [
+                "obj_649b0a6932d449a68319e637fc21e44a",
+                "obj_dd98a769294a4a65b0c344a672ebc8a0"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449787.3331058,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_497b8421a13c4d7591d364e15b564625",
+        "label": "nightstand",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": 0.37891075015068054,
+            "x_max": 1.0991684198379517,
+            "y_min": 7.691096305847168,
+            "y_max": 8.24617862701416,
+            "z_min": 0.07062431424856186,
+            "z_max": 0.638094961643219
+        },
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449826.0831003,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_dd98a769294a4a65b0c344a672ebc8a0",
+        "label": "bed",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -0.38152173161506653,
+            "x_max": 0.21400418877601624,
+            "y_min": 6.236968517303467,
+            "y_max": 8.17422103881836,
+            "z_min": 0.6339857578277588,
+            "z_max": 1.1331851482391357
+        },
+        "room_id": "room_1",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [
+                "obj_12792bef70104f559bb2c0c2167afe76",
+                "obj_3011e210ab44468182db07748dfe8058",
+                "obj_38773d14abcd44c09a4924d263c72f9f",
+                "obj_4365b16ea4894c0d8417eb2f20cad12e",
+                "obj_49043832d72740b48a318da488f92d9a",
+                "obj_6757a61342aa42c39dd290084fd66a5e",
+                "obj_98a2729e43e84fca9d2e714ecf385886"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449826.1396904,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_d372ef061023422787653d125e648863",
+        "label": "sink",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -5.113521575927734,
+            "x_max": -4.913312911987305,
+            "y_min": 6.05479097366333,
+            "y_max": 6.213376045227051,
+            "z_min": 0.681401252746582,
+            "z_max": 0.7940546870231628
+        },
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [
+                "obj_c9b7d10261794b7dae83ce9816993b33"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449847.65477,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_c9b7d10261794b7dae83ce9816993b33",
+        "label": "countertop#1",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -4.688419818878174,
+            "x_max": -4.124854564666748,
+            "y_min": 5.7743611335754395,
+            "y_max": 6.154109954833984,
+            "z_min": 0.8034698963165283,
+            "z_max": 0.8193638920783997
+        },
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [],
+            "isOn": [
+                "obj_cf8e494b31f74773871b79cadbe82673"
+            ],
+            "isNextTo": [
+                "obj_d372ef061023422787653d125e648863"
+            ],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449847.7124548,
+        "last_perception_timestamp": 1788449816.05302,
+        "last_perception_datetime": "2026-09-03T15:36:56.053020+00:00"
+    },
+    {
+        "object_id": "obj_cf8e494b31f74773871b79cadbe82673",
+        "label": "cabinetry",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -4.517604827880859,
+            "x_max": -4.087705135345459,
+            "y_min": 5.792579174041748,
+            "y_max": 5.803294658660889,
+            "z_min": 0.17265115678310394,
+            "z_max": 0.7163113951683044
+        },
+        "room_id": "room_0",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788449847.825194,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_c6368fbb39204a1980b9c1d0086dd2b0",
+        "label": "sink",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -5.681341648101807,
+            "x_max": -5.468760013580322,
+            "y_min": -0.07438249886035919,
+            "y_max": 0.2406616359949112,
+            "z_min": 0.8164271116256714,
+            "z_max": 0.9162949323654175
+        },
+        "room_id": "room_3",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788450087.6252704,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_7b7998bb06fd4fcf8a64136911d6a6e6",
+        "label": "cabinet drawer#1",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -3.7210795879364014,
+            "x_max": -3.312208890914917,
+            "y_min": -0.8518900275230408,
+            "y_max": -0.8287186622619629,
+            "z_min": 0.7499489784240723,
+            "z_max": 0.8665239214897156
+        },
+        "room_id": "room_2",
+        "relations": {
+            "isIn": [],
+            "isOn": [
+                "obj_ad4e328e8fc14616b70413237684dd53"
+            ],
+            "isNextTo": [],
+            "isAbove": [
+                "obj_0aae223c99e542c1971bda63b50e9194"
+            ],
+            "isUnder": []
+        },
+        "creation_time": 1788450087.6832004,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_ad4e328e8fc14616b70413237684dd53",
+        "label": "cabinet drawer#2",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -3.717134475708008,
+            "x_max": -3.3157758712768555,
+            "y_min": -0.850416898727417,
+            "y_max": -0.8426110744476318,
+            "z_min": 0.5508308410644531,
+            "z_max": 0.7292978763580322
+        },
+        "room_id": "room_2",
+        "relations": {
+            "isIn": [],
+            "isOn": [
+                "obj_0aae223c99e542c1971bda63b50e9194"
+            ],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788450087.7423012,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_0aae223c99e542c1971bda63b50e9194",
+        "label": "cabinet drawer#3",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -3.72092604637146,
+            "x_max": -3.3180675506591797,
+            "y_min": -0.852575957775116,
+            "y_max": -0.8447390794754028,
+            "z_min": 0.3369731307029724,
+            "z_max": 0.515522837638855
+        },
+        "room_id": "room_2",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": [
+                "obj_7b7998bb06fd4fcf8a64136911d6a6e6"
+            ]
+        },
+        "creation_time": 1788450087.7991338,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_25ca3ae2697b49e4ac87d8b1b6c6607d",
+        "label": "cabinetry",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -5.529124736785889,
+            "x_max": -5.520614147186279,
+            "y_min": -1.4097721576690674,
+            "y_max": -0.651205837726593,
+            "z_min": 1.4537217617034912,
+            "z_max": 2.168351888656616
+        },
+        "room_id": "room_3",
+        "relations": {
+            "isIn": [
+                "obj_7d7725619edf4cf6b6a65a3b13099bb3"
+            ],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788450129.5461512,
+        "last_perception_timestamp": 1788450390.551438,
+        "last_perception_datetime": "2026-09-03T15:46:30.551438+00:00"
+    },
+    {
+        "object_id": "obj_7cff30aee145498c918eb3fed3dcea17",
+        "label": "refrigerator",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -2.4534647464752197,
+            "x_max": -2.3679001331329346,
+            "y_min": -0.8047098517417908,
+            "y_max": -0.06802786886692047,
+            "z_min": 0.3928529620170593,
+            "z_max": 1.6190682649612427
+        },
+        "room_id": "room_2",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788450144.2858489,
+        "last_perception_timestamp": 1788450404.1290162,
+        "last_perception_datetime": "2026-09-03T15:46:44.129016+00:00"
+    },
+    {
+        "object_id": "obj_7d7725619edf4cf6b6a65a3b13099bb3",
+        "label": "wooden cabinets",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -5.529124736785889,
+            "x_max": -5.520614147186279,
+            "y_min": -1.4097721576690674,
+            "y_max": -0.651205837726593,
+            "z_min": 1.4537217617034912,
+            "z_max": 2.168351888656616
+        },
+        "room_id": "room_3",
+        "relations": {
+            "isIn": [
+                "obj_25ca3ae2697b49e4ac87d8b1b6c6607d"
+            ],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788450163.7893753,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_68a959ea820d4cb9ab1a72e2712dba3f",
+        "label": "fireplace",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -5.771143436431885,
+            "x_max": -5.05283784866333,
+            "y_min": -5.887040615081787,
+            "y_max": -4.706755638122559,
+            "z_min": 0.2070322483778,
+            "z_max": 1.1106808185577393
+        },
+        "room_id": "room_6",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788450450.2735016,
+        "last_perception_timestamp": 1788450500.5694857,
+        "last_perception_datetime": "2026-09-03T15:48:20.569486+00:00"
+    },
+    {
+        "object_id": "obj_076b3ef00e5b47aaabc85ff0fa0a541b",
+        "label": "floor",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -3.558840274810791,
+            "x_max": -2.743004560470581,
+            "y_min": -7.028080463409424,
+            "y_max": -5.32218599319458,
+            "z_min": 0.013503777794539928,
+            "z_max": 0.4445067048072815
+        },
+        "room_id": "room_7",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788450480.6801353,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
+    },
+    {
+        "object_id": "obj_2ea12f81a20a40e8bd180eb3483f2746",
+        "label": "window",
+        "description": "unknown",
+        "color": "unknown",
+        "material": "unknown",
+        "shape": "",
+        "bbox": {
+            "x_min": -4.532731533050537,
+            "x_max": -3.2481613159179688,
+            "y_min": -8.503039360046387,
+            "y_max": -8.379509925842285,
+            "z_min": 0.5049097537994385,
+            "z_max": 1.6280521154403687
+        },
+        "room_id": "room_7",
+        "relations": {
+            "isIn": [],
+            "isOn": [],
+            "isNextTo": [],
+            "isAbove": [],
+            "isUnder": []
+        },
+        "creation_time": 1788450500.1160662,
+        "last_perception_timestamp": null,
+        "last_perception_datetime": null
     }
 ]

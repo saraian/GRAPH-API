@@ -1,0 +1,22 @@
+a4's probe frame. A REAL habitat render at run resolution, shipped with the gate.
+
+  source     <runs>/20260826_112549_hm3d_00861/room_frames/
+             room_0@1787736474.679392067.jpg
+  copied     2026-08-31, archive read-only (rule 12)
+  sha256_16  e3e009c51ead2dad
+  size       74175 bytes, 640x480 RGB
+
+WHY A FILE AND NOT np.zeros((64,64,3)):
+a4 sent a 64x64 zero frame for its three calls. The Modal service takes a different code path
+for a degenerate input: it returned timing keys ['total','yolo_world'] for that frame and
+['detector','sam2','total'] for this one, from the same endpoint, minutes apart. So a4 was
+asserting a contract against an input no run ever sends, and it refused run 16 for a reason
+that did not describe the run. The same defect could as easily have produced a false PASS.
+
+WHY SHIPPED AND NOT READ FROM A BUNDLE:
+a gate that reads the archive asserts whatever the archive has become. This frame is fixed, so
+what a4 asserts does not change when the corpus does.
+
+WHY 640x480 AND NOT SMALLER:
+that is the resolution runs send. Shrinking it risks re-entering the degenerate path this file
+exists to leave.

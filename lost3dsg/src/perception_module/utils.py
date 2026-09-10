@@ -1,6 +1,5 @@
 from object_info import Object
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from rclpy.time import Time as ROS2Time
 from rclpy.duration import Duration as ROS2Duration
 import numpy as np
 from cv_bridge import CvBridge
@@ -9,13 +8,13 @@ from sensor_msgs.msg import Image, CameraInfo
 from scipy.spatial import KDTree
 from std_msgs.msg import ColorRGBA
 import config 
-
+from rclpy.time import Time
 
 bridge = CvBridge()
 
 file_path = os.path.abspath(__file__)
-ENCODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path),"utils", "l2_encoder.onnx")
-DECODER_VITSAM_PATH = os.path.join(os.path.dirname(file_path),"utils", "l2_decoder.onnx")
+ENCODER_VITSAM_PATH = config.CFG["paths"]["vitsam_encoder"] or os.path.join(os.path.dirname(file_path), "utils", "l2_encoder.onnx")
+DECODER_VITSAM_PATH = config.CFG["paths"]["vitsam_decoder"] or os.path.join(os.path.dirname(file_path), "utils", "l2_decoder.onnx")
 
 
 class SyncedCameraData:
@@ -31,6 +30,8 @@ class SyncedCameraData:
         """
         self.node = node
         self.bridge = CvBridge()
+        self.sync_tolerance_sec = float(sync_tolerance_ms) / 1000.0
+        self.default_camera_frame = "habitat_camera_optical"
 
         # Data cache - ALWAYS UPDATED with the most recent messages
         self.cached_rgb = None
@@ -40,8 +41,21 @@ class SyncedCameraData:
         self.all_ready = False
 
         # QoS for real robot sensor topics
+        # GA-164. depth=1, not 10, and the callback comment three screens down says why:
+        # "ALWAYS updates with the most recent RGB". A depth of 10 defeats that -- the node
+        # drains a QUEUE of ten frames in arrival order, each one immediately superseded by
+        # the next, so `cached_rgb` lags the sensor by up to the queue depth.
+        #
+        # MEASURED, run 20260901_035141 at 1280x960: frames reached get_synced_data a MEDIAN
+        # 7.14 s stale (p90 10.90 s, max 34.05 s) against its 1.0 s freshness limit, so ALL
+        # 1650 were rejected and `publish_objects` ran ZERO times in 17 minutes. At 640x480
+        # the same check rejected 292 and 17 in the two previous runs and 428 and 29 cycles
+        # still ran -- so this is a backlog that 4x the pixels turned from a tax into a wall.
+        #
+        # depth=1 means the middleware keeps only the newest sample and the node reads the
+        # present rather than catching up on the past.
         qos_sensor = QoSProfile(
-            depth=10,
+            depth=1,
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST
         )
@@ -72,43 +86,76 @@ class SyncedCameraData:
         if first_time:
             self.node.get_logger().info("Depth received (first frame)")
             self._check_all_ready()
+        self._try_get_transform()
 
     def _camera_info_callback(self, msg):
-        """Saves CameraInfo (usually doesn't change)"""
-        if self.cached_camera_info is None:
-            self.cached_camera_info = msg
+        """Keep the latest CameraInfo header stamp aligned with the current frame."""
+        first_time = self.cached_camera_info is None
+        self.cached_camera_info = msg
+        if first_time:
             self.node.get_logger().info("CameraInfo received")
-            self._check_all_ready()
+        self._check_all_ready()
+        self._try_get_transform()
 
     def _try_get_transform(self):
-        """ALWAYS updates the transform with the most recent one available"""
         if self.cached_rgb is None:
-            return  # Don't have RGB yet
-
+            return
         if not hasattr(self.node, 'tf_buffer'):
             return
-
         try:
-            camera_frame = self.cached_rgb.header.frame_id
+            camera_frame = self.cached_rgb.header.frame_id or self.default_camera_frame
             target_frame = "map"
-
-            # ALWAYS use the most recent transform available (timestamp=0)
-            # We ignore the image timestamp because there's too much delay
+            lookup_time = Time.from_msg(self.cached_rgb.header.stamp)
             transform = self.node.tf_buffer.lookup_transform(
                 target_frame,
                 camera_frame,
-                ROS2Time(seconds=0),  # Most recent available
-                timeout=ROS2Duration(seconds=0.01)
+                lookup_time,
+                timeout=ROS2Duration(seconds=config.CFG["tf"]["lookup_timeout"])
             )
-
             first_time = self.cached_transform is None
-            self.cached_transform = transform  # Always update!
-
+            self.cached_transform = transform
             if first_time:
                 self.node.get_logger().info("✓ Transform received (first)")
                 self._check_all_ready()
-
         except Exception as e:
+            # Per le bbox 3D preferiamo una posa esatta al timestamp del frame RGB:
+            # when unavailable, invalidate the cache so the frame is dropped.
+            self.cached_transform = None
+
+            # GA-95. The TF-at-image-stamp principle above is CORRECT and stays: a box is
+            # back-projected with the pose the camera actually had when the shutter opened.
+            # What was missing is the exit. Only `cached_transform` was cleared, never
+            # `cached_rgb`, so the SAME frame was re-looked-up on every tick -- and once its
+            # stamp falls out of the TF buffer the lookup is unrecoverable BY DEFINITION,
+            # because the data it needs has been evicted. In run A that produced 2271
+            # retries of one dead frame over 38 minutes, each one logging at INFO from the
+            # caller, while the first (and only) warn here had already been suppressed by
+            # _transform_error_logged.
+            #
+            # A frame older than the buffer's cache window can never be transformed again.
+            # Say so ONCE with the numbers, then DROP IT so the next frame gets a turn.
+            try:
+                stamp_s = Time.from_msg(self.cached_rgb.header.stamp).nanoseconds / 1e9
+                now_s = self.node.get_clock().now().nanoseconds / 1e9
+                age = now_s - stamp_s
+            except Exception:
+                age = None
+
+            cache_s = float(config.CFG["tf"].get("buffer_cache_s", 30.0))
+            if age is not None and age > cache_s:
+                self.node.get_logger().warn(
+                    f"Dropping frame: its stamp is {age:.1f}s old and the TF buffer holds "
+                    f"only {cache_s:.0f}s, so this lookup can never succeed. "
+                    f"Discarding it so the next frame is tried. ({e})")
+                self.cached_rgb = None
+                self.cached_depth = None
+                self.all_ready = False
+                # Re-arm the one-shot warn: the NEXT frame's failure is a new fact, and
+                # suppressing it was half of why this went unnoticed for 38 minutes.
+                if hasattr(self, '_transform_error_logged'):
+                    del self._transform_error_logged
+                return
+
             if not hasattr(self, '_transform_error_logged'):
                 self.node.get_logger().warn(f"Transform not available: {e}")
                 self._transform_error_logged = True
@@ -123,52 +170,73 @@ class SyncedCameraData:
                 self.node.get_logger().info("OK - All data ready!")
                 self.all_ready = True
 
-    def get_synced_data(self):
-        """
-        Returns camera data ONLY if ALL are available (RGB, Depth, CameraInfo, Transform).
+    def get_synced_data(self, max_age=None):
+        # GA-164: reachable, not hardcoded. 1.0 s was a literal default that no config could
+        # reach -- the same class as the three unreachable settings found tonight -- and it
+        # is the exact threshold that rejected every frame of run 035141. Raising it is a
+        # real trade and should be made deliberately: TF-at-image-stamp keeps an old frame
+        # GEOMETRICALLY correct, but a frame seconds old describes a scene the robot may
+        # have left, and the TF buffer only holds 30 s.
+        if max_age is None:
+            max_age = float(config.CFG["perception"].get("max_frame_age_s", 1.0))
+        if self.cached_transform is None:
+            self._try_get_transform()
 
-        Returns:
-            dict or None: {
-                'rgb': numpy array BGR,
-                'depth': numpy array (meters),
-                'camera_info': CameraInfo msg,
-                'transform': TransformStamped,
-                'timestamp': Time of RGB frame,
-                'camera_frame': str
-            }
-        """
-
-        # AGGIUNGI QUESTA RIGA DI STAMPA QUI SOTTO:
-        print(f"--- [DEBUG utils] Verifico cache -> RGB:{self.cached_rgb is not None}, Depth:{self.cached_depth is not None}, Info:{self.cached_camera_info is not None}, TF:{self.cached_transform is not None}")
-        # Check if we have ALL the data (including transform!)
-        if (self.cached_rgb is None or
-            self.cached_depth is None or
-            self.cached_camera_info is None or
-            self.cached_transform is None):
+        missing = []
+        if self.cached_rgb is None:
+            missing.append("rgb")
+        if self.cached_depth is None:
+            missing.append("depth")
+        if self.cached_camera_info is None:
+            missing.append("camera_info")
+        if self.cached_transform is None:
+            missing.append("transform")
+        if missing:
+            self.node.get_logger().info(f"Synced data not ready, missing: {', '.join(missing)}")
             return None
 
-        try:
-            # Convert images
-            rgb_cv = self.bridge.imgmsg_to_cv2(self.cached_rgb, 'bgr8')
-            depth_array = self.bridge.imgmsg_to_cv2(self.cached_depth, desired_encoding='passthrough')
-            depth_array = np.asarray(depth_array).astype(float)
+        # Controllo di freschezza: scarta dati troppo vecchi
+        now = self.node.get_clock().now()
+        rgb_stamp = Time.from_msg(self.cached_rgb.header.stamp)
+        age = (now - rgb_stamp).nanoseconds / 1e9
+        if age > max_age:
+            self.node.get_logger().warn(f"Cached frame too old ({age:.2f}s), discarding")
+            return None
 
-            # Convert to meters if necessary (depth from Asus Xtion is in mm)
-            
+        depth_stamp = None
+        if hasattr(self.cached_depth, "header"):
+            depth_stamp = Time.from_msg(self.cached_depth.header.stamp)
+            stamp_delta = abs((rgb_stamp - depth_stamp).nanoseconds) / 1e9
+            if stamp_delta > self.sync_tolerance_sec:
+                self.node.get_logger().warn(
+                    f"RGB/depth not synchronised ({stamp_delta:.3f}s), discarding the frame"
+                )
+                return None
+
+        try:
+            rgb_cv = self.bridge.imgmsg_to_cv2(self.cached_rgb, 'bgr8')
+            depth_array = depth_to_metres(
+                self.bridge.imgmsg_to_cv2(self.cached_depth, desired_encoding='passthrough'))
+
             if config.simulation:
                 depth_array = np.nan_to_num(depth_array, nan=0.0, posinf=0.0, neginf=0.0)
-    
-            else:
-                if depth_array.max() > 20.0:
-                    depth_array = depth_array / 1000.0  # Convert mm to meters
-            return {
-                    'rgb': rgb_cv,
-                    'depth': depth_array,
-                    'camera_info': self.cached_camera_info,
-                    'transform': self.cached_transform,
-                    'timestamp': self.cached_rgb.header.stamp,
-                    'camera_frame': self.cached_rgb.header.frame_id
-                }
+
+            result = {
+                'rgb': rgb_cv,
+                'depth': depth_array,
+                'camera_info': self.cached_camera_info,
+                'transform': self.cached_transform,
+                'timestamp': self.cached_rgb.header.stamp,
+                'camera_frame': self.cached_rgb.header.frame_id
+            }
+
+            # Invalida dopo il consumo, per forzare l'attesa di un nuovo frame
+            self.cached_rgb = None
+            self.cached_depth = None
+            self.cached_camera_info = None
+            self.cached_transform = None
+
+            return result
 
         except Exception as e:
             self.node.get_logger().error(f"Data conversion error: {e}")
@@ -190,6 +258,15 @@ def depth_image_to_point_cloud(depth_image, camera_intrinsics):
     return points
 
 
+def depth_to_metres(raw):
+    """GA-42. The unit comes from the ENCODING (REP 118: 16UC1 is millimetres, 32FC1 is
+    metres), not from the frame's largest pixel: `max() > 20.0` divided a whole metre-valued
+    frame by 1000 on one far or infinite reading."""
+    raw = np.asarray(raw)
+    depth = raw.astype(float)
+    return depth / 1000.0 if raw.dtype == np.uint16 else depth
+
+
 def statistical_outlier_removal(points_xyz, k=20, std_ratio=2.0):
     """
     Removes statistical outliers based on the mean distance from the k nearest neighbors.
@@ -203,11 +280,16 @@ def statistical_outlier_removal(points_xyz, k=20, std_ratio=2.0):
         mask: Boolean array (N,) where True = valid point
     """
 
-    if len(points_xyz) < k:
+    # <= k, not < k (reviewed 2026-09-07): with exactly k points the k+1 query pads a
+    # neighbour with inf, every mean distance is inf, the threshold is nan and NOTHING is
+    # kept -- the detection lost its 3D box. Measured: n=30, k=30 -> kept 0/30.
+    if len(points_xyz) <= k:
         return np.ones(len(points_xyz), dtype=bool)
 
     tree = KDTree(points_xyz)
-    distances, _ = tree.query(points_xyz, k=k+1)  # +1 because it includes the point itself
+    # workers=-1: the same query on every core. kNN distances are deterministic, so the
+    # kept set is identical; only the wall time changes (22 cores in the run container).
+    distances, _ = tree.query(points_xyz, k=k+1, workers=-1)  # +1 because it includes the point itself
     mean_distances = distances[:, 1:].mean(axis=1)  # Exclude the point itself (distance 0)
 
     global_mean = mean_distances.mean()
@@ -228,7 +310,7 @@ def get_distinct_color(index):
     r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
     return ColorRGBA(r=r, g=g, b=b, a=1.0)
 
-def apply_nms(bboxs, labels, scores, iou_threshold=0.5):
+def apply_nms(bboxs, labels, scores, iou_threshold=0.5, containment_threshold=None):
     """
     Apply CLASS-AWARE Non-Maximum Suppression to remove overlapping bounding boxes.
     NMS is applied SEPARATELY for each class, so boxes of different classes are never suppressed.
@@ -245,6 +327,14 @@ def apply_nms(bboxs, labels, scores, iou_threshold=0.5):
     """
     if len(bboxs) == 0:
         return [], [], []
+
+    if containment_threshold is None:
+        try:
+            from config import CFG
+            containment_threshold = float(
+                (CFG.get("perception", {}) or {}).get("containment_threshold", 0.85))
+        except Exception:
+            containment_threshold = 0.85
 
     # Convert to numpy arrays for easier manipulation
     bboxs = np.array(bboxs)
@@ -296,10 +386,34 @@ def apply_nms(bboxs, labels, scores, iou_threshold=0.5):
             intersection = w * h
 
             # IoU = intersection / union
-            iou = intersection / (areas[i] + areas[order[1:]] - intersection)
+            # GA-19: epsilon, as the cloud twin has. Two zero-area boxes gave 0/0 = nan,
+            # and `nan <= threshold` is False, so a box was suppressed by one it does
+            # not overlap. A degenerate box now has IoU 0 and survives NMS on its own.
+            iou = intersection / np.maximum(areas[i] + areas[order[1:]] - intersection, 1e-9)
 
-            # Keep only boxes with IoU below threshold
-            inds = np.where(iou <= iou_threshold)[0]
+            # GA-276. CONTAINMENT, because IoU IS BLIND TO NESTING.
+            # A small box wholly inside a large one has IoU = area_small/area_large: at a 5x
+            # size difference that is 0.2, far below any sane threshold, so it survives.
+            # MEASURED on run 20260902_221606: 61 same-class pairs in one frame where one box
+            # is >90% contained in the other, and ALL 61 have IoU < 0.5 -- median IoU 0.185
+            # against median IoS 0.934. That is the concentric stack of five `bed` boxes and
+            # four `nightstand` boxes the operator saw on the live overlay.
+            #
+            # IoS = intersection / area of the SMALLER box. 1.0 means fully contained.
+            # Boxes are visited in DESCENDING score order, so the survivor is always the
+            # stronger detection and the suppressed one is always the weaker -- on the
+            # measured pairs the contained box scored 0.15-0.28 against 0.49-0.60.
+            #
+            # THE RISK, and it is real: 2D containment is not 3D containment. Two same-class
+            # objects at different depths -- a far chair seen "inside" a near chair's box --
+            # nest in the image while being distinct in the world. This trades that rare
+            # false merge against a measured, constant flood of duplicates. Set
+            # perception.containment_threshold to 1.01 to disable it without a code edit.
+            smaller = np.minimum(areas[i], areas[order[1:]])
+            ios = np.where(smaller > 0, intersection / np.maximum(smaller, 1e-9), 0.0)
+
+            # Keep only boxes below BOTH thresholds
+            inds = np.where((iou <= iou_threshold) & (ios <= containment_threshold))[0]
             order = order[inds + 1]
 
         # Map back to original indices
@@ -324,6 +438,46 @@ def rectangles_overlap(rect1, rect2):
     return not (x1_max < x2_min or x2_max < x1_min or 
                 y1_max < y2_min or y2_max < y1_min)
 
+# Distinct, high-contrast BGR fills for mask overlays. Deliberately not a colormap over the
+# label string: two adjacent objects of the same class would then get the same colour and the
+# overlay would show one blob where the segmenter found two. Cycled by DETECTION INDEX, so
+# neighbours always differ.
+_MASK_COLOURS = [(60, 60, 230), (60, 200, 60), (230, 140, 40), (200, 60, 200),
+                 (40, 210, 210), (230, 90, 140), (120, 200, 60), (60, 140, 230)]
+
+
+def draw_masks(img, detections, alpha=0.40):
+    """Paint each detection's SAM mask over the frame. GA-214.
+
+    The live view showed boxes and labels but never the masks, so the one stage whose output
+    is hardest to judge from numbers -- segmentation -- was the one stage you could not
+    watch. A box tells you the detector fired; only the mask tells you whether it grabbed the
+    object, half of it, or the wall behind it.
+
+    Blended, not replaced: at alpha 0.40 the underlying pixels stay visible, so a mask that
+    has slipped off its object is obvious rather than hidden under an opaque patch. A
+    detection with no mask is SKIPPED silently -- that is a normal state for a box the
+    segmenter declined, and drawing a rectangle in its place would imply a mask that is not
+    there.
+    """
+    overlay = None
+    for i, det in enumerate(detections):
+        m = getattr(det, "mask", None)
+        if m is None:
+            continue
+        m = np.asarray(m)
+        if m.ndim == 3:
+            m = m[0] if m.shape[0] in (1, 3) else m[..., 0]
+        if m.shape[:2] != img.shape[:2] or not m.any():
+            continue
+        if overlay is None:
+            overlay = img.copy()
+        overlay[m.astype(bool)] = _MASK_COLOURS[i % len(_MASK_COLOURS)]
+    if overlay is not None:
+        cv2.addWeighted(overlay, alpha, img, 1.0 - alpha, 0, dst=img)
+    return img
+
+
 def draw_detections(img, detections):
     occupied_regions = [] 
     
@@ -332,7 +486,10 @@ def draw_detections(img, detections):
         
         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
-        text = f"{detection.label}: {detection.score:.2f}"
+        # Unified scene boxes carry no calibrated confidence. Showing 1.00 would
+        # invent one; omit the suffix when the producing model supplied no score.
+        text = (detection.label if detection.score is None
+                else f"{detection.label}: {detection.score:.2f}")
         (text_width, text_height), baseline = cv2.getTextSize(
             text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2
         )

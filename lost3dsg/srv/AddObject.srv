@@ -9,8 +9,31 @@ float32 y_min
 float32 y_max
 float32 z_min
 float32 z_max
+# GA-312. The oriented (PCA, yaw-about-z) box that Bbox3d.msg already carries stopped HERE: this
+# service took the six axis-aligned limits only, so every object written through the API lost its
+# tilt and the persisted map became a mixture of two geometries with nothing saying which. Same
+# shape as Bbox3d.msg, for the same reason: has_orientation is not redundant -- a yaw of 0.0 from
+# a real measurement must not be confused with "never measured".
+bool has_orientation
+float32 yaw
+float32[3] oriented_center
+float32[3] oriented_extents
 string room_id
 float32[] description_embedding
+# GA-184. Whether `description_embedding` above carries a MEASUREMENT or nothing at all.
+#
+# The field is `float32[]`, a typed array, and a typed array CANNOT CARRY NULL -- so an
+# absent embedding and an empty one are the same bytes on this boundary. The producer
+# encodes None as `[]` because it has no other choice, the decoder maps size-0 back to
+# None, and the round trip was blamed on the producer for a while: 190 warnings in one
+# 58-minute run, logged as "still producing empties" when the message type was simply
+# unable to say "absent".
+#
+# Same fix as `has_orientation` in Bbox3d.msg and `has_bbox_2d` beside it, for the same
+# reason: without a flag, the zero-length array of an object that was never described is
+# indistinguishable from one whose embedding genuinely came back empty, and absence read
+# as a measurement is the defect class this review keeps finding.
+bool has_description_embedding
 bool in_exploration
 ---
 # RESPONSE
