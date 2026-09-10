@@ -1119,6 +1119,18 @@ def test_found_exercised_auto_follows_the_configured_hook():
         fake.CFG = {"hooks": {"search_paths": ["/found"], "filter": ""}}
         assert g._found_exercised("auto") is False, "no filter means nothing extends this run"
 
+        # GA-476. A FILTER THAT SHIPS HERE IS NOT EXTENSION CODE. This repository grew one of its
+        # own -- envelope_size:SizeFilter in src/perception_module -- and a7 failed it with
+        # live_roots_undeclared for existing. Where the module lives is the question, not whether
+        # the name is non-empty.
+        import os as _os
+        fake.__file__ = _os.path.join(_os.path.dirname(_os.path.dirname(HERE)),
+                                      "lost3dsg", "src", "perception_module", "config.py")
+        fake.CFG = {"hooks": {"filter": "envelope_size:SizeFilter"}}
+        assert g._found_exercised("auto") is False, "a filter that ships here extends nothing"
+        fake.CFG = {"hooks": {"filter": "pkg.mod:C"}}
+        assert g._found_exercised("auto") is True, "a dotted module that is not here IS extension code"
+
         fake.CFG = {}
         assert g._found_exercised("auto") is False, "no hooks section at all"
     finally:

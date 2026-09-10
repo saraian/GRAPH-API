@@ -1316,7 +1316,16 @@ echo "    (latest is repointed at the end, and only if the gate passes)"
 # The navmesh sits next to the scene mesh; a scene shipped without one gets no schedule and the run
 # falls back to the sampling policy, which is SAID rather than left for a reader to infer.
 SCHEDULE_DIR=${SCHEDULE_DIR:-$WORKSPACE_ROOT/schedules}
-if [ -z "${FEED_SCHEDULE:-}" ]; then
+# GA-476. SET-BUT-EMPTY IS AN ANSWER, and `-z "${FEED_SCHEDULE:-}"` could not hear it: empty and
+# unset looked the same, so `FEED_SCHEDULE=` built and exported the cached schedule anyway and there
+# was NO way to ask for the old sampling motion. Measured by the ontology lane, who set it empty on
+# purpose to keep their readings comparable and got 34 scheduled stops instead. `${FEED_SCHEDULE+x}`
+# tests whether the name is set at all, so empty now means "no schedule" and unset still means
+# "build or reuse one".
+if [ -n "${FEED_SCHEDULE+x}" ] && [ -z "$FEED_SCHEDULE" ]; then
+  echo "    schedule: NONE — FEED_SCHEDULE is set and empty, so this run uses the sampling policy"
+  echo "    (that policy moves on 6 of every 96 frames; the two are not comparable on coverage)"
+elif [ -z "${FEED_SCHEDULE:-}" ]; then
   _scene_glb="${HABITAT_SCENE:-$DEF_SCENE}"
   _navmesh="${_scene_glb%.glb}.navmesh"
   _regen=$(python3 -c "

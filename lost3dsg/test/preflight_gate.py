@@ -733,7 +733,22 @@ def _found_exercised(flag):
     if flag == "auto":
         try:
             import config as cfgmod
-            return bool((cfgmod.CFG.get("hooks") or {}).get("filter"))
+            # GA-476 (2026-09-10, found by the ontology lane, whose run this failed). A FILTER IS
+            # NOT AUTOMATICALLY EXTENSION CODE. GA-435 replaced "is this a detection run" with
+            # "does hooks.filter name something", and wrote that hooks.filter "is the single name
+            # that routes a run into extension code". That was true until this repository started
+            # shipping a filter of its own, hours later: envelope_size:SizeFilter lives in
+            # src/perception_module, needs no extension environment and declares no live root, and
+            # a7 failed it with live_roots_undeclared for existing.
+            #
+            # So the question is WHERE the filter lives, the same correction the launcher's own
+            # guard needed. A dotted name is a package path, so it is split before the file test.
+            filt = ((cfgmod.CFG.get("hooks") or {}).get("filter") or "").strip()
+            if not filt:
+                return False
+            mod = filt.split(":", 1)[0]
+            here = os.path.dirname(os.path.abspath(cfgmod.__file__))
+            return not os.path.exists(os.path.join(here, *mod.split(".")) + ".py")
         except Exception:
             # A config that cannot be read is a2's finding, not a7's. Answer the safer way: assert
             # the live roots, because "no extension" is the claim that would let a moving tree pass.
