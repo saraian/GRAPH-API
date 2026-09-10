@@ -517,9 +517,14 @@ def _replay_mode_html(bundle: Path) -> str:
   #rLive {{ color:#fca5a5; border-color:rgba(239,68,68,.6) !important; }}
   #rLive.on {{ background:rgba(127,29,29,.85) !important; color:#fff; }}
   #rLive.on::before {{ content:'\\25cf '; color:#ef4444; }}
-  /* The D-pad reserved 324px on the right of the feed. With it gone that is dead space --
-     visible in the screenshot as a black column beside the image. Give it to the frame. */
-  #feedWrapper {{ padding-right: 8px !important; padding-bottom: 44px !important; }}
+  /* Room for the transport bar. The horizontal gutters are NOT set here any more: this rule
+     used to force `padding-right: 8px !important` because the d-pad was hidden in replay and
+     the 324 px it reserved were dead space. In LIVE mode the d-pad is there, and the
+     !important beat the layout that had just measured it -- the viewer computed a 260 px
+     gutter, wrote it inline, and this line overrode it, so the panels sat on top of the feed.
+     The viewer's own dock layout now reserves a gutter per side from what is actually docked
+     there, which gives an empty side 0 px -- what this rule wanted, arrived at by measurement. */
+  #feedWrapper {{ padding-bottom: 44px !important; }}
   #replayBar {{
     position:absolute; left:8px; right:8px; bottom:4px; z-index:35;
     display:flex; align-items:center; gap:8px; padding:5px 9px; border-radius:7px;
