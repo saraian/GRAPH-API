@@ -2026,7 +2026,15 @@ def _scenes_table():
     against and nothing would say so.
     """
     p = Path(__file__).resolve().parents[2] / "tools" / "extract_gt.py"
-    spec = importlib.util.spec_from_file_location("_found_extract_gt", p)
+    if not p.is_file():
+        # SAY SO RATHER THAN 500. This raised FileNotFoundError deep inside /scene_mesh, so the
+        # 3D tab showed a bare framework error page and nothing named the missing file. The mesh
+        # is optional -- the 3D view still draws the measured boxes without it -- so an absent
+        # extractor must degrade to "no mesh", not to a stack trace.
+        raise FileNotFoundError(
+            f"the scene table lives in {p}, which is not present. The 3D view draws its boxes "
+            f"without a mesh; restore that file to get the ground-truth mesh back.")
+    spec = importlib.util.spec_from_file_location("_scene_table", p)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.SCENES
@@ -2042,7 +2050,13 @@ def mesh_path(bundle):
     scene = _scene_of(RUNS_DIR / bundle)
     if not scene:
         return None, None
-    entry = _scenes_table().get(scene)
+    try:
+        entry = _scenes_table().get(scene)
+    except FileNotFoundError as exc:
+        # No scene table in this checkout: the mesh is unavailable, the boxes are not. Returning
+        # "no mesh" is the same answer as an unknown scene, which the caller already renders.
+        print(f"[scene3d] no ground-truth mesh: {exc}", flush=True)
+        return None, scene
     if not entry:
         return None, scene
     p = Path(entry[0])

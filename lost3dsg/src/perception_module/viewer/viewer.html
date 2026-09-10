@@ -73,7 +73,10 @@
     .feed-container {
       position: relative; background: #000; border-radius: 8px; border: 1px solid var(--border);
       overflow: hidden; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
-      --hud-col: 324px; /* overlay width + margins; minimap left, dpad right, feed centered between */
+      /* One gutter PER SIDE, set by layoutDocks from what is actually docked there. It was a
+         single --hud-col applied to both sides, so the feed gave up 324 px on the left even when
+         nothing was there. Defaults keep the old behaviour until the script runs. */
+      --hud-left: 324px; --hud-right: 324px;
     }
     .feed-img { height: 100%; max-width: 100%; object-fit: contain; object-position: center center; }
     /* GA-379: two feeds SIDE BY SIDE (owner ruling 2026-09-08) -- the live camera and the newest
@@ -640,7 +643,7 @@
       .resizer-h, .resizer-v { display: none; }
       .teleop-overlay { width: 210px; padding: 8px; }
       .minimap-hud { width: 200px; height: 170px; }
-      .feed-container { --hud-col: 234px; }
+      .feed-container { --hud-left: 234px; --hud-right: 234px; }
       .minimap-modal { width: 94vw; }
       .minimap-modal > div[style*="grid"] { grid-template-columns: 1fr !important; }
     }
@@ -667,7 +670,7 @@
       <div id="colLeft" class="col-pane" style="width: 58%; min-width: 350px;">
         <!-- Top Left: Live Simulator Feed -->
         <div id="panelFeed" class="feed-container" style="height: 46%; min-height: 180px; position: relative;">
-          <div id="feedWrapper" style="position:relative; height:100%; width:100%; padding:0 var(--hud-col); box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center;">
+          <div id="feedWrapper" style="position:relative; height:100%; width:100%; padding:0 var(--hud-right) 0 var(--hud-left); box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center;">
             <img id="habitatFeedImg" class="feed-img" src="/feed" />
 
             <!-- GA-379: the retained annotated cycle, beside the live camera. The bridge keeps the
@@ -1647,13 +1650,101 @@
     // its aspect, the d-pad keeps a minimum usable width). Position and size persist per browser
     // in localStorage; there is no server state. A drag under 5 px is a click, so the minimap's
     // header still opens the modal. ponytail: pointer events only, no library.
+    // GA-441 (owner 2026-09-10): the minimap sits ABOVE the d-pad by default, both scale to fit,
+    // and the feed takes the space the second gutter used to hold. The two overlays were
+    // independent before -- one defaulted left, one right -- so the feed was squeezed from both
+    // sides even though each gutter held one small panel. They are registered here so a single
+    // pass can stack them and tell the feed how much room it actually needs.
+    const DOCKS = [];
+    function layoutDocks() {
+      const feed = document.querySelector('.feed-container');
+      if (!feed || !DOCKS.length) return;
+      const ph = (DOCKS[0].el.parentElement || feed).clientHeight || 0;
+      for (const side of ['left', 'right']) {
+        const col = DOCKS.filter(d => (d.state.side || 'left') === side)
+                         .sort((a, b) => (a.state.top ?? 0) - (b.state.top ?? 0));
+        if (col.length < 2) continue;
+        // SCALE TO FIT, not overlap. The natural heights are measured first; if the column is
+        // taller than the feed, every panel in it is narrowed by the same factor, so the minimap
+        // keeps its aspect and the d-pad keeps its proportions. minW still wins: below it the
+        // buttons stop being usable, and a panel nobody can press is worse than one that overflows.
+        const gap = 10, margin = 12;
+        // SCALE FROM THE NATURAL WIDTH, never from the current one. Measuring the element and
+        // shrinking it wrote the shrunken value back, so every later pass shrank again from the
+        // already-shrunk size: 300 -> 211 -> 181 across three calls, and the panels crept smaller
+        // on every resize. `natural` is what the panel asks for -- the user's saved width, or the
+        // stylesheet's -- and the fitted width is applied to the DOM WITHOUT being saved, so a
+        // window that grows again restores the size the user chose.
+        const hOf = d => d.opts.aspect ? Math.round(d.natural * d.opts.aspect) : d.el.offsetHeight;
+        // SCALE, do not just narrow. Narrowing alone could not make the column fit: the d-pad's
+        // height comes from its button rows, so a narrower d-pad is the same height and the column
+        // still ran 157 px past the bottom of the feed. A transform scales both panels whole --
+        // text, buttons and canvas together -- which is what "scale to fit" has to mean for a
+        // panel whose height is content-driven.
+        for (const d of col) {
+          d.el.style.width = d.natural + 'px';
+          if (d.opts.aspect) d.el.style.height = Math.round(d.natural * d.opts.aspect) + 'px';
+          d.el.style.transform = 'none';
+        }
+        const natTotal = col.reduce((a, d) => a + d.el.offsetHeight, 0) + gap * (col.length - 1) + margin * 2;
+        const f = (natTotal > ph && ph > 0) ? Math.max(0.45, (ph - margin * 2 - gap * (col.length - 1)) /
+                                                             Math.max(1, natTotal - margin * 2 - gap * (col.length - 1)))
+                                            : 1;
+        const side_ = side;
+        for (const d of col) {
+          d.el.style.transformOrigin = side_ === 'right' ? 'top right' : 'top left';
+          d.el.style.transform = f < 1 ? 'scale(' + f.toFixed(3) + ')' : 'none';
+          // Remember what the panel occupies ON SCREEN. Re-reading getBoundingClientRect for the
+          // gutter returned the pre-transform 300 px in the same pass that had just scaled it to
+          // 183, so the feed reserved 324 px for something 183 px wide. The layout already knows
+          // both numbers; it does not need to ask the browser again.
+          d.shownW = Math.round(d.natural * f);
+        }
+        // The transform does not change the layout box, so the column is positioned in SCALED
+        // heights or the panels would be spaced for a size they no longer occupy on screen.
+        const hFit = d => Math.round(d.el.offsetHeight * f);
+        // MEASURE EACH PANEL AS IT IS PLACED, never from a list taken earlier. The first version
+        // measured every height up front, but a panel that has not been sized yet reports a
+        // placeholder height (the minimap read 71 px before its canvas laid out, then grew to
+        // 158), so the next panel was positioned into the space the first one was about to take
+        // and the two overlapped. Reading offsetHeight immediately before placing the next one
+        // forces the reflow and uses the height the panel actually has.
+        let y = margin;
+        for (const d of col) {
+          d.el.style.bottom = 'auto';
+          d.el.style.top = Math.round(y) + 'px';
+          y += hFit(d) + gap;
+        }
+      }
+      // The feed only reserves a gutter on a side that actually holds something, and the padding
+      // is written DIRECTLY. Going through a CSS variable did not work: the wrapper resolved
+      // --hud-right to 279px and its computed padding-right was still 8px, so the feed never
+      // reclaimed the space. One assignment, no indirection, and the measurement agrees with it.
+      const wrap = document.getElementById('feedWrapper');
+      if (wrap) {
+        for (const side of ['left', 'right']) {
+          // getBoundingClientRect, not offsetWidth: a scaled panel occupies less room on screen
+          // than its layout box, and reserving the unscaled width gives the feed a gutter wider
+          // than the thing standing in it.
+          const w = DOCKS.filter(d => d.el.isConnected && (d.state.side || 'left') === side)
+                         .reduce((m, d) => Math.max(m, d.shownW || d.el.offsetWidth), 0);
+          wrap.style['padding' + (side === 'left' ? 'Left' : 'Right')] = (w ? w + 24 : 0) + 'px';
+        }
+      }
+    }
+    window.addEventListener('resize', layoutDocks);
+    // A second pass after the first paint: fonts, the minimap canvas and the d-pad grid all settle
+    // after the initial call, and a panel that reported a placeholder height then would leave the
+    // column spaced for a size nothing has any more.
+    function layoutDocksSettled() { requestAnimationFrame(() => requestAnimationFrame(layoutDocks)); }
+
     function makeDockable(el, name, opts) {
       if (!el) return;
       const parent = el.parentElement, key = 'dock:' + name;
       const grip = el.querySelector('.dock-grip');
       const rz = document.createElement('div'); rz.className = 'dock-resize'; rz.title = 'Drag to resize'; el.appendChild(rz);
       const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-      function apply(st) {
+      function apply(st, quiet) {
         const pw = parent.clientWidth, ph = parent.clientHeight;
         const w = clamp(st.width || el.offsetWidth, opts.minW, Math.max(opts.minW, pw - 24));
         el.style.width = w + 'px';
@@ -1663,12 +1754,18 @@
         if (st.side === 'right') { el.style.left = 'auto'; el.style.right = '12px'; }
         else { el.style.right = 'auto'; el.style.left = '12px'; }
         el.dataset.dockSide = st.side || 'left';
+        if (!quiet) layoutDocks();
       }
       function save(st) { try { localStorage.setItem(key, JSON.stringify(st)); } catch (e) {} }
       function load() { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
       let state = load();
       if (state) apply(state);
-      else state = { side: name === 'teleop' ? 'right' : 'left', top: name === 'teleop' ? Math.max(0, parent.clientHeight - el.offsetHeight - 12) : 12, width: el.offsetWidth };
+      else {
+        // Owner ruling 2026-09-10: one column on the right, minimap on top of the d-pad. `top` is
+        // only the ORDER here; layoutDocks computes the real position and shrinks both to fit.
+        state = { side: 'right', top: name === 'teleop' ? 1 : 0, width: el.offsetWidth };
+        apply(state, true);
+      }
       let drag = null, suppressClick = false;
       grip.addEventListener('pointerdown', ev => {
         if (ev.button !== 0) return;
@@ -1707,6 +1804,14 @@
       rz.addEventListener('pointerup', () => { if (rs) { rs = null; save(state); } });
       window.addEventListener('resize', () => apply(state));
       el.__dock = { get: () => ({ ...state }), set: st => { state = { ...state, ...st }; apply(state); save(state); } };
+      // REPLACE an existing entry rather than appending. makeDockable can run more than once for
+      // the same panel, and a stale entry keeps its unscaled element: the gutter took the MAX
+      // width across the registry, read 300 px from the dead entry while the live panels were
+      // 189 px on screen, and reserved 324 px of feed for something 189 px wide.
+      const dock = { el, name, opts, apply, natural: state.width || el.offsetWidth || opts.minW,
+                     get state() { return state; }, set state(v) { state = v; } };
+      const at = DOCKS.findIndex(d => d.name === name);
+      if (at >= 0) DOCKS[at] = dock; else DOCKS.push(dock);
     }
 
     // ---- GA-379: the second feed pane -------------------------------------------------------
@@ -4872,6 +4977,8 @@
       setupBEVInteractions('bevCanvasHUD');
       makeDockable(document.getElementById('minimapHud'), 'minimap', { minW: 160, aspect: 250 / 300 });
       makeDockable(document.getElementById('teleopOverlay'), 'teleop', { minW: 170, aspect: null });
+      layoutDocks();
+      layoutDocksSettled();
       setupBEVInteractions('bevCanvasModal');
 
       const feedImg = document.getElementById('habitatFeedImg');
