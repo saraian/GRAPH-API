@@ -420,7 +420,28 @@ def _load():
         return dict(_DEFAULTS), None
     import yaml
     with open(path) as f:
-        return _merge(_DEFAULTS, yaml.safe_load(f) or {}), path
+        cfg = _merge(_DEFAULTS, yaml.safe_load(f) or {})
+
+    # A LOCAL OVERRIDE, MERGED AND ANNOUNCED. `config.local.yaml` beside the tracked config is
+    # gitignored and wins key by key. It exists so a deployment can wire ITS OWN extension --
+    # hooks.search_paths and hooks.filter -- without the shared repository naming a package or a
+    # path that only one machine has. The tracked config once carried both, so a clean clone
+    # depended on a checkout nobody else had.
+    #
+    # ANNOUNCED, because a silent config change is the fault this file already carries a comment
+    # about: the returned path is the tracked file, so a bundle recording only that path would say
+    # nothing about the override. The keys it touched are printed and returned.
+    local = os.path.join(os.path.dirname(os.path.abspath(path)), "config.local.yaml")
+    if os.path.exists(local):
+        with open(local) as f:
+            over = yaml.safe_load(f) or {}
+        if over:
+            cfg = _merge(cfg, over)
+            _keys = sorted(f"{k}.{sk}" if isinstance(v, dict) else k
+                           for k, v in over.items() for sk in (v if isinstance(v, dict) else [k]))
+            print(f"[config] local override {local} in force: {', '.join(_keys)}", flush=True)
+            return cfg, f"{path} + {local}"
+    return cfg, path
 
 
 # CFG_PATH is the file that was read, or None when the defaults are in force. A
