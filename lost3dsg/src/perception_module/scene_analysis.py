@@ -11,6 +11,36 @@ from typing import Any
 NORMALIZED_COORDINATE_MAX = 1000.0
 
 
+def normalize_excluded_labels(excluded):
+    """Return configured labels in a form suitable for exact and plural matching."""
+    return {
+        str(value).strip().lower()
+        for value in (excluded or ())
+        if str(value).strip()
+    }
+
+
+def is_excluded_label(label: str, excluded) -> bool:
+    """Whether *label* is configured as excluded, accepting a simple plural form."""
+    normalized = str(label).strip().lower()
+    excluded = normalize_excluded_labels(excluded)
+    return normalized in excluded or (
+        normalized.endswith("s") and normalized[:-1] in excluded
+    )
+
+
+def excluded_labels_rule(excluded) -> str:
+    """Render the configured exclusion rule for the structured scene prompt."""
+    excluded = normalize_excluded_labels(excluded)
+    if not excluded:
+        return ""
+    names = ", ".join(f"'{name}'" for name in sorted(excluded))
+    return (
+        "- Never return any of these configured excluded categories, in singular or "
+        f"plural form: {names}. They are structural and already come from room geometry."
+    )
+
+
 SCENE_ANALYSIS_RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
@@ -131,13 +161,20 @@ def _json_text(content: str) -> str:
     return fenced.group(1).strip() if fenced else value
 
 
-def parse_scene_analysis(content: str, image_width: int, image_height: int):
+def parse_scene_analysis(
+    content: str,
+    image_width: int,
+    image_height: int,
+    excluded_labels=None,
+):
     """Validate a scene response and convert its normalized boxes to pixels.
 
     One invalid object is skipped without discarding valid siblings. A malformed
     top-level response, or a non-empty response in which every box is invalid,
     raises so the caller records a failed VLM cycle instead of publishing false
-    empty-scene evidence.
+    empty-scene evidence. Configured excluded labels are removed after validation;
+    a frame containing only excluded objects is a valid empty scene, not a failed
+    VLM response.
     """
 
     try:
@@ -149,7 +186,9 @@ def parse_scene_analysis(content: str, image_width: int, image_height: int):
     if not isinstance(objects, list):
         raise TypeError("VLM response must contain an objects array")
 
+    excluded = normalize_excluded_labels(excluded_labels)
     result = []
+    valid_objects = 0
     for item in objects:
         if not isinstance(item, dict):
             continue
@@ -159,9 +198,14 @@ def parse_scene_analysis(content: str, image_width: int, image_height: int):
         if not label or bbox is None:
             continue
 
+        valid_objects += 1
+        label = label.lower()
+        if is_excluded_label(label, excluded):
+            continue
+
         result.append(
             SceneObject(
-                label=label.lower(),
+                label=label,
                 description=_text(item.get("description")),
                 color=_text(item.get("color")),
                 material=_text(item.get("material")),
@@ -170,7 +214,7 @@ def parse_scene_analysis(content: str, image_width: int, image_height: int):
             )
         )
 
-    if objects and not result:
+    if objects and valid_objects == 0:
         raise ValueError("VLM response contained objects but no valid detections")
 
     return result

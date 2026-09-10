@@ -100,17 +100,27 @@ class VlmClient:
         raw = self._vlm_call(prompt, self._encode(rgb))
         return self.parse_labels_response(raw)
 
-    def call_scene(self, prompt_path, rgb):
+    def call_scene(self, prompt_path, rgb, excluded=None):
         """Analyze the complete frame in one structured VLM request.
 
         The returned boxes are converted to coordinates in the original image,
         even when the encoder downsizes the image before transport: the response
         uses aspect-preserving 0..1000 normalized coordinates.
         """
-        from scene_analysis import SCENE_ANALYSIS_RESPONSE_FORMAT, parse_scene_analysis
+        from scene_analysis import (
+            SCENE_ANALYSIS_RESPONSE_FORMAT,
+            excluded_labels_rule,
+            normalize_excluded_labels,
+            parse_scene_analysis,
+        )
+
+        if excluded is None:
+            excluded = (CFG.get("perception", {}) or {}).get("excluded_labels", [])
+        excluded = normalize_excluded_labels(excluded)
 
         with open(prompt_path, encoding="utf-8") as prompt_file:
             prompt = prompt_file.read()
+        prompt = prompt.replace("{EXCLUDED_LABELS_RULE}", excluded_labels_rule(excluded))
         raw = self._vlm_call(
             prompt,
             self._encode(rgb),
@@ -118,7 +128,12 @@ class VlmClient:
             image_detail="high",
         )
         height, width = rgb.shape[:2]
-        return parse_scene_analysis(raw, image_width=width, image_height=height)
+        return parse_scene_analysis(
+            raw,
+            image_width=width,
+            image_height=height,
+            excluded_labels=excluded,
+        )
 
     def _clean_labels(self, raw_labels):
         """Lemmatise and de-duplicate, logging what was collapsed. GA-285.

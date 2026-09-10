@@ -1,9 +1,10 @@
 Analyze the full image once and return every relevant object as one entry in the requested JSON structure.
 
 Object selection:
-- Include clearly visible foreground objects.
-- Always include a visible door, even when it is in the background.
+- Include clearly visible foreground objects and visible functional or fixture objects.
+- Include visible doors and doorways unless the configured exclusion rule below excludes them.
 - Exclude walls, floors, ceilings, background clutter, tiny partially visible objects, and components that belong to a larger object (for example, do not list sofa cushions separately from the sofa).
+{EXCLUDED_LABELS_RULE}
 - Create a separate entry for every visible object instance, including multiple instances of the same type.
 
 For every object provide:

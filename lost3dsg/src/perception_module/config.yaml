@@ -283,3 +283,6 @@ perception:
   # seconds; a remote perception call. 25.0 was hardcoded and sat below all
   # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
   cloud_timeout_s: 60.0
+  # Structural surfaces and openings already come from room geometry. Set [] to let
+  # the whole-scene VLM return them.
+  excluded_labels: ["wall", "floor", "ceiling", "door", "doorway", "door frame", "doorframe"]
