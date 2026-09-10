@@ -735,10 +735,26 @@ for _v in ${EXT_ENV_PASS:-}; do EXT_E_ARGS="$EXT_E_ARGS -e $_v"; done
 # object manager dies at the first proposal carrying a room, mid-run, twenty minutes in --
 # measured 2026-09-09 by the simulator lane running the launch path by hand. A launch-time
 # refusal is the same information, an hour earlier and with the map still unbuilt.
-if [ -z "${EXT_ENV_FILE:-}" ] && grep -qE '^\s*filter:\s*"[^"]+"' "$HERE/$CFG_NAME" 2>/dev/null; then
-  echo "!! $CFG_NAME wires an extension filter but EXT_ENV_FILE is unset."
+# GA-475 (2026-09-10, found by the ontology lane, whose run this refused). NOT EVERY FILTER IS AN
+# EXTENSION FILTER. The test was "the config names a filter", which is one step wider than the
+# reason above: a filter that ships INSIDE this repository needs no extension environment, and
+# there is nothing for EXT_ENV_FILE to point at. The message even offered "or clear hooks.filter",
+# which for an in-repo filter means "or stop using the feature".
+#
+# So ask WHERE the filter lives: take the module before the colon and look for it beside the
+# perception code. Verified against all four configs before landing -- size_gate_config names
+# envelope_size, whose module is present, and is allowed; regolo_config names found.filter, whose
+# module is not, and is refused exactly as before; smoke_config and graphapi_only_config name no
+# filter and are untouched.
+_filter_module=$(grep -E '^[[:space:]]*filter:[[:space:]]*"[^"]+"' "$HERE/$CFG_NAME" 2>/dev/null \
+                 | sed -E 's/.*"([^":]+):.*/\1/')
+# A dotted name is a package path, so it becomes a directory path before the file test.
+_filter_path="$HERE/../src/perception_module/$(printf '%s' "${_filter_module:-}" | tr '.' '/').py"
+if [ -z "${EXT_ENV_FILE:-}" ] && [ -n "$_filter_module" ] && [ ! -f "$_filter_path" ]; then
+  echo "!! $CFG_NAME wires the filter '$_filter_module', which is NOT in this repository"
+  echo "   ($_filter_path does not exist), and EXT_ENV_FILE is unset."
   echo "   The extension's variables would never reach the container and the run would die"
-  echo "   at the first proposal that needs one. Set EXT_ENV_FILE, or clear hooks.filter."
+  echo "   at the first proposal that needs one. Set EXT_ENV_FILE, or name a filter that ships here."
   exit 1
 fi
 

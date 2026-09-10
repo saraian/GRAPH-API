@@ -70,8 +70,13 @@ DATASET = os.environ.get("HABITAT_DATASET", "/DATA/habitat_hospital/holodeck_cli
 PORT = int(os.environ.get("FEED_PORT", "7799"))
 FPS = float(os.environ.get("FEED_FPS", hab_cfg.get("fps", 3.0)))
 SEED = int(os.environ.get("FEED_SEED", "7"))
-SHOW = os.environ.get("FEED_SHOW", "0") == "1"
-OVERLAY = os.environ.get("FEED_OVERLAY", "0") == "1"
+# GA-473 (owner 2026-09-10). CONFIG FIRST, ENVIRONMENT SECOND, like every other feed setting.
+# These four were the only ones with no config key, so a run that set everything else in
+# config.yaml still needed them on the command line. The precedence is the one the rest of this
+# file already uses: the yaml states the intended setting and travels with the bundle; the
+# environment variable flips ONE run without editing a file everyone shares.
+SHOW = os.environ.get("FEED_SHOW", "1" if hab_cfg.get("show", False) else "0") == "1"
+OVERLAY = os.environ.get("FEED_OVERLAY", "1" if hab_cfg.get("overlay", False) else "0") == "1"
 
 # GA-265. WHAT THE HABITAT WINDOW DRAWS, toggleable from the window itself AND from the
 # dashboard, with one shared state so the two can never disagree.
@@ -129,7 +134,7 @@ SEND_TIMEOUT = float(os.environ.get("FEED_SEND_TIMEOUT", "10"))
 # this project has ever made, and it landed on 1.35 each time. ROS z, which IS habitat y.
 SPAWN_FLOOR = float(os.environ["FEED_SPAWN_FLOOR"]) if os.environ.get("FEED_SPAWN_FLOOR") else None
 # GA-131. Ground-truth instance ids in the frame, for VALIDATION ONLY. Off by default.
-GT_SEMANTIC = os.environ.get("FEED_GT_SEMANTIC", "0") == "1"
+GT_SEMANTIC = os.environ.get("FEED_GT_SEMANTIC", "1" if hab_cfg.get("gt_semantic", False) else "0") == "1"
 CTRL_PORT = int(os.environ.get("FEED_CTRL_PORT", "7790"))
 # Where the per-frame stats and the BEV payload go. ONE directory, and it is an error for the
 # run not to know which.
@@ -995,7 +1000,6 @@ TOUR_END_SETTLE_S = float(os.environ.get("FEED_TOUR_END_SETTLE_S",
 #
 # WITH NO SCHEDULE CONFIGURED NOTHING CHANGES: the run takes the walk/dwell path it always took.
 SCHEDULE_PATH = os.environ.get("FEED_SCHEDULE", hab_cfg.get("schedule", "") or "").strip()
-SCHEDULE_OVERLAY = None      # filled when a schedule is loaded; null in the payload when none is
 EXPLORATION_LAPS = int(os.environ.get("FEED_EXPLORATION_LAPS",
                                       hab_cfg.get("exploration_laps", 3)))
 # GA-466 (owner 2026-09-10). HOW THE AGENT GETS FROM ONE STOP TO THE NEXT, chosen by
@@ -1094,7 +1098,8 @@ def _pending_merges():
 # Still, not turning: the tour's turn_left is 10 deg = 0.175 rad per tick, above the perception
 # gate's position_threshold 0.05, which is why the tour's dynamic dwell never produced a still
 # camera (run I, GA-337). Env only, no config keys, so there is exactly one reader per name.
-DWELL_MODE = os.environ.get("FEED_DWELL_MODE", "adaptive").strip().lower()
+DWELL_MODE = os.environ.get("FEED_DWELL_MODE",
+                            hab_cfg.get("dwell_mode", "adaptive")).strip().lower()
 if DWELL_MODE not in ("adaptive", "fixed"):
     raise SystemExit(f"[feed] FEED_DWELL_MODE={DWELL_MODE!r}; expected adaptive or fixed")
 DWELL_MIN = int(os.environ.get("FEED_DWELL_MIN", 18))
@@ -2069,12 +2074,17 @@ def main():
     # GA-441. A CONFIGURED SCHEDULE REPLACES THE SAMPLING TOUR. Same interface -- step(agent) and
     # house_done -- so the mapping branch, the walk step, the floor guard and the end-of-run settle
     # all keep working without knowing which one they hold.
+    # BOUND BEFORE THE BRANCH, not inside it. Assigning this name only in the schedule branch made
+    # it a LOCAL of main(), which shadowed the module-level default and left it unbound on every run
+    # WITHOUT a schedule -- the payload then raised UnboundLocalError at the first frame. Reported
+    # from a run of the feed host on its own, which is the path that has no schedule.
+    schedule_payload = None
     if have_nav and SCHEDULE_PATH:
         if MOVE_FN not in MOVERS:
             raise SystemExit(f"[feed] FEED_MOVE_FN={MOVE_FN!r} is not one of {sorted(MOVERS)}")
         _floor_now = float(agent.get_state().position[1])
         _sched_doc = load_schedule(SCHEDULE_PATH, _floor_now)
-        SCHEDULE_OVERLAY = schedule_overlay(_sched_doc, EXPLORATION_LAPS)
+        schedule_payload = schedule_overlay(_sched_doc, EXPLORATION_LAPS)
         tour = ScheduledTour(sim, _sched_doc, EXPLORATION_LAPS, MOVE_FN)
     else:
         tour = Tour(sim, rng) if have_nav else None
@@ -2611,7 +2621,7 @@ def main():
                 # a client places a point with (p[0] - bounds_min[0]) / scale and nothing else. The
                 # schedule itself is habitat coords; converting here means one conversion in one
                 # place instead of one per consumer. ROS = (-hab_z, -hab_x, hab_y).
-                "schedule": SCHEDULE_OVERLAY,
+                "schedule": schedule_payload,
                 "stats": feed_stats,
                 "auto_mode": CTRL.auto_mode,
                 "config": CTRL.config,
