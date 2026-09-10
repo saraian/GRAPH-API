@@ -90,6 +90,10 @@ install(PROGRAMS
   src/perception_module/association.py
   # GA-209's grid describer, imported by perception_2 and missing from this list — caught by
   # check_install_list.py in the smoke suite, which is what that check exists for.
+  # Size check against the measured envelope corpus, keyed on the detector label with no
+  # ontology step. Its data file is installed by the install(DIRECTORY ... data) rule below;
+  # the module without that directory raises FileNotFoundError on its first lookup.
+  src/perception_module/envelope_size.py
   src/perception_module/crop_grid.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -104,6 +108,10 @@ install(FILES
   src/perception_module/prompts/visual_prompt.txt
   DESTINATION lib/${PROJECT_NAME}/prompts
 )
+install(DIRECTORY src/perception_module/data
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY src/perception_module/viewer
   DESTINATION lib/${PROJECT_NAME}
 )
