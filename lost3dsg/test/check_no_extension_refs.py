@@ -51,7 +51,13 @@ ALLOWED = {
 
 
 def offenders(root: pathlib.Path):
-    files = subprocess.run(["git", "-C", str(root), "ls-files"],
+    # TRACKED **AND** UNTRACKED-BUT-NOT-IGNORED. `ls-files` alone lists only tracked files, so a
+    # BRAND-NEW file passes this check right up until it is committed -- and then fails on the next
+    # clean checkout, in somebody else's clone. That happened: an example config added on
+    # 2026-09-10 named an extension in two comments, passed here while it was still untracked, and
+    # broke the check for the next person to clone. `-o --exclude-standard` closes it while still
+    # honouring .gitignore, so a deployment's own uncommitted wiring is not flagged.
+    files = subprocess.run(["git", "-C", str(root), "ls-files", "-c", "-o", "--exclude-standard"],
                            capture_output=True, text=True).stdout.split()
     out = []
     for rel in files:
