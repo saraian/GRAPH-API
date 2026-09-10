@@ -939,6 +939,21 @@ TEST_TOUR = int(os.environ.get("FEED_TEST_TOUR", hab_cfg.get("tour_waypoints", 0
 # almost nothing: the objects that matter are the ones it stops and looks at.
 TEST_TOUR_SCAN = int(os.environ.get("FEED_TEST_TOUR_SCAN", hab_cfg.get("tour_scan_frames", 12)))
 
+# GA-434 / RULE 73. THE BASE RUN TOURS THE WHOLE HOUSE: every storey, teleporting to the next one
+# when a storey is finished. Owner, 2026-09-10: "no caps this time, we need to perform a full house
+# tour, all storeys (if we finish a storey, just teleport to the next storey). This is our base run
+# policy from now on."
+#
+# ON BY DEFAULT, because it is the policy and not a setting: a run that tours one storey is no
+# longer a base run. The switch exists for MAPPING runs, which need one storey by construction --
+# a 2D occupancy grid cannot represent two, which is why owner ruling 25 refused a map whose nodes
+# spread 3.071 m over three storeys. Whether one rtabmap session may span the house at all is the
+# owner's open question; the storey boundary is printed and counted here so either answer can be
+# acted on without rebuilding the tour.
+TOUR_ALL_FLOORS = os.environ.get(
+    "FEED_TOUR_ALL_FLOORS",
+    "1" if hab_cfg.get("tour_all_floors", True) else "0").lower() in ("1", "true", "yes", "on")
+
 # GA-258. DYNAMIC DWELL: stay while merges are still waiting to be confirmed.
 #
 # A merge commits only after `merge_min_consecutive` consecutive sweeps over the evidence
@@ -1177,6 +1192,21 @@ class FloorGuard:
         self.last_on_floor = None
         self.corrections = 0
         self.max_drift = 0.0
+        self.reanchors = 0
+
+    def reanchor(self, floor_y):
+        """Move the guard to a new storey after a DELIBERATE teleport (rule 73).
+
+        LAST_ON_FLOOR IS CLEARED, and that is the whole point of the method. The guard corrects
+        drift by teleporting to the last position it saw on its own storey. Left in place across a
+        storey change, the first drift on the new storey would send the agent back DOWNSTAIRS, and
+        the second storey would never be toured -- a full-house tour that silently tours one floor
+        twice. Clearing it costs one uncorrected drift at most: check() says so and does nothing
+        until a position on the new storey has been seen.
+        """
+        self.floor_y = float(floor_y)
+        self.last_on_floor = None
+        self.reanchors += 1
 
     def check(self, agent, pathfinder=None):
         """Call once per frame, after the motion. Returns True if it corrected."""
@@ -1260,6 +1290,63 @@ class Tour:
         self.goal = None
         self.scan_left = 0
         self.origin = None      # GA-219: set on the first step, the centre of the walk disc
+        self.floor_guard = None
+        self.floors_todo = []       # storeys still to visit, set by bind_floors
+        self.floor_order = []       # storeys toured, in order, for the bundle
+        self._tour_planned_total = 0
+
+    def bind_floors(self, scene_floors, tol, guard):
+        """Plan the remaining storeys. Called from main once the floors are clustered.
+
+        Ascending z, plainly: the agent teleports between storeys, so travel cost does not order
+        them and a rule anyone can predict is worth more than a shorter path.
+        """
+        self.floor_guard = guard
+        here = float(guard.floor_y if guard is not None else self.floor_y)
+        self.floor_order = [round(here, 2)]
+        if not TOUR_ALL_FLOORS:
+            print("[feed] FULL-HOUSE TOUR OFF: this run tours the start storey only "
+                  f"({here:+.2f}). Rule 73 says that is not a base run.", flush=True)
+            return
+        self.floors_todo = sorted(f for f in (scene_floors or []) if abs(f - here) > float(tol))
+        print(f"[feed] FULL-HOUSE TOUR: start storey {here:+.2f}, then "
+              + (", ".join(f"{f:+.2f}" for f in self.floors_todo) or "no other storey"), flush=True)
+
+    def _advance_floor(self, agent):
+        """Teleport to the next storey and re-plan. -> True if the tour moved.
+
+        A storey with no navigable point within tolerance is SKIPPED WITH A LINE, not treated as
+        the end of the house: _spawn_point refuses rather than landing elsewhere, and one
+        unreachable storey must not end a tour that still has storeys after it.
+        """
+        while self.floors_todo:
+            z = self.floors_todo.pop(0)
+            try:
+                target = _spawn_point(self.sim, z)
+            except SystemExit as exc:
+                print(f"[feed] storey {z:+.2f} SKIPPED: {exc}", flush=True)
+                continue
+            st = agent.get_state()
+            st.position = np.asarray(target, dtype=np.float32)
+            agent.set_state(st)
+            self.floor_y = float(target[1])
+            self.origin = np.array(target)
+            self.goal = None
+            if self.floor_guard is not None:
+                self.floor_guard.reanchor(self.floor_y)
+            self._tour = self._tour_waypoints(TEST_TOUR)
+            self._tour_i = 0
+            self._tour_scan = 0
+            self._dwelling = False
+            self._dwell_frames = 0
+            self._tour_planned_total += len(self._tour)
+            self.floor_order.append(round(self.floor_y, 2))
+            print(f"[feed] STOREY DONE. Teleported to {self.floor_y:+.2f}: "
+                  f"{len(self._tour)} waypoints, {len(self.floors_todo)} storeys left", flush=True)
+            for k, w in enumerate(self._tour):
+                print(f"[feed]   waypoint {k}: ({w[0]:.2f}, {w[1]:.2f}, {w[2]:.2f})", flush=True)
+            return True
+        return False
 
     def _sample(self, n, max_tries=50):
         pts = []
@@ -1314,6 +1401,7 @@ class Tour:
                 self.origin = np.array(agent.get_state().position)
             if not hasattr(self, "_tour") or self._tour is None:
                 self._tour = self._tour_waypoints(TEST_TOUR)
+                self._tour_planned_total += len(self._tour)
                 self._tour_i = 0
                 # GA-431. Reaches are COUNTED, not inferred from the index. The index also advances
                 # when a dwell ends, and a tour still walking toward waypoint 3 has the same index as
@@ -1356,7 +1444,10 @@ class Tour:
                 self._tour_i += 1
                 return
             if self._tour_i >= len(self._tour):
-                # Tour complete. Keep turning rather than stopping: a still camera is
+                # RULE 73: a finished storey is not a finished tour while the house has more.
+                if self._advance_floor(agent):
+                    return
+                # House complete. Keep turning rather than stopping: a still camera is
                 # indistinguishable from a crashed feed downstream.
                 agent.act("turn_left")
                 return
@@ -1596,6 +1687,11 @@ def main():
     floor_guard = FloorGuard(_anchor, floor_tol, str(hab_cfg.get("floor_confinement", "teleport")))
     print(f"[feed] floor guard: anchor {_anchor:+.2f}, tolerance {floor_tol:.2f} m, "
           f"mode {floor_guard.mode}", flush=True)
+
+    # RULE 73. The itinerary is planned HERE and not in Tour.__init__ because the storeys are not
+    # known until the navmesh samples above have been clustered, and Tour is built before that.
+    if tour is not None:
+        tour.bind_floors(scene_floors, floor_tol, floor_guard)
 
     topdown_maps = {}
     if have_nav:
@@ -1841,6 +1937,14 @@ def main():
                 "tour_waypoints_requested": TEST_TOUR,
                 "tour_waypoints_planned": len(getattr(tour, "_tour", None) or []) if tour else 0,
                 "tour_waypoints_reached": getattr(tour, "_tour_reached", 0) if tour else 0,
+                # RULE 73. planned counts EVERY storey's waypoints; the per-storey key above is
+                # the last storey only, and a full-house run must not be read as a short one.
+                "tour_waypoints_planned_all_floors": getattr(tour, "_tour_planned_total", 0) if tour else 0,
+                "tour_all_floors": TOUR_ALL_FLOORS,
+                "tour_floors_planned": (1 + len(getattr(tour, "floors_todo", []))
+                                        + max(0, len(getattr(tour, "floor_order", [])) - 1)) if tour else 0,
+                "tour_floors_toured": len(getattr(tour, "floor_order", [])) if tour else 0,
+                "tour_floor_order": list(getattr(tour, "floor_order", [])) if tour else [],
                 "tour_ended_on_index": getattr(tour, "_tour_i", None) if tour else None,
                 **hold.stats(),
                 "mapping_seconds": MAPPING_SECONDS,
