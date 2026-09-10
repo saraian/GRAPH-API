@@ -147,8 +147,13 @@ habitat:
 hooks:
   # extension seam (hooks.py): admission Filter / node Refiner loaded from another
   # package by dotted path; empty = the pass-through blueprints (today's behaviour)
-  search_paths: ["/root/exchange/FOUND"]
-  filter: "found.filter:OntologicalFilter"
+  # EMPTY IN THE TRACKED CONFIG, and that is deliberate rather than an oversight. These two lines
+  # named an extension package and a path on one machine, so the shared repository depended on a
+  # checkout nobody else has and the boundary check failed on a clean clone. A DEPLOYMENT wires its
+  # own extension -- through a local config that is not committed, or through the launcher's
+  # EXT_ENV_FILE seam -- and the repository ships the seam, not the wiring.
+  search_paths: []        # where to look for the packages named below
+  filter: ""              # "pkg.module:ClassName", subclass of hooks.Filter; empty = pass-through
   refiner: ""             # "pkg.module:ClassName", subclass of hooks.Refiner
   store: ""               # "pkg.module:ClassName", subclass of hooks.Store; empty = SQLite map
   decisions_log: ""       # JSONL of decisions/revisions; empty -> output/hook_decisions.jsonl
