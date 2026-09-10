@@ -1097,7 +1097,9 @@ def test_found_exercised_auto_follows_the_configured_hook():
         assert g._found_exercised("0") is False
 
         fake = types.ModuleType("config")
-        fake.CFG = {"hooks": {"filter": "found.filter:OntologicalFilter"}}
+        # A module:Class the way an extension exports one. The literal used to name a real
+        # deployment, which made this repository fail its own boundary check on a fixture.
+        fake.CFG = {"hooks": {"filter": "yourpkg.filter:OntologicalFilter"}}
         sys.modules["config"] = fake
         assert g._found_exercised("auto") is True, "a configured filter means extension code runs"
 
@@ -1158,6 +1160,7 @@ def test_a12_refuses_a_gt_reader_outside_the_allow_list_and_passes_the_clean_tre
     pass. Rule 18/26: run it, do not predict it."""
     import shutil
     import tempfile
+
     from preflight_gate import a12_gt_isolation
     lost = os.path.dirname(HERE)
     ignore = shutil.ignore_patterns("__pycache__", ".ruff_cache", "*.pyc", "output", "probe_assets")
