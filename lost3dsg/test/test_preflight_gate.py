@@ -1115,6 +1115,54 @@ def test_found_exercised_auto_follows_the_configured_hook():
             sys.modules["config"] = saved
 
 
+def test_a4_asserts_every_hub_model_a_run_loads():
+    """GA-438. The cache check sat inside `backend == "local"`, so a cloud run asserted nothing.
+
+    MiniLM and both dinov2 sizes load on EVERY run whatever the backend -- nlp_utils for semantic
+    matching, visual_reid for the crop embedder, which picks -base over -small on measured VRAM, so
+    both must be present or the run downloads whichever it chooses.
+    """
+    import os
+    import tempfile
+    from preflight_gate import HF_MODELS_EVERY_RUN, _hf_models_present
+
+    saved = {k: os.environ.get(k) for k in ("PREFLIGHT_HF_CACHE", "HF_HOME", "TRANSFORMERS_CACHE")}
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            os.environ["PREFLIGHT_HF_CACHE"] = td
+            for k in ("HF_HOME", "TRANSFORMERS_CACHE"):
+                os.environ.pop(k, None)
+
+            _, missing, seen = _hf_models_present(local_backend=False)
+            check(len(missing) == len(HF_MODELS_EVERY_RUN) and not seen,
+                  f"an empty cache must report every always-loaded model missing: {missing}")
+
+            # A DIRECTORY IS NOT A CACHED MODEL: huggingface creates it before the fetch finishes,
+            # and an interrupted download leaves snapshots/ empty. That must still read as missing.
+            stem = os.path.join(td, "hub", "models--facebook--dinov2-small")
+            os.makedirs(os.path.join(stem, "snapshots", "abc123"))
+            _, missing, seen = _hf_models_present(local_backend=False)
+            check("facebook/dinov2-small" in missing,
+                  "an empty snapshots/ directory must NOT count as cached")
+
+            open(os.path.join(stem, "snapshots", "abc123", "config.json"), "w").write("{}")
+            _, missing, seen = _hf_models_present(local_backend=False)
+            check("facebook/dinov2-small" in seen and "facebook/dinov2-small" not in missing,
+                  f"a snapshot holding a file must count as cached: {missing}")
+
+            # the local backend asks for one more model than a cloud backend
+            _, m_cloud, _ = _hf_models_present(local_backend=False)
+            _, m_local, _ = _hf_models_present(local_backend=True)
+            check(len(m_local) == len(m_cloud) + 1,
+                  f"the local backend must also assert the detector: {m_local} vs {m_cloud}")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 if __name__ == "__main__":
     # Mirrors src/perception_module/test_config.py: every function is a pytest test AND
     # this file still runs as a script. It collected ZERO tests under pytest before, because

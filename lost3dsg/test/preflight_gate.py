@@ -20,6 +20,7 @@ finds is a gate that hides what it found; the run is cheap to restart and the bu
 """
 import argparse
 import json
+import glob
 import os
 import sys
 import time
@@ -305,6 +306,66 @@ def a3_policy_reached_container(expect_policy):
     return (not mismatches), {"checked": seen, "mismatches": mismatches}
 
 
+# GA-438 (2026-09-10). THE HUB MODELS A RUN LOADS, enumerated from the source because no list
+# existed anywhere. Owner policy, 2026-09-10: "models should be already downloaded and cached
+# beforehand", so a download DURING a run is a fault and a4 asserts these instead of recording them.
+# The previous note here -- "a cache miss is a first-run download and not a fault" -- was right when
+# it was written and is not right now.
+#
+# THREE OF THE FOUR LOAD ON EVERY RUN, WHATEVER THE BACKEND, and that is the part the old check
+# missed: it sat inside `if backend == "local"`, so a cloud-backend run could pass a4 and then
+# download three models. visual_reid picks dinov2-base over dinov2-small on MEASURED VRAM, so both
+# must be present or the run downloads whichever one it chooses.
+HF_MODELS_EVERY_RUN = (
+    ("sentence-transformers/all-MiniLM-L6-v2", "nlp_utils.py, semantic matching"),
+    ("facebook/dinov2-small", "visual_reid.py, crop embedder (ViT-S/14)"),
+    ("facebook/dinov2-base", "visual_reid.py, chosen over -small on measured VRAM"),
+)
+HF_MODELS_LOCAL_BACKEND = (
+    ("google/owlv2-base-patch16-ensemble", "models.py, the in-line detector"),
+)
+
+
+def _hf_models_present(local_backend):
+    """-> (cache root, [missing model ids], {present model id: snapshot path}).
+
+    FILES ON DISK, never a load: a4 runs before the stack and loading OWLv2 plus the SAM pair would
+    cost minutes and a lot of memory in the one probe whose job is to be cheap.
+
+    A DIRECTORY IS NOT A CACHED MODEL. huggingface creates models--<org>--<name> before it has
+    finished fetching, and an interrupted download leaves the directory with an empty snapshots/.
+    So this requires a snapshot holding at least one file, which is the difference between "the
+    hub was here once" and "this run can load it offline".
+    """
+    hf = (os.environ.get("PREFLIGHT_HF_CACHE") or os.environ.get("HF_HOME")
+          or os.environ.get("TRANSFORMERS_CACHE") or "/models/hf")
+    wanted = list(HF_MODELS_EVERY_RUN) + (list(HF_MODELS_LOCAL_BACKEND) if local_backend else [])
+    missing, seen = [], {}
+    for model_id, _why in wanted:
+        stem = "models--" + model_id.replace("/", "--")
+        hit = None
+        for cand in glob.glob(os.path.join(hf, "**", stem), recursive=True):
+            snaps = glob.glob(os.path.join(cand, "snapshots", "*", "*"))
+            if snaps:
+                hit = cand
+                break
+        if hit:
+            seen[model_id] = hit
+        else:
+            missing.append(model_id)
+    return hf, missing, seen
+
+
+def _hub_why(missing, hf):
+    why = {m: w for m, w in list(HF_MODELS_EVERY_RUN) + list(HF_MODELS_LOCAL_BACKEND)}
+    return ("these hub models are NOT cached under " + hf + ": "
+            + "; ".join(f"{m} ({why.get(m, 'loaded by this stack')})" for m in missing)
+            + ". Owner policy 2026-09-10: models are cached beforehand, so a download inside a run "
+              "is a fault -- it lands in the first perception cycle, which is the cycle a cold-start "
+              "number is read from. Fetch them into the cache the container mounts, or point "
+              "PREFLIGHT_HF_CACHE at the cache this run will use.")
+
+
 def a4_perception_twice(frame=None):
     """Probe the backend TWICE. A one-shot liveness check passes a broken service.
 
@@ -340,26 +401,29 @@ def a4_perception_twice(frame=None):
     # cost minutes and a lot of memory in the one probe whose job is to be cheap.
     local_cfg = (getattr(cfgmod, "CFG", {}) or {}).get("perception", {}).get("backend", "local")
     if str(local_cfg).lower() == "local":
-        import glob
         paths = (cfgmod.CFG.get("paths") or {})
         want = {"vitsam_encoder": paths.get("vitsam_encoder"), "vitsam_decoder": paths.get("vitsam_decoder")}
         missing = {k: v for k, v in want.items() if not (v and os.path.isfile(v) and os.path.getsize(v) > 0)}
-        # The detector's weights come from the HF hub by model id, so a cache MISS is a download at
-        # the first cycle, not a fault. Recorded rather than refused — a gate silent about a
-        # multi-gigabyte fetch at cycle 1 is hiding a cost, and one that refuses it blocks a first run.
-        hf = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE") or "/models/hf"
-        cached = bool(glob.glob(os.path.join(hf, "**", "models--google--owlv2*"), recursive=True))
+        hf, hub_missing, hub_seen = _hf_models_present(local_backend=True)
+        cached = "google/owlv2-base-patch16-ensemble" not in hub_missing
         detail = {"backend": name, "path": "in-line (OWLv2 + VitSam), the stub is never called",
                   "vitsam": {k: (v, os.path.getsize(v) if v and os.path.isfile(v) else None)
                              for k, v in want.items()},
                   "owlv2_weights_cached": cached, "hf_cache_root": hf,
-                  "note": "the segmenter's files are ASSERTED; the detector's weights are RECORDED, "
-                          "because a cache miss is a first-run download and not a fault. Whether the "
-                          "models actually detect is the first cycle's answer, not this probe's."}
+                  "hub_models_present": hub_seen, "hub_models_missing": hub_missing,
+                  "note": "the segmenter's files and the hub models are ASSERTED, both from disk and "
+                          "never by loading them. Whether the models actually detect is the first "
+                          "cycle's answer, not this probe's."}
         if missing:
             detail["why"] = (f"perception.backend is 'local' and the segmenter files do not resolve: "
                              f"{missing}. The in-line path cannot start without them, and there is no "
                              f"fallback — a4 refuses rather than letting the run discover it.")
+            return False, detail
+        # AFTER the segmenter files, on purpose. The segmenter is what decides whether the in-line
+        # path can start at all, and it was a4's contract before today; putting the hub check first
+        # would change which reason a4 gives for a fault it already caught.
+        if hub_missing:
+            detail["why"] = _hub_why(hub_missing, hf)
             return False, detail
         return True, detail
 
@@ -813,6 +877,41 @@ def a8_stack_imports(modules=None, install=None):
         except BaseException as exc:      # noqa: BLE001 - a node dying on ANY error is the finding
             failed[name] = f"{type(exc).__name__}: {exc}"
     detail = {"importable": ok, "failed": failed}
+    # GA-439 (2026-09-10). ONE CALL, NOT A NEW PROBE. check_install_list.py catches the module that
+    # is IMPORTED but not INSTALLED -- the same defect shape as GA-128, which it was written for --
+    # and its only caller was test_perception_smoke.py:590, a suite rather than a run path. Its own
+    # docstring says to let it run in the gate, and `grep -c check_install_list preflight_gate.py`
+    # was 0. A8 is where it belongs: a8 asks whether the installed modules import, and this asks
+    # whether everything they import got installed. The two halves of one question.
+    #
+    # NOT BLOCKING, deliberately. a8's own failure is a node that cannot start; this is a node that
+    # starts and then cannot import something at runtime, which is a real fault but not one that is
+    # certain to fire this run. Recorded where a reader meets it rather than refusing a run the
+    # owner authorised on the strength of the rest of the gate.
+    # THE PACKAGE ROOT, not the repository root: audit() joins "CMakeLists.txt" and
+    # "src/perception_module" onto what it is given, and both live under lost3dsg/. Checked against
+    # the real tree rather than assumed -- /graph_api/CMakeLists.txt does not exist and the audit
+    # would have reported "cannot be audited" on every run, which reads exactly like a pass.
+    src_root = os.environ.get("PREFLIGHT_SRC_ROOT", "/graph_api/lost3dsg")
+    if os.path.isfile(os.path.join(src_root, "CMakeLists.txt")):
+        try:
+            sys.path.insert(0, os.path.join(src_root, "src", "perception_module"))
+            from check_install_list import audit
+            import io
+            import contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = audit(src_root)
+            detail["install_list"] = {"rc": rc, "clean": rc == 0,
+                                      "report": buf.getvalue().strip().split("\n")[-12:],
+                                      "root": src_root}
+        except Exception as exc:      # noqa: BLE001 - the audit failing is information, not a stop
+            detail["install_list"] = {"rc": None, "clean": None,
+                                      "error": f"{type(exc).__name__}: {exc}", "root": src_root}
+    else:
+        detail["install_list"] = {"rc": None, "clean": None, "root": src_root,
+                                  "reason": f"no CMakeLists.txt under {src_root}; the source tree is "
+                                            "not mounted here, so the install list cannot be audited"}
     if failed:
         detail["why"] = (
             "a node the run is about to start cannot be imported, so it will die within seconds "

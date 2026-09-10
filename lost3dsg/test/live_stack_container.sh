@@ -111,6 +111,25 @@ EXT_MOUNT_POINT="${EXT_MOUNT_POINT:-/ext}"
 # nlp_utils.py:22 and preflight_gate.py already use when HF_HOME is unset, so this line was
 # overriding a correct default with a path that does not exist.
 export HF_HOME="${HF_HOME:-/models/hf}"
+# GA-438 (2026-09-10). OFFLINE MAKES A MISSING MODEL FAIL AT LOAD instead of being paid silently in
+# the first perception cycle, which is the owner's policy ("models should be already downloaded and
+# cached beforehand"). The experiment lane proved all five models load with the hub switched off --
+# but they set it in Gin's own environment, and docker passes only what the -e list names, so that
+# enforcement never left that machine.
+#
+# DEFAULT OFF, DELIBERATELY, AND HERE IS THE MEASUREMENT THAT DECIDES IT. facebook/dinov2-small and
+# facebook/dinov2-base are cached NOWHERE on this host -- not in /DATA/huggingface_cache, not in
+# /DATA/FOUND/.hf_cache, not in ~/.cache/huggingface -- and visual_reid.py loads one of them on
+# EVERY run whatever the backend. Offline by default today would refuse every run on this machine,
+# which is a worse failure than the one it prevents, and it would refuse at LOAD rather than at the
+# gate. a4 now asserts these models by name, so the refusal already comes early and says which file
+# to fetch. Turn this on once the cache is warm: FEED_HF_OFFLINE=1.
+if [ "${FEED_HF_OFFLINE:-0}" = "1" ]; then
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+  echo ">>> HF OFFLINE: a model missing from $HF_HOME will fail at load, not download"
+else
+  echo ">>> HF online (FEED_HF_OFFLINE=0): a model missing from $HF_HOME downloads inside the run"
+fi
 
 # CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).
 # No default. This line used to read ${CFG_NAME:-smoke_config.yaml}, and because
