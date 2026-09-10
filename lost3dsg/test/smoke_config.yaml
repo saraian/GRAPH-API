@@ -44,6 +44,15 @@ habitat:
   min_floor_share: 0.10   # UNMEASURED; storeys measured at 46.8/45.9%, non-floors at 0.7/3.3%
   floor_confinement: teleport
 
+  # GA-465. THE EXPLORATION SCHEDULE, documented in the TRACKED config because regolo_config.yaml is
+  # gitignored (the endpoint is a credential, GA-319) and a fresh checkout would otherwise never see
+  # these names. Every value below is the code's own default, so writing them changes nothing.
+  regenerate_schedule: false   # true rebuilds the schedule even when a matching one is cached
+  exploration_laps: 3          # complete passes of the storey; every lap is the SAME trajectory
+  move_function: follower      # follower (plans over the navmesh) or straight (drives at the point)
+  post_scan_hook: ""           # module:function run after every completed 360 scan
+
+
 hooks:
   search_paths: ["/found"]
   filter: ""   # no extension in the smoke config: this repository ships none
