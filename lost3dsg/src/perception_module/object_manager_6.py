@@ -80,6 +80,20 @@ POV_SCALE_FACTOR = CFG["association"]["pov_scale_factor"]
 MAX_VOLUME_THRESHOLD = CFG["association"]["max_volume_threshold"]
 BBOX_REDUCTION_RATIO = CFG["association"]["bbox_reduction_ratio"]
 
+
+def _room_id_for_topic(room_id):
+    """Return a valid room-topic payload, or ``None`` when geometry has no room.
+
+    ``RoomManager.current_room_id`` is intentionally optional: before a room polygon
+    is available, or while the robot is between/inside unresolved regions, it is
+    ``None``.  ``std_msgs/String.data`` accepts only ``str`` and must never receive
+    that internal sentinel directly.
+    """
+    if room_id is None:
+        return None
+    value = str(room_id).strip()
+    return value or None
+
 # GA-350 (ported from GRAPH-API 3a5a818). Room frames handed to the ontology side for
 # typing: one on entry, then one per this much in-room travel, capped. Env-tunable because
 # the right stride is scene-scale dependent (a corridor and an open-plan room want different
@@ -1328,10 +1342,23 @@ class ObjectManagerService(Node):
                 self.room_manager.evaluate_scene(request.descriptions.descriptions, wm.persistent_perceptions)
 
                 if self.room_manager.current_room_id != old_room_id:
-                    room_msg = String()
-                    room_msg.data = self.room_manager.current_room_id
-                    self.room_pub.publish(room_msg)
-                    self.object_services.log_both('info', f"Room change detected! Signalled Perception for: {self.room_manager.current_room_id}")
+                    room_id = _room_id_for_topic(self.room_manager.current_room_id)
+                    if room_id is None:
+                        # Unknown is a valid RoomManager state, not a ROS string value.
+                        # Do not publish a fabricated room id or let None escape into
+                        # std_msgs/String.data and kill the executor callback.
+                        self.object_services.log_both(
+                            'warn',
+                            "Room geometry has no current room; /current_room update suppressed",
+                        )
+                    else:
+                        room_msg = String()
+                        room_msg.data = room_id
+                        self.room_pub.publish(room_msg)
+                        self.object_services.log_both(
+                            'info',
+                            f"Room change detected! Signalled Perception for: {room_id}",
+                        )
 
             self.last_room_check_time = current_time
 
