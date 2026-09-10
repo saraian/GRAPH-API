@@ -2,8 +2,13 @@ Analyze the full image once and return every relevant object as one entry in the
 
 Object selection:
 - Include clearly visible foreground objects and visible functional or fixture objects.
-- Include visible doors and doorways unless the configured exclusion rule below excludes them.
-- Exclude walls, floors, ceilings, background clutter, tiny partially visible objects, and components that belong to a larger object (for example, do not list sofa cushions separately from the sofa).
+- Structural architecture is scene context, not an object to detect. Do not return structural
+  classes or create boxes for them: this includes walls, floors, ceilings, doors, doorways,
+  door frames, and equivalent fixed building surfaces or openings. They are supplied by the
+  room/wall geometry pipeline, even when they are prominent in the image or partially occlude
+  a target object.
+- Exclude background clutter, tiny partially visible objects, and components that belong to a
+  larger object (for example, do not list sofa cushions separately from the sofa).
 {EXCLUDED_LABELS_RULE}
 - Create a separate entry for every visible object instance, including multiple instances of the same type.
 
