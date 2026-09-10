@@ -102,6 +102,31 @@ def save_uncertain():
         finally:
             object_services.PROJECT_ROOT = original
 
+    # The file belongs in the RUN'S BUNDLE, which is `GRAPH_API_OUTPUT_DIR`. `graph_api_bridge`
+    # reads it from there for the on-hold / rejected / abstained audit and watches it in the
+    # graph fingerprint, so a writer using PROJECT_ROOT agreed with those readers only when the
+    # run's output directory happened to be the source tree's own `output/`.
+    #
+    # BOTH DIRECTIONS, because an assertion on the joined path alone would pass even if the
+    # writer never ran: the file must appear in the bundle AND be absent from PROJECT_ROOT.
+    original_env = os.environ.get("GRAPH_API_OUTPUT_DIR")
+    with tempfile.TemporaryDirectory() as bundle, tempfile.TemporaryDirectory() as tree:
+        object_services.PROJECT_ROOT = tree
+        os.environ["GRAPH_API_OUTPUT_DIR"] = bundle
+        try:
+            object_services.save_uncertain_objects(node)
+            in_bundle = pathlib.Path(bundle) / "uncertain_objects.txt"
+            in_tree = pathlib.Path(tree) / "output" / "uncertain_objects.txt"
+            assert in_bundle.is_file(), "the pool must land in the run's bundle"
+            assert in_bundle.read_text().strip(), "the bundle copy must not be empty"
+            assert not in_tree.exists(), "nothing may be written into the source tree"
+        finally:
+            object_services.PROJECT_ROOT = original
+            if original_env is None:
+                os.environ.pop("GRAPH_API_OUTPUT_DIR", None)
+            else:
+                os.environ["GRAPH_API_OUTPUT_DIR"] = original_env
+
 
 def reassign_rooms():
     rm = room_manager.RoomManager.__new__(room_manager.RoomManager)
