@@ -618,6 +618,33 @@ COPY_SOURCE = "/graph_api/lost3dsg/src/perception_module"
 LIVE_ROOTS = {}
 
 
+def _found_exercised(flag):
+    """-> whether this run executes extension code. "auto" asks the config.
+
+    GA-435 (2026-09-10). The caller used to answer this with "is this a detection run", passing 1
+    for everything that was not MAPPING_ONLY. Those are different questions, and on a deployment
+    with NO extension the wrong answer is not harmless: a7 fails with live_roots_undeclared, so a
+    GRAPH-API-only stack could not pass the gate at all. Found on Gin, where no hooks are
+    configured, hooks.filter is empty and no EXT_* variable is set.
+
+    hooks.filter IS the question. It is the single name that routes a run into extension code, and
+    a2 already reads it. Empty means nothing extends this run, so there is no live tree to declare
+    and none to assert. A run that DOES name a filter and declares no live root still fails, which
+    is the case the check exists for.
+
+    "1" and "0" still mean what they meant, so a caller that knows the answer keeps stating it.
+    """
+    if flag == "auto":
+        try:
+            import config as cfgmod
+            return bool((cfgmod.CFG.get("hooks") or {}).get("filter"))
+        except Exception:
+            # A config that cannot be read is a2's finding, not a7's. Answer the safer way: assert
+            # the live roots, because "no extension" is the claim that would let a moving tree pass.
+            return True
+    return flag == "1"
+
+
 def a7_source_frozen(expect, executed_tree=None, copy_source=None, live_roots=None,
                      found_exercised=True, teardown=False):
     """The copied tree must match what the launcher hashed. The live mounts are SAMPLED.
@@ -1228,9 +1255,10 @@ def main(argv=None):
     ap.add_argument("--teardown", action="store_true",
                     help="a7 run at container close: assert only the LIVE roots against the stamp; "
                          "the vendored mount is released at the copied ping and is reported, not judged")
-    ap.add_argument("--found-exercised", default="1",
+    ap.add_argument("--found-exercised", default="auto",
                     help="1 if this run executes an extension package (a live-root mismatch then FAILS a7); "
-                         "0 under MAPPING_ONLY, where it is recorded and does not block")
+                         "0 under MAPPING_ONLY, where it is recorded and does not block; "
+                         "auto (the default) answers it from the config's hooks.filter")
     # Read on the HOST, where the previous bundle exists; this gate runs in the container.
     ap.add_argument("--expect-cycle-s", default="",
                     help="worst frame age the previous run REJECTED, seconds, for a10")
@@ -1313,7 +1341,7 @@ def main(argv=None):
         "a5": lambda: a5_bundle_clean(args.run_dir, args.run_start, args.scratch_dir),
         "a6": lambda: a6_camera_pose_offset(args.camera_height),
         "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha),
-                                       found_exercised=(args.found_exercised == "1"),
+                                       found_exercised=_found_exercised(args.found_exercised),
                                        teardown=args.teardown),
         "a8": lambda: a8_stack_imports(install=args.install_tree),
         "a9": lambda: a9_feed_streaming(args.feed_log, args.feed_window_s),

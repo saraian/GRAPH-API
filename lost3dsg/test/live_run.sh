@@ -248,8 +248,18 @@ cleanup() {
     #
     # HOST SIDE, AFTER THE CONTAINER HAS EXITED. Ground truth must never be readable from the
     # runtime path; this runs here for the same reason analyse_run.py does.
-    ( cd "$WORKSPACE_ROOT" && python3 -m tools.class_counts "$RUN_DIR" ) 2>&1 \
-      | sed 's/^/    /' || echo "    class_counts failed (non-fatal)"
+    # GA-437 (2026-09-10). tools/ IS THE EXTENSION'S, NOT THIS STACK'S, so its absence is normal.
+    # A GRAPH-API-only checkout has no tools/ and every run on Gin printed
+    # "ModuleNotFoundError: No module named 'tools'" -- non-fatal, but it is a FOUND-only tool that
+    # survived the 2026-09-09 removal ("this repository names none of them"), and the boundary
+    # checker cannot see it because the name contains no "found". Skipped with a REASON rather than
+    # a stack trace; its proper home is EXT_POST_RUN, which the extension already supplies.
+    if [ -f "$WORKSPACE_ROOT/tools/class_counts.py" ]; then
+      ( cd "$WORKSPACE_ROOT" && python3 -m tools.class_counts "$RUN_DIR" ) 2>&1 \
+        | sed 's/^/    /' || echo "    class_counts failed (non-fatal)"
+    else
+      echo "    class counts SKIPPED: $WORKSPACE_ROOT/tools/class_counts.py is absent (no extension)"
+    fi
 
     # GA-395. THE CAP IS NOT IN THE BUNDLE, and the envelope's cap condition therefore reads
     # UNCHECKABLE on every bundle in the archive. run_capped.sh records it in the TESTING lane's
@@ -349,14 +359,34 @@ PY
       # owned by the invoking user. The one warning it prints is pip's cache being unwritable.
       # THE TWO EXT_ VARIABLES MUST BE PASSED WITH -e. They are HOST variables; inside the
       # single-quoted block below they expand in the CONTAINER, where they are unset.
+      # GA-437 (2026-09-10). WORKSPACE_ROOT IS THE DATA ROOT, NOT THE EXTENSION TREE, and mounting
+      # it here made one variable mean both. It held while the extension and the data lived in one
+      # directory; the owner's move to a neutral /DATA/workspace separates them, and this mount then
+      # provides an /ext with no vendor/wheels and no repair script. The repair would run against
+      # nothing and the guard below would read whatever rc that produced.
+      #
+      # REFUSE RATHER THAN REPAIR NOTHING. The extension declares its own tree through EXT_MOUNTS
+      # (owner ruling 2026-09-09), which is passed through below; what this block still needs from
+      # the extension is a mount point that holds vendor/wheels. Checked on the HOST, where the
+      # directory is, so the failure names its cause instead of appearing as a pip error.
+      if [ ! -d "$WORKSPACE_ROOT/vendor/wheels" ] && [ -z "${EXT_MOUNTS:-}" ]; then
+        echo "GA-293 store repair: SKIPPED. EXT_STORE_REPAIR=$EXT_STORE_REPAIR is set, but nothing" \
+          >> "$RUN_DIR/logs/store_repair.log"
+        echo "  declares an extension tree: EXT_MOUNTS is empty and $WORKSPACE_ROOT holds no" \
+          >> "$RUN_DIR/logs/store_repair.log"
+        echo "  vendor/wheels. The repair needs the extension's tree, not the data root." \
+          >> "$RUN_DIR/logs/store_repair.log"
+        _repair_rc=4
+      else
       docker run --rm --entrypoint bash --user "$(id -u):$(id -g)" -e PYTHONUSERBASE=/tmp/pyuser \
-        -e EXT_MOUNT_POINT -e EXT_STORE_REPAIR \
+        -e EXT_MOUNT_POINT -e EXT_STORE_REPAIR ${EXT_MOUNTS:-} \
         -v "$WORKSPACE_ROOT":"$EXT_MOUNT_POINT":ro -v "$RUN_DIR":/ws/output "$IMAGE_TAG" -lc '
           python3 -c "import pyoxigraph" 2>/dev/null ||
             pip install --user --quiet --no-index --find-links="$EXT_MOUNT_POINT"/vendor/wheels pyoxigraph
           cd "$EXT_MOUNT_POINT" && $EXT_STORE_REPAIR /ws/output/knowledge_graph.ttl
         ' >> "$RUN_DIR/logs/store_repair.log" 2>&1
       _repair_rc=$?
+      fi
       _kg_after=$( [ -f "$_kg" ] && wc -l < "$_kg" || echo 0 )
       echo "GA-293 store repair: rc=$_repair_rc, $_kg_before -> $_kg_after lines" >> "$RUN_DIR/logs/store_repair.log"
       # rc 0 repaired-or-nothing-to-repair; 2 no store; 3 empty store; 4 the repair could not run.
@@ -885,7 +915,13 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # launched the pristine image while recording itself as the patched one.
 IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble-ga290}
 IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
-HF_CACHE=${HF_CACHE:-$WORKSPACE_ROOT/.hf_cache}
+# GA-437 (2026-09-10). THE STAMP MUST READ THE CACHE THE RUN USES. This was
+# $WORKSPACE_ROOT/.hf_cache, which made WORKSPACE_ROOT do double duty as the data root AND the model
+# cache; after the workspace moved to a neutral directory it names nothing, and _enc_rev below would
+# have stamped every encoder revision as unknown. The container loads its weights from the mount at
+# /models/hf, whose host side is HF_SHARED_CACHE, so that is the directory whose refs describe the
+# run. Same value the container now sets HF_HOME to (live_stack_container.sh).
+HF_CACHE=${HF_CACHE:-${HF_SHARED_CACHE:-/DATA/huggingface_cache}}
 # >>> TEST-EXTRACT _enc_rev  (test_env_stamp.sh sources the block between these markers.
 # It guessed the boundary with a sed pattern twice and was wrong twice: /^$/ swallowed the
 # call sites below, and /; }$/ ran to end-of-file because this definition is a single line,
@@ -1035,11 +1071,7 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "gt_semantic": ${FEED_GT_SEMANTIC:-0},
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
     "localization_regime": "fresh_map_per_launch",
-    # GA-434 / RULE 73. WHICH SHAPE OF HOUSE RUN THIS BUNDLE BELONGS TO. Two exist and they are not
-    # comparable: "relaunch_per_storey" is one launch, one map and one bundle per storey, which is
-    # the owner's 2026-09-10 ruling; "continuous_teleport" is one launch touring every storey, whose
-    # map would straddle them and which owner ruling 25 refuses. A bundle set read as the wrong one
-    # would double-count objects across storeys or look like it lost them.
+    "tour_shape_note": "GA-434 / rule 73. WHICH SHAPE OF HOUSE RUN THIS BUNDLE BELONGS TO. Two exist and they are not comparable: relaunch_per_storey is one launch, one map and one bundle per storey, which is the owner's 2026-09-10 ruling; continuous_teleport is one launch touring every storey, whose map would straddle them and which owner ruling 25 refuses. A bundle set read as the wrong one would double-count objects across storeys or look like it lost them.",
     "tour_shape": "$([ "${FEED_TOUR_ALL_FLOORS:-0}" != "0" ] && echo continuous_teleport || echo relaunch_per_storey)",
     "house_id": $([ -n "${HOUSE_ID:-}" ] && echo "\"$HOUSE_ID\"" || echo null),
     "spawn_floor": $([ -n "${FEED_SPAWN_FLOOR:-}" ] && echo "$FEED_SPAWN_FLOOR" || echo null),

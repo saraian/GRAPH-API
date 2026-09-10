@@ -92,7 +92,25 @@ PY
 # found/concept_embedder.py, so there is nothing to mount and nothing to add to the path. `found`
 # itself never came from PYTHONPATH -- the hook config carries its path.
 EXT_MOUNT_POINT="${EXT_MOUNT_POINT:-/ext}"
-export HF_HOME="$EXT_MOUNT_POINT/.hf_cache"
+# GA-437 (2026-09-10). HF_HOME POINTED AT A PATH NOTHING MOUNTS, on every machine, in every run.
+#
+# It read "$EXT_MOUNT_POINT/.hf_cache", i.e. /ext/.hf_cache. Checked against the launcher's actual
+# mount list: the run container gets $WORKSPACE_ROOT/maps at $EXT_MOUNT_POINT/maps and NOTHING at
+# $EXT_MOUNT_POINT itself, and the extension mounts its own tree at /found:ro (tools/ext/env.sh),
+# not at /ext. So /ext/.hf_cache never existed inside a run; huggingface created it in the
+# container's writable layer, downloaded the weights into it, and --rm threw them away.
+#
+# CONSEQUENCE, and it is a measurement error rather than a slow start: the download lands in the
+# FIRST perception cycle, which is the cycle anyone quotes as cold-start latency, on a machine whose
+# cache is warm. a4 recorded owlv2_weights_cached false and was right. Warming a cache is not the
+# fix; the path is.
+#
+# /models/hf IS WHERE THE CACHE IS: the launcher mounts $HF_SHARED_CACHE (default
+# /DATA/huggingface_cache) there, and that directory has the hub/ layout HF_HOME expects --
+# hub/models--google--owlv2-base-patch16-ensemble is present today. It is also the fallback that
+# nlp_utils.py:22 and preflight_gate.py already use when HF_HOME is unset, so this line was
+# overriding a correct default with a path that does not exist.
+export HF_HOME="${HF_HOME:-/models/hf}"
 
 # CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).
 # No default. This line used to read ${CFG_NAME:-smoke_config.yaml}, and because
@@ -238,7 +256,7 @@ container_exit_cleanup() {
   # failing one. Same expectations and the same found-exercised rule as the startup gate.
   python3 /graph_api/lost3dsg/test/preflight_gate.py --only a7 --teardown --out /ws/output/a7_teardown.json \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
-      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo 1)" \
+      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo auto)" \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg > /tmp/a7_teardown.log 2>&1 \
     && echo ">>> a7 at teardown: PASS — $(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));a=[p for p in d['probes'] if p['id']=='a7'][0]['detail'];m=a.get('live_mismatches') or {};print('live roots unchanged since the launch stamp' if not m else 'live root(s) MOVED during the run, recorded non-blocking: '+', '.join(f'{k} {v[\"launcher\"]}->{v[\"container\"]}' for k,v in m.items()))" /ws/output/a7_teardown.json 2>/dev/null || echo 'a7_teardown.json unreadable')" \
     || echo "!! a7 at teardown FAILED — a source root moved during the run; see a7_teardown.json (latest will not move)"
@@ -290,7 +308,7 @@ else
       --expect-config-sha "${PREFLIGHT_EXPECT_CFG_SHA:-}" \
       --expect-merged-sha "${PREFLIGHT_EXPECT_MERGED_SHA:-}" \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
-      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo 1)" \
+      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo auto)" \
       --expect-policy "${PREFLIGHT_EXPECT_POLICY:-}" \
       --expect-cycle-s "${PREFLIGHT_EXPECT_CYCLE_S:-}" \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg \

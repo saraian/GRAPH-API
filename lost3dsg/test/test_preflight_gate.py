@@ -1079,6 +1079,40 @@ def test_a7_at_teardown_judges_only_the_live_roots():
         check(list(d["mismatches"]) == ["found_live"], f"a moved live root must be the only mismatch: {d['mismatches']}")
 
 
+def test_found_exercised_auto_follows_the_configured_hook():
+    """GA-435. "is this a detection run" is not "does this run execute extension code".
+
+    The caller passed 1 for every run that was not MAPPING_ONLY, so on a deployment with NO
+    extension a7 failed with live_roots_undeclared and the gate refused every run. Measured on Gin,
+    where no hooks are configured and no EXT_* variable is set.
+    """
+    import importlib
+    import sys
+    import types
+    g = importlib.import_module("preflight_gate")
+    saved = sys.modules.get("config")
+    try:
+        # explicit answers still mean what they meant
+        assert g._found_exercised("1") is True
+        assert g._found_exercised("0") is False
+
+        fake = types.ModuleType("config")
+        fake.CFG = {"hooks": {"filter": "found.filter:OntologicalFilter"}}
+        sys.modules["config"] = fake
+        assert g._found_exercised("auto") is True, "a configured filter means extension code runs"
+
+        fake.CFG = {"hooks": {"search_paths": ["/found"], "filter": ""}}
+        assert g._found_exercised("auto") is False, "no filter means nothing extends this run"
+
+        fake.CFG = {}
+        assert g._found_exercised("auto") is False, "no hooks section at all"
+    finally:
+        if saved is None:
+            sys.modules.pop("config", None)
+        else:
+            sys.modules["config"] = saved
+
+
 if __name__ == "__main__":
     # Mirrors src/perception_module/test_config.py: every function is a pytest test AND
     # this file still runs as a script. It collected ZERO tests under pytest before, because
