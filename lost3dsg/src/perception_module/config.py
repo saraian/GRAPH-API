@@ -419,8 +419,21 @@ _DEFAULTS = {
         "hf_offline": True,         # no in-run fetches: a missing model fails at the gate
         "cfg_name": "regolo_config.yaml",
     },
+    # The size check that ships WITH this repository: envelope_size.SizeFilter, keyed on the
+    # detector label. On by default; set enabled: false to turn it off without editing any code.
+    "size_check": {
+        "enabled": True,
+        # Off by default on purpose. A filter that starts REFUSING the day it is installed
+        # changes what every later number means; the annotation is enough to measure the
+        # change first, and enforcing is then a decision taken against evidence.
+        "enforce": False,
+    },
     "hooks": {
         "search_paths": [],
+        # EMPTY IN THE CODE DEFAULTS, and the default belongs in config.yaml instead. A run that
+        # loaded NO config file is a run configured by nothing, and it must not quietly start
+        # filtering proposals: test_a2_returns_False_when_no_config_file_was_loaded asserts
+        # exactly that, and it caught this line when the size check was first defaulted here.
         "filter": "",
         "refiner": "",
         "store": "",           # subclass of hooks.Store; empty -> SQLite temporal map

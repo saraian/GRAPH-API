@@ -240,7 +240,7 @@ def test_a1_records_the_discriminants_not_only_the_score():
         _n, _top_min, _z_min, _embedder = 170, 0.87, 3.0, Emb()
 
     class Res:
-        evidence = "kgaligner 0.90 (z=5.2) -> Sofa (http://x#Sofa)"
+        evidence = "aligner 0.90 (z=5.2) -> Sofa (http://x#Sofa)"
 
     d = g._discriminants(KG(), "couch", Res())
     check(d["n_candidates"] == 170, d)      # the size of the set that ranked it
@@ -287,7 +287,7 @@ def test_a1_reads_the_field_the_aligner_actually_sets():
         score: float
         evidence: str
 
-    name, src = g._aligned_name(Alignment("couch", "Sofa", 0.9032, "kgaligner 0.90 -> Sofa"))
+    name, src = g._aligned_name(Alignment("couch", "Sofa", 0.9032, "aligner 0.90 -> Sofa"))
     check(name == "Sofa", f"the aligner sets .aligned, not .name: got {name!r}")
     check(src == ".aligned", src)
 

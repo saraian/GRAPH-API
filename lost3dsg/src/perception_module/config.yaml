@@ -257,6 +257,16 @@ run:
                             # missing model fails at the gate instead of downloading mid-run and
                             # changing what the run measured. Override: FEED_HF_OFFLINE=0.
   cfg_name: regolo_config.yaml  # which recipe the container loads. Override: CFG_NAME.
+# The size check that ships WITH this repository. It compares a proposal's box against the
+# measured size range for its class and needs no ontology: the detector's label is the lookup
+# key. `hooks.filter` below selects it, so turning it off means either enabled: false here or
+# emptying that line.
+size_check:
+  enabled: true
+  # Off on purpose. When false the check ANNOTATES and refuses nothing, which is what lets a
+  # run measure the change before taking it. true makes an out-of-range box a refusal.
+  enforce: false
+
 hooks:
   # extension seam (hooks.py): admission Filter / node Refiner loaded from another
   # package by dotted path; empty = the pass-through blueprints (today's behaviour)
@@ -266,7 +276,10 @@ hooks:
   # own extension -- through a local config that is not committed, or through the launcher's
   # EXT_ENV_FILE seam -- and the repository ships the seam, not the wiring.
   search_paths: []        # where to look for the packages named below
-  filter: ""              # "pkg.module:ClassName", subclass of hooks.Filter; empty = pass-through
+  # DEFAULTS TO THIS REPOSITORY'S OWN size check, which is not an extension: envelope_size.py
+  # and its corpus ship here, so a clean clone has everything it names. A deployment that wires
+  # an extension replaces this line from its own config.local.yaml, as before.
+  filter: "envelope_size:SizeFilter"   # "pkg.module:ClassName", subclass of hooks.Filter; empty = pass-through
   refiner: ""             # "pkg.module:ClassName", subclass of hooks.Refiner
   store: ""               # "pkg.module:ClassName", subclass of hooks.Store; empty = SQLite map
   decisions_log: ""       # JSONL of decisions/revisions; empty -> output/hook_decisions.jsonl

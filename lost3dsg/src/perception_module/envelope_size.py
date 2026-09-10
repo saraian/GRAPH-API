@@ -112,21 +112,42 @@ def extents_of(proposal: dict):
 class SizeFilter(Filter):
     """A Filter that checks size against the corpus and nothing else.
 
-    Select it with `hooks.filter: "envelope_size:SizeFilter"`. It ANNOTATES every proposal
-    and refuses none, unless GRAPH_API_SIZE_ENFORCE=1. That default is deliberate: a filter
-    that starts refusing the day it is installed changes what every later number means, and
-    the annotation is enough to measure the change first.
+    `config.yaml` selects it (`hooks.filter`) and configures it (`size_check`):
+
+        size_check:
+          enabled: true     # false turns the check into a no-op without editing any code
+          enforce: false    # true makes an out-of-range box a refusal
+
+    Both are read from the config FILE, not from the environment: a run is configured in one
+    place, and a setting that can also arrive as an environment variable has two places to
+    look and no single answer to "what did this run use".
+
+    `enforce` is off by default on purpose. A filter that starts refusing the day it is
+    installed changes what every later number means, and the annotation is enough to measure
+    the change first.
 
     It ABSTAINS, never admits, when the corpus has no envelope. Abstain says "I have no
     grounds"; admit would say "I checked and it is fine".
     """
     name = "envelope-size"
 
-    def __init__(self, enforce=None):
-        self.enforce = (os.environ.get("GRAPH_API_SIZE_ENFORCE") == "1") if enforce is None else enforce
+    def __init__(self, enabled=None, enforce=None):
+        if enabled is None or enforce is None:
+            # Imported here, not at module scope, so the pure functions above need no
+            # configuration at all: a caller can use size_ok() with nothing wired up.
+            from config import CFG
+            section = CFG["size_check"]
+            enabled = section["enabled"] if enabled is None else enabled
+            enforce = section["enforce"] if enforce is None else enforce
+        self.enabled, self.enforce = bool(enabled), bool(enforce)
 
     def judge(self, proposal: dict) -> Decision:
         label = proposal.get("label", "")
+        if not self.enabled:
+            # A no-op says so. Silence here would be indistinguishable from a check that ran
+            # and found nothing to object to.
+            return Decision(ABSTAIN, "size check disabled (size_check.enabled: false)",
+                            annotation={"size": {"status": "disabled", "label": label}})
         ext = extents_of(proposal)
         if ext is None:
             return Decision(ABSTAIN, "no bounding box on the proposal",
@@ -161,13 +182,21 @@ if __name__ == "__main__":
 
     # the filter abstains on an unmeasured kind and never refuses unless told to
     box = {"x_min": 0, "x_max": 0.01, "y_min": 0, "y_max": 0.01, "z_min": 0, "z_max": 0.01}
-    assert SizeFilter().judge({"label": "flux capacitor", "bbox": box}).outcome == ABSTAIN
-    lenient = SizeFilter(enforce=False).judge({"label": "chair", "bbox": box})
+    assert SizeFilter(enabled=True, enforce=False).judge(
+        {"label": "flux capacitor", "bbox": box}).outcome == ABSTAIN
+
+    # disabled is a no-op that SAYS it is one, and never refuses
+    off = SizeFilter(enabled=False, enforce=True).judge({"label": "chair", "bbox": box})
+    assert off.outcome == ABSTAIN and off.annotation["size"]["status"] == "disabled", off
+    assert "disabled" in off.reason
+
+    lenient = SizeFilter(enabled=True, enforce=False).judge({"label": "chair", "bbox": box})
     assert lenient.outcome == ADMIT and lenient.annotation["size"]["status"] == "outside"
-    assert SizeFilter(enforce=True).judge({"label": "chair", "bbox": box}).outcome == REJECT
+    assert SizeFilter(enabled=True, enforce=True).judge({"label": "chair", "bbox": box}).outcome == REJECT
 
     # the oriented box wins over the axis-aligned one when both are present
     both = dict(box, oriented_extents=[0.5, 0.5, 0.9])
-    assert SizeFilter().judge({"label": "chair", "bbox": both}).annotation["size"]["status"] == "inside"
+    assert SizeFilter(enabled=True, enforce=False).judge(
+        {"label": "chair", "bbox": both}).annotation["size"]["status"] == "inside"
 
     print(f"envelope_size self-check OK: {len(corpus)} envelopes")

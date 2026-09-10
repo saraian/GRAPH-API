@@ -729,7 +729,7 @@ def graph_data(request: Request = None):
             # at a confident 100%. Absent stays absent; the viewer renders "—".
             #
             # The column is populated from the ALIGNER'S OWN SCORE when the aligner
-            # recorded one (annotation.alignment.score, e.g. "kgaligner 0.94 (z=7.2)
+            # recorded one (annotation.alignment.score, e.g. "aligner 0.94 (z=7.2)
             # -> Bed"). That is a measured similarity, not a detector confidence and
             # not a probability that the object is real -- `alignment.evidence` carries
             # what it means. Objects the aligner never scored keep an absent

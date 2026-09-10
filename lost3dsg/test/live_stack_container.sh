@@ -102,7 +102,7 @@ PY
 # exist here, so the encoder is re-fetched from the hub every run.
 #
 # This line used to be preceded by `export PYTHONPATH=/kb:...`, which put ASPIRE's knowledge_bridge
-# on the path because kg_align.py imported ConceptEmbedder from it. GA-306 vendored that class into
+# on the path because an extension module imported ConceptEmbedder from it. GA-306 vendored that class into
 # found/concept_embedder.py, so there is nothing to mount and nothing to add to the path. `found`
 # itself never came from PYTHONPATH -- the hook config carries its path.
 EXT_MOUNT_POINT="${EXT_MOUNT_POINT:-/ext}"
