@@ -159,18 +159,52 @@ def test_crops_dir_never_created_inside_output_dir():
             f"fallback must be outside OUTPUT_DIR, got {mod.CROPS_DIR}"
 
 
-def test_output_dir_never_falls_back_to_the_read_only_remedy_source():
-    """Phase 0: /DATA/GRAPH-API is a remedy source only, so the running dashboard
-    must not read its data from there. Asserted against the source text, because a
-    fallback only fires when the earlier candidates are missing -- which is exactly
-    when nobody is watching."""
+def test_output_dir_follows_the_environment_and_never_this_source_directory():
+    """OUTPUT_DIR must come from the environment, and must never be the dashboard's own directory.
+
+    WHAT THIS CHECK USED TO SAY, and why it was retired. It asserted that OUTPUT_DIR must not
+    start with "/DATA/GRAPH-API", because at the time that checkout was a REMEDY SOURCE and the
+    run data lived elsewhere. On 2026-09-10 the owner ruled that /DATA/GRAPH-API is the
+    authoritative workspace root: runs/ holds the bundles, results/ holds the scratch. The moment
+    /DATA/GRAPH-API/runs/latest existed the old assertion began REFUSING the correct answer --
+    rule 78, a policy change can freeze a check on refuse, and a refusal reads as rigour.
+
+    WHAT SURVIVES IS THE PROPERTY, not the path. FD-31 was never about which directory was
+    forbidden; it was that OUTPUT_DIR silently became the dashboard's own SOURCE directory and the
+    crops mkdir wrote into it. That is still a defect under any root, so it is what is asserted
+    here, together with the thing that makes a root swap safe at all: the value FOLLOWS the
+    environment rather than a literal in the file.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
     src = (HERE / "server.py").read_text()
+    # An absolute deployment path in the source is wrong whichever deployment it names: it is what
+    # made the value survive a root change without anyone noticing.
     hits = [ln.strip() for ln in src.splitlines()
-            if "/DATA/GRAPH-API" in ln and not ln.strip().startswith("#")]
-    assert not hits, f"server.py resolves paths into the read-only remedy source: {hits}"
-    mod = _load_server()
-    assert not str(mod.OUTPUT_DIR).startswith("/DATA/GRAPH-API"), \
-        f"OUTPUT_DIR points at the read-only remedy source: {mod.OUTPUT_DIR}"
+            if "/DATA/" in ln and not ln.strip().startswith("#")]
+    assert not hits, f"server.py hardcodes a deployment path: {hits}"
+
+    with tempfile.TemporaryDirectory() as td:
+        runs = _P(td) / "runs"
+        (runs / "latest").mkdir(parents=True)
+        saved = {k: os.environ.get(k) for k in ("GRAPH_API_RUNS_DIR", "GRAPH_API_OUTPUT_DIR")}
+        try:
+            os.environ.pop("GRAPH_API_OUTPUT_DIR", None)
+            os.environ["GRAPH_API_RUNS_DIR"] = str(runs)
+            for m in ("server", "dash_env"):
+                sys.modules.pop(m, None)
+            mod = _load_server()
+            assert mod.OUTPUT_DIR == runs / "latest", \
+                f"OUTPUT_DIR did not follow GRAPH_API_RUNS_DIR: {mod.OUTPUT_DIR}"
+            # the FD-31 defect itself, under any root
+            assert _P(mod.OUTPUT_DIR).resolve() != HERE.resolve(), \
+                "OUTPUT_DIR is the dashboard's own source directory (FD-31)"
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+            for m in ("server", "dash_env"):
+                sys.modules.pop(m, None)
 
 
 def test_no_health_component_reports_itself_active_unconditionally():
@@ -764,6 +798,52 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
             sys.modules.update(parked)
 
 
+def test_only_directories_named_like_a_run_are_served():
+    """A directory that is not a run must not be listed, and must never become "latest".
+
+    `resolve_bundle` orders runs lexicographically because "the names are timestamps". On
+    2026-09-10 a tree migration left `_volume_output_backup_20260910` beside the runs; "_" is
+    0x5F and every digit is 0x3x, so it sorted LAST and the dashboard adopted it as the newest
+    run. It has no run_metadata.json, so the 3D tab's mesh request 404'd and the banner named a
+    backup folder as the run being served.
+
+    BOTH DIRECTIONS, and the intruder is placed where it actually did damage -- sorting after a
+    real run. A filter checked only against names it rejects proves nothing about the ones it
+    must keep.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    import replay_server as _rs
+
+    with tempfile.TemporaryDirectory() as td:
+        root = _P(td)
+        for name in ("20260910_141811_hm3d_00861", "20260910_170036_hm3d_00861"):
+            (root / name / "logs").mkdir(parents=True)
+            (root / name / "room.json").write_text("{}")
+        # sorts AFTER every digit, which is exactly how it won
+        (root / "_volume_output_backup_20260910").mkdir()
+        (root / "_volume_output_backup_20260910" / "room.json").write_text("{}")
+        (root / "notes").mkdir()                       # no timestamp at all
+        (root / "latest").symlink_to(root / "20260910_170036_hm3d_00861")
+
+        old_root = _rs.RUNS_ROOT
+        try:
+            _rs.RUNS_ROOT = root
+            names = _rs._bundle_names()
+            assert names == ["20260910_170036_hm3d_00861", "20260910_141811_hm3d_00861"], names
+            # and "latest" resolves to the newest REAL run, not the intruder
+            got = _rs.resolve_bundle("latest")
+            assert got is not None and got.name == "20260910_170036_hm3d_00861", got
+            # the predicate itself, both ways
+            assert _rs.is_run_dir(root / "20260910_141811_hm3d_00861")
+            assert not _rs.is_run_dir(root / "_volume_output_backup_20260910")
+            assert not _rs.is_run_dir(root / "notes")
+            assert not _rs.is_run_dir(root / "latest"), "a symlink is not a run directory"
+        finally:
+            _rs.RUNS_ROOT = old_root
+
+
 def test_an_empty_timeline_names_this_runs_reason_not_a_generic_one():
     """A bundle with no frames must say WHY THIS bundle has none, from its own record.
 
@@ -892,7 +972,7 @@ if __name__ == "__main__":
     test_the_tools_menu_never_links_to_a_route_that_is_not_served()
     test_no_duplicate_routes()
     test_crops_dir_never_created_inside_output_dir()
-    test_output_dir_never_falls_back_to_the_read_only_remedy_source()
+    test_output_dir_follows_the_environment_and_never_this_source_directory()
     test_no_health_component_reports_itself_active_unconditionally()
     test_bridge_objects_carry_the_admission_grade_and_the_log_is_read_incrementally()
     test_feed_host_grade_toggles_filter_and_count()
@@ -906,6 +986,7 @@ if __name__ == "__main__":
     test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_replay()
     test_the_bundle_tag_says_which_machine_recorded_it()
     test_an_empty_timeline_names_this_runs_reason_not_a_generic_one()
-    _ran = 18
+    test_only_directories_named_like_a_run_are_served()
+    _ran = 19
     print(f"all {_ran} checks passed (viewer fetches {len(fetched)} endpoints: "
           f"{', '.join(fetched)})")

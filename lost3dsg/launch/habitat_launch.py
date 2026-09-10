@@ -64,7 +64,23 @@ def generate_launch_description():
     # ------------------------------------------------------------
     graph_api_bridge_dir_arg = DeclareLaunchArgument(
         'graph_api_bridge_dir',
-        default_value='/root/exchange/lost3dsg/src/perception_module',
+        # DEFERS TO GRAPH_API_SRC_DIR, for the same reason metrics_output_dir defers to
+        # GRAPH_API_OUTPUT_DIR below: a literal here is a path from one container layout, and this
+        # one does not use it. /root/exchange/lost3dsg/src/perception_module does not exist in the
+        # image; the sources are at /graph_api/lost3dsg/src/perception_module.
+        #
+        # MEASURED: this is the `cwd` of habitat_metrics_collector and of this file's copy of
+        # graph_api_bridge, so both die at startup with
+        #   FileNotFoundError: [Errno 2] No such file or directory:
+        #   '/root/exchange/lost3dsg/src/perception_module'
+        # The bridge survives because live_stack_container.sh starts its own. The collector does
+        # not, and NO BUNDLE HAS EVER CARRIED ITS REPORT: 0 of 113 bundles hold
+        # risultati_operativi.json. It failed loudly into the launch log every run and nobody read
+        # that far, which is why a missing artefact looked like an artefact nobody wanted.
+        #
+        # The literal stays as the last resort, so a launch with nothing exported behaves as before.
+        default_value=EnvironmentVariable('GRAPH_API_SRC_DIR',
+                                          default_value='/root/exchange/lost3dsg/src/perception_module'),
         description="Cartella contenente graph_api_bridge.py",
     )
 

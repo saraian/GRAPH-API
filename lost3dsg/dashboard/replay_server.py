@@ -108,6 +108,29 @@ RVIZ_LOG = Path("/tmp/graphapi_live/rviz.log")
 RVIZ_CONTAINER = "graphapi_rviz"   # the name view_rviz.sh gives its container
 
 
+# A RUN BUNDLE IS NAMED LIKE ONE. `resolve_bundle` orders runs lexicographically and says so:
+# "the names are timestamps, so lexicographic order is chronological". That premise is only true
+# of directories that CARRY a timestamp name, and nothing checked. On 2026-09-10 a tree migration
+# left `_volume_output_backup_20260910` in the runs directory; "_" is 0x5F, every digit is 0x3x,
+# so the backup sorted AFTER every real run and became "latest". The dashboard then served a
+# directory with no run_metadata.json: the 3D tab asked for its mesh and got a 404, the banner
+# named the backup, and nothing on the page said the chosen run was not a run.
+#
+# Filtering on the NAME rather than on the contents is deliberate, and it is the narrower claim:
+# the sort's own premise is about names, so this makes the premise true instead of guessing from
+# files that a partial run may not have written yet. A directory whose name is not a run id is
+# not orderable by this rule and is therefore not a candidate.
+_RUN_ID_RE = re.compile(r"^\d{8}_\d{6}(?:_|$)")
+
+
+def is_run_dir(d) -> bool:
+    """A directory this dashboard may serve: a real directory, not a symlink, named like a run."""
+    try:
+        return d.is_dir() and not d.is_symlink() and bool(_RUN_ID_RE.match(d.name))
+    except OSError:
+        return False
+
+
 def resolve_bundle(spec):
     """Turn a --bundle value into a directory. "latest" means the NEWEST RUN.
 
@@ -126,8 +149,7 @@ def resolve_bundle(spec):
         # the dashboard at all until somebody had recorded a run, so the start page -- which exists
         # to say "no runs in <dir>" and let one be launched -- could never be reached.
         return None
-    runs = sorted((d for d in RUNS_ROOT.iterdir() if d.is_dir() and not d.is_symlink()),
-                  key=lambda d: d.name)
+    runs = sorted((d for d in RUNS_ROOT.iterdir() if is_run_dir(d)), key=lambda d: d.name)
     if not runs:
         return None
     ready = [d for d in runs if _has_graph(d)]
@@ -2011,7 +2033,7 @@ __INTERNAL_LINKS__      <button id="rvizLaunchBtn" onclick="startRviz()" hidden
 def _bundle_names(limit: int = 60):
     """Run directory names, newest first, for the dashboard's bundle picker."""
     try:
-        runs = [d for d in RUNS_ROOT.iterdir() if d.is_dir() and not d.is_symlink()]
+        runs = [d for d in RUNS_ROOT.iterdir() if is_run_dir(d)]
     except OSError:
         return []
     return [d.name for d in sorted(runs, key=lambda d: d.name, reverse=True)[:limit]]

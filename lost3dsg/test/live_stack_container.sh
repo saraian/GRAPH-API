@@ -163,6 +163,10 @@ export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/${CFG_NAME}
 # the loop, and a bundle that looks complete. Fail here instead.
 [ -f "$GRAPH_API_CONFIG" ] || { echo "!! GRAPH_API_CONFIG=$GRAPH_API_CONFIG does not exist — refusing to run on defaults"; exit 1; }
 export GRAPH_API_OUTPUT_DIR=/ws/output
+# Where the python sources actually are in THIS image. habitat_launch.py uses it as the cwd
+# of habitat_metrics_collector; its own default names a layout this container does not have,
+# so without this the collector dies at startup and the bundle gets no operational report.
+export GRAPH_API_SRC_DIR=/graph_api/lost3dsg/src/perception_module
 
 # GA-264. A real triple store, installed from the vendored wheel so this needs no network.
 # found/store.py falls back to the in-memory rdflib graph if the import fails, and SAYS so --
