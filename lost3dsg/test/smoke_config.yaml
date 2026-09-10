@@ -64,6 +64,12 @@ perception:
   # It is read from MODAL_PERCEPTION_URL in the launcher's environment and must never be
   # committed again. Empty here on purpose.
   modal_endpoint: ""
+  # GA-477. DECLARED AT THE CODE DEFAULT, so it changes nothing about a run and makes the value
+  # answerable from the run's own config. Probe a10 compares this guard against the worst frame age
+  # the PREVIOUS run rejected; without the key it SKIPPED, and a skipped probe fails the gate -- so
+  # the tracked smoke config could not pass its own gate. Found by the ontology lane on their own
+  # config, which had the same gap.
+  max_frame_age_s: 1.0
   # seconds; a remote perception call. 25.0 was hardcoded and sat below all
   # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
   # INTERIM, NOT MEASURED. 180 was not derived from a distribution and must not be cited as

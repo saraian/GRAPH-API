@@ -304,7 +304,30 @@ def a3_policy_reached_container(expect_policy):
     keys and this file learns nothing about any of them.
     """
     if not expect_policy:
-        return SKIPPED, {"reason": "no --expect-policy given; nothing to compare against"}
+        # GA-477 (2026-09-10, found by the ontology lane, whose third launch this cost). NOTHING TO
+        # COMPARE IS AN ANSWER, NOT AN ABSENCE. A skip fails the gate (:1574, and rightly -- a probe
+        # that did not run must not read as green), so a3 skipping made the gate UNPASSABLE for any
+        # stack with no policy layer: the launcher builds the expectation by looping over
+        # EXT_ENV_PASS, which is empty without an extension, so a3 skipped for graphapi_only_config,
+        # for smoke_config, and for every GRAPH-API-only deployment.
+        #
+        # This is the same finding GA-435 fixed for a7 four hours earlier -- "on a deployment with
+        # NO extension ... a GRAPH-API-only stack could not pass the gate at all" -- which survived
+        # one probe over because the fix was made where it was found rather than where it applied.
+        #
+        # SO THE DISCRIMINATOR IS WHETHER A POLICY LAYER EXISTS, not whether an expectation arrived.
+        # No extension declares one: there is nothing to deliver and nothing to check, and the probe
+        # says so. An extension IS configured and the expectation is missing: that is the launcher
+        # failing to compute what it promised, which is the fault a3 was written for, and it still
+        # skips.
+        if _found_exercised("auto"):
+            return SKIPPED, {"reason": "an extension is configured but no --expect-policy arrived; "
+                                       "the launcher builds it from EXT_ENV_PASS, so this is a gap "
+                                       "in the launcher, not an absent policy layer"}
+        return True, {"checked": {}, "mismatches": {},
+                      "reason": "no policy layer in this deployment: the config names no filter "
+                                "outside this repository, so no extension variable has to reach "
+                                "the container. Vacuously true, and recorded rather than skipped."}
     mismatches, seen = {}, {}
     for k, want in expect_policy.items():
         got = os.environ.get(k)

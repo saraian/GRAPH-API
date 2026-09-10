@@ -1188,6 +1188,50 @@ def test_a4_asserts_every_hub_model_a_run_loads():
                 os.environ[k] = v
 
 
+def test_a3_passes_vacuously_with_no_policy_layer():
+    """GA-477. A skip FAILS the gate, so a3 skipping made it unpassable without an extension.
+
+    The launcher builds --expect-policy by looping over EXT_ENV_PASS, which is empty when no
+    extension is configured. a3 then had nothing to compare and skipped -- for graphapi_only_config,
+    for smoke_config, and for every GRAPH-API-only deployment. "Nothing to compare" is a true
+    answer, not a missing one; a launcher that FAILED to compute an expectation it promised is a
+    different case and still skips.
+    """
+    import os as _os
+    import types as _types
+    from preflight_gate import a3_policy_reached_container
+    here = _os.path.join(_os.path.dirname(_os.path.dirname(HERE)),
+                         "lost3dsg", "src", "perception_module")
+    saved = sys.modules.get("config")
+    try:
+        fake = _types.ModuleType("config")
+        fake.__file__ = _os.path.join(here, "config.py")
+        sys.modules["config"] = fake
+
+        fake.CFG = {"hooks": {"filter": ""}}
+        ok, d = a3_policy_reached_container({})
+        check(ok is True, f"no policy layer must PASS, got {ok}")
+        check("no policy layer" in d["reason"], d)
+
+        fake.CFG = {"hooks": {"filter": "envelope_size:SizeFilter"}}
+        ok, _ = a3_policy_reached_container({})
+        check(ok is True, "a filter that ships here is not a policy layer either")
+
+        fake.CFG = {"hooks": {"filter": "found.filter:OntologicalFilter"}}
+        ok, d = a3_policy_reached_container({})
+        check(ok is not True, "an extension with no expectation is a LAUNCHER gap, not a pass")
+        check("gap in the launcher" in d["reason"], d)
+
+        fake.CFG = {"hooks": {"filter": ""}}
+        ok, d = a3_policy_reached_container({"FOUND_X": "1"})
+        check(ok is False and d["mismatches"], "a real expectation is still compared")
+    finally:
+        if saved is None:
+            sys.modules.pop("config", None)
+        else:
+            sys.modules["config"] = saved
+
+
 if __name__ == "__main__":
     # Mirrors src/perception_module/test_config.py: every function is a pytest test AND
     # this file still runs as a script. It collected ZERO tests under pytest before, because
