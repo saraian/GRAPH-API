@@ -558,8 +558,24 @@ while [ -z "$_dead_node" ]; do
   # It is a normal end, not a death, and terminating_node.json already says so in its own note --
   # a status of 0 with a node name is how MAPPING_TIME ends a mapping run.
   if [ -f /ws/output/feed_ended.json ]; then
-    _dead_node="FEED_ENDED"; _dead_rc=0
-    _dead_why=" (the feed host completed the house tour)"
+    # THE FILE IS ALSO THE ABORT PATH, so it must not claim the tour finished. `docker stop` kills
+    # the stack where it stands; creating this file ends the launch through the normal archive path,
+    # which is gentler and is what an operator should reach for. But a hand-made marker and a
+    # finished tour would then be the same fact in the bundle, and "the tour completed" is the claim
+    # a baseline turns on. The feed writes reason "house_tour_complete"; anything else -- including
+    # an empty file somebody touched -- is an abort and is recorded as one.
+    _reason=$(python3 -c 'import json,sys
+try:
+    print((json.load(open("/ws/output/feed_ended.json")) or {}).get("reason") or "")
+except Exception:
+    print("")' 2>/dev/null || echo "")
+    if [ "$_reason" = "house_tour_complete" ]; then
+      _dead_node="FEED_ENDED"; _dead_why=" (the feed host completed the house tour)"
+    else
+      _dead_node="FEED_ABORTED"
+      _dead_why=" (feed_ended.json with reason '${_reason:-none}' — ended by hand, not by the tour)"
+    fi
+    _dead_rc=0
     break
   fi
   # With the detector off, PERCEPTION and OM6 are not in the list -- waiting on a node that was
@@ -649,8 +665,8 @@ print(json.dumps({
             "node exiting 0 unexpectedly ends a run too, so read `node` and not the status alone.",
 }, indent=2))
 PY
-if [ "$_dead_node" = "FEED_ENDED" ]; then
-  echo ">>> FEED ENDED${_dead_why:-} — closing the stack. This is the normal end of a base run."
+if [ "$_dead_node" = "FEED_ENDED" ] || [ "$_dead_node" = "FEED_ABORTED" ]; then
+  echo ">>> $_dead_node${_dead_why:-} — closing the stack through the normal archive path."
 else
   echo "!! $_dead_node exited with status ${_dead_rc}${_dead_why:-} — ending the run."
   echo "   The stack is not left running: a run missing any of these nodes measures nothing further."

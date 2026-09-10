@@ -103,6 +103,7 @@ def test_ended_is_a_closed_vocabulary_a_reader_can_test():
              # A WATCHED NODE EXITING 0 IS STILL A DEATH, which is why the node and not the status
              # decides. A reader keying on exit_status would call this one a clean finish.
              (json.dumps({"node": "PERCEPTION", "exit_status": 0}), "node_death"),
+             (json.dumps({"node": "FEED_ABORTED", "exit_status": 0}), "operator_abort"),
              (None, "unrecorded")]
     for term, want in cases:
         with tempfile.TemporaryDirectory() as td:

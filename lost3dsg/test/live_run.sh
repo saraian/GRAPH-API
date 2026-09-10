@@ -320,7 +320,10 @@ except (OSError, ValueError) as exc:
 # instead of matching a node name it has to know. The testing lane's early-death condition reads a
 # LOG LINE today; a line is prose that a future edit breaks silently, and with no cap the ending is
 # the fact their whole eligibility test turns on.
-#   tour_complete  the feed wrote feed_ended.json and the container closed on it (rule 73's normal end)
+#   tour_complete  the feed wrote feed_ended.json with reason house_tour_complete (rule 73's normal end)
+#   operator_abort feed_ended.json existed WITHOUT that reason -- somebody ended the launch by hand
+#                  through the archive path. A finished tour and a hand-stopped one must never be
+#                  the same fact: "the tour completed" is the claim a baseline turns on.
 #   mapping_time   a mapping run reached its own deadline, which is also a normal end
 #   node_death     a watched node exited, whatever its status -- 0 included, which is why the NODE
 #                  and not the status is what discriminates
@@ -328,6 +331,7 @@ except (OSError, ValueError) as exc:
 #                  NOT "unknown": it says the container never reached its own end.
 _tn = d["terminating_node"].get("node")
 d["terminating_node"]["ended"] = ({"FEED_ENDED": "tour_complete",
+                                   "FEED_ABORTED": "operator_abort",
                                    "MAPPING_TIME": "mapping_time"}.get(_tn, "node_death")
                                   if _tn else "unrecorded")
 d["cap"] = {                                            # GA-395, keys ADDED (rule 6)
