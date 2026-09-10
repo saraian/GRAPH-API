@@ -19,6 +19,11 @@ import object_manager_6 as om6  # noqa: E402
 import object_services as osv  # noqa: E402
 from world_model import wm  # noqa: E402
 
+assert om6._room_id_for_topic(None) is None
+assert om6._room_id_for_topic("room_1") == "room_1"
+assert om6._room_id_for_topic(7) == "7"
+assert om6._room_id_for_topic("   ") is None
+
 BOX = dict(x_min=0.0, x_max=1.0, y_min=0.0, y_max=1.0, z_min=0.0, z_max=1.0)
 
 

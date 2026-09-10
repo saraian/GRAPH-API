@@ -64,6 +64,18 @@ def test_ctrl_server():
     get(port, "/action?act=nav_goal&x=1.5&y=-2&z=0.1")
     assert list(h.CTRL.actions) == [("forward", {"amount": 0.5}),
                                     ("nav_goal", {"x": 1.5, "y": -2.0, "z": 0.1})]
+    h.CTRL.actions.clear()
+
+    # goto rides the same /action route, so the bridge proxies it unchanged. `resume` must
+    # survive as a STRING: the route coerces x/y/z/amount with float(), and float("false")
+    # raises -- which is why it is filtered in separately.
+    get(port, "/action?act=goto&x=1.5&y=-2&z=0.1&amount=36&resume=0")
+    assert list(h.CTRL.actions) == [("goto", {"x": 1.5, "y": -2.0, "z": 0.1,
+                                              "amount": 36.0, "resume": "0"})]
+    h.CTRL.actions.clear()
+
+    # No revisit has run, so the status route reports the empty shape rather than 404/500.
+    assert get(port, "/revisit_status")["success"] is True
 
     cfg = get(port, "/set_config?perceive_while_moving=true&seg=1")["config"]
     assert cfg == {"perceive_while_moving": "true", "seg": "1"}

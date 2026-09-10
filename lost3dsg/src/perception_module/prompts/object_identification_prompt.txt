@@ -34,7 +34,6 @@ List all visible, functional, movable, and fixture objects in the foreground and
 - Explicitly include all visible doors and doorways (even if in the background).
 - Use natural, accurate, specific nouns or standard compound nouns (e.g., 'coffee table', 'floor lamp', 'microwave oven', 'office chair', 'nightstand', 'refrigerator', 'armchair', 'bookshelf', 'toaster', 'bathtub', 'sink', 'toilet', 'trash can').
 - Exclude low-level clutter and background structural surfaces (do not list 'wall', 'floor', 'ceiling').
-{EXCLUDED_LABELS_RULE}
 - Do not add subjective decorative adjectives (e.g., use 'leather sofa' or 'sofa', NOT 'beautiful luxurious sofa').
 
 ---

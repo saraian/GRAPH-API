@@ -481,11 +481,8 @@ _DEFAULTS = {
         # here rather than in code if the distribution moves.
         "cloud_timeout_s": 60.0,
         "provider": "fal",   # managed backend when perception.backend is "managed"
-        # Structural surfaces and openings the VLM must never propose. The walls and
-        # the doorways already come from room_manager's geometry, so a VLM label for
-        # one of them only adds a duplicate object to the graph. The prompt asks for
-        # the exclusion and vlm_call drops any that come back anyway, singular or
-        # plural. An empty list turns the exclusion off.
+        # Structural surfaces and openings already come from room geometry. Keep them
+        # out of the whole-scene VLM response; set [] to let the model return them.
         "excluded_labels": ["wall", "floor", "ceiling", "door", "doorway",
                             "door frame", "doorframe"],
     },

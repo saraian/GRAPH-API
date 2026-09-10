@@ -477,6 +477,8 @@ class Ctrl:
         # allowed to mutate Habitat's scene graph.
         self.object_commands = collections.deque()
         self.object_catalog = {"templates": []}
+        # Published by the sim thread each frame, read by /revisit_status. Swapped whole.
+        self.revisit = None
 
 
 CTRL = Ctrl()
@@ -564,6 +566,9 @@ class CtrlHandler(BaseHTTPRequestHandler):
         elif path == "/action":
             act = q.get("act") or q.get("action") or ""
             params = {k: float(q[k]) for k in ("x", "y", "z", "amount") if q.get(k)}
+            # `resume` stays a string: it is a flag, and float("0") would make "false" raise.
+            if q.get("resume") is not None:
+                params["resume"] = q["resume"]
             CTRL.actions.append((act, params))
             self._json({"success": True, "queued": act})
         elif path == "/set_config":
@@ -592,6 +597,10 @@ class CtrlHandler(BaseHTTPRequestHandler):
                       f"{ {k: LAYERS[k] for k in changed} }", flush=True)
             self._json({"layers": LAYERS, "changed": changed,
                         "keys": {chr(k): v for k, v in LAYER_KEYS.items()}})
+        elif path == "/revisit_status":
+            # /action is fire-and-forget, so without this a caller cannot tell a reach from a
+            # refusal. Single attribute read: the sim thread swaps CTRL.revisit whole.
+            self._json({"success": True, **(CTRL.revisit or {"active": None, "last": None})})
         elif path == "/get_config":
             self._json({"success": True, "config": CTRL.config})
         else:
@@ -997,6 +1006,22 @@ MOVE_FN = os.environ.get("FEED_MOVE_FN", hab_cfg.get("move_function", "follower"
 # change to that place is worth making.
 POST_SCAN_HOOK = os.environ.get("FEED_POST_SCAN_HOOK",
                                 hab_cfg.get("post_scan_hook", "") or "").strip()
+
+# REVISIT (`/action?act=goto`). Drive the agent to one point, look around, rejoin the tour.
+# The scene is dynamic, so answering "what changed over there" needs a way to go and look;
+# this file supplies the mechanism only -- which point, and when, belongs to the caller.
+#
+# 36 frames is a full turn at the 10 degrees per `turn_left` the manual scan already assumes.
+REVISIT_SCAN_FRAMES = int(os.environ.get("FEED_REVISIT_SCAN", hab_cfg.get("revisit_scan_frames", 36)))
+# Arrival tolerance, against the follower's own goal_radius of 0.4 m plus a margin: the follower
+# stops "close enough", and a target it never approached must not be read as a reach.
+REVISIT_ARRIVAL_TOL_M = float(os.environ.get("FEED_REVISIT_ARRIVAL_TOL",
+                                             hab_cfg.get("revisit_arrival_tol_m", 1.0)))
+# A walk that never finishes has to end by itself. The floor guard teleports the agent back the
+# moment it drifts off-storey, so a path crossing a staircase can otherwise loop forever:
+# walk, get pulled back, re-plan the same path. Bounded here rather than diagnosed at 3 a.m.
+REVISIT_MAX_FRAMES = int(os.environ.get("FEED_REVISIT_MAX_FRAMES",
+                                        hab_cfg.get("revisit_max_frames", 600)))
 
 # GA-258. DYNAMIC DWELL: stay while merges are still waiting to be confirmed.
 #
@@ -1500,6 +1525,36 @@ def load_schedule(path, floor_y, tol=0.75):
 
 
 # --- motion ---
+class RevisitState:
+    """One in-flight `goto`: where, which phase, and how to rejoin the tour.
+
+    REPLACED WHOLE, NEVER MUTATED FIELD BY FIELD. Ctrl carries no lock ("GIL-atomic reads and
+    writes only"), and the sim thread reads this while an HTTP thread may be installing the
+    next one. A single attribute swap is atomic; three independent attributes are not, and the
+    torn read is a target from one request with the phase of another.
+    """
+
+    TRAVEL = "travel"
+    SCAN = "scan"
+
+    def __init__(self, target_hab, target_ros, scan_frames, resume, saved_tour_i=None,
+                 snap_distance_m=0.0):
+        self.target_hab = np.asarray(target_hab, dtype=np.float64)
+        self.target_ros = tuple(float(v) for v in target_ros)
+        self.scan_frames = int(scan_frames)
+        self.resume = bool(resume)
+        self.saved_tour_i = saved_tour_i
+        self.snap_distance_m = float(snap_distance_m)
+        self.phase = self.TRAVEL
+        self.frames_travelled = 0
+        self.scan_left = int(scan_frames)
+
+    def status(self):
+        return {"phase": self.phase, "target_ros": list(self.target_ros),
+                "frames_travelled": self.frames_travelled, "scan_left": self.scan_left,
+                "resume": self.resume, "snap_distance_m": round(self.snap_distance_m, 3)}
+
+
 class Tour:
     """Greedy nearest-unvisited coverage over navmesh samples, 360° scan at each.
 
@@ -1521,6 +1576,11 @@ class Tour:
         self.floor_order = []       # storeys toured, in order, for the bundle
         self.house_done = False     # set when the last storey's waypoints are exhausted
         self._tour_planned_total = 0
+        self.revisit = None                 # RevisitState while a goto is in flight
+        self.last_revisit = None            # the outcome of the last one, for /revisit_status
+        self.revisits_requested = 0
+        self.revisits_reached = 0
+        self.revisits_failed = 0
 
     def bind_floors(self, scene_floors, tol, guard):
         """Plan the remaining storeys. Called from main once the floors are clustered.
@@ -1619,7 +1679,94 @@ class Tour:
             pool = [q for q in pool if not np.allclose(q, best)]
         return chosen
 
+    def start_revisit(self, target_hab, target_ros, scan_frames, resume, snap_distance_m):
+        """Install a goto. Returns the accepted state; the caller has already validated.
+
+        saved_tour_i is captured HERE rather than in the revisit branch, because the branch runs
+        after the tour has already been asked for its next action and the index would be read
+        one step late.
+        """
+        saved = getattr(self, "_tour_i", None) if resume else None
+        self.revisit = RevisitState(target_hab, target_ros, scan_frames, resume,
+                                    saved_tour_i=saved, snap_distance_m=snap_distance_m)
+        self.revisits_requested += 1
+        print(f"[feed] revisit: going to ROS ({target_ros[0]:.2f}, {target_ros[1]:.2f}, "
+              f"{target_ros[2]:.2f}), scan {scan_frames} frames, "
+              f"resume={'yes' if resume else 'no'}", flush=True)
+        return self.revisit
+
+    def _end_revisit(self, outcome, detail=""):
+        rv = self.revisit
+        self.revisit = None
+        if rv is None:
+            return
+        if outcome == "reached":
+            self.revisits_reached += 1
+        else:
+            self.revisits_failed += 1
+        # The tour index is restored, not left where the revisit found it: the revisit never
+        # advanced it, but _advance_floor may have replanned underneath a long one, and a stale
+        # index into a shorter plan is an IndexError at the next walk step.
+        if rv.resume and rv.saved_tour_i is not None and hasattr(self, "_tour"):
+            self._tour_i = min(int(rv.saved_tour_i), max(len(self._tour) - 1, 0))
+            self._tour_scan = 0
+            self._dwelling = False
+            self._dwell_frames = 0
+        self.last_revisit = {"outcome": outcome, "detail": detail,
+                             "target_ros": list(rv.target_ros),
+                             "frames_travelled": rv.frames_travelled,
+                             "resumed": bool(rv.resume and rv.saved_tour_i is not None)}
+        print(f"[feed] revisit: {outcome}{(' — ' + detail) if detail else ''} "
+              f"after {rv.frames_travelled} frames", flush=True)
+
+    def _step_revisit(self, agent):
+        rv = self.revisit
+        if rv.phase == RevisitState.SCAN:
+            if rv.scan_left <= 0:
+                self._end_revisit("reached")
+                return
+            rv.scan_left -= 1
+            agent.act("turn_left")
+            return
+
+        if rv.frames_travelled >= REVISIT_MAX_FRAMES:
+            self._end_revisit("timeout", f"cap is {REVISIT_MAX_FRAMES}")
+            return
+        try:
+            action = self.follower.next_action_along(rv.target_hab)
+        except Exception as exc:
+            self._end_revisit("unreachable", f"follower raised {type(exc).__name__}")
+            return
+        if action is not None:
+            self.sim.step(action)
+            rv.frames_travelled += 1
+            return
+
+        # `action is None` means EITHER arrived OR no path exists — the follower does not
+        # distinguish them, and the tour branch above treats both as a reach. Infrastructure
+        # other people call blind cannot report a false success, so measure the distance.
+        # Horizontal only: the target sits on the navmesh, the agent's origin is its base, and
+        # a vertical offset between the two is not a navigation failure.
+        here = np.asarray(agent.get_state().position, dtype=np.float64)
+        dist = float(np.hypot(here[0] - rv.target_hab[0], here[2] - rv.target_hab[2]))
+        if dist > REVISIT_ARRIVAL_TOL_M:
+            self._end_revisit("unreachable", f"stopped {dist:.2f} m short "
+                                             f"(tolerance {REVISIT_ARRIVAL_TOL_M:.2f} m)")
+            return
+        if rv.scan_left <= 0:
+            self._end_revisit("reached", f"{dist:.2f} m from target, no scan requested")
+            return
+        rv.phase = RevisitState.SCAN
+        print(f"[feed] revisit: arrived {dist:.2f} m from target, scanning "
+              f"{rv.scan_left} frames", flush=True)
+
     def step(self, agent):
+        # BEFORE every tour mode, so a goto works in auto mode and in all four branches below.
+        # nav_goal, the existing point-to-point action, is reachable only with auto_mode off,
+        # which stops the tour outright and never resumes it.
+        if self.revisit is not None:
+            self._step_revisit(agent)
+            return
         if TEST_MODE and TEST_TOUR > 0:
             # GA-256. Tour mode takes precedence over the radius disc: a bounded walk and a
             # tour are different intentions, and silently blending them would produce a run
@@ -1991,8 +2138,60 @@ def main():
                 nav_target = None
             else:
                 nav_target = np.asarray(target)
+        elif act == "goto":
+            _start_goto(p)
         else:
             print(f"[feed] unknown action: {act}")
+
+    def _start_goto(p):
+        """Validate a revisit target and hand it to the tour. Refuses rather than half-fails.
+
+        Every rejection below is a case that would otherwise fail SILENTLY somewhere later:
+        off the navmesh gives a nan the follower never reports, and off-storey livelocks
+        against the floor guard instead of raising.
+        """
+        if tour is None:
+            print("[feed] goto refused: no navmesh, so there is no follower to drive", flush=True)
+            return
+        ros = (float(p.get("x", 0.0)), float(p.get("y", 0.0)), float(p.get("z", 0.0)))
+        requested = ros_to_habitat(ros)
+        target = requested
+        snap_distance = 0.0
+        if sim.pathfinder.is_loaded:
+            snapped = np.asarray(sim.pathfinder.snap_point(requested), dtype=np.float64)
+            if not np.all(np.isfinite(snapped)):
+                print(f"[feed] goto refused: ROS ({ros[0]:.2f}, {ros[1]:.2f}, {ros[2]:.2f}) "
+                      "does not snap to the navmesh", flush=True)
+                tour.revisits_requested += 1
+                tour.revisits_failed += 1
+                tour.last_revisit = {"outcome": "refused", "detail": "off navmesh",
+                                     "target_ros": list(ros), "frames_travelled": 0,
+                                     "resumed": False}
+                return
+            snap_distance = float(np.linalg.norm(snapped - requested))
+            target = snapped
+        # ROS z IS habitat y (ros = -hz, -hx, hy), so the two heights compare directly.
+        drift = abs(float(target[1]) - floor_guard.floor_y)
+        if drift > floor_guard.tol:
+            print(f"[feed] goto refused: target sits {float(target[1]):+.2f} against storey "
+                  f"{floor_guard.floor_y:+.2f}, {drift:.2f} m off (tolerance "
+                  f"{floor_guard.tol:.2f} m). Cross-storey revisit is not this command.",
+                  flush=True)
+            tour.revisits_requested += 1
+            tour.revisits_failed += 1
+            tour.last_revisit = {"outcome": "refused",
+                                 "detail": f"off storey by {drift:.2f} m",
+                                 "target_ros": list(ros), "frames_travelled": 0,
+                                 "resumed": False}
+            return
+        if snap_distance > 1.0:
+            # Served a neighbour, not what was asked for. Say so: silence here reads downstream
+            # as "the robot looked at the thing", when it looked at the nearest floor to it.
+            print(f"[feed] goto: target snapped {snap_distance:.2f} m onto the navmesh", flush=True)
+        amount = float(p.get("amount", 0) or 0)
+        scan = int(amount) if amount > 0 else REVISIT_SCAN_FRAMES
+        resume = str(p.get("resume", "1")).lower() not in ("0", "false", "no", "off")
+        tour.start_revisit(target, ros, scan, resume, snap_distance)
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -2114,7 +2313,13 @@ def main():
             item["result"] = object_controller.execute(item["command"])
             item["done"].set()
 
-        if not CTRL.auto_mode:
+        if tour is not None and tour.revisit is not None:
+            # AHEAD OF THE MANUAL BRANCH TOO. A goto is an explicit instruction; having it
+            # silently ignored because the viewer happened to leave auto_mode off is the
+            # failure this command exists to remove.
+            label = "REVISIT"
+            tour.step(agent)
+        elif not CTRL.auto_mode:
             label = "MANUAL"
             if manual_scan > 0:
                 agent.act("turn_left")
@@ -2164,6 +2369,13 @@ def main():
             label = "WALK" if moving else "DWELL"
             if moving:
                 _walk_step()
+
+        if tour is not None:
+            CTRL.revisit = {"active": tour.revisit.status() if tour.revisit else None,
+                            "last": tour.last_revisit,
+                            "requested": tour.revisits_requested,
+                            "reached": tour.revisits_reached,
+                            "failed": tour.revisits_failed}
 
         # OWNER RULING 20. Checked AFTER the motion and BEFORE the observation, so a frame is
         # never rendered from a pose the guard is about to reject — a corrected teleport would
@@ -2245,6 +2457,11 @@ def main():
                 # a run whose map is one storey because it was teleported back forty times are
                 # different runs, and the map alone cannot tell them apart.
                 "floor_guard": floor_guard.report(),
+                # Revisits are recorded as three counts, not one: a run where every goto was
+                # refused off-storey and one where none was ever sent both have zero reaches.
+                "revisits_requested": getattr(tour, "revisits_requested", 0) if tour else 0,
+                "revisits_reached": getattr(tour, "revisits_reached", 0) if tour else 0,
+                "revisits_failed": getattr(tour, "revisits_failed", 0) if tour else 0,
                 "last_updated": time.time()
             }
 

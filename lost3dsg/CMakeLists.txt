@@ -61,6 +61,7 @@ install(PROGRAMS
   src/perception_module/graph_api_bridge.py
   src/perception_module/live_overlay.py
   src/perception_module/vlm_call.py
+  src/perception_module/scene_analysis.py
   src/perception_module/label_norm.py
   # sibling modules the nodes import at runtime — without these the installed
   # copies die with ImportError under `ros2 run`
@@ -106,6 +107,7 @@ install(FILES
 install(FILES
   src/perception_module/prompts/object_identification_prompt.txt
   src/perception_module/prompts/visual_prompt.txt
+  src/perception_module/prompts/scene_analysis_prompt.txt
   DESTINATION lib/${PROJECT_NAME}/prompts
 )
 install(DIRECTORY src/perception_module/data
