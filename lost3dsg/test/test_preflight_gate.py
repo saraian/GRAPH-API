@@ -547,18 +547,31 @@ def test_run_output_lives_outside_every_hashed_root():
     # the launcher's own root variable, not a hard-coded path: it derives its root from its own location so a
     # clone anywhere can run; this assertion used to encode the one machine the code was written
     # on, and it failed the moment the hardcoding it was guarding against was removed.
-    out = "$WORKSPACE_ROOT/results"
+    # RESPELT 2026-09-10, PROPERTY UNCHANGED. Run output moved to $REPO/results and OUT_DIR is now
+    # the bundle itself (one directory per run, owner instruction). $REPO/results is still outside
+    # $REPO/lost3dsg, which is what this test exists to guarantee: artefacts inside a hashed root
+    # would move the frozen digest a7 compares against.
+    out = "$REPO/results"
     for r in roots:
         check(not out.startswith(r.rstrip("/") + "/") and out != r,
               f"run output at {out} is inside hashed root {r} — the frozen root cannot hold still")
 
     # and the launcher must actually default there
     body = open(os.path.join(HERE, "live_run.sh")).read()
-    check("OUT_DIR=${OUT_DIR:-$WORKSPACE_ROOT/results/" in body,
-          "live_run.sh must default OUT_DIR under $WORKSPACE_ROOT/results/, never /tmp")
-    check("WORKSPACE_ROOT=${WORKSPACE_ROOT:-$(cd \"$REPO/../..\" && pwd)}" in body,
-          "WORKSPACE_ROOT must be DERIVED from the script's location, not hardcoded — a clone "
-          "anywhere else cannot run if it is")
+    check("RESULTS_DIR=${RESULTS_DIR:-$REPO/results}" in body,
+          "live_run.sh must default the results directory to $REPO/results, never /tmp")
+    check('export OUT_DIR="$RUN_DIR"' in body,
+          "the live output and the bundle must be ONE directory: a scratch directory that is copied "
+          "into the bundle at the end is lost whenever the container dies")
+    # THE OLD ASSERTION HERE DEMANDED THE OPPOSITE AND WAS THE BUG. It required
+    # WORKSPACE_ROOT to be DERIVED as "$REPO/../..", which from /DATA/GRAPH-API computes to "/":
+    # the -d test passed and a run would have written its bundle to /runs and published maps to
+    # /maps. A default that cannot be wrong beats a check that catches it being wrong.
+    check("WORKSPACE_ROOT=${WORKSPACE_ROOT:-$REPO}" in body,
+          "WORKSPACE_ROOT must default to the CHECKOUT. Deriving it from $REPO/../.. resolves to "
+          "the filesystem root from a top-level checkout.")
+    check('cd "$REPO/../.." && pwd' not in body,
+          "the two-levels-above derivation is the defect this default replaced; it must not return")
 
 
 # --- the extension seam: GRAPH-API ships the harness; an extension ships what asserts about itself ---

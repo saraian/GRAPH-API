@@ -31,7 +31,9 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-$(cd "$HERE/../.." && pwd)}"
-RUNS_DIR="${RUNS_DIR:-$WORKSPACE_ROOT/runs}"
+# ONE DIRECTORY PER RUN, IN THE REPOSITORY (owner instruction 2026-09-10). Was
+# $WORKSPACE_ROOT/runs; with the workspace now defaulting to the checkout that path holds nothing.
+RUNS_DIR="${RESULTS_DIR:-$WORKSPACE_ROOT/results}"
 
 # RULE 73 FORBIDS A CAP, and a cap set here would silently truncate a storey mid-tour and leave a
 # bundle that looks finished. Refuse rather than unset it: the caller meant something by it.

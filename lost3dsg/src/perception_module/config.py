@@ -7,6 +7,7 @@ defaults below, which reproduce the historical hardcoded behaviour — so a
 checkout with no config.yaml at all runs exactly as before.
 """
 import os
+import sys
 
 _DEFAULTS = {
     # pre-existing flag (this module used to contain only this line)
@@ -535,7 +536,15 @@ def _load():
             cfg = _merge(cfg, over)
             _keys = sorted(f"{k}.{sk}" if isinstance(v, dict) else k
                            for k, v in over.items() for sk in (v if isinstance(v, dict) else [k]))
-            print(f"[config] local override {local} in force: {', '.join(_keys)}", flush=True)
+            # TO STDERR, NOT STDOUT. The announcement is a message, not a value, and the
+            # launcher CAPTURES this program's stdout to read the merged-config sha
+            # (live_run.sh:949, `--print-merged-sha`). On stdout the line landed INSIDE the JSON
+            # string in run_metadata.json, newline and all, and the launcher then refused the
+            # bundle with "run_metadata.json is not valid JSON". Measured 2026-09-10 on the first
+            # run that ever used a local override -- the feature that makes the override honest
+            # broke the metadata of every run that used it.
+            print(f"[config] local override {local} in force: {', '.join(_keys)}",
+                  file=sys.stderr, flush=True)
             return cfg, f"{path} + {local}"
     return cfg, path
 

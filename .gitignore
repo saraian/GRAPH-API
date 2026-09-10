@@ -33,3 +33,14 @@ lost3dsg/src/perception_module/config.local.yaml
 
 # Per-machine Claude Code settings (hooks); never committed.
 .claude/settings.local.json
+
+# RUN OUTPUT LIVES IN THE REPOSITORY NOW. Owner instruction 2026-09-10: results are stored in
+# <repo>/results, the live output is part of each run's own folder, and there is no separate
+# workspace directory. These MUST stay ignored: a run bundle is over a gigabyte, and untracked
+# data of that size would be walked by `git status`, scanned by the boundary checker (which
+# enumerates with `git ls-files -o --exclude-standard`), and DELETED by `git clean -xdf`.
+/results/
+/runs/
+/maps/
+/output/
+/ws/

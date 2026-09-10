@@ -1,4 +1,54 @@
 #!/usr/bin/env bash
+
+# --help must answer BEFORE anything else parses $1: the scene switch below refused it as a
+# scene name, which is the least useful reply to someone asking what the arguments are.
+case "${1:-}" in
+  -h|--help)
+    cat <<'USAGE'
+live_run.sh — one launch of the GRAPH-API stack against the Habitat feed.
+
+  bash live_run.sh [scene]
+
+SCENE (default hm3d_00861)
+  hm3d_00861  hm3d_00337  hm3d_00770  mp3d_17DRP
+  Any other name is refused; HABITAT_SCENE overrides the path outright.
+
+WHERE THINGS GO
+  WORKSPACE_ROOT   root holding maps/ and results/. MUST hold one of them; it is derived from the
+                   checkout when unset, which is wrong whenever the checkout is not inside it.
+  RESULTS_DIR      run bundles (default $WORKSPACE_ROOT/results). The bundle IS the live output.
+  SCHEDULE_DIR     cached exploration schedules (default $WORKSPACE_ROOT/schedules)
+
+EXPLORATION
+  FEED_SCHEDULE          a schedule file; built and cached automatically when unset
+  FEED_EXPLORATION_LAPS  complete passes of the storey (config habitat.exploration_laps, default 3)
+  FEED_NAVIGATION_MODE   navigate (drive it) or teleport (set the pose)
+  FEED_SPAWN_FLOOR       storey height; REQUIRED when the scene has per-floor maps
+  FEED_TOUR_ALL_FLOORS   1 tours every storey in one launch; default 0, one launch per storey
+
+FEED (each also readable from config.yaml habitat.*)
+  FEED_FPS  FEED_WIDTH  FEED_HEIGHT  FEED_WALK  FEED_DWELL  FEED_DWELL_MODE
+  FEED_MAPPING_SECONDS  FEED_CAMERA_PITCH_DEG  FEED_GT_SEMANTIC  FEED_SHOW  FEED_OVERLAY
+
+STACK
+  CFG_NAME        config file (regolo_config.yaml with an API key, else smoke_config.yaml)
+  RVIZ            0 to run headless; also skipped automatically with no X socket
+  WALL_DETECTOR   1 starts the wall detector (default 0)
+  FEED_HF_OFFLINE 1 refuses to download models mid-run (default 1)
+  IMAGE_TAG       container image (default graphapi-run:humble-ga290)
+
+EXTENSION
+  EXT_ENV_FILE    a shell file the extension ships; REQUIRED when the config names hooks.filter
+  EXT_MOUNTS EXT_ENV_PASS EXT_TREES EXT_POLICY_JSON EXT_STORE_REPAIR EXT_POST_RUN
+
+EXAMPLES
+  bash live_run.sh hm3d_00861
+  FEED_SPAWN_FLOOR=1.21 FEED_EXPLORATION_LAPS=1 bash live_run.sh hm3d_00861
+  RVIZ=0 EXT_ENV_FILE=/path/to/env.sh bash live_run.sh hm3d_00337
+USAGE
+    exit 0
+    ;;
+esac
 # Live demo on this machine: habitat renders on the host (conda habitat_env),
 # the ROS 2 stack runs in the graphapi-run:humble-ga290 container (patched rtabmap, GA-290)
 # over a TCP feed.
@@ -554,6 +604,13 @@ SCENE_ARG=${1:-hm3d_00861}
 RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
 RESULTS_DIR=${RESULTS_DIR:-$REPO/results}
 RUN_DIR="$RESULTS_DIR/$RUN_ID"
+# RUNS_DIR IS THE SAME DIRECTORY NOW, kept as a name because nine places use it: the `latest`
+# symlink, the cycle-budget reader, and run_house.sh's per-storey bookkeeping. MEASURED, and it is
+# why this line exists: when RESULTS_DIR replaced RUNS_DIR and the uses were left behind, the
+# launcher printed "symlinked as /latest" and would have written that symlink at the FILESYSTEM
+# ROOT, while `last_frame_age_rejected.py` was handed an empty argument. Replacing a definition is
+# not replacing its uses.
+RUNS_DIR="$RESULTS_DIR"
 # Stamped BEFORE the directory is created, so every artefact the run legitimately writes is newer
 # than it. The gate's a5 probe fails on anything older -- a directory left dirty by a previous run,
 # or a file copied in by hand.
@@ -1044,10 +1101,25 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 # config.CFG_PATH, the file config.py actually read), the feed host's below.
 # Every variable the extension declared must be SET before this heredoc, or the bundle records a
 # value the process never received. This used to name one deployment's eight variables.
+# GA-474 (owner 2026-09-10). ALL OF THEM, IN ONE MESSAGE. This exited on the FIRST missing name, so
+# an extension declaring twelve unset variables cost twelve launches to discover -- measured today:
+# the run died on the extension's first declared variable, then its second, then the next.
+# Collect, then report. (The names are the extension's; this repository must not carry them.)
+_missing_pass=""
 for _v in ${EXT_ENV_PASS:-}; do
   eval "_isset=\${$_v+yes}"
-  [ -n "${_isset:-}" ] || { echo "!! $_v is declared in EXT_ENV_PASS but not set at run_metadata.json"; exit 1; }
+  [ -n "${_isset:-}" ] || _missing_pass="$_missing_pass $_v"
 done
+if [ -n "$_missing_pass" ]; then
+  echo "!! EXT_ENV_PASS names $(echo $_missing_pass | wc -w) variable(s) that are NOT SET:"
+  for _v in $_missing_pass; do echo "     $_v"; done
+  echo "   \`docker run -e VAR\` sends nothing when VAR is unset in the parent, so the container"
+  echo "   would use its own default while run_metadata.json records this launcher's. Export them"
+  echo "   in \$EXT_ENV_FILE ($EXT_ENV_FILE), or drop them from EXT_ENV_PASS."
+  echo "   To run anyway with each of them empty:"
+  echo "     $(for _v in $_missing_pass; do printf '%s= ' "$_v"; done)bash $0 $SCENE_ARG"
+  exit 1
+fi
 # "machine" records WHICH MACHINE made this bundle. Absent until 2026-09-10, and its absence is why
 # bundles from two machines cannot safely share one directory: nothing inside could tell them apart,
 # so a reader comparing them would not know they were comparing different systems. The bundle now

@@ -1,0 +1,191 @@
+# 03_size_gate.yaml — a complete run configuration. Use it directly:
+#     ./run_headless.sh --config schedules/configs/03_size_gate.yaml
+# or name it from a schedule arm with `config_file:`.
+#
+# THE SIZE ENVELOPES, ANNOTATING ONLY. Same as the reference plus the envelope
+# filter. It abstains rather than admits where the corpus has never measured a kind, so it can
+# annotate without refusing anything. Compare its hook_decisions against 01 to see what the
+# envelopes would have said.
+#
+# WHAT DIFFERS FROM THE TRACKED config.yaml:
+#   habitat.localization_mode: 'rtabmap'
+#   habitat.mapping_seconds: 900.0
+#   hooks.filter: 'envelope_size:SizeFilter'
+#   perception.backend: 'local'
+# Generated 2026-09-10T19:09:47 from
+# lost3dsg/src/perception_module/config.yaml. Edit freely; it is yours.
+
+vlm:
+  base_url: http://localhost:11434/v1
+  model: gemma4:e2b
+  api_key: ''
+  timeout: 30.0
+  retries: 2
+embedding:
+  word2vec_path: /root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz
+  word2vec_limit: 200000
+similarity:
+  label: 0.05
+  color: 0.3
+  material: 0.15
+  description: 0.5
+association:
+  exploration_iou_threshold: 0.1
+  sim_threshold: 0.85
+  tracking_iou_threshold: 0.3
+  volume_expansion_ratio: 0.01
+  exploration_frame_limit: 10
+  object_stability_timeout: 3.0
+  pov_scale_factor: 1.0
+  max_volume_threshold: 0.5
+  bbox_reduction_ratio: 0.3
+  reevaluation_radius_m: 2.0
+  merge_engine: legacy
+  merge_cost_ratio: 20.0
+  merge_min_consecutive: 2
+  merge_max_distance_m: 0.8
+  merge_min_similarity: 0.925
+  merge_knn_k: null
+  update_in_place_distance_m: 0.5
+  transition_move_distance_m: 0.35
+  uncertain_move_distance_m: 0.8
+  max_misses_before_delete: 5
+  delete_undetected: true
+  max_observations_per_object: 64
+  suspicious_max_extent_m: 3.0
+  suspicious_max_volume_m3: 1.5
+frames:
+  camera: habitat_camera_optical
+  agent_pose: habitat_camera
+paths:
+  operations_log: /root/exchange/output/operations.txt
+  vitsam_encoder: ''
+  vitsam_decoder: ''
+  identification_prompt: ''
+  scene_analysis_prompt: ''
+  visual_prompt: ''
+tf:
+  lookup_timeout: 0.1
+walls:
+  min_interval_s: 0.5
+  grid_resolution_m: 0.05
+  vertical_bands: 4
+  min_vertical_bands: 3
+  min_cell_points: 3
+  hough_threshold: 8
+  max_line_gap_m: 0.2
+  support_cell_m: 0.2
+  min_along_coverage: 0.6
+  min_height_coverage: 0.7
+  min_surface_coverage: 0.3
+  plane_cluster_angle_deg: 4.0
+  plane_cluster_distance_m: 0.08
+  plane_cluster_min_overlap: 0.35
+  max_segments: 12
+rooms:
+  default_room_id: ''
+  gvd_method: medial_axis
+  enable_3d_structural_filter: true
+  gvd_3d_min_points_per_cell: 4
+  gvd_3d_min_vertical_span_m: 0.75
+  gvd_3d_min_height_m: 0.25
+  gvd_3d_mid_height_m: 0.8
+  gvd_3d_high_height_m: 1.4
+  gvd_3d_max_height_m: 2.2
+  gvd_3d_required_height_bands: 2
+  gvd_3d_min_points_per_band: 1
+  gvd_3d_max_age_s: 15.0
+  gvd_3d_floor_radius_m: 2.0
+  gvd_3d_floor_min_points: 20
+  gvd_3d_support_dilation_px: 1
+  enable_detected_wall_support: true
+  detected_wall_reinforce_obstacles: true
+  detected_wall_min_observations: 2
+  detected_wall_max_age_s: 300.0
+  detected_wall_min_length_m: 1.5
+  detected_wall_min_vertical_extent_m: 1.2
+  detected_wall_max_rms_m: 0.03
+  detected_wall_merge_angle_deg: 8.0
+  detected_wall_merge_distance_m: 0.18
+  detected_wall_merge_gap_m: 0.5
+  detected_wall_thickness_m: 0.12
+  detected_wall_door_endpoint_radius_m: 0.2
+  detected_wall_door_min_support: 0.16
+  detected_wall_door_max_m: 2.0
+  detected_wall_bottleneck_ratio: 0.9
+  gvd_wall_network_max_fill_ratio: 0.35
+  gvd_topo_fill_max_area_m2: 20.0
+  room_nested_merge_max_area_m2: 8.0
+  room_nested_merge_area_ratio: 0.3
+  gvd_3d_nonwall_component_ratio: 0.01
+  gvd_door_nms_m: 1.2
+  gvd_critical_endpoint_margin_m: 0.2
+  min_room_area_m2: 1.5
+  room_partition_change_confirmations: 3
+  room_partition_stable_iou_min: 0.65
+  gvd_min_robot_component_ratio: 0.15
+habitat:
+  localization_mode: rtabmap
+  scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
+  scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
+  nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
+  nav_scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
+  nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.navmesh
+  single_floor: true
+  floor_tolerance_m: 0.5
+  mapping_seconds: 900.0
+  walk_frames: 6
+  dwell_frames: 60
+  fps: 3.0
+  hfov: 90.0
+  camera_pitch_deg: 0.0
+  floor_confinement: teleport
+  tour_all_floors: false
+  tour_end_settle_s: 90.0
+  min_floor_share: 0.1
+  dataset_root: /root/exchange/lost3dsg/habitat
+run:
+  cap_min: null
+  start_after_stack: true
+  bridge_port: 8081
+  rviz: true
+  show: true
+  overlay: true
+  mapping_only: false
+  map_draw: true
+  rtabmap_slam: false
+  rtabmap_localize_db: ''
+  rtabmap_close_timeout: 150
+  rtabmap_grid_args: ''
+  localize_db_copy: true
+  pose_source: simulator
+  wall_detector: false
+  gt_semantic: true
+  gt_scene_instance: ''
+  house_id: ''
+  house_floors: ''
+  hf_offline: true
+  cfg_name: regolo_config.yaml
+size_check:
+  enabled: true
+  enforce: false
+hooks:
+  search_paths: []
+  filter: envelope_size:SizeFilter
+  refiner: ''
+  store: ''
+  decisions_log: ''
+perception:
+  backend: local
+  modal_endpoint: ''
+  score_threshold: 0.15
+  nms_threshold: 0.5
+  cloud_timeout_s: 60.0
+  excluded_labels:
+  - wall
+  - floor
+  - ceiling
+  - door
+  - doorway
+  - door frame
+  - doorframe
