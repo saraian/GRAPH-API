@@ -550,8 +550,21 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
                     f"{mode}: the heartbeat must pause on detach and reset its clock on re-attach"
             assert "__replayBlocked" in replay and "__replayBlocked" not in live, "the poller blocker is replay-only"
             assert "DASH_MODE='live'" in live and "DASH_MODE='replay'" in replay
-            # owner 2026-09-08: the tailnet-only ARIA link is printed unless DASH_PUBLIC is set
-            assert "ARIA INFRA" in live and "__INTERNAL_LINKS__" not in live
+            # Owner 2026-09-08: the private infra link is printed unless DASH_PUBLIC is set.
+            # 2026-09-10: the host is no longer written in the source — it comes from
+            # DASH_INFRA_URL — so all THREE states are asserted. The old check only covered
+            # "printed" and "not printed for a public copy", which a hardcoded host satisfies
+            # just as well as a configured one; unset-means-no-link is the state that proves
+            # the host left the file.
+            assert "INFRA" not in live, "no infra link when DASH_INFRA_URL is unset"
+            os.environ["DASH_INFRA_URL"] = "https://infra.example.invalid:7443/"
+            try:
+                configured = c.get("/dash").text
+            finally:
+                os.environ.pop("DASH_INFRA_URL", None)
+            assert "INFRA" in configured and "infra.example.invalid" in configured, \
+                "a configured infra URL must appear in the menu"
+            assert "__INTERNAL_LINKS__" not in live
             try:
                 from found.dashboard import dash_ext
             except ImportError:
@@ -561,7 +574,7 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
                 pub = c.get("/dash").text
             finally:
                 os.environ.pop("DASH_PUBLIC", None)
-            assert "ARIA INFRA" not in pub and "tailbd3bab" not in pub and "__INTERNAL_LINKS__" not in pub
+            assert "INFRA" not in pub and "__INTERNAL_LINKS__" not in pub
             # owner 2026-09-08 (via ARIA): a PUBLIC deployment's start page offers no launch section;
             # a lab-host dashboard in replay mode (started before a run) keeps it -- that is where it is needed
             rs.MODE.update(mode="replay", why="test")

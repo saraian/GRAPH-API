@@ -1879,13 +1879,19 @@ def _tools_menu_html(bundles=None) -> str:
     the person clicking it can see.
     """
     import html as _h
-    # Owner ruling 2026-09-08: the ARIA infra link names a tailnet-only host. It is printed only
-    # when this instance is NOT a public deployment; the droplet container sets
-    # DASH_PUBLIC=1 and never prints it (dead there, and an internal hostname leak).
-    internal = "" if dash_env.flag("DASH_PUBLIC") else (
-        '      <a href="https://orchestrator-droplet.tailbd3bab.ts.net:7443/" target="_blank" rel="noopener"\n'
-        '         title="ARIA &amp; Personal Infra Orchestration Dashboard (tailnet only)"\n'
-        '         style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">ARIA INFRA &nearr;</a>\n')
+    # Owner ruling 2026-09-08: the infra link names a private host. It is printed only when this
+    # instance is NOT a public deployment; a public container sets DASH_PUBLIC=1 and never prints
+    # it (dead there, and an internal hostname leak).
+    #
+    # 2026-09-10: the host is no longer WRITTEN HERE. It was plain source text in a repository shown
+    # to reviewers under double-blind review, where the host name alone says whose submission it is.
+    # The gate only kept it off the rendered page; it could not keep it out of the file. Set
+    # DASH_INFRA_URL to restore the link; unset, there is no link and nothing to leak.
+    _infra = dash_env.env("DASH_INFRA_URL", "")
+    internal = "" if (dash_env.flag("DASH_PUBLIC") or not _infra) else (
+        f'      <a href="{_h.escape(_infra, quote=True)}" target="_blank" rel="noopener"\n'
+        '         title="Infra orchestration dashboard (private network only)"\n'
+        '         style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">INFRA &nearr;</a>\n')
     opts = "".join(f'<option value="{_h.escape(b)}" title="{_h.escape(_bundle_tag(b)[1])}">'
                    f'{_h.escape(b)} \u2014 {_h.escape(_bundle_tag(b)[0])}</option>'
                    for b in (bundles or []))
