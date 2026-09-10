@@ -559,16 +559,19 @@ RUN_DIR="$RESULTS_DIR/$RUN_ID"
 # or a file copied in by hand.
 RUN_START_EPOCH=$(date +%s)
 export RUN_START_EPOCH
-export OUT_DIR="$RUN_DIR"
-mkdir -p "$RUN_DIR/logs"
-echo "    run results: $RUN_DIR (live output and bundle are the same directory)"
-
 # A bundle directory that already holds a run is never reused: two runs in one directory produce a
 # bundle whose files come from both and whose metadata describes one.
 if [ -n "$(ls -A "$RUN_DIR" 2>/dev/null)" ]; then
   echo "!! $RUN_DIR already exists and is not empty. RUN_TIMESTAMP=$RUN_TIMESTAMP is already taken."
   exit 1
 fi
+# CHECKED BEFORE THE DIRECTORY IS CREATED. When OUT_DIR and RUN_DIR became one directory the
+# `mkdir -p "$RUN_DIR/logs"` below moved above this test, so logs/ existed by the time it ran and
+# every run refused itself. Order is the whole content of this check.
+export OUT_DIR="$RUN_DIR"
+mkdir -p "$RUN_DIR/logs"
+echo "    run results: $RUN_DIR (live output and bundle are the same directory)"
+
 # GA-258b. EXPORTED, because the FEED HOST needs it. The host process reads
 # merge_pending.json to decide how long to dwell, and that file is written by the container
 # into /ws/output -- which is bind-mounted to $RUN_DIR, not to $OUT_DIR (/out). The feed host
@@ -1207,30 +1210,9 @@ echo "    (latest is repointed at the end, and only if the gate passes)"
 # comment the line: the `#` swallows the continuation and A IS SILENTLY DROPPED. Measured, not
 # reasoned about. `bash -n` passes it. I wrote exactly that bug into this spot on 31 Aug and it
 # would have thrown away HABITAT_SCENE and HABITAT_DATASET, running the default scene under a
-# bundle stamped with the requested one.
-HABITAT_SCENE=${HABITAT_SCENE:-$DEF_SCENE} \
-HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
-DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
-GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
-  nohup "$HOME/miniconda3/envs/habitat_env/bin/python" "$HERE/habitat_feed_host.py" \
-  > "$RUN_DIR/logs/feed_host.log" 2>&1 &
-FEED_PID=$!
-# habitat import + scene load can take >2 min on cold caches
-for i in $(seq 1 90); do grep -q "listening" "$RUN_DIR/logs/feed_host.log" 2>/dev/null && break; sleep 2; done
-grep -q "listening" "$RUN_DIR/logs/feed_host.log" || { echo "feed host failed:"; tail -20 "$RUN_DIR/logs/feed_host.log"; exit 1; }
-echo "    feed host up"
-
-# GA-464 (owner 2026-09-10). ONE RVIZ, AND IT IS THE LAUNCH FILE'S. Two were being started and
-# neither knew about the other: habitat_launch.py declares use_rviz with default true (:70) and
-# live_stack_container.sh passed only use_wall_detector and localization_mode, while this file also
-# started the sibling container graphapi_rviz. MEASURED on the running system: rviz2 pid 415260 in
-# graphapi_rviz and pid 416147 in graphapi_live, two containers, two windows. The sibling is gone.
-#
-# THE STACK CONTAINER HAD DISPLAY BUT NO WAY TO USE IT. It was given -e DISPLAY and neither the X
-# socket nor a render device, so the surviving rviz was the one that could not draw. Both are added
-# to the docker run below. GA-371's opt-out and its record are kept: RVIZ=0 for a headless host, no
-# X socket means use_rviz:=false rather than a launch that dies, and run_metadata still carries
-# rviz_started and rviz_reason so a bundle says whether anybody was watching.
+# ORDER IS LOAD-BEARING: this runs BEFORE the feed host starts. It sat 120 lines below the
+# launch and the first run with it exported FEED_SCHEDULE into a process that had already
+# started, so the feed took the sampling policy while the launcher printed a cache hit.
 # GA-465 (owner 2026-09-10). THE EXPLORATION SCHEDULE IS CACHED PER SCENE AND BUILT WHEN ABSENT.
 # A schedule is one scene's roadmap and the order to walk it: waypoints on the generalized Voronoi
 # diagram of the navmesh -- the line equidistant from two or more walls, so it runs down the middle
@@ -1275,6 +1257,30 @@ else
   echo "    schedule: $FEED_SCHEDULE (given, not generated)"
 fi
 
+# bundle stamped with the requested one.
+HABITAT_SCENE=${HABITAT_SCENE:-$DEF_SCENE} \
+HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
+DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
+GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
+  nohup "$HOME/miniconda3/envs/habitat_env/bin/python" "$HERE/habitat_feed_host.py" \
+  > "$RUN_DIR/logs/feed_host.log" 2>&1 &
+FEED_PID=$!
+# habitat import + scene load can take >2 min on cold caches
+for i in $(seq 1 90); do grep -q "listening" "$RUN_DIR/logs/feed_host.log" 2>/dev/null && break; sleep 2; done
+grep -q "listening" "$RUN_DIR/logs/feed_host.log" || { echo "feed host failed:"; tail -20 "$RUN_DIR/logs/feed_host.log"; exit 1; }
+echo "    feed host up"
+
+# GA-464 (owner 2026-09-10). ONE RVIZ, AND IT IS THE LAUNCH FILE'S. Two were being started and
+# neither knew about the other: habitat_launch.py declares use_rviz with default true (:70) and
+# live_stack_container.sh passed only use_wall_detector and localization_mode, while this file also
+# started the sibling container graphapi_rviz. MEASURED on the running system: rviz2 pid 415260 in
+# graphapi_rviz and pid 416147 in graphapi_live, two containers, two windows. The sibling is gone.
+#
+# THE STACK CONTAINER HAD DISPLAY BUT NO WAY TO USE IT. It was given -e DISPLAY and neither the X
+# socket nor a render device, so the surviving rviz was the one that could not draw. Both are added
+# to the docker run below. GA-371's opt-out and its record are kept: RVIZ=0 for a headless host, no
+# X socket means use_rviz:=false rather than a launch that dies, and run_metadata still carries
+# rviz_started and rviz_reason so a bundle says whether anybody was watching.
 RVIZ="${RVIZ:-1}"; RVIZ_STARTED=false; RVIZ_REASON=""; RVIZ_DISPLAY="${DISPLAY:-:1}"
 if [ "$RVIZ" != "1" ]; then
   RVIZ_REASON="RVIZ=$RVIZ opt-out"

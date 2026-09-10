@@ -1199,6 +1199,13 @@ A12_ALLOWED_FILES = {
         "offline GT exporter; imported by nothing, installed nowhere",
     "src/perception_module/scene_script.py":
         "offline Habitat scripting; imported by nothing, installed nowhere",
+    # Added 2026-09-10. metrics_eval.py arrived with the metrics tool and IS in CMakeLists' install
+    # list, so it ships into the container -- unlike the two above. Listed anyway because a12 asks
+    # whether ground truth can reach INFERENCE, and nothing on the runtime path imports it: verified
+    # by grep, its only importers are build_hm3d_eval_manifest.py and metrics_eval_visualize.py,
+    # both offline. A module that ships but is never imported cannot leak what it can read.
+    "src/perception_module/metrics_eval.py":
+        "offline HOV-SG metrics; installed, but imported only by two offline tools",
     # Added 2026-09-10. The config DECLARES the `gt_semantic` switch — a config that carries a
     # setting has to name it, exactly as live_run.sh does when it exports FEED_GT_SEMANTIC. Both
     # entries are a declaration plus a comment; neither reads a ground-truth value. Verified before

@@ -108,6 +108,7 @@ def fake_sim(arrive_after=1):
         box["n"] += 1
         return None if box["n"] % arrive_after == 0 else "move_forward"
 
+
     sim = types.SimpleNamespace()
     sim.make_greedy_follower = lambda *a, **k: types.SimpleNamespace(next_action_along=next_action)
     sim.step = lambda action: None
@@ -144,7 +145,7 @@ def test_a_storey_that_is_not_in_the_file_is_refused():
 def test_every_lap_is_the_same_trajectory_and_the_run_ends():
     with feed_host(FEED_SCHEDULE="x") as (mod, tmp):
         sch = json.load(open(schedule_file(tmp, stops=3)))["schedule"][0]
-        tour = mod.ScheduledTour(fake_sim(), sch, laps=3, move_fn="follower")
+        tour = mod.ScheduledTour(fake_sim(), sch, laps=3, move_fn="teleport")
         agent = FakeAgent()
         assert drive(tour, agent) is not None, "the schedule never completed"
         assert tour.lap == 3 and tour.scans_done == 9, (tour.lap, tour.scans_done)
@@ -162,7 +163,7 @@ def test_the_trigger_fires_once_per_scan_and_carries_the_context():
         hook.record = lambda ctx: seen.append(ctx) or {"moved": 1}
         sys.modules["_hook_mod"] = hook
         try:
-            tour = mod.ScheduledTour(fake_sim(), sch, laps=2, move_fn="follower")
+            tour = mod.ScheduledTour(fake_sim(), sch, laps=2, move_fn="teleport")
             drive(tour, FakeAgent())
         finally:
             sys.modules.pop("_hook_mod", None)
@@ -185,7 +186,7 @@ def test_a_hook_that_raises_stops_the_run():
         boom.boom = _raise
         sys.modules["_boom_mod"] = boom
         try:
-            tour = mod.ScheduledTour(fake_sim(), sch, laps=1, move_fn="follower")
+            tour = mod.ScheduledTour(fake_sim(), sch, laps=1, move_fn="teleport")
             try:
                 drive(tour, FakeAgent())
             except RuntimeError as exc:
@@ -196,20 +197,50 @@ def test_a_hook_that_raises_stops_the_run():
             sys.modules.pop("_boom_mod", None)
 
 
-def test_the_movers_are_selectable_and_the_straight_one_turns_before_driving():
+def test_navigate_measures_arrival_instead_of_trusting_the_follower():
+    """`next_action_along` returns None for "arrived" AND for "no path". Distance decides."""
     with feed_host(FEED_SCHEDULE="x") as (mod, tmp):
-        assert set(mod.MOVERS) >= {"follower", "straight"}
+        far = types.SimpleNamespace(next_action_along=lambda g: None)   # stops immediately
+        sim = fake_sim()
+        agent = FakeAgent()                                             # stands at (0, y, 0)
+        st = {"frames": 0}
+        assert mod._move_navigate(sim, agent, [0.0, 1.21, 0.0], far, st) == "arrived"
+        st = {"frames": 0}
+        assert mod._move_navigate(sim, agent, [9.0, 1.21, 0.0], far, st) == "unreachable", \
+            "a follower that stops 9 m short has NOT arrived"
+        assert "short" in st["why"], st
+
+        # and a leg that never finishes ends on the cap rather than running for ever
+        never = types.SimpleNamespace(next_action_along=lambda g: "move_forward")
+        st = {"frames": mod.REVISIT_MAX_FRAMES}
+        assert mod._move_navigate(sim, agent, [9.0, 1.21, 0.0], never, st) == "timeout"
+
+
+def test_the_movers_are_selectable_and_teleport_snaps_to_the_navmesh():
+    with feed_host(FEED_SCHEDULE="x") as (mod, tmp):
+        assert set(mod.MOVERS) >= {"navigate", "teleport"}
+
+        # TELEPORT SNAPS TO THE NAVMESH. A schedule point comes from a 5 cm raster and can sit off
+        # the walkable surface; placing the agent there leaves it inside a wall.
         agent = FakeAgent()
         sim = fake_sim()
-        # HABITAT'S AGENT FACES -Z, so a goal at -Z is straight ahead and one at +Z is behind.
-        # Getting that backwards is how a "turn towards the goal" ends up driving away from it.
-        assert mod._move_straight(sim, agent, [0.0, 1.21, -5.0], None) is False
-        assert agent.acts[-1] == "move_forward", f"a goal at -Z is in front: {agent.acts}"
-        agent.acts.clear()
-        assert mod._move_straight(sim, agent, [0.0, 1.21, 5.0], None) is False
-        assert agent.acts[-1] in ("turn_left", "turn_right"), f"a goal at +Z is behind: {agent.acts}"
-        # a goal it is already standing on counts as reached
-        assert mod._move_straight(sim, agent, [0.0, 1.21, 0.0], None) is True
+        sim.pathfinder = types.SimpleNamespace(
+            is_loaded=True, snap_point=lambda p: np.array([p[0] + 0.05, p[1], p[2]], np.float32))
+        st = {"frames": 0}
+        assert mod._move_teleport(sim, agent, [3.0, 1.21, 4.0], None, st) == "arrived"
+        assert abs(float(agent.get_state().position[0]) - 3.05) < 1e-4, agent.get_state().position
+
+        # A SNAP THAT MOVES THE AGENT FURTHER THAN THE ARRIVAL TOLERANCE IS A REFUSAL, not a
+        # silent relocation to somewhere else entirely.
+        sim.pathfinder = types.SimpleNamespace(
+            is_loaded=True, snap_point=lambda p: np.array([p[0] + 9.0, p[1], p[2]], np.float32))
+        st = {"frames": 0}
+        assert mod._move_teleport(sim, agent, [3.0, 1.21, 4.0], None, st) == "unreachable"
+        assert "9.0" in st["why"], st
+        # a stop the agent already stands on is reached with no snap needed
+        sim.pathfinder = types.SimpleNamespace(is_loaded=False)
+        st = {"frames": 0}
+        assert mod._move_teleport(sim, agent, [0.0, 1.21, 0.0], None, st) == "arrived"
 
 
 def test_an_unreachable_point_is_skipped_rather_than_holding_the_run():
@@ -220,7 +251,7 @@ def test_an_unreachable_point_is_skipped_rather_than_holding_the_run():
         never.make_greedy_follower = lambda *a, **k: types.SimpleNamespace(
             next_action_along=lambda goal: "move_forward")     # never arrives
         never.step = lambda action: None
-        tour = mod.ScheduledTour(never, sch, laps=1, move_fn="follower")
+        tour = mod.ScheduledTour(never, sch, laps=1, move_fn="navigate")
         assert drive(tour, FakeAgent()) is not None, "a stuck leg must not hold the run for ever"
         assert tour.scans_done == 0, "nothing was reached, so nothing was scanned"
 

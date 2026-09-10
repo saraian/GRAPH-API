@@ -997,16 +997,23 @@ TOUR_END_SETTLE_S = float(os.environ.get("FEED_TOUR_END_SETTLE_S",
 SCHEDULE_PATH = os.environ.get("FEED_SCHEDULE", hab_cfg.get("schedule", "") or "").strip()
 EXPLORATION_LAPS = int(os.environ.get("FEED_EXPLORATION_LAPS",
                                       hab_cfg.get("exploration_laps", 3)))
-# The function that drives between two stops. Modular on purpose: the follower plans over the
-# navmesh and is what the stack has always used, but a schedule's legs are already known to be
-# clear, so a straight drive is available and cheaper. Add one by name to MOVERS.
-MOVE_FN = os.environ.get("FEED_MOVE_FN", hab_cfg.get("move_function", "follower") or "").strip()
+# GA-466 (owner 2026-09-10). HOW THE AGENT GETS FROM ONE STOP TO THE NEXT, chosen by
+# `habitat.navigation_mode`:
+#   navigate  drive it, with the goto skill's own arrival test (the follower, an arrival tolerance
+#             and a frame cap). This is what a robot does, and it is what produces the frames
+#             between two stops -- a corridor is where half the objects are seen.
+#   teleport  set the pose directly, snapped to the navmesh. No travel frames, so a lap costs only
+#             its scans; use it when the question is what the scans see, not how the agent got there.
+# `move_function` is the old name for the same setting and still works.
+NAVIGATION_MODE = os.environ.get(
+    "FEED_NAVIGATION_MODE",
+    hab_cfg.get("navigation_mode", hab_cfg.get("move_function", "navigate")) or "navigate").strip()
+MOVE_FN = os.environ.get("FEED_MOVE_FN", NAVIGATION_MODE).strip()
 # module:function called after every completed 360 degree scan. The dynamic dataset update belongs
 # here: the scan is the moment the world model has just been shown a place, so it is the moment a
 # change to that place is worth making.
 POST_SCAN_HOOK = os.environ.get("FEED_POST_SCAN_HOOK",
                                 hab_cfg.get("post_scan_hook", "") or "").strip()
-
 # REVISIT (`/action?act=goto`). Drive the agent to one point, look around, rejoin the tour.
 # The scene is dynamic, so answering "what changed over there" needs a way to go and look;
 # this file supplies the mechanism only -- which point, and when, belongs to the caller.
@@ -1328,10 +1335,10 @@ def topdown_map_payload(sim, floor_y, mpp=0.05):
         img = np.flip(nav.T, axis=(0, 1))                     # [row=ros y asc, col=ros x asc]
         bgra = np.zeros((*img.shape, 4), dtype=np.uint8)
         bgra[img] = (184, 163, 148, 110)                      # translucent slate
+        bmin, bmax = sim.pathfinder.get_bounds()
         ok, png = cv2.imencode(".png", bgra)
         if not ok:
             return None
-        bmin, bmax = sim.pathfinder.get_bounds()
         return {
             "image": "data:image/png;base64," + base64.b64encode(png.tobytes()).decode(),
             "bounds_min": [-float(bmax[2]), float(floor_y), -float(bmax[0])],
@@ -1346,42 +1353,70 @@ def topdown_map_payload(sim, floor_y, mpp=0.05):
 #
 # EACH RETURNS True WHEN THE STOP IS REACHED. Keep the contract that narrow: a mover decides how to
 # travel, never when to scan or where to go next, so a new one cannot quietly change the schedule.
-def _move_follower(sim, agent, goal, follower):
-    """The navmesh path follower. What the stack has always used; it goes round furniture."""
+def _move_navigate(sim, agent, goal, follower, state):
+    """Drive to the stop. -> "arrived", "unreachable", "timeout", or None while travelling.
+
+    THE ARRIVAL IS MEASURED, NOT INFERRED. `next_action_along` returns None both for "arrived" and
+    for "no path exists", and the old tour treated both as a reach -- that is how a run kept
+    "arriving" at goals it never approached and covered 4.8 m in 18.7 minutes. This is the goto
+    skill's test: when the follower stops, compare the horizontal distance against
+    REVISIT_ARRIVAL_TOL_M and call it what it is. Horizontal only, because the target sits on the
+    navmesh and the agent's origin is its base.
+
+    THE FRAME CAP IS NOT DECORATION. The floor guard teleports the agent back the moment it drifts
+    off-storey, so a leg that crosses a staircase can loop for ever: walk, get pulled back, re-plan
+    the same path.
+    """
+    if state["frames"] >= REVISIT_MAX_FRAMES:
+        return "timeout"
     try:
         action = follower.next_action_along(np.asarray(goal, dtype=np.float32))
-    except Exception:
-        action = None
-    if action is None:
-        return True
-    sim.step(action)
-    return False
+    except Exception as exc:
+        state["why"] = f"follower raised {type(exc).__name__}: {exc}"
+        return "unreachable"
+    if action is not None:
+        sim.step(action)
+        state["frames"] += 1
+        return None
+    here = np.asarray(agent.get_state().position, dtype=np.float64)
+    dist = float(np.hypot(here[0] - float(goal[0]), here[2] - float(goal[2])))
+    state["distance"] = dist
+    if dist > REVISIT_ARRIVAL_TOL_M:
+        state["why"] = f"stopped {dist:.2f} m short (tolerance {REVISIT_ARRIVAL_TOL_M:.2f} m)"
+        return "unreachable"
+    return "arrived"
 
 
-def _move_straight(sim, agent, goal, follower):
-    """Turn towards the stop, then drive at it.
+def _move_teleport(sim, agent, goal, follower, state):
+    """Put the agent on the stop. -> "arrived", or "unreachable" when the navmesh refuses it.
 
-    A schedule's legs run along the Voronoi ridge and every one was checked against the free space
-    when the schedule was built, so the straight line between consecutive points is known to be
-    clear. This is cheaper than planning and it cannot wander. It is NOT safe for an arbitrary goal.
+    SNAPPED TO THE NAVMESH FIRST. A schedule point comes from a rasterised roadmap at 5 cm, so it
+    can sit a few centimetres off the walkable surface; placing the agent there would leave it
+    standing in a wall and every frame from that stop would be wrong. If the snap moves it further
+    than the arrival tolerance, the stop is refused rather than silently relocated.
     """
+    target = np.asarray(goal, dtype=np.float32)
+    pf = getattr(sim, "pathfinder", None)
+    if pf is not None and getattr(pf, "is_loaded", False):
+        snapped = np.asarray(pf.snap_point(target), dtype=np.float32)
+        if not np.all(np.isfinite(snapped)):
+            state["why"] = "snap_point returned no navigable point"
+            return "unreachable"
+        moved = float(np.hypot(snapped[0] - target[0], snapped[2] - target[2]))
+        if moved > REVISIT_ARRIVAL_TOL_M:
+            state["why"] = f"nearest navigable point is {moved:.2f} m away"
+            return "unreachable"
+        state["distance"] = moved
+        target = snapped
     st = agent.get_state()
-    here = np.asarray(st.position, dtype=np.float64)
-    to = np.asarray(goal, dtype=np.float64) - here
-    if float(np.hypot(to[0], to[2])) < 0.15:
-        return True
-    q = st.rotation
-    yaw = math.atan2(2.0 * (q.w * q.y + q.x * q.z), 1.0 - 2.0 * (q.y ** 2 + q.z ** 2))
-    want = math.atan2(-to[0], -to[2])
-    err = math.degrees((want - yaw + math.pi) % (2 * math.pi) - math.pi)
-    if abs(err) > 10.0:
-        agent.act("turn_left" if err > 0 else "turn_right")
-    else:
-        agent.act("move_forward")
-    return False
+    st.position = target
+    agent.set_state(st)
+    return "arrived"
 
 
-MOVERS = {"follower": _move_follower, "straight": _move_straight}
+# `follower` and `straight` are the previous names, kept so an existing command line still runs.
+MOVERS = {"navigate": _move_navigate, "teleport": _move_teleport,
+          "follower": _move_navigate, "straight": _move_navigate}
 
 
 def _fire_post_scan(ctx):
@@ -1432,14 +1467,48 @@ class ScheduledTour:
         self.lap = 0
         self.scan_left = 0
         self.scans_done = 0
-        self.stalled = 0
+        self.travel_frames = 0
+        self.skipped = []
+        self.leg = {"frames": 0}      # per-leg state the mover keeps: frames, distance, why
+        # THE SAME SURFACE AS Tour, because main() and the goto skill hold whichever one exists and
+        # read these off it without asking which. Missing floor_y crashed the first scheduled run at
+        # habitat_feed_host.py:2027 after the schedule had already loaded -- the storey the guard
+        # anchors to, the revisit counters the bundle reports, and the goto entry point all live
+        # here. Substitutability is the contract; a partial one fails only at runtime.
+        self.floor_y = float(schedule.get("height", 0.0))
+        self.todo = []
+        self.revisit = None
+        self.last_revisit = None
+        self.revisits_requested = 0
+        self.revisits_reached = 0
+        self.revisits_failed = 0
+
         self.house_done = False
         self.floor_order = [round(float(schedule.get("height", 0.0)), 2)]
         self._tour_reached = 0
         self._tour_planned_total = len(self.points)
         print(f"[feed] SCHEDULE: {len(self.points)} points, "
               f"{sum(1 for p in self.points if p['scan_deg'])} stops, {self.laps} lap(s), "
-              f"mover {move_fn}", flush=True)
+              f"navigation_mode {move_fn}", flush=True)
+
+    def bind_floors(self, scene_floors, tol, guard):
+        """A schedule is one storey by construction, so there is nothing to plan. Anchor the guard."""
+        self.floor_guard = guard
+        if guard is not None:
+            guard.reanchor(self.floor_y)
+        print(f"[feed] SCHEDULE: single storey {self.floor_y:+.2f}; the floor guard is anchored "
+              f"there and no storey change is planned", flush=True)
+
+    def start_revisit(self, *a, **k):
+        """goto is refused while a schedule drives: the two would fight over the same agent.
+
+        A revisit walks somewhere, scans and rejoins the tour by restoring a saved tour index. A
+        schedule has no such index to restore, and silently dropping the agent back mid-trajectory
+        would leave the lap claiming stops it never reached.
+        """
+        print("[feed] goto refused: a schedule is driving this run; stop it or run without "
+              "FEED_SCHEDULE", flush=True)
+        return None
 
     def _scan_frames(self, deg):
         return max(1, int(round(deg / 10.0)))     # the turn action is 10 degrees
@@ -1464,26 +1533,29 @@ class ScheduledTour:
             return
 
         pt = self.points[self.i]
-        if self.move(self.sim, agent, pt["xyz"], self.follower):
-            self.stalled = 0
-            if pt["scan_deg"]:
-                self._tour_reached += 1
-                self.scan_left = self._scan_frames(pt["scan_deg"])
-            else:
-                self._advance()
+        verdict = self.move(self.sim, agent, pt["xyz"], self.follower, self.leg)
+        if verdict is None:
+            return                       # still travelling
+        if verdict != "arrived":
+            # A LEG THAT CANNOT BE DRIVEN MUST NOT HOLD THE RUN, and it must not be counted as a
+            # visit either. The stop is skipped, the reason is named, and the count goes into the
+            # bundle -- a lap that skipped nine stops is not the same lap as one that skipped none.
+            self.skipped.append({"point_index": self.i, "stop": pt.get("stop"), "lap": self.lap,
+                                 "verdict": verdict, "why": self.leg.get("why", ""),
+                                 "frames": self.leg["frames"], "xyz": pt["xyz"]})
+            print(f"[feed] SCHEDULE: point {self.i} {verdict}"
+                  f"{' — ' + self.leg['why'] if self.leg.get('why') else ''}, skipping", flush=True)
+            self._advance()
             return
-        # A LEG THAT NEVER ARRIVES MUST NOT HOLD THE RUN. The follower returns None both for
-        # "arrived" and for "no path", and a schedule point can sit a few centimetres off the
-        # navmesh. Give up on a leg after a bounded number of frames, say so, and take the next
-        # point rather than spinning here for the rest of the run.
-        self.stalled += 1
-        if self.stalled > 240:
-            print(f"[feed] SCHEDULE: point {self.i} unreachable after {self.stalled} frames "
-                  f"({pt['xyz']}), skipping", flush=True)
-            self.stalled = 0
+        self.travel_frames += self.leg["frames"]
+        if pt["scan_deg"]:
+            self._tour_reached += 1
+            self.scan_left = self._scan_frames(pt["scan_deg"])
+        else:
             self._advance()
 
     def _advance(self):
+        self.leg = {"frames": 0}
         self.i += 1
         if self.i < len(self.points):
             return
@@ -1498,7 +1570,9 @@ class ScheduledTour:
 
     def report(self):
         return {"schedule_points": len(self.points), "laps": self.laps, "lap_reached": self.lap,
-                "scans_done": self.scans_done, "mover": self.move_name}
+                "scans_done": self.scans_done, "navigation_mode": self.move_name,
+                "travel_frames": self.travel_frames,
+                "stops_skipped": len(self.skipped), "skipped": self.skipped[:40]}
 
 
 def load_schedule(path, floor_y, tol=0.75):
