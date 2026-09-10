@@ -178,7 +178,7 @@ def _semantic_mesh_aabbs(mesh_path, text_path):
         raise RuntimeError("Pillow è necessario per leggere le texture semantic.glb") from exc
     records = _semantic_records(text_path)
     gltf, binary = _read_glb(mesh_path)
-    transforms, images, boxes, triangles = _mesh_transforms(gltf), {}, {}, {}
+    transforms, images, boxes = _mesh_transforms(gltf), {}, {}
     for mesh_index, mesh in enumerate(gltf.get("meshes", [])):
         for primitive in mesh.get("primitives", []):
             attrs = primitive.get("attributes", {})
@@ -245,51 +245,8 @@ def _semantic_mesh_aabbs(mesh_path, text_path):
                     low, high = np.min(points, axis=0), np.max(points, axis=0)
                     old = boxes.get(color)
                     boxes[color] = (low, high) if old is None else (np.minimum(old[0], low), np.maximum(old[1], high))
-                    triangles.setdefault(color, []).append(
-                        [[float(p[0]), float(p[2])] for p in points]
-                    )
-    return [{**records[color], "color_rgb": list(color), "aabb": box,
-             "_footprint_triangles": triangles.get(color, [])}
+    return [{**records[color], "color_rgb": list(color), "aabb": box}
             for color, box in boxes.items()]
-
-
-def _region_floor_wall_polygon(objects, resolution=0.05):
-    """Ricava un footprint XZ da triangoli floor, o wall come fallback.
-
-    Usa solo la libreria standard: l'inviluppo convesso dei vertici preserva
-    l'orientamento e l'estensione della superficie senza richiedere OpenCV,
-    Shapely o altre dipendenze nell'ambiente Habitat.
-    """
-    preferred = [o for o in objects if o.get("category_name") == "floor"]
-    source = "semantic_floor_mesh_footprint"
-    if not preferred:
-        preferred = [o for o in objects if o.get("category_name") == "wall"]
-        source = "semantic_wall_mesh_footprint"
-    triangles = [tri for obj in preferred for tri in obj.get("_footprint_triangles", [])]
-    if not triangles:
-        return None, None
-    points = sorted({(round(float(p[0]) / resolution) * resolution,
-                      round(float(p[1]) / resolution) * resolution)
-                     for triangle in triangles for p in triangle})
-    if len(points) < 3:
-        return None, None
-
-    def cross(o, a, b):
-        return ((a[0] - o[0]) * (b[1] - o[1])
-                - (a[1] - o[1]) * (b[0] - o[0]))
-
-    lower = []
-    for point in points:
-        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
-            lower.pop()
-        lower.append(point)
-    upper = []
-    for point in reversed(points):
-        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
-            upper.pop()
-        upper.append(point)
-    polygon_xz = [[float(x), float(z)] for x, z in lower[:-1] + upper[:-1]]
-    return polygon_xz, source
 
 
 def _grid_spec(low, high, resolution):
@@ -340,11 +297,9 @@ def _extract_texture_geometry(scene, semantic_mesh, semantic_text,
         raise RuntimeError(f"nessuna istanza decodificata da {semantic_mesh}")
 
     region_boxes = {}
-    region_objects = {}
     for obj in objects:
         rid = str(obj.get("region_id") or "unknown")
         low, high = obj["aabb"]
-        region_objects.setdefault(rid, []).append(obj)
         old = region_boxes.get(rid)
         region_boxes[rid] = ((low, high) if old is None else
                              (np.minimum(old[0], low), np.maximum(old[1], high)))
@@ -384,19 +339,14 @@ def _extract_texture_geometry(scene, semantic_mesh, semantic_text,
 
     gt_regions = []
     for rid, (low, high) in region_boxes.items():
-        polygon_xz, geometry_source = _region_floor_wall_polygon(
-            region_objects.get(rid, []))
-        if polygon_xz is None:
-            polygon_xz = [[float(low[0]), float(low[2])],
-                          [float(high[0]), float(low[2])],
-                          [float(high[0]), float(high[2])],
-                          [float(low[0]), float(high[2])]]
-            geometry_source = "semantic_object_aabb_envelope"
         gt_regions.append({"region_id": rid, "floor_index": region_floor[rid],
                            "category_id": None, "category_name": "",
-                           "polygon_xz_m": polygon_xz,
+                           "polygon_xz_m": [[float(low[0]), float(low[2])],
+                                            [float(high[0]), float(low[2])],
+                                            [float(high[0]), float(high[2])],
+                                            [float(low[0]), float(high[2])]],
                            "aabb_min_m": low.tolist(), "aabb_max_m": high.tolist(),
-                           "geometry_source": geometry_source,
+                           "geometry_source": "semantic_object_aabb_envelope",
                            "geometry_is_exact": False})
     return {
         "scene": _scene_number(scene), "construction_time_s": None,

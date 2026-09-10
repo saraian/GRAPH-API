@@ -167,24 +167,43 @@ class RoomManager:
             # Temporally fused wall_detector evidence for conservative doorway support.
             'enable_detected_wall_support': True,
             # Confirmed depth walls are stronger evidence than a compact 2D
-            # occupancy blob (which may be furniture).  They reinforce only
-            # occupied cells in _segment_regions_gvd, so an open doorway cannot
-            # be hallucinated as a closed wall.
+            # occupancy blob (which may be furniture).  After an additional
+            # confidence gate they can repair small free-space holes in the 2D
+            # map, making the wall network usable as a room boundary.
             'detected_wall_reinforce_obstacles': True,
+            'detected_wall_close_free_space': True,
+            # Two independent observations already satisfy the persistence gate
+            # below.  Do not silently impose a second three-frame gate here.
+            'detected_wall_topology_confidence': 0.33,
             'detected_wall_min_observations': 2,
             # Wall coordinates are expressed in ``map``.  Old observations may
             # be invalid after an RTAB-Map graph optimisation, so require them
             # to be seen again instead of reinforcing the topology forever.
             'detected_wall_max_age_s': 300.0,
-            'detected_wall_min_length_m': 1.50,
-            'detected_wall_min_vertical_extent_m': 1.20,
-            'detected_wall_max_rms_m': 0.03,
-            'detected_wall_merge_angle_deg': 8.0,
-            'detected_wall_merge_distance_m': 0.18,
+            # Use the detector's own 0.5 m length floor. Requiring a longer
+            # segment here discarded already validated, repeatedly observed wall
+            # pieces (especially beside doors and partial occlusions).
+            'detected_wall_min_length_m': 0.50,
+            'detected_wall_min_vertical_extent_m': 0.90,
+            'detected_wall_max_rms_m': 0.05,
+            # Viewpoint changes perturb a TLS line by several degrees/cell widths.
+            # Fuse that jitter instead of restarting the observation counter.
+            'detected_wall_merge_angle_deg': 12.0,
+            'detected_wall_merge_distance_m': 0.22,
             'detected_wall_merge_gap_m': 0.50,
             'detected_wall_thickness_m': 0.12,
+            # Close small acquisition gaps and imperfect corner junctions in the
+            # confirmed wall network.  This is deliberately shorter than a door:
+            # the network becomes topologically continuous without sealing a real
+            # passage between two collinear wall pieces.
+            'detected_wall_junction_gap_m': 0.30,
+            'detected_wall_junction_angle_deg': 20.0,
             'detected_wall_door_endpoint_radius_m': 0.20,
             'detected_wall_door_min_support': 0.16,
+            # Let the confirmed wall layout propose doorway partitions directly,
+            # instead of depending entirely on a sometimes unstable GVD branch.
+            'detected_wall_direct_door_cuts': True,
+            'detected_wall_door_min_m': 0.55,
             # A measured wall pair can delimit a wide/open doorway; the generic
             # GVD door threshold remains conservative for clutter-induced gaps.
             'detected_wall_door_max_m': 2.00,
@@ -221,10 +240,21 @@ class RoomManager:
             # frame is especially unreliable while RTAB-Map closes a wall or
             # the depth wall detector is still accumulating evidence.
             'room_partition_change_confirmations': 3,
+            # Losing a doorway cut merges identities and is much harder to undo
+            # than temporarily keeping an old split.  Use asymmetric hysteresis.
+            'room_split_change_confirmations': 3,
+            'room_merge_change_confirmations': 8,
+            'room_hold_empty_partition': True,
             # Compatible contour refinements below this IoU are also held;
             # otherwise room polygons visibly breathe at every map callback.
             'room_partition_stable_iou_min': 0.65,
             'gvd_min_robot_component_ratio': 0.15,
+            # A confirmed wall may intentionally disconnect two rooms.  Keeping only the
+            # robot's connected component (or the largest one) therefore made valid rooms
+            # disappear after 3D wall reinforcement.  Preserve all meaningful floor
+            # components and discard only small scan-noise islands.
+            'gvd_keep_disconnected_rooms': True,
+            'gvd_disconnected_component_min_area_m2': 1.5,
             # GA-30: the nearest-room radius used to be the literal 0.45 in
             # `max(tolerance, 0.45)`, so the tolerance knob above never reached it.
             'room_nearest_fallback_m': 0.45,
@@ -668,61 +698,71 @@ class RoomManager:
         return filled
 
     def _navigable_free_component(self, free, grid):
-        """Keep the mapped free-space component reachable by the robot.
+        """Keep all meaningful floor components, including rooms separated by walls.
 
-        Disconnected free islands are scan artefacts or currently unreachable map pieces;
-        they are not rooms in the robot's present topological floor. Prefer the component
-        containing the robot and fall back to the largest component when TF is unavailable.
+        The old implementation kept only the robot component (or the largest component).
+        That assumption is invalid after a confirmed 3D wall is rasterised: the wall is
+        supposed to disconnect adjacent rooms, so this step used to erase every room but
+        one.  Only components smaller than the configured room-area floor are treated as
+        mapping noise.
         """
         count, labels, stats, _ = cv2.connectedComponentsWithStats(
             (free > 0).astype(np.uint8), 8)
-        if count <= 2:
+        if count <= 1:
             self._last_free_component_stats = {
-                'before': max(0, count-1), 'kept_label': 1 if count == 2 else 0,
+                'before': max(0, count-1), 'kept_label': 0,
                 'discarded_pixels': 0,
-                'kept_ratio': 1.0 if count == 2 else 0.0,
+                'kept_ratio': 0.0,
             }
             return free
 
-        keep = 0
-        robot_label = 0
-        if self.last_robot_xy is not None:
-            pixel = self._world_to_grid(*self.last_robot_xy, grid)
-            if pixel is not None:
-                x, y = pixel
-                if 0 <= y < labels.shape[0] and 0 <= x < labels.shape[1]:
-                    robot_label = int(labels[y, x])
-                    keep = robot_label
-        if keep <= 0:
-            keep = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        if not self._params.get('gvd_keep_disconnected_rooms', True):
+            # Compatibility escape hatch for deployments that explicitly want the old
+            # reachable-only behaviour.
+            keep = 0
+            robot_label = 0
+            if self.last_robot_xy is not None:
+                pixel = self._world_to_grid(*self.last_robot_xy, grid)
+                if pixel is not None:
+                    x, y = pixel
+                    if 0 <= y < labels.shape[0] and 0 <= x < labels.shape[1]:
+                        robot_label = int(labels[y, x])
+                        keep = robot_label
+            if keep <= 0:
+                keep = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            result = np.zeros_like(free)
+            result[labels == keep] = 255
+            self._last_free_component_stats = {
+                'before': count - 1, 'kept_components': 1, 'kept_label': keep,
+                'kept_pixels': int(stats[keep, cv2.CC_STAT_AREA]),
+                'discarded_pixels': int(np.count_nonzero(free) - stats[keep, cv2.CC_STAT_AREA]),
+                'kept_ratio': round(float(stats[keep, cv2.CC_STAT_AREA]) /
+                                    max(1, int(np.count_nonzero(free))), 4),
+                'legacy_reachable_only': True,
+            }
+            return result
 
-        largest_label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-        robot_area = int(stats[robot_label, cv2.CC_STAT_AREA]) if robot_label > 0 else 0
-        largest_area = int(stats[largest_label, cv2.CC_STAT_AREA])
-        min_robot_ratio = float(self._params.get(
-            'gvd_min_robot_component_ratio', 0.15))
-        fallback_largest = (
-            robot_label > 0 and robot_label != largest_label and
-            robot_area < min_robot_ratio * max(1, largest_area))
-        if fallback_largest:
-            # A transient wall/door closure can isolate the robot in a tiny
-            # pocket. Using that pocket as the complete segmentation would erase
-            # every other room from the global map.
-            keep = largest_label
-
+        min_area_px = max(1, int(round(float(self._params.get(
+            'gvd_disconnected_component_min_area_m2',
+            self._params.get('min_room_area_m2', 1.5))) /
+            max(float(grid.info.resolution) ** 2, 1e-12))))
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        keep_labels = np.flatnonzero(areas >= min_area_px) + 1
+        # Never return an empty topology just because the map is still fragmentary.
+        if keep_labels.size == 0 and areas.size:
+            keep_labels = np.asarray([1 + int(np.argmax(areas))])
         result = np.zeros_like(free)
-        result[labels == keep] = 255
+        for label in keep_labels.tolist():
+            result[labels == label] = 255
+        kept_pixels = int(np.count_nonzero(result))
         self._last_free_component_stats = {
-            'before': count-1,
-            'kept_label': keep,
-            'kept_pixels': int(stats[keep, cv2.CC_STAT_AREA]),
-            'discarded_pixels': int(np.count_nonzero(free) - stats[keep, cv2.CC_STAT_AREA]),
-            'robot_component_pixels': robot_area,
-            'largest_component_pixels': largest_area,
-            'kept_ratio': round(
-                float(stats[keep, cv2.CC_STAT_AREA]) /
-                max(1, int(np.count_nonzero(free))), 4),
-            'fallback_largest_component': fallback_largest,
+            'before': count - 1,
+            'kept_components': int(keep_labels.size),
+            'min_component_area_m2': round(min_area_px * float(grid.info.resolution) ** 2, 3),
+            'kept_pixels': kept_pixels,
+            'discarded_pixels': int(np.count_nonzero(free) - kept_pixels),
+            'kept_ratio': round(kept_pixels / max(1, int(np.count_nonzero(free))), 4),
+            'legacy_reachable_only': False,
         }
         return result
 
@@ -824,13 +864,22 @@ class RoomManager:
         return kept
 
     def _detected_wall_support(self, grid):
-        """Rasterise temporally confirmed depth walls as a 0..1 confidence image."""
+        """Rasterise confirmed walls as one locally continuous support network.
+
+        Depth views commonly stop a few centimetres before a corner.  Merely
+        drawing each finite segment leaves leaks in the wall mask and a later
+        GVD pass can join the rooms through that leak.  Confirmed endpoints are
+        therefore joined when they are very close and either collinear or form
+        a plausible corner.  The maximum gap is intentionally well below the
+        doorway width used by segmentation, so doorway-separated pieces remain
+        disconnected.
+        """
         if not self._params.get('enable_detected_wall_support', True) or grid is None:
             return None
         height, width = int(grid.info.height), int(grid.info.width)
         support = np.zeros((height, width), dtype=np.float32)
         min_obs = max(1, int(self._params.get('detected_wall_min_observations', 1)))
-        min_length = float(self._params.get('detected_wall_min_length_m', 1.50))
+        min_length = float(self._params.get('detected_wall_min_length_m', 0.50))
         min_vertical = float(self._params.get('detected_wall_min_vertical_extent_m', 1.20))
         max_rms = float(self._params.get('detected_wall_max_rms_m', 0.03))
         thickness = max(1, int(round(float(self._params.get(
@@ -838,6 +887,7 @@ class RoomManager:
         segments = 0
         rejected = 0
         expired = 0
+        qualified = []
         max_age_s = float(self._params.get('detected_wall_max_age_s', 0.0))
         now = time.time()
         for wall in self._detected_wall_map:
@@ -866,14 +916,168 @@ class RoomManager:
             layer = np.zeros_like(support, dtype=np.uint8)
             cv2.line(layer, q0, q1, 255, thickness)
             support[layer > 0] = np.maximum(support[layer > 0], confidence)
+            qualified.append((p0, p1, q0, q1, confidence))
             segments += 1
+
+        # Join only pairs of endpoints.  Drawing between arbitrary nearby line
+        # interiors would create cross-walls in cluttered areas.  Both straight
+        # continuations and near-right-angle corners are accepted; oblique pairs
+        # are left untouched because their topology is ambiguous.
+        max_gap_m = max(0.0, float(self._params.get(
+            'detected_wall_junction_gap_m', 0.30)))
+        angle_tol = math.radians(max(0.0, float(self._params.get(
+            'detected_wall_junction_angle_deg', 20.0))))
+        straight_min = math.cos(angle_tol)
+        corner_max = math.sin(angle_tol)
+        junctions = 0
+        for i, first in enumerate(qualified):
+            a0, a1, aq0, aq1, aconf = first
+            adir = (a1 - a0) / max(float(np.linalg.norm(a1 - a0)), 1e-9)
+            for second in qualified[i + 1:]:
+                b0, b1, bq0, bq1, bconf = second
+                bdir = (b1 - b0) / max(float(np.linalg.norm(b1 - b0)), 1e-9)
+                alignment = abs(float(adir @ bdir))
+                if alignment < straight_min and alignment > corner_max:
+                    continue
+                endpoint_pairs = [
+                    (float(np.linalg.norm(ap - bp)), aq, bq)
+                    for ap, aq in ((a0, aq0), (a1, aq1))
+                    for bp, bq in ((b0, bq0), (b1, bq1))
+                ]
+                gap_m, qa, qb = min(endpoint_pairs, key=lambda item: item[0])
+                if gap_m <= max_gap_m:
+                    confidence = min(aconf, bconf)
+                    layer = np.zeros_like(support, dtype=np.uint8)
+                    cv2.line(layer, qa, qb, 255, thickness)
+                    support[layer > 0] = np.maximum(
+                        support[layer > 0], confidence)
+                    junctions += 1
         self._last_detected_wall_stats = {
             'confirmed_segments': segments,
+            'closed_junctions': junctions,
             'rejected_segments': rejected,
             'expired_segments': expired,
             'support_cells': int(np.count_nonzero(support)),
         }
         return support
+
+    def _detected_wall_doorway_cuts(self, free, cut, grid, resolution):
+        """Cut doorway-sized gaps between confirmed collinear wall pieces.
+
+        The GVD remains useful for doors inferred only from free-space shape, but
+        measured walls are stronger evidence: if two stable pieces lie on the
+        same plane and terminate around a free gap, that gap is a doorway.  A
+        proposed cut is retained only when it actually separates two regions at
+        least as large as ``min_room_area_m2``.  This makes enclosing walls
+        dominant without turning short wall fragments into tiny rooms.
+        """
+        stats = {'proposed': 0, 'accepted': 0, 'rejected_not_free': 0,
+                 'rejected_no_split': 0, 'rejected_small_partition': 0}
+        if (not self._params.get('detected_wall_direct_door_cuts', True) or
+                grid is None or not np.any(cut)):
+            self._last_wall_door_cut_stats = stats
+            return cut
+
+        min_obs = max(1, int(self._params.get('detected_wall_min_observations', 2)))
+        min_length = float(self._params.get('detected_wall_min_length_m', 0.50))
+        min_vertical = float(self._params.get('detected_wall_min_vertical_extent_m', 0.90))
+        max_rms = float(self._params.get('detected_wall_max_rms_m', 0.05))
+        max_age_s = float(self._params.get('detected_wall_max_age_s', 0.0))
+        now = time.time()
+        walls = []
+        for wall in self._detected_wall_map:
+            if int(wall.get('observations', 1)) < min_obs:
+                continue
+            if (max_age_s > 0.0 and
+                    now - float(wall.get('last_seen', now)) > max_age_s):
+                continue
+            try:
+                p0, p1, direction, length = self._wall_geometry(wall)
+            except (KeyError, TypeError, ValueError):
+                continue
+            vertical = float(wall.get('z_max', 0.0)) - float(wall.get('z_min', 0.0))
+            if (length < min_length or vertical < min_vertical or
+                    float(wall.get('inlier_rms_m', float('inf'))) > max_rms):
+                continue
+            walls.append((p0, p1, direction, length))
+
+        angle_cos = math.cos(math.radians(float(self._params.get(
+            'detected_wall_merge_angle_deg', 12.0))))
+        plane_tol = float(self._params.get('detected_wall_merge_distance_m', 0.22))
+        min_gap = float(self._params.get('detected_wall_door_min_m', 0.55))
+        max_gap = float(self._params.get('detected_wall_door_max_m', 2.0))
+        min_component_px = max(1, int(round(
+            float(self._params['min_room_area_m2']) /
+            max(resolution * resolution, 1e-12))))
+        thickness = max(1, 2*int(self._params.get('gvd_cut_margin_px', 2)) + 1)
+        result = cut.copy()
+
+        proposals = []
+        for i, (a0, a1, adir, alen) in enumerate(walls):
+            normal = np.array([-adir[1], adir[0]])
+            for b0, b1, bdir, blen in walls[i + 1:]:
+                if abs(float(adir @ bdir)) < angle_cos:
+                    continue
+                if abs(float((((b0 + b1) - (a0 + a1))*0.5) @ normal)) > plane_tol:
+                    continue
+                # Put both finite intervals on the first wall's tangent.  Only
+                # disjoint intervals have a doorway between them.
+                ai = sorted((0.0, alen))
+                bt0, bt1 = float((b0-a0) @ adir), float((b1-a0) @ adir)
+                bi = sorted((bt0, bt1))
+                if bi[0] > ai[1]:
+                    gap, left, right = bi[0]-ai[1], a1, (b0 if bt0 < bt1 else b1)
+                elif ai[0] > bi[1]:
+                    gap, left, right = ai[0]-bi[1], (b0 if bt0 > bt1 else b1), a0
+                else:
+                    continue
+                if min_gap <= gap <= max_gap:
+                    proposals.append((gap, left, right))
+
+        # Narrow, strongly delimited openings first.  Once a cut has separated a
+        # room, later candidates are validated only inside their current parent.
+        for _gap, left, right in sorted(proposals, key=lambda item: item[0]):
+            q0 = self._world_to_grid(float(left[0]), float(left[1]), grid)
+            q1 = self._world_to_grid(float(right[0]), float(right[1]), grid)
+            if q0 is None or q1 is None:
+                continue
+            height, width = result.shape
+            if not (0 <= q0[0] < width and 0 <= q0[1] < height and
+                    0 <= q1[0] < width and 0 <= q1[1] < height):
+                continue
+            stats['proposed'] += 1
+            gap_layer = np.zeros_like(free, dtype=np.uint8)
+            cv2.line(gap_layer, q0, q1, 255, 1)
+            gap_pixels = gap_layer > 0
+            if (not np.any(gap_pixels) or
+                    np.count_nonzero(gap_pixels & (free > 0)) /
+                    max(1, np.count_nonzero(gap_pixels)) < 0.60):
+                stats['rejected_not_free'] += 1
+                continue
+            _, before = cv2.connectedComponents(result, 8)
+            midpoint = ((q0[0]+q1[0])//2, (q0[1]+q1[1])//2)
+            parent_label = int(before[midpoint[1], midpoint[0]])
+            if parent_label <= 0:
+                stats['rejected_no_split'] += 1
+                continue
+            trial = result.copy()
+            cv2.line(trial, q0, q1, 0, thickness)
+            _, after = cv2.connectedComponents(trial, 8)
+            parent = before == parent_label
+            children = np.unique(after[parent])
+            children = children[children > 0]
+            if children.size < 2:
+                stats['rejected_no_split'] += 1
+                continue
+            areas = [np.count_nonzero(parent & (after == child)) for child in children]
+            if min(areas) < min_component_px:
+                stats['rejected_small_partition'] += 1
+                continue
+            result = trial
+            stats['accepted'] += 1
+
+        self._last_wall_door_cut_stats = stats
+        return result
 
     def _floor_height_from_ground(self, now_mono, max_age_s):
         """Estimate this floor's map-frame height from ``cloud_ground``.
@@ -1724,14 +1928,25 @@ class RoomManager:
         self._active_detected_wall_support = detected_wall_support
         structural_occ = self._structural_obstacles(occupied, resolution, grid, cloud_support=cloud_support)
         reinforced_cells = 0
+        closed_free_cells = 0
+        topology_wall_mask = None
         if (detected_wall_support is not None and
                 self._params.get('detected_wall_reinforce_obstacles', False)):
-            # Evidence confirms classification only where SLAM already says non-free. It cannot
-            # hallucinate an obstacle across observed navigable space.
-            reinforce = (detected_wall_support > 0) & (occupied > 0)
-            reinforced_cells = int(np.count_nonzero(reinforce & (structural_occ == 0)))
-            structural_occ[reinforce] = 255
+            confidence_gate = float(self._params.get(
+                'detected_wall_topology_confidence', 0.33))
+            topology_wall_mask = detected_wall_support >= confidence_gate
+            reinforced_cells = int(np.count_nonzero(
+                topology_wall_mask & (structural_occ == 0)))
+            structural_occ[topology_wall_mask] = 255
         free_topo = self._fill_nonstructural_obstacles(free, occupied, structural_occ, resolution)
+        if (topology_wall_mask is not None and
+                self._params.get('detected_wall_close_free_space', True)):
+            # A wall seen repeatedly in depth is direct surface evidence.  Let it
+            # repair short false-free gaps left by the 2D mapper; endpoint joining
+            # is capped below door width, so this cannot bridge an actual doorway.
+            closed_free_cells = int(np.count_nonzero(
+                topology_wall_mask & (free_topo > 0)))
+            free_topo[topology_wall_mask] = 0
         # Furniture removed from the topology can leave isolated corner pixels after the
         # occupancy median filter. Closed holes below the configured area are clutter, not
         # navigable-space boundaries, and would create dense spurious medial-axis branches.
@@ -1758,6 +1973,9 @@ class RoomManager:
 
         cut = self._cut_free_space(free_topo, dist_topo, critical_points, resolution)
         validated_cuts = getattr(self, '_last_validated_cuts', [])
+        cut = self._detected_wall_doorway_cuts(
+            free_topo, cut, grid, resolution)
+        wall_door_cuts = getattr(self, '_last_wall_door_cut_stats', {})
 
         markers = self._grow_labels(free_topo, cut, dist_topo)
         if markers is None:
@@ -1793,11 +2011,14 @@ class RoomManager:
         _detected_stats = getattr(self, '_last_detected_wall_stats', {}) or {}
         _detected_stats = {**_detected_stats,
                            'reinforced_cells': reinforced_cells,
+                           'closed_false_free_cells': closed_free_cells,
                            'door_candidates_recovered': int(
                                _cstats.get('wall_supported_recovery', 0))}
         _detected_desc = ' '.join(f'{k}={v}' for k, v in _detected_stats.items())
         _cut_stats = getattr(self, '_last_cut_stats', {}) or {}
         _cut_desc = ' '.join(f'{k}={v}' for k, v in _cut_stats.items())
+        _wall_cut_stats = getattr(self, '_last_wall_door_cut_stats', {}) or {}
+        _wall_cut_desc = ' '.join(f'{k}={v}' for k, v in _wall_cut_stats.items())
         _free_stats = getattr(self, '_last_free_component_stats', {}) or {}
         _free_desc = ' '.join(f'{k}={v}' for k, v in _free_stats.items())
         region_labels = np.unique(markers[markers > 0])
@@ -1807,6 +2028,7 @@ class RoomManager:
             f'branches_cut={len(validated_cuts)} regions={len(region_labels)}'
             + (f' | critical_points: {_cdesc}' if _cdesc else '')
             + (f' | cut_validation: {_cut_desc}' if _cut_desc else '')
+            + (f' | wall_door_cuts: {_wall_cut_desc}' if _wall_cut_desc else '')
             + (f' | free_component: {_free_desc}' if _free_desc else '')
             + (f' | topology_fill: {_fill_desc}' if _fill_desc else '')
             + (f' | cloud_3d: {_wall_desc}' if _wall_desc else '')
@@ -1871,6 +2093,7 @@ class RoomManager:
             'graph_branches': int(_cstats.get('branches', 0)),
             'door_candidates': len(critical_points),
             'door_cuts': len(validated_cuts),
+            'wall_door_cuts': dict(wall_door_cuts),
             'cut_validation': dict(_cut_stats),
             'free_component': dict(_free_stats),
             'regions_after_small_merge': len(region_labels),
@@ -1937,10 +2160,28 @@ class RoomManager:
         return True
 
     def _stabilize_partition(self, candidates):
-        """Require repeated evidence before replacing the active room topology."""
+        """Require repeated evidence before replacing the active room topology.
+
+        Split and merge errors are not equivalent.  A false split is reversible;
+        a false merge collapses two room identities and reassigns their objects.
+        Merges therefore need a longer, separately configurable confirmation run.
+        An empty extraction is treated as sensor/SLAM failure once a valid
+        partition exists and can never erase all rooms.
+        """
         active = [region for region in self.regions.values() if region.misses == 0]
-        required = max(1, int(self._params.get(
+        default_required = max(1, int(self._params.get(
             'room_partition_change_confirmations', 1)))
+        change_kind = ('merge' if len(candidates) < len(active) else
+                       'split' if len(candidates) > len(active) else
+                       'reshape')
+        if change_kind == 'merge':
+            required = max(1, int(self._params.get(
+                'room_merge_change_confirmations', default_required)))
+        elif change_kind == 'split':
+            required = max(1, int(self._params.get(
+                'room_split_change_confirmations', default_required)))
+        else:
+            required = default_required
         stable_iou = float(self._params.get(
             'room_partition_stable_iou_min',
             self._params.get('region_match_iou_min', 0.20)))
@@ -1948,7 +2189,14 @@ class RoomManager:
             'candidate_regions': len(candidates),
             'active_regions': len(active),
             'required_confirmations': required,
+            'change_kind': change_kind,
         }
+        if (active and not candidates and
+                bool(self._params.get('room_hold_empty_partition', True))):
+            self._pending_partition = None
+            self._pending_partition_count = 0
+            return False, {**base, 'accepted': False, 'confirmations': 0,
+                           'reason': 'empty_partition_held'}
         # Bootstrap is immediate.  A genuinely small contour refinement is also
         # immediate; a larger geometry change, split, or merge is debounced.
         if not active or self._partitions_compatible(candidates, active, stable_iou):
@@ -2565,7 +2813,7 @@ class RoomManager:
 
         marker_id = 0
         min_obs = max(1, int(self._params.get('detected_wall_min_observations', 1)))
-        min_length = float(self._params.get('detected_wall_min_length_m', 1.50))
+        min_length = float(self._params.get('detected_wall_min_length_m', 0.50))
         min_vertical = float(self._params.get('detected_wall_min_vertical_extent_m', 1.20))
         max_rms = float(self._params.get('detected_wall_max_rms_m', 0.03))
         max_age_s = float(self._params.get('detected_wall_max_age_s', 0.0))

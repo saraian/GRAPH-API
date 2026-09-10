@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from metrics_eval import assignment, geometry_iou, load
+from metrics_eval import assignment, filtered_scene, geometry_iou, load
 
 
 BLUE = "#2563eb"
@@ -178,6 +178,7 @@ def _region_svg(scene, threshold, xz_bounds, width=1260, height=560):
 
 def render(scenes, output, threshold=.5, region_threshold=.5):
     """Write an HTML page with object and region visualizations per scene."""
+    scenes = [filtered_scene(scene, include_regions=True) for scene in scenes]
     svg = "\n".join(
         _scene_svg(scene, threshold, _scene_xz_bounds(scene)) +
         _region_svg(scene, region_threshold, _scene_xz_bounds(scene))
