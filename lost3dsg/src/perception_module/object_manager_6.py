@@ -1854,12 +1854,19 @@ class ObjectManagerService(Node):
         if not room_frame_due(frames, xy, ROOM_FRAME_STRIDE_M, ROOM_FRAME_MAX, timestamp_sec):
             return frames
 
+        # Called from the pose callback and from the admission loop: a full mount or a
+        # re-negotiated encoding must cost this one frame, not the pose stream. (From 47dce0b.)
         out_dir = os.path.join(os.environ.get("GRAPH_API_OUTPUT_DIR", "/tmp"), "room_frames")
-        os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, f"{key}@{stamp.sec}.{stamp.nanosec}.jpg")
-        rgb = self._room_bridge.imgmsg_to_cv2(latest_rgb, 'bgr8')
-        if not cv2.imwrite(path, rgb):
-            raise RuntimeError(f"could not write the room frame for {key} to {path}")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            rgb = self._room_bridge.imgmsg_to_cv2(latest_rgb, 'bgr8')
+            if not cv2.imwrite(path, rgb):
+                raise RuntimeError("cv2.imwrite returned False")
+        except Exception as e:
+            self.object_services.log_both(
+                'warn', f"[P_room] room frame for {key} not written to {path}: {e}")
+            return frames
         frames.append({
             "path": path,
             "stamp": timestamp_sec,
