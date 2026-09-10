@@ -1199,6 +1199,12 @@ A12_ALLOWED_FILES = {
         "offline GT exporter; imported by nothing, installed nowhere",
     "src/perception_module/scene_script.py":
         "offline Habitat scripting; imported by nothing, installed nowhere",
+    # Added 2026-09-10. The config DECLARES the `gt_semantic` switch — a config that carries a
+    # setting has to name it, exactly as live_run.sh does when it exports FEED_GT_SEMANTIC. Both
+    # entries are a declaration plus a comment; neither reads a ground-truth value. Verified before
+    # listing: the only token in either file is the key's own name, once.
+    "src/perception_module/config.py": "declares the gt_semantic switch; the key's name, not a read",
+    "src/perception_module/config.yaml": "declares the gt_semantic switch; the key's name, not a read",
 }
 # Inside perception_2.py a GT token may occur only in these functions (AST, not grep).
 # _record_cycle_ms carries the gt_semantic_hit latency key: MEASURED by this probe's first run on the
