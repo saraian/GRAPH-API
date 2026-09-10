@@ -2373,15 +2373,22 @@
         ctx.lineWidth = 2.5;
         ctx.beginPath();
         data.detected_walls.forEach(wl => {
-          // Two shapes are accepted because the producer has not settled: a segment as
-          // [[x1,y1],[x2,y2]], or an object carrying a `points` polyline.
-          const seg = Array.isArray(wl) ? wl : (wl && wl.points);
+          // THE PRODUCER'S SHAPE IS {start:{x,y}, end:{x,y}} -- room_manager.py:2708 reads
+          // exactly those fields, and room.json's `detected_walls` is that map. The first
+          // version here read only two array forms I had invented, so this layer would have
+          // stayed empty with the detector ON and read as "no walls found".
+          let seg = null;
+          if (wl && wl.start && wl.end &&
+              typeof wl.start.x === 'number' && typeof wl.end.x === 'number') {
+            seg = [[wl.start.x, wl.start.y], [wl.end.x, wl.end.y]];
+          } else {
+            seg = Array.isArray(wl) ? wl : (wl && wl.points);
+          }
           if (!Array.isArray(seg) || seg.length < 2) return;
-          seg.forEach((pt, k) => {
+          ctx.moveTo(cx + (seg[0][0] - ax) * scale, cy + (seg[0][1] - az) * scale);
+          seg.slice(1).forEach(pt => {
             if (!pt || pt.length < 2) return;
-            const px = cx + (pt[0] - ax) * scale;
-            const py = cy + (pt[1] - az) * scale;
-            if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            ctx.lineTo(cx + (pt[0] - ax) * scale, cy + (pt[1] - az) * scale);
           });
         });
         ctx.stroke();

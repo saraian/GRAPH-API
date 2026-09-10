@@ -1063,9 +1063,23 @@ const DWALL_MAT = new THREE.LineBasicMaterial({color: 0xf59e0b, linewidth: 2});
 const SCHED_MAT = new THREE.LineDashedMaterial({color: 0xa78bfa, dashSize: 0.25, gapSize: 0.18});
 
 function wallSegments(w) {
-  // The producer has not settled on one shape, so both are read: a bare [[x,y],[x,y]]
-  // segment, or an object with a `points` polyline and an optional `z`.
-  const pts = Array.isArray(w) ? w : (w && w.points);
+  // THE PRODUCER'S ACTUAL SHAPE IS {start:{x,y}, end:{x,y}}. room_manager.py:2708 reads
+  // `wall["start"]["x"]` and object_manager_6.py's walls_callback says so in as many words,
+  // and room.json's top-level `detected_walls` is that same `_detected_wall_map`
+  // (room_manager.py:3006). The first version of this function accepted only [[x,y],[x,y]]
+  // and {points: [...]} -- two shapes I had INVENTED -- so with the detector switched on this
+  // layer would have drawn nothing and looked like a detector that found no walls. Verifying
+  // a reader against your own guess at the format proves only that the guess is self-consistent.
+  //
+  // The two array forms are kept as tolerated alternatives, cheap and harmless, but `start`
+  // and `end` are the shape that actually arrives.
+  let pts = null;
+  if (w && w.start && w.end &&
+      typeof w.start.x === 'number' && typeof w.end.x === 'number') {
+    pts = [[w.start.x, w.start.y], [w.end.x, w.end.y]];
+  } else {
+    pts = Array.isArray(w) ? w : (w && w.points);
+  }
   if (!Array.isArray(pts) || pts.length < 2) return null;
   const z = (w && typeof w.z === 'number') ? w.z : (P.floor && P.floor.z) || 0;
   const out = [];
