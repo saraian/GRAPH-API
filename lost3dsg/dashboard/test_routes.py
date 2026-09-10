@@ -84,9 +84,9 @@ def test_every_endpoint_the_viewer_fetches_is_defined():
         assert not (want - have), \
             f"{label} serves a viewer fetching endpoints it does not define: {sorted(want - have)}"
         fetched |= want
-    served = {r.path for r in _load_server().app.routes if hasattr(r, "path")}
-    missing = set()
-    assert not missing, f"viewer fetches endpoints the server does not define: {sorted(missing)}"
+    # (a `missing = set(); assert not missing` pair stood here -- an assertion that could never
+    #  fail, left behind when the second viewer was retired. The live check is `want - have` in
+    #  the loop above; ruff F841 on its unused `served` is what surfaced it.)
     return sorted(fetched)
 
 
@@ -764,6 +764,75 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
             sys.modules.update(parked)
 
 
+def test_an_empty_timeline_names_this_runs_reason_not_a_generic_one():
+    """A bundle with no frames must say WHY THIS bundle has none, from its own record.
+
+    The page used to state one reason for all of them -- "a mapping-only run writes none".
+    That was the wrong answer for 20260910_141811_hm3d_00861, which detected for 87 minutes
+    with `archive.per_detection` false, and the wrong reason sent the reader to the run
+    instead of to the config. The reason now comes from run_metadata.json, which records the
+    RESOLVED value (owner ruling 16).
+
+    EXERCISED WHERE THE ANSWER IS PRESENT, all three states. A reader tested only on the
+    bundle that says nothing proves nothing about the two that do.
+    """
+    import json as _json
+    import tempfile
+    from pathlib import Path as _P
+
+    with tempfile.TemporaryDirectory() as td:
+        root = _P(td)
+
+        def bundle(name, per_detection, n_frames=0):
+            d = root / name
+            (d / "frames").mkdir(parents=True)
+            for i in range(n_frames):
+                # a 1x1 JPEG, so _jpeg_size finds real dimensions rather than (0, 0)
+                (d / "frames" / f"{1000 + i}.jpg").write_bytes(bytes.fromhex(
+                    "ffd8ffe000104a46494600010100000100010000ffdb004300"
+                    + "08" * 64 +
+                    "ffc0000b080001000101011100ffc40014000100000000000000000000000000000000"
+                    "03ffda0008010100003f0037ffd9"))
+            if per_detection is not None:
+                (d / "run_metadata.json").write_text(_json.dumps({
+                    "resolved_config": {"effective_config": {"archive.per_detection": per_detection}}}))
+            return d
+
+        bundle("off", False)
+        bundle("on", True, n_frames=2)
+        bundle("silent", None)
+
+        import replay_view as rv
+        old = rv.RUNS_DIR
+        try:
+            rv.RUNS_DIR = root
+            assert rv.frame_index("off")["archiving"] is False
+            assert rv.frame_index("on")["archiving"] is True
+            # a bundle that records nothing must say NOTHING, not False: "archiving was off"
+            # is a claim, and every bundle before 2026-09-08 would have it made about it.
+            assert rv.frame_index("silent")["archiving"] is None
+            # a metadata file that exists but is corrupt is also "does not say"
+            (root / "silent" / "run_metadata.json").write_text("{not json")
+            assert rv.frame_index("silent")["archiving"] is None
+        finally:
+            rv.RUNS_DIR = old
+
+    # and the PAGE branches on it: three distinct sentences, none of them the old blanket one
+    src = _P(__file__).with_name("replay_server.py").read_text()
+    i = src.find("function armTransport")
+    assert i != -1, "armTransport is gone; this check is looking at the wrong page"
+    arm = src[i - 900:i + 1400]
+    assert "IDX.archiving === false" in arm and "IDX.archiving === true" in arm, \
+        "the empty-timeline message does not read the bundle's own archiving flag"
+    assert "archive.per_detection was off" in arm, "the settings reason is not offered"
+    # IDX must be ASSIGNED, or every branch reads undefined and the blanket sentence wins again.
+    # ANCHORED TO THE START OF THE LINE: the first version asked only whether the text "IDX = d;"
+    # appeared, and a mutation that commented the line out still contained it -- the check passed
+    # on the broken tree. A substring test cannot tell live code from a comment.
+    assert re.search(r"^\s*IDX = d;", src, re.M), \
+        "the index payload is never stored (or the assignment is commented out), so archiving is undefined"
+
+
 def test_the_bundle_tag_says_which_machine_recorded_it():
     """A picker can hold bundles from two machines only if each row says which one made it.
 
@@ -836,6 +905,7 @@ if __name__ == "__main__":
     test_the_legacy_readers_environment_entry_can_actually_fire()
     test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_replay()
     test_the_bundle_tag_says_which_machine_recorded_it()
-    _ran = 17
+    test_an_empty_timeline_names_this_runs_reason_not_a_generic_one()
+    _ran = 18
     print(f"all {_ran} checks passed (viewer fetches {len(fetched)} endpoints: "
           f"{', '.join(fetched)})")

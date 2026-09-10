@@ -125,6 +125,21 @@ def _jpeg_size_read(path):
         return None
 
 
+def _archiving_on(bundle_dir):
+    """Did this run archive per detection? -> True / False / None when the bundle does not say.
+
+    `run_metadata.json` records the RESOLVED value (owner ruling 16) precisely because the
+    config file alone does not say what was in force. Read it here, so the page can name the
+    real reason a timeline is empty instead of offering the only reason somebody once hit."""
+    try:
+        meta = json.loads((bundle_dir / "run_metadata.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    eff = meta.get("resolved_config", {}).get("effective_config", {})
+    v = eff.get("archive.per_detection")
+    return None if v is None else bool(v)
+
+
 def frame_index(bundle):
     """-> {"frames": [{id, w, h, detections: [...]}, ...]} in capture order."""
     d = RUNS_DIR / bundle
@@ -158,6 +173,13 @@ def frame_index(bundle):
                            "detections": by_frame.get(p.stem, [])})
     orphans = sorted(set(by_frame) - {f["id"] for f in frames})
     return {"bundle": bundle, "frames": frames,
+            # WHY the timeline is empty, from the bundle's own record rather than a guess. A
+            # bundle writes no frames for two different reasons and the page used to name only
+            # one of them ("a mapping-only run writes none"), which was the wrong answer for
+            # 20260910_141811_hm3d_00861: that run detected for 87 minutes with
+            # `archive.per_detection` false, and the stated reason sent the reader looking at
+            # the wrong thing for an hour. None = the bundle predates the recorded value.
+            "archiving": _archiving_on(d),
             # Detections whose frame was never written. Reported rather than dropped: a
             # silent mismatch between the two artefacts is the kind of gap this project
             # keeps finding, and it belongs on the page.

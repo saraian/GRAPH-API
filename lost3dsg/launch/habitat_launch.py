@@ -52,7 +52,8 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression, PathJoinSubstitution
+from launch.substitutions import (EnvironmentVariable, LaunchConfiguration,
+                                  PathJoinSubstitution, PythonExpression)
 from launch_ros.actions import Node
 
 
@@ -87,7 +88,21 @@ def generate_launch_description():
 
     metrics_output_dir_arg = DeclareLaunchArgument(
         'metrics_output_dir',
-        default_value='/root/exchange/output',
+        # DEFERS TO GRAPH_API_OUTPUT_DIR, and that is the whole point. Line 264 below does
+        # SetEnvironmentVariable('GRAPH_API_OUTPUT_DIR', metrics_output_dir), so a plain constant
+        # here does not fall back to the exported value -- it OVERWRITES it for every node this
+        # file starts. live_stack_container.sh:165 exports /ws/output, which is the bind mount to
+        # the run bundle; the launch file replaced it with /root/exchange/output, which is the
+        # container's own writable layer and is discarded with the container.
+        #
+        # MEASURED on run 20260910_164624: perception logged "[ARCHIVE] per-detection archiving ON
+        # -> /root/exchange/output" and wrote frames/, depth/ and detections.jsonl there, so the
+        # bundle held none and the dashboard's replay timeline was empty. Same shape as GA-463
+        # (rtabmap's database written to /root/.ros, outside every mount).
+        #
+        # The literal stays as the last resort, so a launch with nothing exported behaves as before.
+        default_value=EnvironmentVariable('GRAPH_API_OUTPUT_DIR',
+                                          default_value='/root/exchange/output'),
         description='Directory condivisa degli artefatti e del report operativo',
     )
 

@@ -592,6 +592,7 @@ def _replay_mode_html(bundle: Path) -> str:
   if (!wrap) return;
 
   let F = [], i = 0, timer = null, speed = 1;
+  let IDX = {{}};   // the last /replay/index payload, so armTransport can read more than `frames`
   // `perm` now means ADMITTED and `temp` means NOT YET JUDGED -- see the verdict block below.
   // The three grade layers are off by default: 128 of this run's 143 graded objects are
   // decline or no_grounds, and drawing them all is the frame under a mesh of red.
@@ -1733,6 +1734,7 @@ def _replay_mode_html(bundle: Path) -> str:
   function loadIndex() {{
     return fetch('/replay/index/' + encodeURIComponent(BUNDLE)).then(r => r.json()).then(d => {{
       const grew = (d.frames || []).length !== F.length;
+      IDX = d;
       F = d.frames || [];
       $('rSeek').max = Math.max(0, F.length - 1);
       armTransport();
@@ -1746,7 +1748,17 @@ def _replay_mode_html(bundle: Path) -> str:
   // thing must not look like a broken one.
   function armTransport() {{
     const usable = F.length > 1;
-    const why = !F.length ? 'this bundle recorded no frames -- a mapping-only run writes none'
+    // NAME THE REASON THIS BUNDLE HAS NONE, not the reason a bundle can have none. `archiving`
+    // is the run's own recorded `archive.per_detection`: false means the run detected normally
+    // and threw the frames away, which is a settings fault and fixable, while a mapping-only
+    // run is working as asked. Saying the wrong one cost an hour on 20260910_141811_hm3d_00861.
+    // null = an older bundle that does not record the value.
+    const noFrames = IDX.archiving === false
+        ? 'this run did not archive frames -- archive.per_detection was off in its config'
+        : (IDX.archiving === true
+            ? 'archiving was on and this bundle still has no frames -- nothing was detected'
+            : 'this bundle recorded no frames -- a mapping-only run writes none');
+    const why = !F.length ? noFrames
                           : (F.length === 1 ? 'this bundle recorded a single frame; there is nothing to step through' : '');
     ['rPlay', 'rStop', 'rPrev', 'rNext', 'rSpeed', 'rSeek'].forEach(id => {{
       const el = $(id);
