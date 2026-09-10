@@ -29,7 +29,7 @@ import time
 # False, because a probe that could not run has asserted NOTHING and must never read as a pass.
 SKIPPED = None
 
-# Backends whose detect_and_segment returns an empty result rather than raising. a4 cannot
+# Backends whose segment_scene returns an empty result rather than raising. a4 cannot
 # distinguish "answered instantly" from "did nothing" by timing, so it refuses them by name.
 STUB_BACKENDS = frozenset({"LocalPerceptionBackend"})
 
@@ -404,7 +404,7 @@ def a4_perception_twice(frame=None):
                        "scope": "loaded on EVERY run, whatever perception.backend is",
                        "why": _hub_why(_always_missing, _hf_root)}
 
-    # GA-81. `LocalPerceptionBackend.detect_and_segment` is `return [], {}` — it does not
+    # GA-81. `LocalPerceptionBackend.segment_scene` is `return [], {}` — it does not
     # raise, so three calls against it record three passes having run NOTHING. a4 exists to
     # catch a backend that answers once and fails after; a backend that answers instantly and
     # always is the same defect with the sign flipped, and a4 could not see it.
@@ -453,7 +453,7 @@ def a4_perception_twice(frame=None):
     if name in STUB_BACKENDS:
         return False, {
             "backend": name,
-            "why": (f"{name}.detect_and_segment returns an empty result without raising, so "
+            "why": (f"{name}.segment_scene returns an empty result without raising, so "
                     "this probe would record passes for calls that computed nothing. A run "
                     "configured onto it produces no detections and no error. Check "
                     "perception.backend in the config the container actually loaded — a2 "
@@ -486,7 +486,16 @@ def a4_perception_twice(frame=None):
     for i in (1, 2, 3):
         t0 = time.time()
         try:
-            result = backend.detect_and_segment(frame, ["chair"])
+            # GA-468 (2026-09-10). segment_scene, not detect_and_segment. The perception interface
+            # was renamed on the abstract base and on every backend, and this gate was left calling
+            # the old name -- so a4 reported "the backend answered no call; it is unreachable, not
+            # cold" for an AttributeError, which is a different fault with a different fix, and it
+            # refused three runs today while the endpoint was healthy.
+            #
+            # THE SECOND ARGUMENT CHANGED MEANING TOO. It was a label list; segment_scene takes the
+            # scene objects the whole-scene VLM proposed. An empty list is the honest probe input:
+            # a4 asks whether the backend ANSWERS TWICE, not whether it finds a chair.
+            result = backend.segment_scene(frame, [])
             # The contract is (detections, timings). A backend that returns something else is
             # reported as such rather than raised as a TypeError, which would land in the
             # attempt's `error` and read as an unreachable service.

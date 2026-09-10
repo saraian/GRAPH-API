@@ -426,7 +426,7 @@ def test_a4_catches_the_missing_stage_timings_before_the_run_does():
 
     def run_with_timings(t):
         class B:
-            def detect_and_segment(self, frame, labels):
+            def segment_scene(self, frame, scene_objects):
                 return [], t
 
         fake_cfg = types.ModuleType("config")
@@ -502,14 +502,14 @@ def test_a4_reads_the_pipelines_required_keys_rather_than_copying_them():
 
 
 def test_a4_refuses_a_backend_that_cannot_answer():
-    """GA-81. `LocalPerceptionBackend.detect_and_segment` is `return [], {}` — it does not
+    """GA-81. `LocalPerceptionBackend.segment_scene` is `return [], {}` — it does not
     raise, so three calls record three passes having computed nothing. a4 was built to catch a
     backend that answers once and fails after; **a backend that answers instantly and always is
     the same defect with the sign flipped**, and timing cannot tell them apart."""
     import types
 
     class LocalPerceptionBackend:
-        def detect_and_segment(self, frame, labels):
+        def segment_scene(self, frame, scene_objects):
             return [], {}
 
     fake_cfg = types.ModuleType("config")
@@ -678,7 +678,7 @@ def test_a4_tells_a_cold_start_apart_from_the_serve_once_fault():
         seq = iter(results)
 
         class Stub:
-            def detect_and_segment(self, frame, labels):
+            def segment_scene(self, frame, scene_objects):
                 if not next(seq):
                     raise TimeoutError("The read operation timed out")
                 # the contract: (detections, per-stage timings). GA-85 asserts the second half.
