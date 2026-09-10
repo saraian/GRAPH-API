@@ -302,6 +302,10 @@ cleanup() {
     python3 - "$RUN_DIR/run_metadata.json" "${CAP_MIN:-}" "$(( $(date +%s) - ${RUN_START_EPOCH:-0} ))" \
              "$_capped" "$_cap_fired_at" "$_cap_note" "${START_AFTER_STACK:-0}" <<'PY' \
       || echo "!! could not stamp the cap block into run_metadata.json — the bundle cannot state whether it was cut short"
+# >>> TEST-EXTRACT stamp_block  (test_terminating_node.py runs the block between these
+# markers against synthetic bundles. GA-430's absent-branch is the one no run exercises:
+# a container killed before its watch loop leaves no terminating_node.json, and 'absent'
+# must not read as 'unknown'.)
 import json, os, sys
 p, cap, elapsed, capped, fired, note, anchor = sys.argv[1:8]
 d = json.load(open(p))
@@ -312,6 +316,20 @@ except (OSError, ValueError) as exc:
     d["terminating_node"] = {"node": None, "note": f"no terminating_node.json in the bundle ({exc.__class__.__name__}): "
                                                    "the container did not reach its own end — killed from outside, or "
                                                    "it died before the watch loop. Absent is not 'unknown'."}
+# GA-430, second half. A CLOSED VOCABULARY FOR HOW THE LAUNCH ENDED, so a reader tests a value
+# instead of matching a node name it has to know. The testing lane's early-death condition reads a
+# LOG LINE today; a line is prose that a future edit breaks silently, and with no cap the ending is
+# the fact their whole eligibility test turns on.
+#   tour_complete  the feed wrote feed_ended.json and the container closed on it (rule 73's normal end)
+#   mapping_time   a mapping run reached its own deadline, which is also a normal end
+#   node_death     a watched node exited, whatever its status -- 0 included, which is why the NODE
+#                  and not the status is what discriminates
+#   unrecorded     no terminating_node.json: killed from outside, or dead before the watch loop.
+#                  NOT "unknown": it says the container never reached its own end.
+_tn = d["terminating_node"].get("node")
+d["terminating_node"]["ended"] = ({"FEED_ENDED": "tour_complete",
+                                   "MAPPING_TIME": "mapping_time"}.get(_tn, "node_death")
+                                  if _tn else "unrecorded")
 d["cap"] = {                                            # GA-395, keys ADDED (rule 6)
     "cap_minutes": int(cap) if cap.strip().isdigit() else None,
     "cap_anchor": "stack_up" if anchor == "1" else "launch",
@@ -323,6 +341,7 @@ d["cap"] = {                                            # GA-395, keys ADDED (ru
     "cap_note": note,
 }
 json.dump(d, open(p, "w"), indent=2)
+# <<< TEST-EXTRACT stamp_block
 PY
     # GA-293 + GA-401 (written by the ontology lane for this file, revision 3; applied here after
     # two interactions with this trap that neither of us could see from one side alone). A killed
