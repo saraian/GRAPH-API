@@ -944,15 +944,33 @@ TEST_TOUR_SCAN = int(os.environ.get("FEED_TEST_TOUR_SCAN", hab_cfg.get("tour_sca
 # tour, all storeys (if we finish a storey, just teleport to the next storey). This is our base run
 # policy from now on."
 #
-# ON BY DEFAULT, because it is the policy and not a setting: a run that tours one storey is no
-# longer a base run. The switch exists for MAPPING runs, which need one storey by construction --
-# a 2D occupancy grid cannot represent two, which is why owner ruling 25 refused a map whose nodes
-# spread 3.071 m over three storeys. Whether one rtabmap session may span the house at all is the
-# owner's open question; the storey boundary is printed and counted here so either answer can be
-# acted on without rebuilding the tour.
+# OFF BY DEFAULT, AND THAT IS NOT A RETREAT FROM THE POLICY. The owner ruled on 2026-09-10 that
+# each storey gets its OWN mapping session: ruling 25 stands, so no map may straddle storeys. Under
+# that ruling the house is toured by RELAUNCHING the stack once per storey, each launch spawning on
+# its storey through FEED_SPAWN_FLOOR, so a mid-run teleport is not how a base run moves between
+# floors and a default of ON would be a setting every base run has to remember to switch off.
+#
+# THE MACHINERY BELOW STAYS. It is the build for one continuous session, which is what the owner
+# would need if the perception world model ever had to persist across storeys. run_metadata.json
+# records which shape actually ran, so no bundle set can be read as the other one.
 TOUR_ALL_FLOORS = os.environ.get(
     "FEED_TOUR_ALL_FLOORS",
-    "1" if hab_cfg.get("tour_all_floors", True) else "0").lower() in ("1", "true", "yes", "on")
+    "1" if hab_cfg.get("tour_all_floors", False) else "0").lower() in ("1", "true", "yes", "on")
+
+# GA-434 / RULE 73. A NO-CAP RUN NEEDS ITS OWN ENDING, and until now it had none.
+#
+# The tour turned in place forever when it ran out of waypoints, and a cap script stopped the run
+# from outside. Rule 73 removes the cap ("no caps this time"), so with nothing else changed a base
+# run would tour the house and then spin until somebody noticed. The feed ends itself instead: it
+# keeps feeding for a settle period after the last storey, then writes feed_ended.json into the
+# bundle, which live_stack_container.sh watches for and shuts the stack down on.
+#
+# 90 s IS A CHOSEN NUMBER, NOT A MEASURED ONE. It has to cover the object manager's last merge
+# sweeps -- a pair over the evidence threshold still needs merge_min_consecutive sweeps to commit,
+# and the dwell logic exists because turning away early is what strands them. Raise it if a run
+# ends with pending merges; the count is in the dwell lines.
+TOUR_END_SETTLE_S = float(os.environ.get("FEED_TOUR_END_SETTLE_S",
+                                         hab_cfg.get("tour_end_settle_s", 90.0)))
 
 # GA-258. DYNAMIC DWELL: stay while merges are still waiting to be confirmed.
 #
@@ -1293,6 +1311,7 @@ class Tour:
         self.floor_guard = None
         self.floors_todo = []       # storeys still to visit, set by bind_floors
         self.floor_order = []       # storeys toured, in order, for the bundle
+        self.house_done = False     # set when the last storey's waypoints are exhausted
         self._tour_planned_total = 0
 
     def bind_floors(self, scene_floors, tol, guard):
@@ -1419,6 +1438,15 @@ class Tour:
             if self._tour_scan > 0:
                 self._tour_scan -= 1
                 agent.act("turn_left")
+                # GA-434. THE INDEX ADVANCES HERE WHEN NO DWELL FOLLOWS, and before today nothing
+                # advanced it on that path: `self._tour_i += 1` lived only in the dwell branch, so
+                # with FEED_TEST_DWELL_DYNAMIC=0 the scan ended, the follower was asked for the same
+                # goal, answered "arrived" again, and the tour scanned waypoint 0 forever while
+                # tour_waypoints_reached counted up once per pass. It never showed because the
+                # dynamic dwell is on by default. Under rule 73 it would be a run that never ends:
+                # a no-cap run is ended BY the tour completing.
+                if self._tour_scan == 0 and not self._dwelling:
+                    self._tour_i += 1
                 return
             if self._dwelling:
                 # GA-258. Past the minimum, keep turning while merges are pending.
@@ -1447,8 +1475,13 @@ class Tour:
                 # RULE 73: a finished storey is not a finished tour while the house has more.
                 if self._advance_floor(agent):
                     return
-                # House complete. Keep turning rather than stopping: a still camera is
-                # indistinguishable from a crashed feed downstream.
+                # House complete. Keep turning while the run settles: a still camera is
+                # indistinguishable from a crashed feed downstream, and the merge sweeps are
+                # still running. main() ends the feed after TOUR_END_SETTLE_S.
+                if not self.house_done:
+                    self.house_done = True
+                    print("[feed] HOUSE TOUR COMPLETE: storeys "
+                          + ", ".join(f"{z:+.2f}" for z in self.floor_order), flush=True)
                 agent.act("turn_left")
                 return
             goal = self._tour[self._tour_i]
@@ -1817,8 +1850,21 @@ def main():
     total_distance_m = 0.0
     last_pos = np.asarray(ag_state.position, dtype=np.float64)
 
+    house_done_at = None
+    end_reason = None
     while True:
         t0 = time.time()
+        # RULE 73. THE RUN ENDS ITSELF. See TOUR_END_SETTLE_S: with no cap, nothing else would.
+        # The break is at the TOP of the loop, after a full frame has been sent and feed_stats.json
+        # rewritten, so the bundle already holds a complete set of statistics when it fires.
+        if tour is not None and getattr(tour, "house_done", False):
+            if house_done_at is None:
+                house_done_at = t0
+                print(f"[feed] settling for {TOUR_END_SETTLE_S:.0f}s before ending the feed",
+                      flush=True)
+            elif (t0 - house_done_at) >= TOUR_END_SETTLE_S:
+                end_reason = "house_tour_complete"
+                break
         mapping = MAPPING_SECONDS > 0 and (t0 - t_start_sim) < MAPPING_SECONDS
         if mapping and not mapping_announced:
             print(f"[feed] MAPPING phase for {MAPPING_SECONDS:.0f}s (continuous coverage tour)")
@@ -2202,6 +2248,23 @@ def main():
         dt = time.time() - t0
         if dt < period:
             time.sleep(period - dt)
+
+    # RULE 73. The stack has no other way to learn that the tour is over: the feed host runs on the
+    # HOST and rtabmap runs in the container, and the only thing they share is this directory
+    # (STATS_DIR is RUN_DIR, bind-mounted onto the container's /ws/output).
+    # NOT a bare touch: a marker with no reason in it cannot distinguish a finished tour from a
+    # crash that happened to leave a file behind.
+    feed_stats["ended_reason"] = end_reason
+    feed_stats["house_tour_complete"] = bool(tour is not None and getattr(tour, "house_done", False))
+    with open(STATS_DIR / "feed_stats.json", "w") as f:
+        json.dump(feed_stats, f)
+    marker = {"reason": end_reason, "t": time.time(),
+              "floors_toured": list(getattr(tour, "floor_order", [])) if tour else [],
+              "settle_s": TOUR_END_SETTLE_S,
+              "total_steps": total_steps, "frames_sent_ok": frames_sent_ok}
+    with open(STATS_DIR / "feed_ended.json", "w") as f:
+        json.dump(marker, f)
+    print(f"[feed] FEED ENDED ({end_reason}); wrote {STATS_DIR / 'feed_ended.json'}", flush=True)
 
 
 if __name__ == "__main__":

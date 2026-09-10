@@ -37,6 +37,24 @@ fi
 # Owner ruling 2026-09-09. An extension supplies itself through EXT_ENV_FILE and EXT_MOUNTS.
 WORKSPACE_ROOT=${WORKSPACE_ROOT:-$(cd "$REPO/../.." && pwd)}
 [ -d "$WORKSPACE_ROOT" ] || { echo "!! WORKSPACE_ROOT=$WORKSPACE_ROOT does not exist"; exit 1; }
+# GA-434 (2026-09-10). EXISTING IS NOT ENOUGH, and "/" exists.
+#
+# The derivation above is "two levels above the checkout", which was right while this repo was
+# vendored inside the workspace. Consolidated to its own directory, two levels above it is the
+# filesystem root: WORKSPACE_ROOT became "/", the -d test passed, and a run would have written its
+# bundle to /runs, published maps to /maps, and found no published map at /maps -- mapping from
+# scratch and reporting it, with every path in the bundle pointing somewhere nobody looks.
+#
+# So the root must LOOK like a workspace: one of the three directories a run reads or writes. That
+# is a fact about the directory rather than a fact about this file's location, which is what went
+# stale. Set WORKSPACE_ROOT in env.local.sh to point somewhere else.
+if [ ! -d "$WORKSPACE_ROOT/maps" ] && [ ! -d "$WORKSPACE_ROOT/runs" ] && [ ! -d "$WORKSPACE_ROOT/results" ]; then
+  echo "!! WORKSPACE_ROOT=$WORKSPACE_ROOT holds no maps/, runs/ or results/ directory."
+  echo "   That is where bundles, maps and scratch go, so this is not a workspace. It is derived"
+  echo "   as two levels above $REPO, which is wrong whenever the checkout is not inside the"
+  echo "   workspace. Set WORKSPACE_ROOT explicitly (env.local.sh) and re-run."
+  exit 1
+fi
 
 MON_PID=""
 FEED_PID=""
@@ -425,7 +443,11 @@ export CFG_NAME
 echo "    config: $CFG_NAME"
 
 # Setup the persistent run bundle (never overwritten across runs)
-RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+# GA-434. OVERRIDABLE, so a caller that launches the stack ONCE PER STOREY knows each bundle's path
+# without scraping it from a log line. run_house.sh sets a distinct stamp per storey. Unset, this is
+# what it always was. The bundle directory is refused below if it already exists, so a stale export
+# of this variable cannot make two runs share one bundle.
+RUN_TIMESTAMP=${RUN_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}
 SCENE_ARG=${1:-hm3d_00861}
 
 # Live run output. A TIMESTAMPED DIRECTORY under $WORKSPACE_ROOT/results/, never /tmp.
@@ -475,6 +497,12 @@ fi
 RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
 RUNS_DIR=${RUNS_DIR:-$WORKSPACE_ROOT/runs}
 RUN_DIR="$RUNS_DIR/$RUN_ID"
+# A bundle directory that already holds a run is never reused: two runs in one directory produce a
+# bundle whose files come from both and whose metadata describes one.
+if [ -n "$(ls -A "$RUN_DIR" 2>/dev/null)" ]; then
+  echo "!! $RUN_DIR already exists and is not empty. RUN_TIMESTAMP=$RUN_TIMESTAMP is already taken."
+  exit 1
+fi
 # GA-258b. EXPORTED, because the FEED HOST needs it. The host process reads
 # merge_pending.json to decide how long to dwell, and that file is written by the container
 # into /ws/output -- which is bind-mounted to $RUN_DIR, not to $OUT_DIR (/out). The feed host
@@ -927,11 +955,16 @@ for _v in ${EXT_ENV_PASS:-}; do
   eval "_isset=\${$_v+yes}"
   [ -n "${_isset:-}" ] || { echo "!! $_v is declared in EXT_ENV_PASS but not set at run_metadata.json"; exit 1; }
 done
+# "machine" records WHICH MACHINE made this bundle. Absent until 2026-09-10, and its absence is why
+# bundles from two machines cannot safely share one directory: nothing inside could tell them apart,
+# so a reader comparing them would not know they were comparing different systems. The bundle now
+# says so itself, which is stronger than keeping the directories apart and remembering why.
 cat <<EOF > "$RUN_DIR/run_metadata.json"
 {
   "run_id": "$RUN_ID",
   "scene": "$SCENE_ARG",
   "start_time": "$(date -Iseconds)",
+  "machine": "$(hostname)",
   "config_name": "$CFG_NAME",
   "output_dir": "$RUN_DIR",
   "config_name_note": "the name the launcher intended; see config_resolved and preflight.json for what each process loaded",
@@ -1002,6 +1035,14 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "gt_semantic": ${FEED_GT_SEMANTIC:-0},
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
     "localization_regime": "fresh_map_per_launch",
+    # GA-434 / RULE 73. WHICH SHAPE OF HOUSE RUN THIS BUNDLE BELONGS TO. Two exist and they are not
+    # comparable: "relaunch_per_storey" is one launch, one map and one bundle per storey, which is
+    # the owner's 2026-09-10 ruling; "continuous_teleport" is one launch touring every storey, whose
+    # map would straddle them and which owner ruling 25 refuses. A bundle set read as the wrong one
+    # would double-count objects across storeys or look like it lost them.
+    "tour_shape": "$([ "${FEED_TOUR_ALL_FLOORS:-0}" != "0" ] && echo continuous_teleport || echo relaunch_per_storey)",
+    "house_id": $([ -n "${HOUSE_ID:-}" ] && echo "\"$HOUSE_ID\"" || echo null),
+    "spawn_floor": $([ -n "${FEED_SPAWN_FLOOR:-}" ] && echo "$FEED_SPAWN_FLOOR" || echo null),
     "localize_db_note": "GA-336: localize_db points at a SCRATCH COPY deleted at exit, so the path alone identifies nothing. localize_db_source + localize_db_sha256_16 name the canonical file this run actually opened.",
     "localize_db_source": $([ -n "${LOCALIZE_DB_SOURCE:-}" ] && echo "\"$LOCALIZE_DB_SOURCE\"" || echo null),
     "localize_db_sha256_16": $([ -n "${LOCALIZE_DB_SHA:-}" ] && echo "\"$LOCALIZE_DB_SHA\"" || echo null),

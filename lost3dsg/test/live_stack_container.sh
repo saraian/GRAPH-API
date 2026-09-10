@@ -303,17 +303,6 @@ fi
 # here: a params-sha sidecar check refused a map built under different grid parameters, and the run
 # read a scratch copy so it could not write into the canonical map. habitat_launch.py owns rtabmap
 # now and hardcodes its database, so neither is reachable. Both branches below only report that.
-# GA-97. LOCALIZATION MODE — LANDED OFF BY DEFAULT. Unset RTABMAP_LOCALIZE_DB and everything
-# below is byte-for-byte today's behaviour.
-#
-# Set it to a map path and the stack localizes against a COPY of that map instead of mapping from
-# scratch. The copy is not politeness: localizing against the original would let this run write
-# into the canonical map, and the next run would inherit changes nobody recorded.
-#
-# THE SIDECAR CHECK IS THE POINT, and it is rule 14's shape. A map built under different grid
-# parameters is not a map of the same world — cell size, ray tracing and the height bands all
-# change what is occupied. Localizing against a stale one produces poses that look fine and are
-# wrong, in a bundle that looks complete. So a mismatch REFUSES TO START rather than warning.
 if [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   # SAY SO WHEN THE BRANCH IS NOT TAKEN. An unset variable took this path silently, and the
   # testing lane found the passthrough missing only because it went looking BEFORE launching
@@ -515,6 +504,21 @@ while [ -z "$_dead_node" ]; do
   if [ "$_MAP_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$_MAP_DEADLINE" ]; then
     _dead_node="MAPPING_TIME"; _dead_rc=0; break
   fi
+  # GA-434 / RULE 73. THE FEED ENDS THE RUN, because with no cap nothing else does.
+  #
+  # The owner removed the cap for base runs ("no caps this time"), and the tour used to turn in
+  # place forever once its waypoints ran out. habitat_feed_host.py now writes feed_ended.json when
+  # the house tour is complete and its settle period has passed. That file is the ONLY channel
+  # between the two: the feed host runs on the host, this script runs in the container, and
+  # /ws/output is the directory they share.
+  #
+  # It is a normal end, not a death, and terminating_node.json already says so in its own note --
+  # a status of 0 with a node name is how MAPPING_TIME ends a mapping run.
+  if [ -f /ws/output/feed_ended.json ]; then
+    _dead_node="FEED_ENDED"; _dead_rc=0
+    _dead_why=" (the feed host completed the house tour)"
+    break
+  fi
   # With the detector off, PERCEPTION and OM6 are not in the list -- waiting on a node that was
   # never started ends the run instantly. A mapping run watches the map and the feed, and ends on
   # TIME rather than on a death.
@@ -602,8 +606,12 @@ print(json.dumps({
             "node exiting 0 unexpectedly ends a run too, so read `node` and not the status alone.",
 }, indent=2))
 PY
-echo "!! $_dead_node exited with status ${_dead_rc}${_dead_why:-} — ending the run."
-echo "   The stack is not left running: a run missing any of these nodes measures nothing further."
+if [ "$_dead_node" = "FEED_ENDED" ]; then
+  echo ">>> FEED ENDED${_dead_why:-} — closing the stack. This is the normal end of a base run."
+else
+  echo "!! $_dead_node exited with status ${_dead_rc}${_dead_why:-} — ending the run."
+  echo "   The stack is not left running: a run missing any of these nodes measures nothing further."
+fi
 tail -5 /tmp/perception.log
 
 # An EMPTY variable here is "exit: : numeric argument required", which is what run

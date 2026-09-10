@@ -1039,6 +1039,17 @@ A12_ALLOWED_FILES = {
     "src/perception_module/test_perception_smoke.py": "smoke test",
     "src/perception_module/habitat_camera_node.py": "NOT installed (GA-299); host-side node",
     "src/perception_module/habitat_camera_objects_node.py": "NOT installed (GA-299); host-side node",
+    # Added 2026-09-10. Both arrived on main with the Habitat scripting work and neither was listed,
+    # so a CLEAN CHECKOUT failed this probe and the gate refused every run -- reported by the
+    # experiment lane, whose stack came up and could not get past it. Each names `semantic_sensor`
+    # once, to CONFIGURE habitat_sim's semantic camera: they are producers and exporters, the same
+    # category as the two host-side nodes above. Verified before listing rather than assumed:
+    # nothing under src/ or test/ imports either, and neither is in CMakeLists' install list, so
+    # neither can be running while inference is.
+    "src/perception_module/hm3d_ground_truth_manifest.py":
+        "offline GT exporter; imported by nothing, installed nowhere",
+    "src/perception_module/scene_script.py":
+        "offline Habitat scripting; imported by nothing, installed nowhere",
 }
 # Inside perception_2.py a GT token may occur only in these functions (AST, not grep).
 # _record_cycle_ms carries the gt_semantic_hit latency key: MEASURED by this probe's first run on the

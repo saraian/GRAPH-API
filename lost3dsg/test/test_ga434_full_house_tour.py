@@ -176,6 +176,40 @@ def test_the_house_ends_after_the_last_storey():
         assert tour.floor_order == [1.35, 2.21]
 
 
+def _drive(tour, agent, limit=4000):
+    """Step the tour until the house is done or the budget runs out."""
+    for i in range(limit):
+        tour.step(agent)
+        if tour.house_done:
+            return i
+    return None
+
+
+def test_a_fixed_dwell_tour_still_advances_and_finishes():
+    """FEED_TEST_DWELL_DYNAMIC=0 used to scan waypoint 0 forever: nothing advanced the index."""
+    with feed_host(FEED_TEST_TOUR="3", FEED_TOUR_ALL_FLOORS="0", FEED_TEST_MODE="1",
+                   FEED_TEST_DWELL_DYNAMIC="0", FEED_TEST_TOUR_SCAN="2") as mod:
+        _, tour, _ = build(mod, 1.35, [1.35])
+        agent = FakeAgent([0.0, 1.35, 0.0])
+        assert _drive(tour, agent) is not None, "the tour never finished"
+        assert tour._tour_reached == 3, tour._tour_reached
+        assert tour.house_done is True
+
+
+def test_the_house_flag_is_set_once_the_last_storey_is_toured():
+    with feed_host(FEED_TEST_TOUR="2", FEED_TOUR_ALL_FLOORS="1", FEED_TEST_MODE="1",
+                   FEED_TEST_DWELL_DYNAMIC="0", FEED_TEST_TOUR_SCAN="2") as mod:
+        sim, tour, guard = build(mod, 1.35, [1.35, 2.21])
+        mod._spawn_point = lambda s, z, tries=4000: (
+            setattr(s._box, "y", z) or np.array([1.0, z, 2.0], dtype=np.float32))
+        agent = FakeAgent([0.0, 1.35, 0.0])
+        assert _drive(tour, agent) is not None
+        # both storeys toured, and only then is the house done
+        assert tour.floor_order == [1.35, 2.21]
+        assert tour._tour_reached == 4, tour._tour_reached
+        assert tour._tour_planned_total == 4
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
