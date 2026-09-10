@@ -339,6 +339,11 @@ def _hf_models_present(local_backend):
     """
     hf = (os.environ.get("PREFLIGHT_HF_CACHE") or os.environ.get("HF_HOME")
           or os.environ.get("TRANSFORMERS_CACHE") or "/models/hf")
+    # READ THE CACHE THE CONTAINER WILL USE, and say so when this is not it. HF_HOME on the host is
+    # not HF_HOME in the container -- that difference IS the /ext fault this probe now exists to
+    # catch, and a probe that reads the wrong cache becomes the defect it was written for. Same
+    # shape as a8's install-tree test: outside the container, assert nothing rather than assert
+    # about the wrong machine. PREFLIGHT_HF_CACHE names the cache explicitly when it is known.
     wanted = list(HF_MODELS_EVERY_RUN) + (list(HF_MODELS_LOCAL_BACKEND) if local_backend else [])
     missing, seen = [], {}
     for model_id, _why in wanted:
@@ -381,6 +386,20 @@ def a4_perception_twice(frame=None):
     backend = get_perception_backend(cfgmod.CFG)
     name = type(backend).__name__
 
+    # GA-438. THE ALWAYS-LOADED MODELS ARE ASSERTED FOR EVERY BACKEND, above the local/cloud split.
+    # The cache check used to sit INSIDE `backend == "local"`, so a cloud run asserted nothing about
+    # models it loads regardless: nlp_utils loads MiniLM on every run and visual_reid loads one of
+    # the two dinov2 sizes on every run. A cloud-backend run could pass a4 and then download three
+    # models inside its first perception cycle.
+    _hf_root, _always_missing, _always_seen = _hf_models_present(local_backend=False)
+    _in_container = os.path.isdir(INSTALL_TREE)
+    if _always_missing and _in_container:
+        return False, {"backend": name, "hf_cache_root": _hf_root,
+                       "hub_models_present": _always_seen,
+                       "hub_models_missing": _always_missing,
+                       "scope": "loaded on EVERY run, whatever perception.backend is",
+                       "why": _hub_why(_always_missing, _hf_root)}
+
     # GA-81. `LocalPerceptionBackend.detect_and_segment` is `return [], {}` — it does not
     # raise, so three calls against it record three passes having run NOTHING. a4 exists to
     # catch a backend that answers once and fails after; a backend that answers instantly and
@@ -422,7 +441,7 @@ def a4_perception_twice(frame=None):
         # AFTER the segmenter files, on purpose. The segmenter is what decides whether the in-line
         # path can start at all, and it was a4's contract before today; putting the hub check first
         # would change which reason a4 gives for a fault it already caught.
-        if hub_missing:
+        if hub_missing and _in_container:
             detail["why"] = _hub_why(hub_missing, hf)
             return False, detail
         return True, detail
