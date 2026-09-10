@@ -1,3 +1,4 @@
+import http.client
 import logging
 import os
 import sys
@@ -32,19 +33,51 @@ def mask_touches_border(mask, margin_px=2):
     return bool(m[:k].any() or m[-k:].any() or m[:, :k].any() or m[:, -k:].any())
 
 
+def _rectangle_support_yaw(xy, tol=0.04, step_deg=1.0):
+    """The yaw whose axis-aligned box, in the rotated frame, has the MOST points within `tol`
+    of its perimeter. GA-364.
+
+    Why the perimeter and not a variance axis, a minimum-area rectangle or a longest line:
+    a mask that bleeds onto the perpendicular wall gives an L of two orthogonal arms; PCA and
+    the minimum-area rectangle take the L's hypotenuse (measured 32 degrees for a wall-aligned
+    cabinet on 152446, footprint 1.22x), and a RANSAC line takes the diagonal chord of any
+    FILLED top surface (a bed seen from above). At the true yaw the box perimeter runs along
+    every straight edge the points have -- a rectangle's four sides, an L's outer arms, the
+    side faces of a corner view -- and at a wrong yaw it touches them only at corners.
+    Deterministic: a 1-degree sweep over [-90, 90), no sampling."""
+    xy = np.asarray(xy, dtype=np.float64)
+    if len(xy) < 10:
+        return None
+    best_n, best_th = -1, None
+    for deg in np.arange(-90.0, 90.0, step_deg):
+        th = np.radians(deg)
+        c, s = np.cos(th), np.sin(th)
+        u = xy[:, 0] * c + xy[:, 1] * s
+        v = -xy[:, 0] * s + xy[:, 1] * c
+        lu, hu = np.percentile(u, [1, 99])
+        lv, hv = np.percentile(v, [1, 99])
+        n = int(((np.abs(u - lu) <= tol) | (np.abs(u - hu) <= tol)
+                 | (np.abs(v - lv) <= tol) | (np.abs(v - hv) <= tol)).sum())
+        if n > best_n:
+            best_n, best_th = n, float(th)
+    return best_th
+
+
 def pca_oriented_box(pts_map, min_anisotropy=1.2, top_fraction=0.2, top_min_points=30):
     """Yaw-about-z oriented box from object points in the map frame — the optional
     PCA keys (yaw / oriented_center / oriented_extents) that box_corners_map and
     the map store already consume. Returns None when the XY spread is too small or
     too isotropic for a stable orientation (the AABB alone is then the honest box).
 
-    GA-315: the yaw is fitted on the TOP-SURFACE points only — the slab within
-    `top_fraction` of the z range below the highest point, when it holds at least
-    `top_min_points` — because a camera sees one vertical side face densely and that
-    face drags the principal axis about 10 degrees off the object's own axis (measured by
-    the orchestrator on the yaw audit). The extents are still taken over ALL points in
-    that frame; only the axis choice comes from the top. ponytail: a fixed fraction, not a
-    plane fit; upgrade to RANSAC on the top plane if the 10 degrees do not go away."""
+    The name is historical: since GA-364 the axis is the yaw with the most PERIMETER
+    support among the top-surface points (`_rectangle_support_yaw`), not a principal
+    component. GA-315: the
+    top surface is the slab within `top_fraction` of the z range below the highest point
+    (when it holds at least `top_min_points`), because a camera sees one vertical side face
+    densely and that face drags a variance axis about 10 degrees off. The extents are still
+    taken over ALL points at that yaw; only the axis choice comes from the top. The
+    anisotropy gate now reads the EXTENTS at the chosen yaw: an L or a near-square set
+    (extent ratio below `min_anisotropy`) yields no box, and the AABB stands."""
     pts = np.asarray(pts_map, dtype=np.float64)
     if pts.shape[0] < 10:
         return None
@@ -52,14 +85,11 @@ def pca_oriented_box(pts_map, min_anisotropy=1.2, top_fraction=0.2, top_min_poin
     z_all = pts[:, 2]
     top = z_all >= z_all.max() - top_fraction * max(z_all.max() - z_all.min(), 1e-6)
     fit_xy = xy[top] if int(top.sum()) >= top_min_points else xy
-    cov = np.cov(fit_xy, rowvar=False)
-    if not np.all(np.isfinite(cov)):
+    if not np.all(np.isfinite(fit_xy)):
         return None
-    evals, evecs = np.linalg.eigh(cov)  # ascending
-    if evals[0] <= 1e-10 or evals[1] / evals[0] < min_anisotropy ** 2:
+    yaw = _rectangle_support_yaw(fit_xy)
+    if yaw is None:
         return None
-    major = evecs[:, 1]
-    yaw = float(np.arctan2(major[1], major[0]))
     # a box is symmetric under 180°: keep yaw in [-pi/2, pi/2)
     if yaw < -np.pi / 2:
         yaw += np.pi
@@ -70,19 +100,33 @@ def pca_oriented_box(pts_map, min_anisotropy=1.2, top_fraction=0.2, top_min_poin
     u = xy[:, 0] * c + xy[:, 1] * s      # box frame
     v = -xy[:, 0] * s + xy[:, 1] * c
     z = pts[:, 2]
-    # ponytail: 1/99 percentile trim. Since W8 these points ARE the AABB pass's SOR'd
+    # GA-313, owner ruling 2026-09-08: the SAME 5/95 trim as the AABB builder
+    # (cv_utils._robust_bounds_from_points), so the two boxes describe one object and the size
+    # gate compares like with like. The yaw sweep above keeps its own 1/99 box: that is the
+    # perimeter test GA-364 measured, not a size. Since W8 these points ARE the AABB pass's SOR'd
     # set (same _filter_object_points arguments), so the claim below finally holds;
     # the trim stays as a residual-straggler guard, not as the only one.
-    lo_u, hi_u = np.percentile(u, [1, 99])
-    lo_v, hi_v = np.percentile(v, [1, 99])
-    lo_z, hi_z = np.percentile(z, [1, 99])
+    lo_u, hi_u = np.percentile(u, [5, 95])
+    lo_v, hi_v = np.percentile(v, [5, 95])
+    lo_z, hi_z = np.percentile(z, [5, 95])
     if min(hi_u - lo_u, hi_v - lo_v, hi_z - lo_z) <= 1e-4:
+        return None
+    du, dv = hi_u - lo_u, hi_v - lo_v
+    if dv > du:
+        # the line named the SHORT side: turn the frame so the major axis is u, as before
+        yaw = yaw + np.pi / 2 if yaw < 0 else yaw - np.pi / 2
+        c, s = np.cos(yaw), np.sin(yaw)
+        u, v = xy[:, 0] * c + xy[:, 1] * s, -xy[:, 0] * s + xy[:, 1] * c
+        lo_u, hi_u = np.percentile(u, [5, 95])
+        lo_v, hi_v = np.percentile(v, [5, 95])
+        du, dv = hi_u - lo_u, hi_v - lo_v
+    if du / max(dv, 1e-6) < min_anisotropy:
         return None
     uc, vc = (lo_u + hi_u) / 2.0, (lo_v + hi_v) / 2.0
     return {
-        "yaw": yaw,
+        "yaw": float(yaw),
         "oriented_center": [float(uc * c - vc * s), float(uc * s + vc * c), float((lo_z + hi_z) / 2.0)],
-        "oriented_extents": [float(hi_u - lo_u), float(hi_v - lo_v), float(hi_z - lo_z)],
+        "oriented_extents": [float(du), float(dv), float(hi_z - lo_z)],
     }
 
 
@@ -134,12 +178,64 @@ class DetectionPipelineMixin:
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
         if backend and backend_type != "local":
             t0 = time.time()
-            detections, cloud_timings = backend.detect_and_segment(
-                camera_data["rgb"],
-                labels,
-                score_threshold=CFG.get("perception", {}).get("score_threshold", 0.15),
-                nms_threshold=CFG.get("perception", {}).get("nms_threshold", 0.50),
-            )
+            try:
+                detections, cloud_timings = backend.detect_and_segment(
+                    camera_data["rgb"],
+                    labels,
+                    score_threshold=CFG.get("perception", {}).get("score_threshold", 0.15),
+                    nms_threshold=CFG.get("perception", {}).get("nms_threshold", 0.50),
+                )
+            except (TimeoutError, OSError, http.client.HTTPException, RuntimeError) as exc:
+                # GA-427. Run 20260909_004443 died at 19m56s because ONE detect_and_segment
+                # request waited the full 180 s of its timeout. The service answered normally
+                # 3 minutes later and its own logs show it never received that request, so the
+                # fault was transient and the run lost itself to it.
+                #
+                # This is the SAME treatment the label call above already has, applied to the
+                # second remote service, and it is deliberately NOT a swallow (rule 14): the
+                # cycle is SKIPPED, the failure is logged at error, counted, and published in
+                # the bundle's status, and `perception.detector_strikes_max` CONSECUTIVE
+                # failures end the run exactly as the VLM's do. A run that loses one cycle and
+                # continues beats a run that loses itself; a run that continues SILENTLY is
+                # what rule 14 forbids, and nothing here is silent.
+                #
+                # The four exception types are the ones this call can raise and no others:
+                # the client re-raises the transport failure with its own type preserved, so
+                # a timeout arrives as TimeoutError, a connection fault as an OSError
+                # subclass, a protocol fault as http.client.HTTPException, and the client's
+                # own enrichment path as RuntimeError. A programming error in the pipeline is
+                # none of these and still crashes.
+                self._det_strikes = getattr(self, "_det_strikes", 0) + 1
+                strikes_max = int(CFG.get("perception", {}).get("detector_strikes_max", 3))
+                self._detector_status = {
+                    "status": "unreachable",
+                    "backend": backend_type,
+                    "error": f"{type(exc).__name__}: {str(exc)[:260]}",
+                    "consecutive_failures": self._det_strikes,
+                    "strikes_max": strikes_max,
+                }
+                self.log_both("error", f"[DETECTOR] detect_and_segment FAILED "
+                                       f"({type(exc).__name__}: {str(exc)[:160]}); cycle "
+                                       f"skipped; strike {self._det_strikes}/{strikes_max}")
+                if strikes_max > 0 and self._det_strikes >= strikes_max:
+                    self.log_both("error", f"[DETECTOR] ENDING THE RUN: the perception service "
+                                           f"failed on {self._det_strikes} consecutive cycles. "
+                                           f"It is gone, not blinking, and this node cannot "
+                                           f"make progress without it.")
+                    for h in list(logging.getLogger().handlers):
+                        try:
+                            h.flush()
+                        except Exception:
+                            pass
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    # os._exit for the same reason the VLM path uses it: this runs on an
+                    # executor thread, where SystemExit unwinds that thread alone.
+                    os._exit(1)
+                if strikes_max <= 0:
+                    raise      # the guard is disabled: crash on the first failure, as before
+                return []
+            self._det_strikes = 0
             t_cloud = time.time() - t0
             client_timings = cloud_timings.get("client")
             # GA-14: these defaulted to 40% of the wall clock, a constant 10 ms, and 50%
@@ -289,6 +385,8 @@ class DetectionPipelineMixin:
         self.latest_latencies = latencies
         try:
             import json
+            # KEPT FROM MAIN over the vendor's hardcoded /ws/output: the bundle root follows the
+            # environment, so a run outside the container still writes where the bundle is read.
             metrics_root = os.environ.get("GRAPH_API_OUTPUT_DIR", "/root/exchange/output")
             for target_path in (
                     "/tmp/perception_latencies.json",
@@ -377,7 +475,8 @@ class DetectionPipelineMixin:
                         h.flush()
                     except Exception:
                         pass
-                sys.stdout.flush(); sys.stderr.flush()
+                sys.stdout.flush()
+                sys.stderr.flush()
                 # os._exit, as in om6: this runs on an executor thread, where SystemExit
                 # unwinds that thread only and leaves the process spinning.
                 os._exit(1)
@@ -521,7 +620,11 @@ if __name__ == "__main__":
     pts += np.array([3.0, 4.0, 0.2])
     box = pca_oriented_box(pts)
     assert box is not None and abs(box["yaw"] - yaw_true) < 0.05, box
-    assert np.allclose(box["oriented_extents"], [2.0, 0.5, 0.5], atol=0.15), box
+    # GA-313 (owner ruling 2026-09-08): extents are the 5/95 span. The meshgrid spans 1.95 x 0.45 x 0.40
+    # and np.percentile(..., [5, 95]) of those grids reads 1.755 x 0.45 x 0.40. The two short axes come
+    # back WHOLE because a percentile trims nothing while the extreme level holds at least 5 % of the
+    # points: y has 10 levels (10 % each) and z has 5 (20 % each), while x has 40 (2.5 %) and is cut.
+    assert np.allclose(box["oriented_extents"], [1.755, 0.45, 0.40], atol=0.02), box
     assert np.allclose(box["oriented_center"], [3.0, 4.0, 0.45], atol=0.1), box
     theta = np.linspace(0, 2 * np.pi, 500)
     circle = np.stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)], axis=1)

@@ -73,6 +73,11 @@ install(PROGRAMS
   src/perception_module/map_database.py
   src/perception_module/models.py
   src/perception_module/query_map.py
+  # Imported by habitat_metrics_collector.py / openai_habitat_assistant.py / run_habitat_script.py
+  # but never declared, so an installed copy dies with ModuleNotFoundError at startup. Found by
+  # test_perception_smoke.py's GA-128 check, which derives its list FROM THE TREE.
+  src/perception_module/habitat_run_metrics.py
+  src/perception_module/script_runner.py
   src/perception_module/graph_api_bridge.py
   src/perception_module/wall_detector.py
   # GA-128. These four are imported by perception_2 / each other and MUST be installed, or
