@@ -675,6 +675,30 @@ controls.screenSpacePanning = true;
 // further down owns the button outright instead of fighting one.
 controls.mouseButtons.MIDDLE = null;
 
+// YAW IS NORMALISED BY THE PANEL'S WIDTH, not its height, and this is set when a drag
+// BEGINS so it is always the size the drag is actually happening in.
+//
+// OrbitControls r128 rotates by `2*PI * deltaX / element.clientHeight` -- it divides a
+// HORIZONTAL gesture by a VERTICAL measurement. In a tall window that is merely odd; in the
+// dashboard's 3D tab, which is short and wide, it makes the view uncontrollable. MEASURED in
+// the tab at 606x418: a 100 px drag turned the camera 86.1 degrees and a full turn took
+// 418 px, so there was no such thing as a small adjustment.
+//
+// It bites HERE and not on the standalone page because the panel is shorter, and it bites at
+// all only because the pitch is pinned (`lockPitch`, owner decision 2026-09-04): with the
+// vertical drag doing nothing by design, yaw is the WHOLE control, and it was the one axis
+// scaled by the wrong dimension.
+//
+// rotateSpeed multiplies that angle, so h/w cancels the height and substitutes the width:
+// one full turn per panel width, whatever the shape. ON 'start' RATHER THAN ON RESIZE: the
+// first version set it in resize(), which runs on the maximise event before the panel has
+// its new size, so it kept the small-panel value at full size (0.69 measured where 0.545 was
+// due). A drag cannot begin before the panel exists, so this reading is never early.
+controls.addEventListener('start', () => {
+  const el = renderer.domElement;
+  controls.rotateSpeed = el.clientHeight / Math.max(1, el.clientWidth);
+});
+
 // YAW AND ZOOM ONLY, by owner decision 2026-09-04. Left-drag turns the model about the
 // vertical; it does not tip it.
 //
@@ -1212,6 +1236,22 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / Math.max(1, h);
   camera.updateProjectionMatrix();
+  // YAW IS NORMALISED BY THE PANEL'S WIDTH, not its height. OrbitControls r128 rotates by
+  // `2*PI * deltaX / element.clientHeight` -- it divides a HORIZONTAL gesture by a VERTICAL
+  // measurement. In a tall window that is merely odd; in the dashboard's 3D tab, which is
+  // short and wide, it makes the view uncontrollable. MEASURED in the tab at 606x418: a
+  // 100 px drag turned the camera 86.1 degrees and a full turn took 418 px, so there was no
+  // such thing as a small adjustment.
+  //
+  // It bites HERE and not on the standalone page because the panel is shorter, and it bites
+  // at all only because the pitch is pinned (owner decision 2026-09-04, `lockPitch`): with
+  // the vertical drag doing nothing by design, yaw is the whole control, and it was the one
+  // axis scaled by the wrong dimension.
+  //
+  // (the yaw normalisation that belongs with this is set at DRAG START, not here -- see
+  //  the 'start' handler by the OrbitControls construction. Setting it on resize read the
+  //  panel before the maximise transition had settled: MEASURED 0.69 still in force at
+  //  1255x684, where it should have been 0.545.)
   // The cytoscape canvas does not follow its container on its own: without this the
   // viewport keeps its old size and the graph drifts out of the pane (measured: 77 of 77
   // nodes inside at load, 39 of 77 after one window resize, 77 again after a reload).
