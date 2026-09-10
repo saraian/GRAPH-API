@@ -427,6 +427,7 @@ class DetectionPipelineMixin:
                 rgb_image,
                 current_room=current_room,
                 room_evidence=room_evidence,
+                excluded=CFG["perception"]["excluded_labels"],
             )
             self._vlm_status = {
                 "status": "ok",

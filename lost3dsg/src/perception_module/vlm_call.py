@@ -83,6 +83,25 @@ class CropVlmCache:
         }
 
 
+def excluded_label_set(excluded):
+    """Normalise the configured exclusions into a lookup set."""
+    return {str(x).strip().lower() for x in (excluded or ()) if str(x).strip()}
+
+
+def is_excluded_label(label, excluded):
+    """True for an excluded label in singular or plural form ('door', 'doors')."""
+    return label in excluded or (label.endswith("s") and label[:-1] in excluded)
+
+
+def excluded_labels_rule(excluded):
+    """The prompt line that names the exclusions, or nothing when there are none."""
+    if not excluded:
+        return ""
+    names = ", ".join(f"'{n}'" for n in sorted(excluded))
+    return ("- NEVER list any of these categories, in singular or in plural form: "
+            f"{names}. They are structural and already come from the room geometry.")
+
+
 class VlmClient:
     def __init__(self, vlm_call_fn, image_encoder_fn, crop_call_fn=None):
         self._vlm_call = vlm_call_fn
@@ -93,12 +112,17 @@ class VlmClient:
         self.last_room_belief = None
         self.cache = CropVlmCache()
 
-    def call_labels(self, prompt_path, rgb, current_room="unknown", room_evidence=""):
+    def call_labels(self, prompt_path, rgb, current_room="unknown", room_evidence="",
+                    excluded=None):
+        excluded = excluded_label_set(excluded)
         prompt = open(prompt_path).read()
         prompt = prompt.replace("{CURRENT_ROOM}", current_room or "unknown")
         prompt = prompt.replace("{ROOM_EVIDENCE}", room_evidence or "none")
+        prompt = prompt.replace("{EXCLUDED_LABELS_RULE}", excluded_labels_rule(excluded))
         raw = self._vlm_call(prompt, self._encode(rgb))
-        return self.parse_labels_response(raw)
+        # The prompt asks and the filter enforces: a VLM still answers 'wall' now and then.
+        return [lab for lab in self.parse_labels_response(raw)
+                if not is_excluded_label(lab, excluded)]
 
     def _clean_labels(self, raw_labels):
         """Lemmatise and de-duplicate, logging what was collapsed. GA-285.
@@ -279,3 +303,38 @@ class VlmClient:
             # serving the same non-answer on every later view of the same crop.
             self.cache.put(cache_key, parsed, provenance)
         return parsed
+
+
+if __name__ == "__main__":
+    # Self-check for the label exclusion: the prompt must carry the rule and the
+    # parsed answer must lose the excluded categories even when the VLM ignores it.
+    import os
+
+    from config import CFG
+
+    prompt_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "prompts", "object_identification_prompt.txt")
+    sent = {}
+
+    def _fake_vlm(text, _image):
+        sent["prompt"] = text
+        return ('{"room_belief": {"type": "kitchen"}, "objects": '
+                '["sofa", "Wall", "doors", "doorway", "door frame", "doorbell"]}')
+
+    client = VlmClient(_fake_vlm, lambda rgb: rgb)
+
+    labels = client.call_labels(prompt_file, None, excluded=CFG["perception"]["excluded_labels"])
+    assert labels == ["sofa", "doorbell"], labels
+    assert "NEVER list any of these categories" in sent["prompt"]
+    assert "{" not in sent["prompt"].split("OUTPUT FORMAT")[0], "a placeholder was not substituted"
+
+    off = client.call_labels(prompt_file, None, excluded=[])
+    # With the exclusion OFF the labels still pass through the normaliser, which lowercases,
+    # singularises and de-duplicates: "Wall"->"wall", "doors"->"door", and "doorway" folds into
+    # it. The point of this arm is that NOTHING is dropped for being excluded, not that the raw
+    # strings survive. (Expectation corrected when the feature landed on main, whose normaliser
+    # is newer than the branch this was written on.)
+    assert off == ["sofa", "wall", "door", "door frame", "doorbell"], off
+    assert "NEVER list" not in sent["prompt"]
+
+    print("vlm_call label exclusion self-check OK")

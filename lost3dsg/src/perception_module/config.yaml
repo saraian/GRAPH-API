@@ -170,3 +170,6 @@ perception:
   # seconds; a remote perception call. 25.0 was hardcoded and sat below all
   # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
   cloud_timeout_s: 60.0
+  # Categories the VLM must never propose, because room_manager already derives them
+  # from geometry. Listed here to be edited; set to [] to let the VLM report them.
+  excluded_labels: ["wall", "floor", "ceiling", "door", "doorway", "door frame", "doorframe"]
