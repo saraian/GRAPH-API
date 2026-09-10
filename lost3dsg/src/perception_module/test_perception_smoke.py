@@ -794,6 +794,22 @@ def orientation_fusion():
     n.bbox, n._yaw_acc = fuse_orientation(n, dict(unoriented))
     assert "yaw" not in n.bbox and n._yaw_acc["n"] == 0
 
+    # A persisted/previously accepted oriented box followed by a clipped view used
+    # to crash because initialization incremented the accumulator without storing
+    # its representative view.
+    prior = Obj()
+    prior.bbox = view(15.0)
+    prior.bbox, prior._yaw_acc = fuse_orientation(prior, dict(unoriented))
+    assert prior.bbox["has_orientation"] is True
+    assert "oriented_center" in prior.bbox and prior._yaw_acc["view"] is not None
+
+    # Also tolerate a legacy accumulator that has n/c/s but no representative.
+    legacy = Obj()
+    legacy.bbox = view(20.0)
+    legacy._yaw_acc = {"n": 1, "c": 1.0, "s": 0.0, "view": None}
+    legacy.bbox, legacy._yaw_acc = fuse_orientation(legacy, dict(unoriented))
+    assert legacy.bbox["has_orientation"] is True
+
 
 def ontology_veto_seam():
     """GA-309: the hook's optional `disjoint` reaches the ontology channel and the record

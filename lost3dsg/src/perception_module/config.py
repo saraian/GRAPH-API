@@ -143,9 +143,17 @@ _DEFAULTS = {
     "walls": {
         # A wall does not move, so re-fitting one per depth frame buys nothing and costs a
         # core. At 30 fps the detector demanded ~5 cores and starved rtabmap; this is the
-        # knob that made it affordable, not the RANSAC speed-up.
+        # knob that made it affordable, not a fitter micro-optimisation.
         "min_interval_s": 0.5,
-        "ransac_iters": 60,
+        # Validation in the fitted vertical-plane coordinates: a wall must have
+        # two-dimensional surface support, rather than a long bird's-eye line.
+        "support_cell_m": 0.20,
+        "min_along_coverage": 0.60,
+        "min_height_coverage": 0.70,
+        "min_surface_coverage": 0.30,
+        "plane_cluster_angle_deg": 4.0,
+        "plane_cluster_distance_m": 0.08,
+        "plane_cluster_min_overlap": 0.35,
         "max_segments": 12,
     },
     "cloud": {
