@@ -516,6 +516,17 @@ _CSS = """
   body.embedded > header, body.embedded > .bar,
   body.embedded > #meshStat, body.embedded > #liveStat { display:none; }
   body.embedded #split { height:100vh; }
+  /* THE EMBEDDED PANEL NEVER SCROLLS AT THE DOCUMENT LEVEL. It is exactly the size of the
+     iframe the dashboard gives it, and anything that genuinely scrolls -- the objects table --
+     carries its own scroller.
+     Without this the panel had a scrollbar that APPEARED AND DISAPPEARED, which is a feedback
+     loop rather than a stray element: `resize()` sizes the canvas to `wrap.clientWidth`, so a
+     scrollbar taking its gutter narrows the wrap, which reflows, which clears the scrollbar,
+     which widens it again. MEASURED while maximized: documentElement.scrollWidth 1245 against
+     clientWidth 1240 -- five pixels, the width of a gutter, and gone on the next reading.
+     overflow:hidden on the container removes the only thing the loop can toggle. Scoped to
+     `.embedded` so the standalone page, which is a normal scrolling document, is untouched. */
+  body.embedded { overflow:hidden; }
   /* The knowledge graph and the objects table appear ONLY when the panel is maximized: in a
      quadrant they leave the scene too little room to be worth anything. */
   body.embedded #side { display:none; }
