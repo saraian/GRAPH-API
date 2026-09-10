@@ -91,6 +91,10 @@ install(PROGRAMS
   src/perception_module/association.py
   # GA-209's grid describer, imported by perception_2 and missing from this list — caught by
   # check_install_list.py in the smoke suite, which is what that check exists for.
+  # Imported by build_hm3d_eval_manifest.py and metrics_eval_visualize.py and missing from this
+  # list, so an installed copy died at startup. Found by check_install_list.py, which is what
+  # that check exists for.
+  src/perception_module/metrics_eval.py
   # Size check against the measured envelope corpus, keyed on the detector label with no
   # ontology step. Its data file is installed by the install(DIRECTORY ... data) rule below;
   # the module without that directory raises FileNotFoundError on its first lookup.

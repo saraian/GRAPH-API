@@ -109,7 +109,10 @@ def test_the_vlm_failure_path_still_records_what_failed():
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "detection_pipeline.py")) as f:
         source = f.read()
-    body = source.split("def _extract_detection_labels", 1)[1].split("\n    def ", 1)[0]
+    # RENAMED to _extract_scene_objects when detection moved to one structured scene call.
+    # Splitting on a name the file no longer contains raised IndexError, so the check that
+    # the failure path still records what failed could not run at all.
+    body = source.split("def _extract_scene_objects", 1)[1].split("\n    def ", 1)[0]
     assert "unreachable" in body
     assert "raise" in body
 

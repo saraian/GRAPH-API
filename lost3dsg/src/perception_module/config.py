@@ -224,6 +224,8 @@ _DEFAULTS = {
         # empty -> <this package>/utils/l2_{encoder,decoder}.onnx
         "vitsam_encoder": "",
         "vitsam_decoder": "",
+        # empty -> <this package>/prompts/scene_analysis_prompt.txt
+        "scene_analysis_prompt": "",
         # empty -> <this package>/prompts/<name>.txt
         "identification_prompt": "",
         "visual_prompt": "",

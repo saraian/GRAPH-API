@@ -80,6 +80,7 @@ paths:
   vitsam_encoder: ""   # empty -> <package>/utils/l2_encoder.onnx
   vitsam_decoder: ""   # empty -> <package>/utils/l2_decoder.onnx
   identification_prompt: ""  # empty -> <package>/prompts/object_identification_prompt.txt
+  scene_analysis_prompt: ""  # empty -> <package>/prompts/scene_analysis_prompt.txt
   visual_prompt: ""          # empty -> <package>/prompts/visual_prompt.txt
 
 tf:

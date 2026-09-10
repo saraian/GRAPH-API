@@ -46,7 +46,10 @@ class StubBackend:
     def __init__(self, detections, timings):
         self._d, self._t = detections, timings
 
-    def detect_and_segment(self, rgb, labels, **kw):
+    def segment_scene(self, rgb, scene_objects, **kw):
+        # RENAMED with the move to one structured scene call. A stub keeping the old name is
+        # not a stub of anything: run_detection would raise AttributeError before reaching the
+        # timing block these five checks exist to exercise.
         return self._d, self._t
 
 
@@ -66,8 +69,11 @@ class Host(dp.DetectionPipelineMixin):
     def _abort_if_moving(self, _where):
         return False
 
-    def _extract_detection_labels(self, _rgb):
-        return ["doorway"]           # run 19's fourth cycle returned exactly this
+    def _extract_scene_objects(self, _rgb):
+        # RENAMED likewise. While this stub carried the old name the REAL method ran, read
+        # CFG["paths"] from a config this test replaces wholesale, and every check failed with
+        # KeyError before it could reach what it was checking.
+        return [{"label": "doorway"}]   # run 19's fourth cycle returned exactly this
 
 
 def run(detections, timings):

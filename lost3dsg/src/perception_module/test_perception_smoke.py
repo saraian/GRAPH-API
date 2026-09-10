@@ -180,7 +180,11 @@ def detector_failure_skips_the_cycle():
         def __init__(self, exc):
             self.exc = exc
 
-        def detect_and_segment(self, *a, **k):
+        def segment_scene(self, *a, **k):
+            # RENAMED with _extract_scene_objects, and for the same reason: one structured
+            # scene response now feeds every backend. A stub carrying the old name is not a
+            # stub of anything -- the call raised AttributeError before reaching the failure
+            # branch, so the strike counter this check exists for was never touched.
             raise self.exc
 
     class Node:
@@ -189,8 +193,13 @@ def detector_failure_skips_the_cycle():
         the first-failure path -- the one that matters -- could not be exercised."""
         log_both = staticmethod(lambda *a, **k: None)
 
-        def _extract_detection_labels(self, rgb):
-            return ["chair"]
+        def _extract_scene_objects(self, rgb):
+            # RENAMED from _extract_detection_labels when detection moved to one structured
+            # scene response. The stub kept the old name, so the real method fell through to
+            # __getattr__, returned None, and run_detection took its "no objects" early return:
+            # the backend was never called and NO STRIKE WAS COUNTED. The check reported a
+            # missing attribute while the counter it tests was never reached.
+            return [{"label": "chair"}]
 
         def _abort_if_moving(self, *a, **k):
             return False
