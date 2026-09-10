@@ -299,6 +299,10 @@ else
 fi
 # -------------------------------------------------------------------------------------------
 
+# GA-97 / GA-433. LOCALIZATION MODE, RETIRED. Localizing against a published map used to happen
+# here: a params-sha sidecar check refused a map built under different grid parameters, and the run
+# read a scratch copy so it could not write into the canonical map. habitat_launch.py owns rtabmap
+# now and hardcodes its database, so neither is reachable. Both branches below only report that.
 # GA-97. LOCALIZATION MODE — LANDED OFF BY DEFAULT. Unset RTABMAP_LOCALIZE_DB and everything
 # below is byte-for-byte today's behaviour.
 #
@@ -310,8 +314,6 @@ fi
 # parameters is not a map of the same world — cell size, ray tracing and the height bands all
 # change what is occupied. Localizing against a stale one produces poses that look fine and are
 # wrong, in a bundle that looks complete. So a mismatch REFUSES TO START rather than warning.
-_RT_DB_ARGS="--delete_db_on_start"
-_RT_DB_PATH="/ws/output/rtabmap.db"
 if [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   # SAY SO WHEN THE BRANCH IS NOT TAKEN. An unset variable took this path silently, and the
   # testing lane found the passthrough missing only because it went looking BEFORE launching
@@ -320,56 +322,23 @@ if [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   echo ">>> localization OFF — mapping from scratch (RTABMAP_LOCALIZE_DB is unset)"
 fi
 if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
-  [ -f "$RTABMAP_LOCALIZE_DB" ] || { echo "!! RTABMAP_LOCALIZE_DB=$RTABMAP_LOCALIZE_DB does not exist"; exit 1; }
-  _want=$(printf '%s' "$RTABMAP_GRID_ARGS" | sha256sum | cut -c1-16)
-  _sidecar="${RTABMAP_LOCALIZE_DB}.params-sha"
-  [ -f "$_sidecar" ] || { echo "!! $_sidecar is missing. A map with no recorded parameters cannot be shown to match this run's; refusing to localize against it."; exit 1; }
-  _have=$(cat "$_sidecar")
-  [ "$_have" = "$_want" ] || {
-    echo "!! MAP PARAMETER MISMATCH — refusing to start."
-    echo "   map was built under params-sha $_have"
-    echo "   this run's RTABMAP_GRID_ARGS hash is $_want"
-    echo "   A map built under different grid parameters is not a map of the same world. Rebuild"
-    echo "   the map or clear RTABMAP_LOCALIZE_DB; do NOT localize against it."
-    exit 1; }
-  # GA-158. THE MAP IS MOUNTED READ-ONLY, NOT COPIED.
+  # GA-433 (2026-09-10). LOCALIZING AGAINST A PUBLISHED MAP IS NOT REACHABLE ANY MORE, so this
+  # refuses instead of accepting the variable and ignoring it.
   #
-  # The copy existed so the run could not write into the canonical map. It cost about FOUR MINUTES
-  # for the 1.2 GB database and left a second 1.2 GB copy in every bundle as rtabmap_localize.db —
-  # 3.6 GB across three runs. Measured by the testing lane on run C, with the sharp consequence:
-  # with FEED_MAPPING_SECONDS=0 a localization run spent ~240 s copying to save ~150 s of mapping,
-  # so localizing was WORSE on the clock than mapping while being right on the substance.
+  # habitat_launch.py owns rtabmap now, and it hardcodes database_path /root/.ros/rtabmap.db with
+  # --delete_db_on_start. Nothing here can hand it another database. The apparatus that used to do
+  # that — the params-sha sidecar check, the read-only canonical mount (GA-158), the writable
+  # scratch copy (GA-336), the per-floor publish refusal (GA-380) — has no caller under this
+  # configuration and is preserved only in git history at a4c5957^ and in PLAN_1.3 §54-66.
   #
-  # A read-only bind mount gives the same guarantee and gives it harder. The copy HOPES the run
-  # will not write to the original; the filesystem MAKES it so. That is the same argument as
-  # single_floor being a publish precondition rather than a sidecar field — a guarantee that
-  # depends on nobody doing the wrong thing versus one that cannot be violated.
-  #
-  # IF RTABMAP REFUSES A READ-ONLY DATABASE the run fails here with sqlite's own error, which is
-  # the honest outcome: it is a fact about rtabmap worth discovering explicitly rather than one
-  # papered over by a copy nobody had costed. Mem/IncrementalMemory false is set below.
-  _RT_DB_PATH="$RTABMAP_LOCALIZE_DB"
-  # GA-336 (2026-09-07). The sentence "localization will not write to it" was FALSE: rtabmap
-  # writes the 2D occupancy grid into its database at close (save2DMapQuery), and against the :ro
-  # canonical map that ended run 20260907_004128 with "attempt to write a readonly database",
-  # exit -6. live_run.sh now hands this script a WRITABLE SCRATCH COPY under /out, on purpose.
-  # So a writable path is expected there, and the warning fires only for a writable path under
-  # the canonical mount, which is the case the :ro mount exists to prevent.
-  if [ -w "$_RT_DB_PATH" ] && [[ "$_RT_DB_PATH" == "$EXT_MOUNT_POINT"/* ]]; then
-    echo "!! WARNING: $_RT_DB_PATH is the CANONICAL map and it is WRITABLE inside the container."
-    echo "   rtabmap writes its 2D grid into this file at close. Mount maps read-only"
-    echo "   (-v <host>:\$EXT_MOUNT_POINT/maps:ro) and localize against the scratch copy (live_run.sh, GA-336)."
-  fi
-  # GA-290, REFUTED, AND THE FLAG IS GONE WITH IT. --RGBD/MaxOdomCacheSize 0 was the owner-approved
-  # hypothesis for the Rtabmap.cpp:4090 (_optimizedPoses) SIGABRT that killed runs 20260903_110622
-  # and _144312 in localization mode. Run 20260903_230232 carried the flag and died the same way at
-  # iteration 1485. Left in place it would read as a fix to whoever comes back to localization.
-  # The record is PLAN_1.3 §26; the next hypothesis there is --RGBD/OptimizeMaxError 0, untested.
-  # SUPERSEDED, 4 Sep ~15:55: the owner banned SLAM outright ("we will not use slam", GA-290
-  # register) and live_run.sh now REFUSES RTABMAP_SLAM=1, so every detection run DOES come here.
-  _RT_DB_ARGS="--Mem/IncrementalMemory false"
-  echo ">>> LOCALIZATION MODE against a copy of $RTABMAP_LOCALIZE_DB (params-sha $_have)"
-  echo "    mapping is OFF; the driver must also set FEED_MAPPING_SECONDS=0"
+  # A variable that is set, printed and then dropped is the failure this whole file argues against
+  # (rule 68: a setting is not an outcome). Until the owner rules on the localization regime, the
+  # honest behaviour is to stop.
+  echo "!! RTABMAP_LOCALIZE_DB=$RTABMAP_LOCALIZE_DB is set, and this stack CANNOT honour it."
+  echo "   habitat_launch.py hardcodes database_path /root/.ros/rtabmap.db --delete_db_on_start,"
+  echo "   so every launch MAPS FRESH and never localizes against a published map."
+  echo "   Clear RTABMAP_LOCALIZE_DB, or restore a launch path that accepts a database."
+  exit 1
 fi
 
 # same rtabmap arguments as launch/habitat_launch.py (odometry from /odom, no TF publish)
