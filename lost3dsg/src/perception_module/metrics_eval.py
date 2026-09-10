@@ -14,6 +14,105 @@ TOP_K = (5, 10, 25, 100, 250, 500)
 HM3D_OBJECT_TYPES = Path(__file__).with_name("HM3D_CountsOfObjectTypes.csv")
 HM3D_TEXT_FEATURES = Path(__file__).with_name("text_feats_HM3DSEM_LABELS.npy")
 
+# HM3D contains architectural surfaces in the same object vocabulary as
+# movable objects.  They are useful for geometry/room extraction, but should
+# not affect object detection/classification metrics.
+STRUCTURAL_OBJECT_LABELS = {
+    "wall", "floor", "ceiling", "panel", "wall panel", "fireplace wall",
+    "shower wall", "shower floor", "shower ceiling",
+}
+
+
+def is_structural_object(row):
+    """Return whether *row* describes a structural architectural surface."""
+    for key in ("category_name", "label", "predicted_label"):
+        value = row.get(key)
+        if value is None:
+            continue
+        # Predicted labels commonly have an instance suffix (e.g. wall#2).
+        label = str(value).strip().casefold().split("#", 1)[0].strip()
+        if (label in STRUCTURAL_OBJECT_LABELS or label.startswith("flooring")
+                or label.endswith((" wall", " floor", " ceiling"))):
+            return True
+    return False
+
+
+def _active_floor_index(scene):
+    """Resolve the current floor index, if the manifest records one."""
+    candidates = (
+        scene.get("active_floor_index"),
+        scene.get("selected_floor_index"),
+        (scene.get("adapter_notes") or {}).get("active_floor_index"),
+        (scene.get("ground_truth_source") or {}).get("selected_floor_index"),
+    )
+    for value in candidates:
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _floor_index_maps(scene):
+    regions = scene.get("predicted_regions", [])
+    gt_regions = scene.get("ground_truth_regions", [])
+    pred_map = {str(r.get("room_id")): r.get("floor_index") for r in regions
+                if r.get("room_id") is not None and r.get("floor_index") is not None}
+    gt_map = {str(r.get("region_id")): r.get("floor_index") for r in gt_regions
+              if r.get("region_id") is not None and r.get("floor_index") is not None}
+    return pred_map, gt_map
+
+
+def _on_active_floor(row, scene, predicted, region_map):
+    active = _active_floor_index(scene)
+    if active is None:
+        return True
+    floor = row.get("floor_index")
+    if floor is None:
+        key = "room_id" if predicted else "region_id"
+        floor = region_map.get(str(row.get(key)))
+    # In manifests produced from a run, predicted rooms without an explicit
+    # floor index are already the active-room set. Keep those rows; GT rows
+    # without membership metadata cannot be safely assigned to a floor.
+    if floor is None:
+        return predicted
+    # A GT manifest generated with --floor-index remaps the retained floor to
+    # local index 0, while preserving the original selected index in metadata.
+    source = scene.get("ground_truth_source") or {}
+    gt_floor_indexes = {r.get("floor_index") for r in scene.get("ground_truth_regions", [])
+                        if r.get("floor_index") is not None}
+    if (not predicted and source.get("selected_floor_index") is not None
+            and gt_floor_indexes == {0}):
+        return floor == 0
+    return floor == active
+
+
+def filtered_scene(scene, include_regions=False):
+    """Copy a scene with structural and (when known) off-floor items removed."""
+    pred_map, gt_map = _floor_index_maps(scene)
+    result = dict(scene)
+    result["predicted_objects"] = [
+        row for row in scene.get("predicted_objects", [])
+        if not is_structural_object(row) and _on_active_floor(row, scene, True, pred_map)
+    ]
+    result["ground_truth_objects"] = [
+        row for row in scene.get("ground_truth_objects", [])
+        if not is_structural_object(row) and _on_active_floor(row, scene, False, gt_map)
+    ]
+    if include_regions and _active_floor_index(scene) is not None:
+        active = _active_floor_index(scene)
+        source = scene.get("ground_truth_source") or {}
+        gt_floor_indexes = {row.get("floor_index") for row in scene.get("ground_truth_regions", [])
+                            if row.get("floor_index") is not None}
+        local_gt_floor = (source.get("selected_floor_index") is not None
+                          and gt_floor_indexes == {0})
+        for key in ("predicted_regions", "ground_truth_regions"):
+            result[key] = [row for row in scene.get(key, [])
+                           if row.get("floor_index") is None
+                           or row.get("floor_index") == (0 if key == "ground_truth_regions" and local_gt_floor else active)]
+    return result
+
 @lru_cache(maxsize=1)
 def hm3d_object_types(path=HM3D_OBJECT_TYPES):
     """Return the HM3D class names in the order used for text embeddings."""
@@ -116,7 +215,11 @@ def match_details(scenes, region_threshold, object_threshold, include_all_pairs=
             ("regions", "predicted_regions", "ground_truth_regions", region_threshold),
             ("objects", "predicted_objects", "ground_truth_objects", object_threshold),
         ):
-            pred, gt = scene.get(pred_key, []), scene.get(gt_key, [])
+            if name == "objects":
+                object_scene = filtered_scene(scene)
+                pred, gt = object_scene.get(pred_key, []), object_scene.get(gt_key, [])
+            else:
+                pred, gt = scene.get(pred_key, []), scene.get(gt_key, [])
             rows = []
             for pi, gi, score in assignment(pred, gt, None):
                 rows.append({
@@ -270,6 +373,7 @@ def objects(scenes, threshold=.5):
     geometric_matches = []
     predicted_total = ground_truth_total = 0
     for s in scenes:
+        s = filtered_scene(s)
         pred, gt = s.get("predicted_objects", []), s.get("ground_truth_objects", [])
         predicted_total += len(pred); ground_truth_total += len(gt)
         matches = assignment(pred, gt, threshold)
@@ -324,6 +428,7 @@ def room_objects(scenes, threshold=.5):
     rows = []
     total_expected = total_predicted = total_matched = 0
     for scene in scenes:
+        scene = filtered_scene(scene)
         pred = scene.get("predicted_objects", [])
         gt = scene.get("ground_truth_objects", [])
         # build_hm3d_eval_manifest emits predicted room -> GT region matches here.
