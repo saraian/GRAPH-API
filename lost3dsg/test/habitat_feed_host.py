@@ -1852,6 +1852,7 @@ def main():
 
     house_done_at = None
     end_reason = None
+    settle_pending_start = settle_pending_end = None
     while True:
         t0 = time.time()
         # RULE 73. THE RUN ENDS ITSELF. See TOUR_END_SETTLE_S: with no cap, nothing else would.
@@ -1860,9 +1861,18 @@ def main():
         if tour is not None and getattr(tour, "house_done", False):
             if house_done_at is None:
                 house_done_at = t0
-                print(f"[feed] settling for {TOUR_END_SETTLE_S:.0f}s before ending the feed",
-                      flush=True)
+                # GA-440. MEASURE THE SETTLE INSTEAD OF DEFENDING THE NUMBER. TOUR_END_SETTLE_S is a
+                # CHOSEN 90 s: it has to cover the object manager's last merge sweeps, and a pair
+                # over the evidence threshold still needs merge_min_consecutive sweeps to commit.
+                # Sampling pending merges at both ends turns "is 90 s enough" into a bundle field:
+                # settle_pending_end above zero says the feed left while merges were still resolving,
+                # and the run says so about itself rather than waiting for somebody to notice.
+                settle_pending_start, _sw = _pending_merges()
+                print(f"[feed] settling for {TOUR_END_SETTLE_S:.0f}s before ending the feed "
+                      f"({settle_pending_start if settle_pending_start is not None else '?'} "
+                      f"merges pending)", flush=True)
             elif (t0 - house_done_at) >= TOUR_END_SETTLE_S:
+                settle_pending_end, _sw = _pending_merges()
                 end_reason = "house_tour_complete"
                 break
         mapping = MAPPING_SECONDS > 0 and (t0 - t_start_sim) < MAPPING_SECONDS
@@ -2254,13 +2264,27 @@ def main():
     # (STATS_DIR is RUN_DIR, bind-mounted onto the container's /ws/output).
     # NOT a bare touch: a marker with no reason in it cannot distinguish a finished tour from a
     # crash that happened to leave a file behind.
+    # GA-440. The two readings that say whether the settle was long enough. UNKNOWN IS NOT ZERO
+    # (rule 5): _pending_merges returns None when the signal file is absent, and a null here means
+    # the feed could not read the count -- not that nothing was pending.
+    _settled = (settle_pending_end == 0) if settle_pending_end is not None else None
     feed_stats["ended_reason"] = end_reason
     feed_stats["house_tour_complete"] = bool(tour is not None and getattr(tour, "house_done", False))
+    feed_stats["settle_pending_start"] = settle_pending_start
+    feed_stats["settle_pending_end"] = settle_pending_end
+    feed_stats["settle_was_enough"] = _settled
     with open(STATS_DIR / "feed_stats.json", "w") as f:
         json.dump(feed_stats, f)
     marker = {"reason": end_reason, "t": time.time(),
               "floors_toured": list(getattr(tour, "floor_order", [])) if tour else [],
               "settle_s": TOUR_END_SETTLE_S,
+              "settle_pending_start": settle_pending_start,
+              "settle_pending_end": settle_pending_end,
+              "settle_was_enough": _settled,
+              "settle_note": "TOUR_END_SETTLE_S is CHOSEN, not measured. settle_pending_end above "
+                             "zero means the feed ended while merges were still resolving, so the "
+                             "settle was too short for this run; null means the pending count could "
+                             "not be read, which is not the same as zero.",
               "total_steps": total_steps, "frames_sent_ok": frames_sent_ok}
     with open(STATS_DIR / "feed_ended.json", "w") as f:
         json.dump(marker, f)
