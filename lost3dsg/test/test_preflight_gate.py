@@ -1217,13 +1217,16 @@ def test_a3_passes_vacuously_with_no_policy_layer():
         ok, _ = a3_policy_reached_container({})
         check(ok is True, "a filter that ships here is not a policy layer either")
 
-        fake.CFG = {"hooks": {"filter": "found.filter:OntologicalFilter"}}
+        # INVENTED NAME, on purpose: the boundary checker cannot tell test data from a real
+        # reference and must not try, which is the same rule that stops a docstring naming a
+        # deployment. a3 asks whether the filter ships HERE, never what it is called.
+        fake.CFG = {"hooks": {"filter": "ext.filter:PolicyFilter"}}
         ok, d = a3_policy_reached_container({})
         check(ok is not True, "an extension with no expectation is a LAUNCHER gap, not a pass")
         check("gap in the launcher" in d["reason"], d)
 
         fake.CFG = {"hooks": {"filter": ""}}
-        ok, d = a3_policy_reached_container({"FOUND_X": "1"})
+        ok, d = a3_policy_reached_container({"EXT_X": "1"})
         check(ok is False and d["mismatches"], "a real expectation is still compared")
     finally:
         if saved is None:
