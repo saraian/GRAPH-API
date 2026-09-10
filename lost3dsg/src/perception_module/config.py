@@ -89,6 +89,35 @@ _DEFAULTS = {
         # Category (c), stated policy: 1.0 m is where 95% of the day's tracking comparisons
         # already sat beyond, and 2.3x the nearest recorded loser (0.355 m).
         "tracking_fallback_radius_m": 1.0,
+
+        # --- merge thresholds: THE NAMES THE CODE ACTUALLY READS -------------------------
+        # GA-341. `cost_ratio`, `min_consecutive` and `mode` are declared above and read by
+        # NOTHING; object_services reads the four names below, so until now every one of them
+        # silently took its module fallback and the documented values were dead. Declared with
+        # the values the code falls back to TODAY, so declaring them changes no behaviour --
+        # `merge_min_consecutive` is 2, which is what every recipe stamps and every bundle ran
+        # with, NOT the 3 the dead `min_consecutive` claims. Retiring the three dead names is
+        # GA-341's own change and is deliberately not done here.
+        "merge_engine": "legacy",          # legacy | evidence -- which merge path decides
+        "merge_cost_ratio": 20.0,          # false-merge cost / missed-merge cost; threshold = log(ratio)
+        "merge_min_consecutive": 2,        # consecutive sweeps a pair must hold before it commits
+        "merge_max_distance_m": 0.8,       # centre distance beyond which a pair is never merged
+        # Must stay STRICTLY above `sim_threshold` or a merge fuses pairs the association loop
+        # just refused; object_services asserts that at load and the service now refuses a
+        # request that carries a lower floor.
+        "merge_min_similarity": 0.925,
+        "merge_knn_k": None,               # None = the covariance-derived reach decides
+        # --- what may absorb, move or delete an object ------------------------------------
+        "update_in_place_distance_m": 0.5,   # a new box this close updates in place, not a move
+        "transition_move_distance_m": 0.35,  # movement that promotes exploration to tracking
+        "uncertain_move_distance_m": 0.8,    # an uncertain object moving further is a new object
+        "max_misses_before_delete": 5,       # unseen sweeps before a tracked object is dropped
+        "delete_undetected": True,           # remove an object that goes unseen in its own view
+        "max_observations_per_object": 64,   # sightings kept per object; the oldest are dropped
+        # A box larger than these is refused as implausible. Both entered as bare literals and
+        # have no measured basis; with a reference box they scale to the admitted size (GA-365).
+        "suspicious_max_extent_m": 3.0,
+        "suspicious_max_volume_m3": 1.5,
         # GA-83 / GA-94: input-starvation watchdog. Seconds of /bbox_3d silence per check,
         # and consecutive silent checks before the node ends the run.
         "input_silence_timeout_s": 60.0,
@@ -292,6 +321,11 @@ _DEFAULTS = {
         "buffer_cache_s": 90.0,
     },
     "rooms": {
+        # How many tagged frames one room keeps, and how far the agent must travel
+        # between them. More frames give the room typer more evidence and cost one
+        # JPEG each. Overrides: ROOM_FRAME_MAX, ROOM_FRAME_STRIDE_M.
+        "room_frame_max": 5,
+        "room_frame_stride_m": 1.5,
         # GA-137. How the GVD skeleton is built.
         #   label_diff -> today's behaviour: mark pixels whose neighbours have different
         #                 nearest-obstacle COMPONENT ids. Provably empty on any floorplan
@@ -339,10 +373,52 @@ _DEFAULTS = {
         "tour_waypoints": 0,
         "tour_scan_frames": 12,
 
+        # --- the camera the simulator renders ----------------------------------------------
+        "hfov": 90.0,              # horizontal field of view, degrees; changes the intrinsics
+        "camera_pitch_deg": 0.0,   # negative looks down; a downward tilt sees floor clutter
+        #                            and loses the top of tall furniture
+        # --- how the agent tours a house ----------------------------------------------------
+        # `teleport` moves the agent to the next storey when one is done; the alternative keeps
+        # it on the storey it spawned on, which is what `single_floor` above enforces.
+        "floor_confinement": "teleport",
+        "tour_all_floors": False,   # a base run sets this; a single-storey launch does not
+        "tour_end_settle_s": 90.0,  # stand still at the end so the last merges can commit
+        "min_floor_share": 0.10,    # a storey holding less than this share of the navmesh is
+        #                             not a storey; it is a landing or a stairwell
+        "dataset_root": "/root/exchange/lost3dsg/habitat",
+
         "dwell_frames": 60,
         "fps": 3.0,
     },
     # extension seam (see hooks.py): empty = the pass-through blueprints
+    # The choices a person makes when starting a run. config.yaml carries the same keys with
+    # a comment each; these are the fallbacks when no file declares them. Credentials and
+    # machine paths are NOT here -- they live in lost3dsg/test/env.local.sh.
+    "run": {
+        "cap_min": None,            # unset for a base run: a completed tour ends a launch
+        "start_after_stack": True,
+        "bridge_port": 8081,
+        "rviz": True,
+        "show": True,
+        "overlay": True,
+        "mapping_only": False,      # true = NO DETECTOR RAN, which a zero-detection bundle
+        #                             cannot otherwise be told apart from a failed run
+        "map_draw": True,
+        "rtabmap_slam": False,      # SLAM is banned by ruling; a run localises against a map
+        "rtabmap_localize_db": "",
+        "rtabmap_close_timeout": 150,
+        "rtabmap_grid_args": "",
+        "localize_db_copy": True,   # work on a COPY so a run cannot modify the shared map
+        "pose_source": "simulator",  # simulator | rtabmap; also decides who owns map->odom
+        "wall_detector": False,
+        "gt_semantic": True,        # archived for the offline join only; never on the
+        #                             decision path, and a preflight probe enforces that
+        "gt_scene_instance": "",
+        "house_id": "",
+        "house_floors": "",
+        "hf_offline": True,         # no in-run fetches: a missing model fails at the gate
+        "cfg_name": "regolo_config.yaml",
+    },
     "hooks": {
         "search_paths": [],
         "filter": "",
@@ -391,6 +467,7 @@ _DEFAULTS = {
         # not succeed. The default below clears the measured maximum; raise it
         # here rather than in code if the distribution moves.
         "cloud_timeout_s": 60.0,
+        "provider": "fal",   # managed backend when perception.backend is "managed"
         # Structural surfaces and openings the VLM must never propose. The walls and
         # the doorways already come from room_manager's geometry, so a VLM label for
         # one of them only adds a duplicate object to the graph. The prompt asks for

@@ -326,6 +326,41 @@ def merge_lock_covers_writes_only():
         osv.wm.persistent_perceptions.clear()
 
 
+def every_config_key_read_is_declared():
+    """A key the code reads and the file never declares silently takes the module fallback,
+    so the config says one thing and the run does another. This swept 22 such keys out of
+    association, habitat and perception in one pass -- including the five merge thresholds,
+    where config.yaml documented `cost_ratio` and `min_consecutive` while object_services read
+    `merge_cost_ratio` and `merge_min_consecutive` and got neither.
+
+    Literal reads only: `CFG["section"]["key"]`, `CFG["section"].get("key")` and the
+    `<name>_cfg.get("key")` locals. A dynamic read is invisible here and always will be."""
+    import re
+
+    import config as cfgmod
+
+    declared = {k: set(v) for k, v in cfgmod._DEFAULTS.items() if isinstance(v, dict)}
+    local_of = {"hab_cfg": "habitat", "assoc_cfg": "association", "p_cfg": "perception",
+                "r_cfg": "rooms", "w_cfg": "walls", "v_cfg": "vlm", "f_cfg": "frames"}
+    direct = re.compile(r'CFG\s*\[\s*["\'](\w+)["\']\s*\]\s*(?:\.get\(\s*|\[\s*)["\'](\w+)["\']')
+    viavar = re.compile(r'(\w+_cfg)\.get\(\s*["\'](\w+)["\']')
+    here = pathlib.Path(__file__).resolve().parent
+    undeclared = []
+    for path in sorted(here.glob("*.py")):
+        if path.name.startswith("test_"):
+            continue
+        text = path.read_text(errors="replace")
+        for sec, key in direct.findall(text):
+            if sec in declared and key not in declared[sec]:
+                undeclared.append(f"{sec}.{key} in {path.name}")
+        for var, key in viavar.findall(text):
+            sec = local_of.get(var)
+            if sec and sec in declared and key not in declared[sec]:
+                undeclared.append(f"{sec}.{key} in {path.name}")
+    assert not undeclared, ("config keys read but never declared, so each silently takes its "
+                            "module fallback: " + "; ".join(sorted(set(undeclared))))
+
+
 # --- the merge path ----------------------------------------------------------------
 def merge_path():
     svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
@@ -1299,6 +1334,7 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("merge request below the match gate is refused (GA-341)", merge_request_below_match_gate_refused),
                  ("detector failure skips the cycle, counted (GA-427)", detector_failure_skips_the_cycle),
                  ("merge lock covers the writes, not the sweep (GA-393)", merge_lock_covers_writes_only),
+                 ("every config key the code reads is declared", every_config_key_read_is_declared),
                  ("merge path (dry run)", merge_path)]:
     check(name, fn)
 
