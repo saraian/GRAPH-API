@@ -346,14 +346,18 @@ def _hf_models_present(local_backend):
     # about the wrong machine. PREFLIGHT_HF_CACHE names the cache explicitly when it is known.
     wanted = list(HF_MODELS_EVERY_RUN) + (list(HF_MODELS_LOCAL_BACKEND) if local_backend else [])
     missing, seen = [], {}
+    # THE LOADER READS $HF_HOME/hub, SO ONLY THAT COUNTS. A recursive search found a stale
+    # sentence-transformers directory at the cache ROOT -- blobs and refs, no snapshots dir the
+    # loader would use -- and reported the model present while an offline load of it raised
+    # LocalEntryNotFoundError. Measured 2026-09-10 against /DATA/huggingface_cache. A probe that
+    # searches more widely than the loader does will pass a model the run cannot open.
+    hub = os.path.join(hf, "hub") if os.path.isdir(os.path.join(hf, "hub")) else hf
     for model_id, _why in wanted:
         stem = "models--" + model_id.replace("/", "--")
         hit = None
-        for cand in glob.glob(os.path.join(hf, "**", stem), recursive=True):
-            snaps = glob.glob(os.path.join(cand, "snapshots", "*", "*"))
-            if snaps:
-                hit = cand
-                break
+        cand = os.path.join(hub, stem)
+        if glob.glob(os.path.join(cand, "snapshots", "*", "*")):
+            hit = cand
         if hit:
             seen[model_id] = hit
         else:

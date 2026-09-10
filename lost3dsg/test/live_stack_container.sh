@@ -117,18 +117,24 @@ export HF_HOME="${HF_HOME:-/models/hf}"
 # but they set it in Gin's own environment, and docker passes only what the -e list names, so that
 # enforcement never left that machine.
 #
-# DEFAULT OFF, DELIBERATELY, AND HERE IS THE MEASUREMENT THAT DECIDES IT. facebook/dinov2-small and
-# facebook/dinov2-base are cached NOWHERE on this host -- not in /DATA/huggingface_cache, not in
-# /DATA/FOUND/.hf_cache, not in ~/.cache/huggingface -- and visual_reid.py loads one of them on
-# EVERY run whatever the backend. Offline by default today would refuse every run on this machine,
-# which is a worse failure than the one it prevents, and it would refuse at LOAD rather than at the
-# gate. a4 now asserts these models by name, so the refusal already comes early and says which file
-# to fetch. Turn this on once the cache is warm: FEED_HF_OFFLINE=1.
-if [ "${FEED_HF_OFFLINE:-0}" = "1" ]; then
+# DEFAULT ON. Owner ruling 2026-09-10, in their words: "Everything should be prepared and cached.
+# No in-run fetches." Offline is what makes that a fact rather than an intention -- a missing model
+# then fails at load with a named cause instead of being paid silently inside the first perception
+# cycle, which is the cycle a cold-start number is read from.
+#
+# THE CACHE WAS WARMED FIRST AND THE LOADS WERE MEASURED, not assumed. facebook/dinov2-small and
+# facebook/dinov2-base were cached NOWHERE on this host until 2026-09-10 -- not in
+# /DATA/huggingface_cache, not in /DATA/FOUND/.hf_cache, not in ~/.cache/huggingface -- and
+# visual_reid.py loads one of them on EVERY run whatever the backend. All four models were then
+# loaded inside this image with HF_HUB_OFFLINE=1: dinov2-small, dinov2-base,
+# all-MiniLM-L6-v2 and owlv2-base-patch16-ensemble. a4 asserts the same four, so a cold cache is
+# refused at the gate rather than discovered at load. FEED_HF_OFFLINE=0 is the escape.
+if [ "${FEED_HF_OFFLINE:-1}" = "1" ]; then
   export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
   echo ">>> HF OFFLINE: a model missing from $HF_HOME will fail at load, not download"
 else
-  echo ">>> HF online (FEED_HF_OFFLINE=0): a model missing from $HF_HOME downloads inside the run"
+  echo "!! HF ONLINE (FEED_HF_OFFLINE=0): a model missing from $HF_HOME will DOWNLOAD inside the"
+  echo "   run, in the first perception cycle. Owner policy 2026-09-10 is no in-run fetches."
 fi
 
 # CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).
