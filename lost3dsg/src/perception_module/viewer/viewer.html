@@ -2360,7 +2360,7 @@
       }
 
       // 3b. DETECTED WALLS, kept visually distinct from the ground-truth walls the 3D view
-      // draws in grey: these are what the wall detector FOUND, and conflating a measurement
+      // draws in grey: these are what the wall detector measured, and conflating a measurement
       // with its reference is the mistake this whole dashboard is written against.
       // Amber, and thicker than the grid.
       //
@@ -4861,7 +4861,13 @@
         return;
       }
 
-      let html = '<table><thead><tr><th>Label</th><th>Verdict</th><th>Room</th><th>Concept</th><th>Score</th></tr></thead><tbody>';
+      // SIZE (m) is the object's own bounding box, w x d x h. Added at the owner's request
+      // 2026-09-10 so this table says the same thing as the 3D page's, which already had it:
+      // two tables of the same objects that disagree about which facts are worth showing make
+      // the reader check both. Computed from `bbox` rather than from any stored `size` field,
+      // because bbox is what every consumer already agrees on -- an absent or partial bbox
+      // renders an em dash, never a zero, which would read as a measured flat object.
+      let html = '<table><thead><tr><th>Label</th><th>Verdict</th><th>Room</th><th>Size (m)</th><th>Concept</th><th>Score</th></tr></thead><tbody>';
       let shown = 0;
       graded.forEach(r => {
         const onto = r.node ? getAlignment(r.node) : null;
@@ -4882,10 +4888,18 @@
         // A row with no graph node is a proposal the gate stopped: it can be listed but
         // it cannot be selected, so it does not pretend to be clickable.
         const clickable = !!r.id;
+        const bb = (r.node && r.node.data) ? r.node.data('bbox') : (r.bbox || null);
+        const sizeTxt = (() => {
+          if (!bb) return '—';
+          const d = [bb.x_max - bb.x_min, bb.y_max - bb.y_min, bb.z_max - bb.z_min];
+          if (d.some(v => typeof v !== 'number' || !isFinite(v))) return '—';
+          return d.map(v => Math.abs(v).toFixed(2)).join(' &times; ');
+        })();
         html += `<tr data-label="${escHtml(r.label)}" ${clickable ? `data-node-id="${escHtml(r.id)}" onclick="selectGraphNodeById('${escHtml(r.id)}')"` : `onclick="highlightObjectRow(null, '${escHtml(r.label).replace(/'/g, '&#39;')}')"`}>
           <td><b${r.logOnly ? ' style="color:var(--muted);" title="not in the graph — the gate stopped this proposal"' : ''}>${escHtml(r.label)}</b></td>
           <td><span title="${why}" style="font-size:0.6rem; font-weight:800; padding:1px 5px; border-radius:4px; white-space:nowrap; color:${v.color}; border:1px solid ${v.color}; background:rgba(15,23,42,0.6);">${v.text}</span></td>
           <td>${r.room ? roomCellHtml(r.room) : '<span style="color:var(--muted);">—</span>'}</td>
+          <td style="font-size:0.66rem; color:var(--muted); white-space:nowrap;">${sizeTxt}</td>
           <td style="color:#a78bfa; font-size:0.68rem;">${conceptName}</td>
           <td>${conf === null || conf === undefined ? '—' : (conf * 100).toFixed(0) + '%'}</td>
         </tr>`;

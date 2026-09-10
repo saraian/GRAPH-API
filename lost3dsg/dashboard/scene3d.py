@@ -343,6 +343,70 @@ def _floor_deck(maps, z):
             "x1": v["bounds_max"][0], "y1": v["bounds_max"][2], "z": v["bounds_min"][1]}
 
 
+def _viewer_kg_style():
+    """The dashboard's OWN cytoscape stylesheet, read from viewer.html.
+
+    The owner's report: the knowledge graph on this page should look like the one on the main
+    dashboard. It did not -- viewer.html styles nodes at 26 px with a labelled background, an
+    arrowed bezier edge and a colour per relation, while this page had a 12 px node, a hairline
+    haystack edge and no relation colours at all. Two stylesheets, one of them a poor relation.
+
+    READ, NOT COPIED. A copy is what produced the divergence in the first place: ~130 lines of
+    selectors that have to be edited in two files to stay one design, and nothing to say when
+    they stop matching. viewer.html stays the single source and this function lifts the literal
+    out of it, so a change there reaches this page with no second edit.
+
+    NOT A SHARED ROUTE, deliberately. `/vendor` is mounted by the dashboard, but viewer.html is
+    ALSO served by the bridge on :8081 in live mode, where a new dashboard route would not
+    exist -- the graph would then break in live mode to fix its looks in replay.
+
+    Returns None when the literal cannot be found, and the caller SAYS so on the page rather
+    than quietly falling back: a graph that silently reverts to the old look is the same
+    divergence again, just harder to notice.
+    """
+    v = _viewer_html_path()
+    if v is None:
+        return None
+    try:
+        h = v.read_text()
+    except OSError:
+        return None
+    i = h.find("cytoscape({")
+    if i == -1:
+        return None
+    j = h.find("style: [", i)
+    if j == -1:
+        return None
+    # LINE BY LINE, WITH `//` COMMENTS STRIPPED, not a character scanner. The first version
+    # balanced brackets over the raw text and ran 43 KB past the end of the array, stopping
+    # inside the regex literal `/[&<>"']/` further down the file -- a bracket in a regex is not
+    # a bracket in the data. The style array is pure data with line comments, so stripping the
+    # comment and counting brackets per line terminates exactly where the array does.
+    lines = h[j:].splitlines(keepends=True)
+    out, depth = [], 0
+    for ln in lines:
+        code = ln.split("//", 1)[0] if "//" in ln and not re.search(r"https?://", ln) else ln
+        out.append(ln)
+        depth += code.count("[") - code.count("]")
+        if depth == 0 and len(out) > 1:
+            body = "".join(out)
+            k = body.index("[")
+            return body[k:body.rindex("]") + 1]
+    return None
+
+
+def _viewer_html_path():
+    """Where viewer.html is, in either tree layout. Same search as the dashboard's own."""
+    here = Path(__file__).resolve()
+    for base in list(here.parents)[:6]:
+        for rel in ("lost3dsg/src/perception_module/viewer/viewer.html",
+                    "src/perception_module/viewer/viewer.html"):
+            cand = base / rel
+            if cand.is_file():
+                return cand
+    return None
+
+
 def scene_payload(bundle, gt_scene=None):
     """-> everything the page draws, in one world frame.
 
@@ -355,7 +419,7 @@ def scene_payload(bundle, gt_scene=None):
            "gt_aabb": None,
            # SEPARATE KEYS, for the reason the docstring above already gives about measured
            # vs truth: `walls` is GROUND TRUTH from the scene file, `detected_walls` is what
-           # the wall detector FOUND, and `schedule` is what the run was TOLD to walk. Three
+           # the wall detector measured, and `schedule` is what the run was told to walk. Three
            # different claims; merging any two would let the page render one as another.
            "detected_walls": [], "schedule": None}
 
@@ -1798,22 +1862,20 @@ function initKG() {
         'no graph in this bundle</div>';
       return;
     }
+    // THE DASHBOARD'S OWN STYLESHEET, lifted from viewer.html at page build (see
+    // `_viewer_kg_style`). This page used to carry a second, thinner one -- 12 px nodes,
+    // hairline haystack edges, no colour per relation -- so the same graph looked like a
+    // different product depending on which panel you opened it in (owner report). The two
+    // selectors below are appended, not merged into that file: `.dim` and `.sel` are this
+    // page's own selection mechanics and mean nothing on the dashboard.
     CYK = cytoscape({
       container: host, elements: els,
-      style: [
-        {selector: 'node', style: {'background-color': '#0284c7', 'label': 'data(label)',
-          'font-size': '7px', 'color': '#cbd5e1', 'width': 12, 'height': 12,
-          'text-valign': 'center', 'text-halign': 'right', 'text-margin-x': 2,
-          'min-zoomed-font-size': 6}},
-        {selector: 'node[type="room"]', style: {'background-color': '#0369a1',
-          'shape': 'round-rectangle', 'width': 26, 'height': 16, 'font-size': '8px'}},
-        {selector: 'edge', style: {'width': 0.6, 'line-color': 'rgba(148,163,184,.35)',
-          'curve-style': 'haystack'}},
+      style: __KGSTYLE__.concat([
         {selector: '.dim', style: {'opacity': 0.12}},
         {selector: '.sel', style: {'background-color': '#38bdf8', 'width': 20, 'height': 20,
           'border-width': 2, 'border-color': '#e2e8f0', 'font-size': '10px',
           'color': '#ffffff', 'z-index': 99}},
-      ],
+      ]),
       layout: {name: 'cose', animate: false, numIter: 250, nodeRepulsion: 9000,
                idealEdgeLength: 40, padding: 12},
     });
@@ -1821,6 +1883,12 @@ function initKG() {
       const id = String(ev.target.id()).replace(/^n_/, '');
       select(id, 'graph');
     });
+    if (__KGWARN__) {
+      const w = document.createElement('div');
+      w.style.cssText = 'padding:4px 8px;color:#eab308;font-size:10px';
+      w.textContent = __KGWARN__;
+      host.parentElement.insertBefore(w, host);
+    }
   }).catch(e => {
     host.innerHTML = '<div style="padding:10px;color:#f87171;font-size:11px">' +
       'knowledge graph unavailable: ' + e.message + '</div>';
@@ -2244,7 +2312,17 @@ def page(bundle):
     except ImportError:
         import dash_ext as _dx
     _brand = _dx.brand()
+    # The dashboard's cytoscape stylesheet, so the graph here is the graph there. When it
+    # cannot be read the page SAYS so on screen rather than reverting to a second look that
+    # nobody would notice was the wrong one -- an empty array styles nothing, which is
+    # unmistakable, and `kgStyleWarn` prints the reason beside the graph.
+    _kg = _viewer_kg_style()
+    _kg_warn = "" if _kg else (
+        "the dashboard stylesheet could not be read from viewer.html; "
+        "this graph is UNSTYLED rather than silently different")
     js = (_JS.replace("__PAYLOAD__", json.dumps(p))
+             .replace("__KGSTYLE__", _kg or "[]")
+             .replace("__KGWARN__", json.dumps(_kg_warn))
              .replace("__BUNDLE__", json.dumps(bundle))
              .replace("__MESHURL__", json.dumps("/scene_mesh?bundle=" + bundle)))
     return f"""<title>{_brand} scene &middot; {bundle}</title>
@@ -2463,6 +2541,16 @@ def _check_layers():
     for btn in ("bObj", "bWall", "bDWall", "bSched", "bOpen", "bPath", "bFloor", "bLabel",
                 "bReset", "bMesh"):
         assert f'id="{btn}' in h and f"getElementById('{btn}')" in h, f"{btn} lost its handler"
+    # ONE KNOWLEDGE GRAPH, TWO PANELS. The style is read out of viewer.html, so the page must
+    # carry viewer.html's own selectors -- not a second stylesheet that merely looks similar.
+    # Asserted on selectors this file has never defined itself, so a local copy cannot satisfy
+    # it: a relation colour and the concept node are viewer.html's vocabulary alone.
+    kg = _viewer_kg_style()
+    assert kg, "the dashboard stylesheet could not be read; the graph would render unstyled"
+    for sel in ('node[type="concept"]', 'edge[label="supports"]', ':selected'):
+        assert sel in kg and sel in h, f"the graph lost the dashboard's {sel} styling"
+    assert "'width': 26" in h, "node size no longer matches the dashboard's"
+    print("  graph: styled from viewer.html's own stylesheet, not a second copy")
     print(f"  layers: {len(names)} groups, each with a show flag and the loop derived from G")
 
 
