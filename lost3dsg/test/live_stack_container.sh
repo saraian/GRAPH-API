@@ -92,7 +92,50 @@ PY
 # found/concept_embedder.py, so there is nothing to mount and nothing to add to the path. `found`
 # itself never came from PYTHONPATH -- the hook config carries its path.
 EXT_MOUNT_POINT="${EXT_MOUNT_POINT:-/ext}"
-export HF_HOME="$EXT_MOUNT_POINT/.hf_cache"
+# GA-437 (2026-09-10). HF_HOME POINTED AT A PATH NOTHING MOUNTS, on every machine, in every run.
+#
+# It read "$EXT_MOUNT_POINT/.hf_cache", i.e. /ext/.hf_cache. Checked against the launcher's actual
+# mount list: the run container gets $WORKSPACE_ROOT/maps at $EXT_MOUNT_POINT/maps and NOTHING at
+# $EXT_MOUNT_POINT itself, and the extension mounts its own tree at /found:ro (tools/ext/env.sh),
+# not at /ext. So /ext/.hf_cache never existed inside a run; huggingface created it in the
+# container's writable layer, downloaded the weights into it, and --rm threw them away.
+#
+# CONSEQUENCE, and it is a measurement error rather than a slow start: the download lands in the
+# FIRST perception cycle, which is the cycle anyone quotes as cold-start latency, on a machine whose
+# cache is warm. a4 recorded owlv2_weights_cached false and was right. Warming a cache is not the
+# fix; the path is.
+#
+# /models/hf IS WHERE THE CACHE IS: the launcher mounts $HF_SHARED_CACHE (default
+# /DATA/huggingface_cache) there, and that directory has the hub/ layout HF_HOME expects --
+# hub/models--google--owlv2-base-patch16-ensemble is present today. It is also the fallback that
+# nlp_utils.py:22 and preflight_gate.py already use when HF_HOME is unset, so this line was
+# overriding a correct default with a path that does not exist.
+export HF_HOME="${HF_HOME:-/models/hf}"
+# GA-438 (2026-09-10). OFFLINE MAKES A MISSING MODEL FAIL AT LOAD instead of being paid silently in
+# the first perception cycle, which is the owner's policy ("models should be already downloaded and
+# cached beforehand"). The experiment lane proved all five models load with the hub switched off --
+# but they set it in Gin's own environment, and docker passes only what the -e list names, so that
+# enforcement never left that machine.
+#
+# DEFAULT ON. Owner ruling 2026-09-10, in their words: "Everything should be prepared and cached.
+# No in-run fetches." Offline is what makes that a fact rather than an intention -- a missing model
+# then fails at load with a named cause instead of being paid silently inside the first perception
+# cycle, which is the cycle a cold-start number is read from.
+#
+# THE CACHE WAS WARMED FIRST AND THE LOADS WERE MEASURED, not assumed. facebook/dinov2-small and
+# facebook/dinov2-base were cached NOWHERE on this host until 2026-09-10 -- not in
+# /DATA/huggingface_cache, not in any extension's own cache, not in ~/.cache/huggingface -- and
+# visual_reid.py loads one of them on EVERY run whatever the backend. All four models were then
+# loaded inside this image with HF_HUB_OFFLINE=1: dinov2-small, dinov2-base,
+# all-MiniLM-L6-v2 and owlv2-base-patch16-ensemble. a4 asserts the same four, so a cold cache is
+# refused at the gate rather than discovered at load. FEED_HF_OFFLINE=0 is the escape.
+if [ "${FEED_HF_OFFLINE:-1}" = "1" ]; then
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+  echo ">>> HF OFFLINE: a model missing from $HF_HOME will fail at load, not download"
+else
+  echo "!! HF ONLINE (FEED_HF_OFFLINE=0): a model missing from $HF_HOME will DOWNLOAD inside the"
+  echo "   run, in the first perception cycle. Owner policy 2026-09-10 is no in-run fetches."
+fi
 
 # CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).
 # No default. This line used to read ${CFG_NAME:-smoke_config.yaml}, and because
@@ -238,7 +281,7 @@ container_exit_cleanup() {
   # failing one. Same expectations and the same found-exercised rule as the startup gate.
   python3 /graph_api/lost3dsg/test/preflight_gate.py --only a7 --teardown --out /ws/output/a7_teardown.json \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
-      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo 1)" \
+      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo auto)" \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg > /tmp/a7_teardown.log 2>&1 \
     && echo ">>> a7 at teardown: PASS — $(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));a=[p for p in d['probes'] if p['id']=='a7'][0]['detail'];m=a.get('live_mismatches') or {};print('live roots unchanged since the launch stamp' if not m else 'live root(s) MOVED during the run, recorded non-blocking: '+', '.join(f'{k} {v[\"launcher\"]}->{v[\"container\"]}' for k,v in m.items()))" /ws/output/a7_teardown.json 2>/dev/null || echo 'a7_teardown.json unreadable')" \
     || echo "!! a7 at teardown FAILED — a source root moved during the run; see a7_teardown.json (latest will not move)"
@@ -290,7 +333,7 @@ else
       --expect-config-sha "${PREFLIGHT_EXPECT_CFG_SHA:-}" \
       --expect-merged-sha "${PREFLIGHT_EXPECT_MERGED_SHA:-}" \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
-      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo 1)" \
+      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo auto)" \
       --expect-policy "${PREFLIGHT_EXPECT_POLICY:-}" \
       --expect-cycle-s "${PREFLIGHT_EXPECT_CYCLE_S:-}" \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg \
@@ -299,19 +342,10 @@ else
 fi
 # -------------------------------------------------------------------------------------------
 
-# GA-97. LOCALIZATION MODE — LANDED OFF BY DEFAULT. Unset RTABMAP_LOCALIZE_DB and everything
-# below is byte-for-byte today's behaviour.
-#
-# Set it to a map path and the stack localizes against a COPY of that map instead of mapping from
-# scratch. The copy is not politeness: localizing against the original would let this run write
-# into the canonical map, and the next run would inherit changes nobody recorded.
-#
-# THE SIDECAR CHECK IS THE POINT, and it is rule 14's shape. A map built under different grid
-# parameters is not a map of the same world — cell size, ray tracing and the height bands all
-# change what is occupied. Localizing against a stale one produces poses that look fine and are
-# wrong, in a bundle that looks complete. So a mismatch REFUSES TO START rather than warning.
-_RT_DB_ARGS="--delete_db_on_start"
-_RT_DB_PATH="/ws/output/rtabmap.db"
+# GA-97 / GA-433. LOCALIZATION MODE, RETIRED. Localizing against a published map used to happen
+# here: a params-sha sidecar check refused a map built under different grid parameters, and the run
+# read a scratch copy so it could not write into the canonical map. habitat_launch.py owns rtabmap
+# now and hardcodes its database, so neither is reachable. Both branches below only report that.
 if [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   # SAY SO WHEN THE BRANCH IS NOT TAKEN. An unset variable took this path silently, and the
   # testing lane found the passthrough missing only because it went looking BEFORE launching
@@ -320,56 +354,23 @@ if [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   echo ">>> localization OFF — mapping from scratch (RTABMAP_LOCALIZE_DB is unset)"
 fi
 if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
-  [ -f "$RTABMAP_LOCALIZE_DB" ] || { echo "!! RTABMAP_LOCALIZE_DB=$RTABMAP_LOCALIZE_DB does not exist"; exit 1; }
-  _want=$(printf '%s' "$RTABMAP_GRID_ARGS" | sha256sum | cut -c1-16)
-  _sidecar="${RTABMAP_LOCALIZE_DB}.params-sha"
-  [ -f "$_sidecar" ] || { echo "!! $_sidecar is missing. A map with no recorded parameters cannot be shown to match this run's; refusing to localize against it."; exit 1; }
-  _have=$(cat "$_sidecar")
-  [ "$_have" = "$_want" ] || {
-    echo "!! MAP PARAMETER MISMATCH — refusing to start."
-    echo "   map was built under params-sha $_have"
-    echo "   this run's RTABMAP_GRID_ARGS hash is $_want"
-    echo "   A map built under different grid parameters is not a map of the same world. Rebuild"
-    echo "   the map or clear RTABMAP_LOCALIZE_DB; do NOT localize against it."
-    exit 1; }
-  # GA-158. THE MAP IS MOUNTED READ-ONLY, NOT COPIED.
+  # GA-433 (2026-09-10). LOCALIZING AGAINST A PUBLISHED MAP IS NOT REACHABLE ANY MORE, so this
+  # refuses instead of accepting the variable and ignoring it.
   #
-  # The copy existed so the run could not write into the canonical map. It cost about FOUR MINUTES
-  # for the 1.2 GB database and left a second 1.2 GB copy in every bundle as rtabmap_localize.db —
-  # 3.6 GB across three runs. Measured by the testing lane on run C, with the sharp consequence:
-  # with FEED_MAPPING_SECONDS=0 a localization run spent ~240 s copying to save ~150 s of mapping,
-  # so localizing was WORSE on the clock than mapping while being right on the substance.
+  # habitat_launch.py owns rtabmap now, and it hardcodes database_path /root/.ros/rtabmap.db with
+  # --delete_db_on_start. Nothing here can hand it another database. The apparatus that used to do
+  # that — the params-sha sidecar check, the read-only canonical mount (GA-158), the writable
+  # scratch copy (GA-336), the per-floor publish refusal (GA-380) — has no caller under this
+  # configuration and is preserved only in git history at a4c5957^ and in PLAN_1.3 §54-66.
   #
-  # A read-only bind mount gives the same guarantee and gives it harder. The copy HOPES the run
-  # will not write to the original; the filesystem MAKES it so. That is the same argument as
-  # single_floor being a publish precondition rather than a sidecar field — a guarantee that
-  # depends on nobody doing the wrong thing versus one that cannot be violated.
-  #
-  # IF RTABMAP REFUSES A READ-ONLY DATABASE the run fails here with sqlite's own error, which is
-  # the honest outcome: it is a fact about rtabmap worth discovering explicitly rather than one
-  # papered over by a copy nobody had costed. Mem/IncrementalMemory false is set below.
-  _RT_DB_PATH="$RTABMAP_LOCALIZE_DB"
-  # GA-336 (2026-09-07). The sentence "localization will not write to it" was FALSE: rtabmap
-  # writes the 2D occupancy grid into its database at close (save2DMapQuery), and against the :ro
-  # canonical map that ended run 20260907_004128 with "attempt to write a readonly database",
-  # exit -6. live_run.sh now hands this script a WRITABLE SCRATCH COPY under /out, on purpose.
-  # So a writable path is expected there, and the warning fires only for a writable path under
-  # the canonical mount, which is the case the :ro mount exists to prevent.
-  if [ -w "$_RT_DB_PATH" ] && [[ "$_RT_DB_PATH" == "$EXT_MOUNT_POINT"/* ]]; then
-    echo "!! WARNING: $_RT_DB_PATH is the CANONICAL map and it is WRITABLE inside the container."
-    echo "   rtabmap writes its 2D grid into this file at close. Mount maps read-only"
-    echo "   (-v <host>:\$EXT_MOUNT_POINT/maps:ro) and localize against the scratch copy (live_run.sh, GA-336)."
-  fi
-  # GA-290, REFUTED, AND THE FLAG IS GONE WITH IT. --RGBD/MaxOdomCacheSize 0 was the owner-approved
-  # hypothesis for the Rtabmap.cpp:4090 (_optimizedPoses) SIGABRT that killed runs 20260903_110622
-  # and _144312 in localization mode. Run 20260903_230232 carried the flag and died the same way at
-  # iteration 1485. Left in place it would read as a fix to whoever comes back to localization.
-  # The record is PLAN_1.3 §26; the next hypothesis there is --RGBD/OptimizeMaxError 0, untested.
-  # SUPERSEDED, 4 Sep ~15:55: the owner banned SLAM outright ("we will not use slam", GA-290
-  # register) and live_run.sh now REFUSES RTABMAP_SLAM=1, so every detection run DOES come here.
-  _RT_DB_ARGS="--Mem/IncrementalMemory false"
-  echo ">>> LOCALIZATION MODE against a copy of $RTABMAP_LOCALIZE_DB (params-sha $_have)"
-  echo "    mapping is OFF; the driver must also set FEED_MAPPING_SECONDS=0"
+  # A variable that is set, printed and then dropped is the failure this whole file argues against
+  # (rule 68: a setting is not an outcome). Until the owner rules on the localization regime, the
+  # honest behaviour is to stop.
+  echo "!! RTABMAP_LOCALIZE_DB=$RTABMAP_LOCALIZE_DB is set, and this stack CANNOT honour it."
+  echo "   habitat_launch.py hardcodes database_path /root/.ros/rtabmap.db --delete_db_on_start,"
+  echo "   so every launch MAPS FRESH and never localizes against a published map."
+  echo "   Clear RTABMAP_LOCALIZE_DB, or restore a launch path that accepts a database."
+  exit 1
 fi
 
 # same rtabmap arguments as launch/habitat_launch.py (odometry from /odom, no TF publish)
@@ -402,18 +403,13 @@ echo ">>> pose source: ${FEED_POSE_SOURCE:-simulator} (rtabmap publish_tf_map:=$
 # and rcl refuses an empty -p value, so the node defaults stand: odom_frame_id "" from the /odom topic). Namespace /rtabmap and node name rtabmap are kept, so /rtabmap/map and
 # /rtabmap/cloud_map (read by object_manager_6) do not move. The library args stay positional and
 # override any node parameter, as before ("Update ... from arguments" in the log).
-echo "rtabmap_args: $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS | node: publish_tf=$_RT_PUBLISH_TF_MAP pub_loc_pose_only_when_localizing=true direct-launch" > /tmp/rtabmap.log
-ros2 run rtabmap_slam rtabmap $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS --ros-args \
-  -r __ns:=/rtabmap -r __node:=rtabmap \
-  -p subscribe_depth:=true -p subscribe_rgb:=true -p approx_sync:=true \
-  -p frame_id:=base_link -p map_frame_id:=map \
-  -p publish_tf:="$_RT_PUBLISH_TF_MAP" -p pub_loc_pose_only_when_localizing:=true \
-  -p database_path:="$_RT_DB_PATH" \
-  -p topic_queue_size:=10 -p sync_queue_size:=10 -p wait_for_transform:=0.2 \
-  -p qos_image:=0 -p qos_odom:=0 -p qos_camera_info:=0 \
-  -r rgb/image:=/camera/rgb -r depth/image:=/camera/depth -r rgb/camera_info:=/camera/camera_info -r odom:=/odom \
-  >> /tmp/rtabmap.log 2>&1 &
-RTABMAP_PID=$!   # now the node itself, not a launcher: the close path's SIGINT reaches it directly
+# OUR DIRECT rtabmap INVOCATION IS RETIRED (owner 2026-09-10). It stood here and started a SECOND
+# rtabmap beside the one habitat_launch.py starts — same namespace, same node name, both
+# subscribing the same topics and both publishing map->odom. That double start was introduced
+# when the launch route was added and never exercised through this script, only through a
+# standalone harness; removing the flag is what made it visible. Her launch file owns rtabmap
+# now, including its parameters, and `localization_mode` there decides publish_tf_map by
+# construction, which is the single-authority property our publish_tf juggling was reaching for.
 # GA-359 (C): RECORD /rtabmap/localization_pose FOR THE WHOLE RUN, so perception's covariance gate
 # gets a MEASURED threshold from the first rtabmap-mode bundle instead of an invented one. CSV, one
 # line per message, no header (ros2 topic echo --csv): header.stamp.sec, header.stamp.nanosec,
@@ -438,56 +434,19 @@ ros2 topic echo --csv --full-length /rtabmap/localization_pose geometry_msgs/msg
 # RTABMAP_PID becomes the `ros2 launch` process rather than the node — harmless, since the close
 # also signals by pattern (`pkill -INT -f rtabmap_slam/rtabmap`, the case this file was originally
 # written for), but not yet exercised through a full close.
-if [ "${LEGACY_NODE_STARTS:-0}" != "1" ]; then
-  _wall_arg=$([ "${WALL_DETECTOR:-0}" = "1" ] && echo true || echo false)
-  _loc_arg=$([ "${FEED_POSE_SOURCE:-simulator}" = "rtabmap" ] && echo rtabmap || echo ground_truth)
-  echo ">>> stack via habitat_launch.py (use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg)"
-  ros2 launch lost3dsg habitat_launch.py \
-      use_wall_detector:="$_wall_arg" localization_mode:="$_loc_arg" \
-      > /tmp/launch.log 2>&1 &
-  LAUNCH_PID=$!
-  # The close path signals rtabmap by PATTERN as well as by pid, so a launcher pid here is safe.
-  RTABMAP_PID=$LAUNCH_PID; OM6_PID=""; PERCEPTION_PID=""; WALLS_PID=""
-else
-ros2 run lost3dsg object_manager_6.py > /tmp/om6.log 2>&1 &
-OM6_PID=$!
-python3 /ws/install/lost3dsg/lib/lost3dsg/graph_api_bridge.py > /tmp/bridge.log 2>&1 &
-# MAPPING_ONLY: the detector is NOT STARTED. Not idled, not stubbed -- absent. A mapping run
-# needs no detections and every Modal call it makes is money spent on an image nobody reads.
-if [ "${MAPPING_ONLY:-0}" = "1" ]; then
-  echo ">>> MAPPING_ONLY=1: perception_2 and the cloud path are OFF. No detector, no Modal calls."
-  PERCEPTION_PID=""
-else
-  echo ">>> MAPPING_ONLY is ${MAPPING_ONLY:-unset} — normal run, detector ON."
-  ros2 run lost3dsg perception_2.py > /tmp/perception.log 2>&1 &
-  PERCEPTION_PID=$!
-fi
-
-# GA-29 / wall_detector's FIRST LAUNCH. Four reasons it never produced a wall, and the first was
-# that nothing ever started it — this line. It is in CMakeLists.txt:66 so `ros2 run` resolves it;
-# it subscribes /camera/depth and /camera/camera_info, the topics rtabmap already takes above, and
-# publishes /detected_wall_segments in the schema object_manager_6.walls_callback actually reads.
-# GA-206. OPT-OUT, default OFF for this run. wall_detector.py measured at 4.4 CORES on
-# 2026-09-01 while rtabmap -- the ONLY source of the map->odom transform perception waits on --
-# was taking 2.1-2.4 s per iteration against its own 1.0 s rate limit. Every frame then aged out
-# with "Synced data not ready, missing: transform", and six launch attempts produced zero
-# detection cycles.
-#
-# The layer it feeds is separately known to produce nothing: ridge segmentation yields ZERO
-# critical points on ~87% of sweeps (GA-195), so no doorway is ever cut and no room is split.
-# Spending 4.4 cores on it while starving the transform chain buys a room layer that does not
-# work at the cost of the detections that do.
-#
-# WALL_DETECTOR=1 restores it. This is a resource decision for a contended machine, NOT a
-# claim that wall detection is wrong.
-if [ "${WALL_DETECTOR:-0}" = "1" ]; then
-  ros2 run lost3dsg wall_detector.py > /tmp/walls.log 2>&1 &
-else
-  echo ">>> wall_detector DISABLED (WALL_DETECTOR=1 to enable) — 4.4 cores returned to rtabmap"
-  : > /tmp/walls.log
-fi
-WALLS_PID=$!
-fi   # end of the legacy one-by-one starts
+# THE ONE START PATH (owner 2026-09-10). Her configuration IS the configuration: our direct
+# rtabmap invocation is retired, not kept as a second route. The LEGACY_NODE_STARTS escape that
+# stood here for one cycle is REMOVED — a retired configuration kept behind a flag is a
+# configuration somebody will set, and then two machines run different stacks and nothing says so.
+_wall_arg=$([ "${WALL_DETECTOR:-0}" = "1" ] && echo true || echo false)
+_loc_arg=$([ "${FEED_POSE_SOURCE:-simulator}" = "rtabmap" ] && echo rtabmap || echo ground_truth)
+echo ">>> stack via habitat_launch.py (use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg)"
+ros2 launch lost3dsg habitat_launch.py \
+    use_wall_detector:="$_wall_arg" localization_mode:="$_loc_arg" \
+    > /tmp/launch.log 2>&1 &
+LAUNCH_PID=$!
+# The close path signals rtabmap by PATTERN as well as by pid, so a launcher pid here is safe.
+RTABMAP_PID=$LAUNCH_PID; OM6_PID=""; PERCEPTION_PID=""; WALLS_PID=""
 
 # periodic snapshots of the annotated detection image for the host
 ros2 run image_view image_saver --ros-args -r image:=/image_with_bb \
@@ -588,6 +547,37 @@ while [ -z "$_dead_node" ]; do
   if [ "$_MAP_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$_MAP_DEADLINE" ]; then
     _dead_node="MAPPING_TIME"; _dead_rc=0; break
   fi
+  # GA-434 / RULE 73. THE FEED ENDS THE RUN, because with no cap nothing else does.
+  #
+  # The owner removed the cap for base runs ("no caps this time"), and the tour used to turn in
+  # place forever once its waypoints ran out. habitat_feed_host.py now writes feed_ended.json when
+  # the house tour is complete and its settle period has passed. That file is the ONLY channel
+  # between the two: the feed host runs on the host, this script runs in the container, and
+  # /ws/output is the directory they share.
+  #
+  # It is a normal end, not a death, and terminating_node.json already says so in its own note --
+  # a status of 0 with a node name is how MAPPING_TIME ends a mapping run.
+  if [ -f /ws/output/feed_ended.json ]; then
+    # THE FILE IS ALSO THE ABORT PATH, so it must not claim the tour finished. `docker stop` kills
+    # the stack where it stands; creating this file ends the launch through the normal archive path,
+    # which is gentler and is what an operator should reach for. But a hand-made marker and a
+    # finished tour would then be the same fact in the bundle, and "the tour completed" is the claim
+    # a baseline turns on. The feed writes reason "house_tour_complete"; anything else -- including
+    # an empty file somebody touched -- is an abort and is recorded as one.
+    _reason=$(python3 -c 'import json,sys
+try:
+    print((json.load(open("/ws/output/feed_ended.json")) or {}).get("reason") or "")
+except Exception:
+    print("")' 2>/dev/null || echo "")
+    if [ "$_reason" = "house_tour_complete" ]; then
+      _dead_node="FEED_ENDED"; _dead_why=" (the feed host completed the house tour)"
+    else
+      _dead_node="FEED_ABORTED"
+      _dead_why=" (feed_ended.json with reason '${_reason:-none}' — ended by hand, not by the tour)"
+    fi
+    _dead_rc=0
+    break
+  fi
   # With the detector off, PERCEPTION and OM6 are not in the list -- waiting on a node that was
   # never started ends the run instantly. A mapping run watches the map and the feed, and ends on
   # TIME rather than on a death.
@@ -675,8 +665,12 @@ print(json.dumps({
             "node exiting 0 unexpectedly ends a run too, so read `node` and not the status alone.",
 }, indent=2))
 PY
-echo "!! $_dead_node exited with status ${_dead_rc}${_dead_why:-} — ending the run."
-echo "   The stack is not left running: a run missing any of these nodes measures nothing further."
+if [ "$_dead_node" = "FEED_ENDED" ] || [ "$_dead_node" = "FEED_ABORTED" ]; then
+  echo ">>> $_dead_node${_dead_why:-} — closing the stack through the normal archive path."
+else
+  echo "!! $_dead_node exited with status ${_dead_rc}${_dead_why:-} — ending the run."
+  echo "   The stack is not left running: a run missing any of these nodes measures nothing further."
+fi
 tail -5 /tmp/perception.log
 
 # An EMPTY variable here is "exit: : numeric argument required", which is what run

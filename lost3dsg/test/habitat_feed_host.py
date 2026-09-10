@@ -939,6 +939,39 @@ TEST_TOUR = int(os.environ.get("FEED_TEST_TOUR", hab_cfg.get("tour_waypoints", 0
 # almost nothing: the objects that matter are the ones it stops and looks at.
 TEST_TOUR_SCAN = int(os.environ.get("FEED_TEST_TOUR_SCAN", hab_cfg.get("tour_scan_frames", 12)))
 
+# GA-434 / RULE 73. THE BASE RUN TOURS THE WHOLE HOUSE: every storey, teleporting to the next one
+# when a storey is finished. Owner, 2026-09-10: "no caps this time, we need to perform a full house
+# tour, all storeys (if we finish a storey, just teleport to the next storey). This is our base run
+# policy from now on."
+#
+# OFF BY DEFAULT, AND THAT IS NOT A RETREAT FROM THE POLICY. The owner ruled on 2026-09-10 that
+# each storey gets its OWN mapping session: ruling 25 stands, so no map may straddle storeys. Under
+# that ruling the house is toured by RELAUNCHING the stack once per storey, each launch spawning on
+# its storey through FEED_SPAWN_FLOOR, so a mid-run teleport is not how a base run moves between
+# floors and a default of ON would be a setting every base run has to remember to switch off.
+#
+# THE MACHINERY BELOW STAYS. It is the build for one continuous session, which is what the owner
+# would need if the perception world model ever had to persist across storeys. run_metadata.json
+# records which shape actually ran, so no bundle set can be read as the other one.
+TOUR_ALL_FLOORS = os.environ.get(
+    "FEED_TOUR_ALL_FLOORS",
+    "1" if hab_cfg.get("tour_all_floors", False) else "0").lower() in ("1", "true", "yes", "on")
+
+# GA-434 / RULE 73. A NO-CAP RUN NEEDS ITS OWN ENDING, and until now it had none.
+#
+# The tour turned in place forever when it ran out of waypoints, and a cap script stopped the run
+# from outside. Rule 73 removes the cap ("no caps this time"), so with nothing else changed a base
+# run would tour the house and then spin until somebody noticed. The feed ends itself instead: it
+# keeps feeding for a settle period after the last storey, then writes feed_ended.json into the
+# bundle, which live_stack_container.sh watches for and shuts the stack down on.
+#
+# 90 s IS A CHOSEN NUMBER, NOT A MEASURED ONE. It has to cover the object manager's last merge
+# sweeps -- a pair over the evidence threshold still needs merge_min_consecutive sweeps to commit,
+# and the dwell logic exists because turning away early is what strands them. Raise it if a run
+# ends with pending merges; the count is in the dwell lines.
+TOUR_END_SETTLE_S = float(os.environ.get("FEED_TOUR_END_SETTLE_S",
+                                         hab_cfg.get("tour_end_settle_s", 90.0)))
+
 # GA-258. DYNAMIC DWELL: stay while merges are still waiting to be confirmed.
 #
 # A merge commits only after `merge_min_consecutive` consecutive sweeps over the evidence
@@ -1177,6 +1210,21 @@ class FloorGuard:
         self.last_on_floor = None
         self.corrections = 0
         self.max_drift = 0.0
+        self.reanchors = 0
+
+    def reanchor(self, floor_y):
+        """Move the guard to a new storey after a DELIBERATE teleport (rule 73).
+
+        LAST_ON_FLOOR IS CLEARED, and that is the whole point of the method. The guard corrects
+        drift by teleporting to the last position it saw on its own storey. Left in place across a
+        storey change, the first drift on the new storey would send the agent back DOWNSTAIRS, and
+        the second storey would never be toured -- a full-house tour that silently tours one floor
+        twice. Clearing it costs one uncorrected drift at most: check() says so and does nothing
+        until a position on the new storey has been seen.
+        """
+        self.floor_y = float(floor_y)
+        self.last_on_floor = None
+        self.reanchors += 1
 
     def check(self, agent, pathfinder=None):
         """Call once per frame, after the motion. Returns True if it corrected."""
@@ -1260,6 +1308,64 @@ class Tour:
         self.goal = None
         self.scan_left = 0
         self.origin = None      # GA-219: set on the first step, the centre of the walk disc
+        self.floor_guard = None
+        self.floors_todo = []       # storeys still to visit, set by bind_floors
+        self.floor_order = []       # storeys toured, in order, for the bundle
+        self.house_done = False     # set when the last storey's waypoints are exhausted
+        self._tour_planned_total = 0
+
+    def bind_floors(self, scene_floors, tol, guard):
+        """Plan the remaining storeys. Called from main once the floors are clustered.
+
+        Ascending z, plainly: the agent teleports between storeys, so travel cost does not order
+        them and a rule anyone can predict is worth more than a shorter path.
+        """
+        self.floor_guard = guard
+        here = float(guard.floor_y if guard is not None else self.floor_y)
+        self.floor_order = [round(here, 2)]
+        if not TOUR_ALL_FLOORS:
+            print("[feed] FULL-HOUSE TOUR OFF: this run tours the start storey only "
+                  f"({here:+.2f}). Rule 73 says that is not a base run.", flush=True)
+            return
+        self.floors_todo = sorted(f for f in (scene_floors or []) if abs(f - here) > float(tol))
+        print(f"[feed] FULL-HOUSE TOUR: start storey {here:+.2f}, then "
+              + (", ".join(f"{f:+.2f}" for f in self.floors_todo) or "no other storey"), flush=True)
+
+    def _advance_floor(self, agent):
+        """Teleport to the next storey and re-plan. -> True if the tour moved.
+
+        A storey with no navigable point within tolerance is SKIPPED WITH A LINE, not treated as
+        the end of the house: _spawn_point refuses rather than landing elsewhere, and one
+        unreachable storey must not end a tour that still has storeys after it.
+        """
+        while self.floors_todo:
+            z = self.floors_todo.pop(0)
+            try:
+                target = _spawn_point(self.sim, z)
+            except SystemExit as exc:
+                print(f"[feed] storey {z:+.2f} SKIPPED: {exc}", flush=True)
+                continue
+            st = agent.get_state()
+            st.position = np.asarray(target, dtype=np.float32)
+            agent.set_state(st)
+            self.floor_y = float(target[1])
+            self.origin = np.array(target)
+            self.goal = None
+            if self.floor_guard is not None:
+                self.floor_guard.reanchor(self.floor_y)
+            self._tour = self._tour_waypoints(TEST_TOUR)
+            self._tour_i = 0
+            self._tour_scan = 0
+            self._dwelling = False
+            self._dwell_frames = 0
+            self._tour_planned_total += len(self._tour)
+            self.floor_order.append(round(self.floor_y, 2))
+            print(f"[feed] STOREY DONE. Teleported to {self.floor_y:+.2f}: "
+                  f"{len(self._tour)} waypoints, {len(self.floors_todo)} storeys left", flush=True)
+            for k, w in enumerate(self._tour):
+                print(f"[feed]   waypoint {k}: ({w[0]:.2f}, {w[1]:.2f}, {w[2]:.2f})", flush=True)
+            return True
+        return False
 
     def _sample(self, n, max_tries=50):
         pts = []
@@ -1314,6 +1420,7 @@ class Tour:
                 self.origin = np.array(agent.get_state().position)
             if not hasattr(self, "_tour") or self._tour is None:
                 self._tour = self._tour_waypoints(TEST_TOUR)
+                self._tour_planned_total += len(self._tour)
                 self._tour_i = 0
                 # GA-431. Reaches are COUNTED, not inferred from the index. The index also advances
                 # when a dwell ends, and a tour still walking toward waypoint 3 has the same index as
@@ -1331,6 +1438,15 @@ class Tour:
             if self._tour_scan > 0:
                 self._tour_scan -= 1
                 agent.act("turn_left")
+                # GA-434. THE INDEX ADVANCES HERE WHEN NO DWELL FOLLOWS, and before today nothing
+                # advanced it on that path: `self._tour_i += 1` lived only in the dwell branch, so
+                # with FEED_TEST_DWELL_DYNAMIC=0 the scan ended, the follower was asked for the same
+                # goal, answered "arrived" again, and the tour scanned waypoint 0 forever while
+                # tour_waypoints_reached counted up once per pass. It never showed because the
+                # dynamic dwell is on by default. Under rule 73 it would be a run that never ends:
+                # a no-cap run is ended BY the tour completing.
+                if self._tour_scan == 0 and not self._dwelling:
+                    self._tour_i += 1
                 return
             if self._dwelling:
                 # GA-258. Past the minimum, keep turning while merges are pending.
@@ -1356,8 +1472,16 @@ class Tour:
                 self._tour_i += 1
                 return
             if self._tour_i >= len(self._tour):
-                # Tour complete. Keep turning rather than stopping: a still camera is
-                # indistinguishable from a crashed feed downstream.
+                # RULE 73: a finished storey is not a finished tour while the house has more.
+                if self._advance_floor(agent):
+                    return
+                # House complete. Keep turning while the run settles: a still camera is
+                # indistinguishable from a crashed feed downstream, and the merge sweeps are
+                # still running. main() ends the feed after TOUR_END_SETTLE_S.
+                if not self.house_done:
+                    self.house_done = True
+                    print("[feed] HOUSE TOUR COMPLETE: storeys "
+                          + ", ".join(f"{z:+.2f}" for z in self.floor_order), flush=True)
                 agent.act("turn_left")
                 return
             goal = self._tour[self._tour_i]
@@ -1597,6 +1721,11 @@ def main():
     print(f"[feed] floor guard: anchor {_anchor:+.2f}, tolerance {floor_tol:.2f} m, "
           f"mode {floor_guard.mode}", flush=True)
 
+    # RULE 73. The itinerary is planned HERE and not in Tour.__init__ because the storeys are not
+    # known until the navmesh samples above have been clustered, and Tour is built before that.
+    if tour is not None:
+        tour.bind_floors(scene_floors, floor_tol, floor_guard)
+
     topdown_maps = {}
     if have_nav:
         for f in scene_floors:
@@ -1721,8 +1850,31 @@ def main():
     total_distance_m = 0.0
     last_pos = np.asarray(ag_state.position, dtype=np.float64)
 
+    house_done_at = None
+    end_reason = None
+    settle_pending_start = settle_pending_end = None
     while True:
         t0 = time.time()
+        # RULE 73. THE RUN ENDS ITSELF. See TOUR_END_SETTLE_S: with no cap, nothing else would.
+        # The break is at the TOP of the loop, after a full frame has been sent and feed_stats.json
+        # rewritten, so the bundle already holds a complete set of statistics when it fires.
+        if tour is not None and getattr(tour, "house_done", False):
+            if house_done_at is None:
+                house_done_at = t0
+                # GA-440. MEASURE THE SETTLE INSTEAD OF DEFENDING THE NUMBER. TOUR_END_SETTLE_S is a
+                # CHOSEN 90 s: it has to cover the object manager's last merge sweeps, and a pair
+                # over the evidence threshold still needs merge_min_consecutive sweeps to commit.
+                # Sampling pending merges at both ends turns "is 90 s enough" into a bundle field:
+                # settle_pending_end above zero says the feed left while merges were still resolving,
+                # and the run says so about itself rather than waiting for somebody to notice.
+                settle_pending_start, _sw = _pending_merges()
+                print(f"[feed] settling for {TOUR_END_SETTLE_S:.0f}s before ending the feed "
+                      f"({settle_pending_start if settle_pending_start is not None else '?'} "
+                      f"merges pending)", flush=True)
+            elif (t0 - house_done_at) >= TOUR_END_SETTLE_S:
+                settle_pending_end, _sw = _pending_merges()
+                end_reason = "house_tour_complete"
+                break
         mapping = MAPPING_SECONDS > 0 and (t0 - t_start_sim) < MAPPING_SECONDS
         if mapping and not mapping_announced:
             print(f"[feed] MAPPING phase for {MAPPING_SECONDS:.0f}s (continuous coverage tour)")
@@ -1841,6 +1993,14 @@ def main():
                 "tour_waypoints_requested": TEST_TOUR,
                 "tour_waypoints_planned": len(getattr(tour, "_tour", None) or []) if tour else 0,
                 "tour_waypoints_reached": getattr(tour, "_tour_reached", 0) if tour else 0,
+                # RULE 73. planned counts EVERY storey's waypoints; the per-storey key above is
+                # the last storey only, and a full-house run must not be read as a short one.
+                "tour_waypoints_planned_all_floors": getattr(tour, "_tour_planned_total", 0) if tour else 0,
+                "tour_all_floors": TOUR_ALL_FLOORS,
+                "tour_floors_planned": (1 + len(getattr(tour, "floors_todo", []))
+                                        + max(0, len(getattr(tour, "floor_order", [])) - 1)) if tour else 0,
+                "tour_floors_toured": len(getattr(tour, "floor_order", [])) if tour else 0,
+                "tour_floor_order": list(getattr(tour, "floor_order", [])) if tour else [],
                 "tour_ended_on_index": getattr(tour, "_tour_i", None) if tour else None,
                 **hold.stats(),
                 "mapping_seconds": MAPPING_SECONDS,
@@ -2098,6 +2258,37 @@ def main():
         dt = time.time() - t0
         if dt < period:
             time.sleep(period - dt)
+
+    # RULE 73. The stack has no other way to learn that the tour is over: the feed host runs on the
+    # HOST and rtabmap runs in the container, and the only thing they share is this directory
+    # (STATS_DIR is RUN_DIR, bind-mounted onto the container's /ws/output).
+    # NOT a bare touch: a marker with no reason in it cannot distinguish a finished tour from a
+    # crash that happened to leave a file behind.
+    # GA-440. The two readings that say whether the settle was long enough. UNKNOWN IS NOT ZERO
+    # (rule 5): _pending_merges returns None when the signal file is absent, and a null here means
+    # the feed could not read the count -- not that nothing was pending.
+    _settled = (settle_pending_end == 0) if settle_pending_end is not None else None
+    feed_stats["ended_reason"] = end_reason
+    feed_stats["house_tour_complete"] = bool(tour is not None and getattr(tour, "house_done", False))
+    feed_stats["settle_pending_start"] = settle_pending_start
+    feed_stats["settle_pending_end"] = settle_pending_end
+    feed_stats["settle_was_enough"] = _settled
+    with open(STATS_DIR / "feed_stats.json", "w") as f:
+        json.dump(feed_stats, f)
+    marker = {"reason": end_reason, "t": time.time(),
+              "floors_toured": list(getattr(tour, "floor_order", [])) if tour else [],
+              "settle_s": TOUR_END_SETTLE_S,
+              "settle_pending_start": settle_pending_start,
+              "settle_pending_end": settle_pending_end,
+              "settle_was_enough": _settled,
+              "settle_note": "TOUR_END_SETTLE_S is CHOSEN, not measured. settle_pending_end above "
+                             "zero means the feed ended while merges were still resolving, so the "
+                             "settle was too short for this run; null means the pending count could "
+                             "not be read, which is not the same as zero.",
+              "total_steps": total_steps, "frames_sent_ok": frames_sent_ok}
+    with open(STATS_DIR / "feed_ended.json", "w") as f:
+        json.dump(marker, f)
+    print(f"[feed] FEED ENDED ({end_reason}); wrote {STATS_DIR / 'feed_ended.json'}", flush=True)
 
 
 if __name__ == "__main__":

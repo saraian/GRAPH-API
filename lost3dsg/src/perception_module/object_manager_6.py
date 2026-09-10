@@ -84,8 +84,12 @@ BBOX_REDUCTION_RATIO = CFG["association"]["bbox_reduction_ratio"]
 # typing: one on entry, then one per this much in-room travel, capped. Env-tunable because
 # the right stride is scene-scale dependent (a corridor and an open-plan room want different
 # spacing). The launcher stamps both into run_metadata so a bundle says what it ran with.
-ROOM_FRAME_MAX = int(os.environ.get("ROOM_FRAME_MAX", "5"))
-ROOM_FRAME_STRIDE_M = float(os.environ.get("ROOM_FRAME_STRIDE_M", "1.5"))
+# GA-352 family: these were settable ONLY by environment variable, so the config file could
+# not say they exist and a reader of the file would conclude they do not. Same precedence as
+# every other knob -- the file is the source of truth, the variable is a per-run override.
+ROOM_FRAME_MAX = int(os.environ.get("ROOM_FRAME_MAX", CFG["rooms"].get("room_frame_max", 5)))
+ROOM_FRAME_STRIDE_M = float(os.environ.get(
+    "ROOM_FRAME_STRIDE_M", CFG["rooms"].get("room_frame_stride_m", 1.5)))
 # GA-12: the exploration->tracking move distance was the literal 0.35 at its one use site,
 # the only destructive threshold in this block with no config key.
 TRANSITION_MOVE_DISTANCE_M = CFG["association"].get("transition_move_distance_m", 0.35)

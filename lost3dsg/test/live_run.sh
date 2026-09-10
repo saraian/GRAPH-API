@@ -37,6 +37,24 @@ fi
 # Owner ruling 2026-09-09. An extension supplies itself through EXT_ENV_FILE and EXT_MOUNTS.
 WORKSPACE_ROOT=${WORKSPACE_ROOT:-$(cd "$REPO/../.." && pwd)}
 [ -d "$WORKSPACE_ROOT" ] || { echo "!! WORKSPACE_ROOT=$WORKSPACE_ROOT does not exist"; exit 1; }
+# GA-434 (2026-09-10). EXISTING IS NOT ENOUGH, and "/" exists.
+#
+# The derivation above is "two levels above the checkout", which was right while this repo was
+# vendored inside the workspace. Consolidated to its own directory, two levels above it is the
+# filesystem root: WORKSPACE_ROOT became "/", the -d test passed, and a run would have written its
+# bundle to /runs, published maps to /maps, and found no published map at /maps -- mapping from
+# scratch and reporting it, with every path in the bundle pointing somewhere nobody looks.
+#
+# So the root must LOOK like a workspace: one of the three directories a run reads or writes. That
+# is a fact about the directory rather than a fact about this file's location, which is what went
+# stale. Set WORKSPACE_ROOT in env.local.sh to point somewhere else.
+if [ ! -d "$WORKSPACE_ROOT/maps" ] && [ ! -d "$WORKSPACE_ROOT/runs" ] && [ ! -d "$WORKSPACE_ROOT/results" ]; then
+  echo "!! WORKSPACE_ROOT=$WORKSPACE_ROOT holds no maps/, runs/ or results/ directory."
+  echo "   That is where bundles, maps and scratch go, so this is not a workspace. It is derived"
+  echo "   as two levels above $REPO, which is wrong whenever the checkout is not inside the"
+  echo "   workspace. Set WORKSPACE_ROOT explicitly (env.local.sh) and re-run."
+  exit 1
+fi
 
 MON_PID=""
 FEED_PID=""
@@ -230,8 +248,18 @@ cleanup() {
     #
     # HOST SIDE, AFTER THE CONTAINER HAS EXITED. Ground truth must never be readable from the
     # runtime path; this runs here for the same reason analyse_run.py does.
-    ( cd "$WORKSPACE_ROOT" && python3 -m tools.class_counts "$RUN_DIR" ) 2>&1 \
-      | sed 's/^/    /' || echo "    class_counts failed (non-fatal)"
+    # GA-437 (2026-09-10). tools/ IS THE EXTENSION'S, NOT THIS STACK'S, so its absence is normal.
+    # A GRAPH-API-only checkout has no tools/ and every run on Gin printed
+    # "ModuleNotFoundError: No module named 'tools'" -- non-fatal, but it is an extension-only tool
+    # that survived the 2026-09-09 removal ("this repository names none of them"), and the boundary
+    # checker cannot see it because the name contains no "found". Skipped with a REASON rather than
+    # a stack trace; its proper home is EXT_POST_RUN, which the extension already supplies.
+    if [ -f "$WORKSPACE_ROOT/tools/class_counts.py" ]; then
+      ( cd "$WORKSPACE_ROOT" && python3 -m tools.class_counts "$RUN_DIR" ) 2>&1 \
+        | sed 's/^/    /' || echo "    class_counts failed (non-fatal)"
+    else
+      echo "    class counts SKIPPED: $WORKSPACE_ROOT/tools/class_counts.py is absent (no extension)"
+    fi
 
     # GA-395. THE CAP IS NOT IN THE BUNDLE, and the envelope's cap condition therefore reads
     # UNCHECKABLE on every bundle in the archive. run_capped.sh records it in the TESTING lane's
@@ -274,6 +302,10 @@ cleanup() {
     python3 - "$RUN_DIR/run_metadata.json" "${CAP_MIN:-}" "$(( $(date +%s) - ${RUN_START_EPOCH:-0} ))" \
              "$_capped" "$_cap_fired_at" "$_cap_note" "${START_AFTER_STACK:-0}" <<'PY' \
       || echo "!! could not stamp the cap block into run_metadata.json — the bundle cannot state whether it was cut short"
+# >>> TEST-EXTRACT stamp_block  (test_terminating_node.py runs the block between these
+# markers against synthetic bundles. GA-430's absent-branch is the one no run exercises:
+# a container killed before its watch loop leaves no terminating_node.json, and 'absent'
+# must not read as 'unknown'.)
 import json, os, sys
 p, cap, elapsed, capped, fired, note, anchor = sys.argv[1:8]
 d = json.load(open(p))
@@ -284,6 +316,24 @@ except (OSError, ValueError) as exc:
     d["terminating_node"] = {"node": None, "note": f"no terminating_node.json in the bundle ({exc.__class__.__name__}): "
                                                    "the container did not reach its own end — killed from outside, or "
                                                    "it died before the watch loop. Absent is not 'unknown'."}
+# GA-430, second half. A CLOSED VOCABULARY FOR HOW THE LAUNCH ENDED, so a reader tests a value
+# instead of matching a node name it has to know. The testing lane's early-death condition reads a
+# LOG LINE today; a line is prose that a future edit breaks silently, and with no cap the ending is
+# the fact their whole eligibility test turns on.
+#   tour_complete  the feed wrote feed_ended.json with reason house_tour_complete (rule 73's normal end)
+#   operator_abort feed_ended.json existed WITHOUT that reason -- somebody ended the launch by hand
+#                  through the archive path. A finished tour and a hand-stopped one must never be
+#                  the same fact: "the tour completed" is the claim a baseline turns on.
+#   mapping_time   a mapping run reached its own deadline, which is also a normal end
+#   node_death     a watched node exited, whatever its status -- 0 included, which is why the NODE
+#                  and not the status is what discriminates
+#   unrecorded     no terminating_node.json: killed from outside, or dead before the watch loop.
+#                  NOT "unknown": it says the container never reached its own end.
+_tn = d["terminating_node"].get("node")
+d["terminating_node"]["ended"] = ({"FEED_ENDED": "tour_complete",
+                                   "FEED_ABORTED": "operator_abort",
+                                   "MAPPING_TIME": "mapping_time"}.get(_tn, "node_death")
+                                  if _tn else "unrecorded")
 d["cap"] = {                                            # GA-395, keys ADDED (rule 6)
     "cap_minutes": int(cap) if cap.strip().isdigit() else None,
     "cap_anchor": "stack_up" if anchor == "1" else "launch",
@@ -295,6 +345,7 @@ d["cap"] = {                                            # GA-395, keys ADDED (ru
     "cap_note": note,
 }
 json.dump(d, open(p, "w"), indent=2)
+# <<< TEST-EXTRACT stamp_block
 PY
     # GA-293 + GA-401 (written by the ontology lane for this file, revision 3; applied here after
     # two interactions with this trap that neither of us could see from one side alone). A killed
@@ -331,14 +382,34 @@ PY
       # owned by the invoking user. The one warning it prints is pip's cache being unwritable.
       # THE TWO EXT_ VARIABLES MUST BE PASSED WITH -e. They are HOST variables; inside the
       # single-quoted block below they expand in the CONTAINER, where they are unset.
+      # GA-437 (2026-09-10). WORKSPACE_ROOT IS THE DATA ROOT, NOT THE EXTENSION TREE, and mounting
+      # it here made one variable mean both. It held while the extension and the data lived in one
+      # directory; the owner's move to a neutral /DATA/workspace separates them, and this mount then
+      # provides an /ext with no vendor/wheels and no repair script. The repair would run against
+      # nothing and the guard below would read whatever rc that produced.
+      #
+      # REFUSE RATHER THAN REPAIR NOTHING. The extension declares its own tree through EXT_MOUNTS
+      # (owner ruling 2026-09-09), which is passed through below; what this block still needs from
+      # the extension is a mount point that holds vendor/wheels. Checked on the HOST, where the
+      # directory is, so the failure names its cause instead of appearing as a pip error.
+      if [ ! -d "$WORKSPACE_ROOT/vendor/wheels" ] && [ -z "${EXT_MOUNTS:-}" ]; then
+        echo "GA-293 store repair: SKIPPED. EXT_STORE_REPAIR=$EXT_STORE_REPAIR is set, but nothing" \
+          >> "$RUN_DIR/logs/store_repair.log"
+        echo "  declares an extension tree: EXT_MOUNTS is empty and $WORKSPACE_ROOT holds no" \
+          >> "$RUN_DIR/logs/store_repair.log"
+        echo "  vendor/wheels. The repair needs the extension's tree, not the data root." \
+          >> "$RUN_DIR/logs/store_repair.log"
+        _repair_rc=4
+      else
       docker run --rm --entrypoint bash --user "$(id -u):$(id -g)" -e PYTHONUSERBASE=/tmp/pyuser \
-        -e EXT_MOUNT_POINT -e EXT_STORE_REPAIR \
+        -e EXT_MOUNT_POINT -e EXT_STORE_REPAIR ${EXT_MOUNTS:-} \
         -v "$WORKSPACE_ROOT":"$EXT_MOUNT_POINT":ro -v "$RUN_DIR":/ws/output "$IMAGE_TAG" -lc '
           python3 -c "import pyoxigraph" 2>/dev/null ||
             pip install --user --quiet --no-index --find-links="$EXT_MOUNT_POINT"/vendor/wheels pyoxigraph
           cd "$EXT_MOUNT_POINT" && $EXT_STORE_REPAIR /ws/output/knowledge_graph.ttl
         ' >> "$RUN_DIR/logs/store_repair.log" 2>&1
       _repair_rc=$?
+      fi
       _kg_after=$( [ -f "$_kg" ] && wc -l < "$_kg" || echo 0 )
       echo "GA-293 store repair: rc=$_repair_rc, $_kg_before -> $_kg_after lines" >> "$RUN_DIR/logs/store_repair.log"
       # rc 0 repaired-or-nothing-to-repair; 2 no store; 3 empty store; 4 the repair could not run.
@@ -425,7 +496,11 @@ export CFG_NAME
 echo "    config: $CFG_NAME"
 
 # Setup the persistent run bundle (never overwritten across runs)
-RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+# GA-434. OVERRIDABLE, so a caller that launches the stack ONCE PER STOREY knows each bundle's path
+# without scraping it from a log line. run_house.sh sets a distinct stamp per storey. Unset, this is
+# what it always was. The bundle directory is refused below if it already exists, so a stale export
+# of this variable cannot make two runs share one bundle.
+RUN_TIMESTAMP=${RUN_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}
 SCENE_ARG=${1:-hm3d_00861}
 
 # Live run output. A TIMESTAMPED DIRECTORY under $WORKSPACE_ROOT/results/, never /tmp.
@@ -475,6 +550,12 @@ fi
 RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
 RUNS_DIR=${RUNS_DIR:-$WORKSPACE_ROOT/runs}
 RUN_DIR="$RUNS_DIR/$RUN_ID"
+# A bundle directory that already holds a run is never reused: two runs in one directory produce a
+# bundle whose files come from both and whose metadata describes one.
+if [ -n "$(ls -A "$RUN_DIR" 2>/dev/null)" ]; then
+  echo "!! $RUN_DIR already exists and is not empty. RUN_TIMESTAMP=$RUN_TIMESTAMP is already taken."
+  exit 1
+fi
 # GA-258b. EXPORTED, because the FEED HOST needs it. The host process reads
 # merge_pending.json to decide how long to dwell, and that file is written by the container
 # into /ws/output -- which is bind-mounted to $RUN_DIR, not to $OUT_DIR (/out). The feed host
@@ -715,50 +796,39 @@ sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2]
       echo "    scene-level map stamped for floor $FEED_SPAWN_FLOOR — using it"
     fi
   fi
-  if [ -f "$_mapdir/rtabmap.db" ]; then
-    # GA-336. LOCALIZE AGAINST A WRITABLE COPY, NEVER THE CANONICAL FILE.
+if [ -f "$_mapdir/rtabmap.db" ]; then
+    # GA-433 (2026-09-10). THE PUBLISHED MAP IS NOT USED, AND THIS SAYS SO INSTEAD OF PRETENDING.
     #
-    # GA-295 mounts maps/ :ro so a run can never mutate the published map — that rule stands and
-    # it caught a real mutation (§27). But in localization mode rtabmap is handed the map as its
-    # OWN database_path, and its close path writes the 2D occupancy grid back into it. Measured
-    # in run 20260907_004128, the first localization run ever to reach a graceful shutdown:
-    #   [FATAL] DBDriverSqlite3.cpp:5348::save2DMapQuery() Condition (rc == SQLITE_DONE) not met!
-    #           [DB error (0.23.7): attempt to write a readonly database]   -> UException, exit -6
-    # Every earlier run died in the map::at abort band before reaching close, which is why a
-    # read-only mount and a writing close path coexisted for days without anyone seeing it.
+    # Until today this branch copied the map to scratch (~1.2 GB, 12 s), exported
+    # RTABMAP_LOCALIZE_DB and printed "localizing against a scratch COPY". habitat_launch.py owns
+    # rtabmap now and hardcodes database_path /root/.ros/rtabmap.db with --delete_db_on_start, so
+    # the copy was never opened: the run mapped fresh while its log and its bundle said localized.
+    # That is the failure GA-380 refuses in the other direction, so the copy and the claim are gone
+    # and the regime is named in run_metadata.json instead (localization_regime).
     #
-    # SCRATCH, NOT THE BUNDLE: the copy is ~1.2 GB and it is not evidence — the canonical file's
-    # provenance sidecar is. $OUT_DIR is the live scratch mount (/out in the container) and the
-    # cleanup trap only archives *.json/*.jsonl/*.log from it, so a .db never reaches the bundle.
-    # The trap deletes it after the container has exited, i.e. after rtabmap has closed.
-    _canon_db="$_mapdir/rtabmap.db"
-    LOCALIZE_DB_COPY="$OUT_DIR/localize_db_copy.db"
-    cp "$_canon_db" "$LOCALIZE_DB_COPY" || { echo "!! could not copy the localization map to scratch — aborting rather than localizing against the read-only canonical file"; exit 1; }
-    # The container refuses a map without its .params-sha sidecar (live_stack_container.sh, the
-    # MAP PARAMETER MISMATCH check), so the copy must carry the sidecar too, or every localization
-    # run refuses to start. Measured cost of the copy on this host: 12 s for 1.2 GB (2026-09-07).
-    cp "$_canon_db.params-sha" "$LOCALIZE_DB_COPY.params-sha" || { echo "!! could not copy $_canon_db.params-sha — the container would refuse the map without it"; exit 1; }
-    # The bundle must still name EXACTLY which map ran. The sha is recomputed here, not read from
-    # the sidecar: the sidecar records the file at publish time, and this records the file that
-    # this run actually opened.
-    LOCALIZE_DB_SOURCE="$_canon_db"
-    LOCALIZE_DB_SHA=$(sha256sum "$_canon_db" | cut -c1-16)
-    export RTABMAP_LOCALIZE_DB="/out/localize_db_copy.db"
+    # THE MAP LIBRARY IS DEAD CODE UNDER THIS CONFIGURATION — the params-sha sidecar, the :ro
+    # canonical mount (GA-295/158), the scratch copy (GA-336) and the per-floor publish refusal
+    # (GA-380). It is left standing, unused, pending the owner's ruling on the localization regime.
+    LOCALIZE_DB_SOURCE=""
+    LOCALIZE_DB_SHA=""
     export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-0}"
-    echo "    localizing against a scratch COPY of $_canon_db (sha $LOCALIZE_DB_SHA, mapping phase 0s)"
+    echo "    a published map exists at $_mapdir/rtabmap.db and THIS RUN WILL NOT USE IT."
+    echo "    habitat_launch.py maps fresh every launch (--delete_db_on_start); see PLAN_1.3 §67."
   elif ls -d "$WORKSPACE_ROOT/maps/$SCENE_ARG"/floor_* >/dev/null 2>&1; then
     # GA-380 (2026-09-08). Maps are published PER FLOOR now and the scene-level rtabmap.db of
     # hm3d_00861 was moved aside on 7 Sep, so an unpinned localisation run would have fallen
     # through to "map from scratch" with a note nobody reads — a verification run that was meant
     # to localise would have mapped for 150 s and measured a different regime (rule 14: the
     # fallback is the defect). Refuse and name the floors that exist.
+    # GA-433 (2026-09-10): no run localises any more, so the refusal no longer protects a regime.
+    # It is kept because it still forces the spawn floor to be chosen deliberately rather than
+    # inherited from seed-7's unconstrained spawn, which lands on whichever storey it lands on.
     echo "!! NO map at $_mapdir, but this scene has per-floor maps: $(ls -d "$WORKSPACE_ROOT/maps/$SCENE_ARG"/floor_* | xargs -n1 basename | tr '\n' ' ')"
     echo "   Pin FEED_SPAWN_FLOOR=<z> to localise against one of them (or set RTABMAP_LOCALIZE_DB). Refusing to map from scratch by accident."
     exit 1
   else
-    echo "    NO published map at $_mapdir — this run will MAP from scratch."
-    echo "    That is the fallback, not the intent: publish a map for this scene and floor and"
-    echo "    subsequent runs will localize instead of re-mapping."
+    echo "    NO published map at $_mapdir. This run maps from scratch — as every run does now."
+    echo "    Publishing a map will NOT change that: habitat_launch.py passes --delete_db_on_start."
   fi
 fi
 if [ "$MAPPING_ONLY" = "1" ]; then
@@ -868,7 +938,13 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # launched the pristine image while recording itself as the patched one.
 IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble-ga290}
 IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
-HF_CACHE=${HF_CACHE:-$WORKSPACE_ROOT/.hf_cache}
+# GA-437 (2026-09-10). THE STAMP MUST READ THE CACHE THE RUN USES. This was
+# $WORKSPACE_ROOT/.hf_cache, which made WORKSPACE_ROOT do double duty as the data root AND the model
+# cache; after the workspace moved to a neutral directory it names nothing, and _enc_rev below would
+# have stamped every encoder revision as unknown. The container loads its weights from the mount at
+# /models/hf, whose host side is HF_SHARED_CACHE, so that is the directory whose refs describe the
+# run. Same value the container now sets HF_HOME to (live_stack_container.sh).
+HF_CACHE=${HF_CACHE:-${HF_SHARED_CACHE:-/DATA/huggingface_cache}}
 # >>> TEST-EXTRACT _enc_rev  (test_env_stamp.sh sources the block between these markers.
 # It guessed the boundary with a sed pattern twice and was wrong twice: /^$/ swallowed the
 # call sites below, and /; }$/ ran to end-of-file because this definition is a single line,
@@ -938,11 +1014,16 @@ for _v in ${EXT_ENV_PASS:-}; do
   eval "_isset=\${$_v+yes}"
   [ -n "${_isset:-}" ] || { echo "!! $_v is declared in EXT_ENV_PASS but not set at run_metadata.json"; exit 1; }
 done
+# "machine" records WHICH MACHINE made this bundle. Absent until 2026-09-10, and its absence is why
+# bundles from two machines cannot safely share one directory: nothing inside could tell them apart,
+# so a reader comparing them would not know they were comparing different systems. The bundle now
+# says so itself, which is stronger than keeping the directories apart and remembering why.
 cat <<EOF > "$RUN_DIR/run_metadata.json"
 {
   "run_id": "$RUN_ID",
   "scene": "$SCENE_ARG",
   "start_time": "$(date -Iseconds)",
+  "machine": "$(hostname)",
   "config_name": "$CFG_NAME",
   "output_dir": "$RUN_DIR",
   "config_name_note": "the name the launcher intended; see config_resolved and preflight.json for what each process loaded",
@@ -1012,6 +1093,11 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
                "note": "raised from 640x480 by owner ruling 25. A gain measured here is a gain of the SYSTEM: resolution moves detector, segmentation, depth and describer together and cannot be attributed to one without a second arm."},
     "gt_semantic": ${FEED_GT_SEMANTIC:-0},
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
+    "localization_regime": "fresh_map_per_launch",
+    "tour_shape_note": "GA-434 / rule 73. WHICH SHAPE OF HOUSE RUN THIS BUNDLE BELONGS TO. Two exist and they are not comparable: relaunch_per_storey is one launch, one map and one bundle per storey, which is the owner's 2026-09-10 ruling; continuous_teleport is one launch touring every storey, whose map would straddle them and which owner ruling 25 refuses. A bundle set read as the wrong one would double-count objects across storeys or look like it lost them.",
+    "tour_shape": "$([ "${FEED_TOUR_ALL_FLOORS:-0}" != "0" ] && echo continuous_teleport || echo relaunch_per_storey)",
+    "house_id": $([ -n "${HOUSE_ID:-}" ] && echo "\"$HOUSE_ID\"" || echo null),
+    "spawn_floor": $([ -n "${FEED_SPAWN_FLOOR:-}" ] && echo "$FEED_SPAWN_FLOOR" || echo null),
     "localize_db_note": "GA-336: localize_db points at a SCRATCH COPY deleted at exit, so the path alone identifies nothing. localize_db_source + localize_db_sha256_16 name the canonical file this run actually opened.",
     "localize_db_source": $([ -n "${LOCALIZE_DB_SOURCE:-}" ] && echo "\"$LOCALIZE_DB_SOURCE\"" || echo null),
     "localize_db_sha256_16": $([ -n "${LOCALIZE_DB_SHA:-}" ] && echo "\"$LOCALIZE_DB_SHA\"" || echo null),
@@ -1164,6 +1250,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e MERGE_MIN_CONSECUTIVE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
   -e MAPPING_ONLY -e FEED_MAPPING_SECONDS -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
+  -e FEED_HF_OFFLINE -e PREFLIGHT_HF_CACHE \
   -e FEED_SPAWN_FLOOR -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
   -e ROOM_FRAME_MAX -e ROOM_FRAME_STRIDE_M -e FEED_POSE_SOURCE \
  -e GRAPH_API_SRC -e GRAPH_API_TEST_SRC \

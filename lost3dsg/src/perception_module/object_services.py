@@ -435,7 +435,15 @@ def save_uncertain_objects(node):
     Moved here because this is where `uncertain_objects` lives. `object_manager_6` already
     imports from this module, so its own call site keeps working with no cycle.
     """
-    output_dir = os.path.join(PROJECT_ROOT, "output")
+    # The run's OWN output directory, which is the bundle: `GRAPH_API_OUTPUT_DIR` is what the
+    # launcher bind-mounts, and `graph_api_bridge` reads this file from there (`_graph_version`
+    # watches it and the on-hold / rejected / abstained audit loads it). Building the path from
+    # PROJECT_ROOT instead made the two agree only when the run's output directory happened to
+    # BE the source tree's `output/`, so on any other host the audit was silently empty and the
+    # graph fingerprint missed a file it believed it was watching. It also wrote INSIDE the tree
+    # under test, which the container copies at start, so a run changed what the next launch
+    # copied. PROJECT_ROOT stays as the fallback for a bare source-tree run.
+    output_dir = os.environ.get("GRAPH_API_OUTPUT_DIR") or os.path.join(PROJECT_ROOT, "output")
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, "uncertain_objects.txt")
 

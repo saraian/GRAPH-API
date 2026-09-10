@@ -102,6 +102,31 @@ def save_uncertain():
         finally:
             object_services.PROJECT_ROOT = original
 
+    # The file belongs in the RUN'S BUNDLE, which is `GRAPH_API_OUTPUT_DIR`. `graph_api_bridge`
+    # reads it from there for the on-hold / rejected / abstained audit and watches it in the
+    # graph fingerprint, so a writer using PROJECT_ROOT agreed with those readers only when the
+    # run's output directory happened to be the source tree's own `output/`.
+    #
+    # BOTH DIRECTIONS, because an assertion on the joined path alone would pass even if the
+    # writer never ran: the file must appear in the bundle AND be absent from PROJECT_ROOT.
+    original_env = os.environ.get("GRAPH_API_OUTPUT_DIR")
+    with tempfile.TemporaryDirectory() as bundle, tempfile.TemporaryDirectory() as tree:
+        object_services.PROJECT_ROOT = tree
+        os.environ["GRAPH_API_OUTPUT_DIR"] = bundle
+        try:
+            object_services.save_uncertain_objects(node)
+            in_bundle = pathlib.Path(bundle) / "uncertain_objects.txt"
+            in_tree = pathlib.Path(tree) / "output" / "uncertain_objects.txt"
+            assert in_bundle.is_file(), "the pool must land in the run's bundle"
+            assert in_bundle.read_text().strip(), "the bundle copy must not be empty"
+            assert not in_tree.exists(), "nothing may be written into the source tree"
+        finally:
+            object_services.PROJECT_ROOT = original
+            if original_env is None:
+                os.environ.pop("GRAPH_API_OUTPUT_DIR", None)
+            else:
+                os.environ["GRAPH_API_OUTPUT_DIR"] = original_env
+
 
 def reassign_rooms():
     rm = room_manager.RoomManager.__new__(room_manager.RoomManager)
@@ -299,6 +324,41 @@ def merge_lock_covers_writes_only():
         osv.wm.lock = real_lock
         osv.PROJECT_ROOT = original_root
         osv.wm.persistent_perceptions.clear()
+
+
+def every_config_key_read_is_declared():
+    """A key the code reads and the file never declares silently takes the module fallback,
+    so the config says one thing and the run does another. This swept 22 such keys out of
+    association, habitat and perception in one pass -- including the five merge thresholds,
+    where config.yaml documented `cost_ratio` and `min_consecutive` while object_services read
+    `merge_cost_ratio` and `merge_min_consecutive` and got neither.
+
+    Literal reads only: `CFG["section"]["key"]`, `CFG["section"].get("key")` and the
+    `<name>_cfg.get("key")` locals. A dynamic read is invisible here and always will be."""
+    import re
+
+    import config as cfgmod
+
+    declared = {k: set(v) for k, v in cfgmod._DEFAULTS.items() if isinstance(v, dict)}
+    local_of = {"hab_cfg": "habitat", "assoc_cfg": "association", "p_cfg": "perception",
+                "r_cfg": "rooms", "w_cfg": "walls", "v_cfg": "vlm", "f_cfg": "frames"}
+    direct = re.compile(r'CFG\s*\[\s*["\'](\w+)["\']\s*\]\s*(?:\.get\(\s*|\[\s*)["\'](\w+)["\']')
+    viavar = re.compile(r'(\w+_cfg)\.get\(\s*["\'](\w+)["\']')
+    here = pathlib.Path(__file__).resolve().parent
+    undeclared = []
+    for path in sorted(here.glob("*.py")):
+        if path.name.startswith("test_"):
+            continue
+        text = path.read_text(errors="replace")
+        for sec, key in direct.findall(text):
+            if sec in declared and key not in declared[sec]:
+                undeclared.append(f"{sec}.{key} in {path.name}")
+        for var, key in viavar.findall(text):
+            sec = local_of.get(var)
+            if sec and sec in declared and key not in declared[sec]:
+                undeclared.append(f"{sec}.{key} in {path.name}")
+    assert not undeclared, ("config keys read but never declared, so each silently takes its "
+                            "module fallback: " + "; ".join(sorted(set(undeclared))))
 
 
 # --- the merge path ----------------------------------------------------------------
@@ -1274,6 +1334,7 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("merge request below the match gate is refused (GA-341)", merge_request_below_match_gate_refused),
                  ("detector failure skips the cycle, counted (GA-427)", detector_failure_skips_the_cycle),
                  ("merge lock covers the writes, not the sweep (GA-393)", merge_lock_covers_writes_only),
+                 ("every config key the code reads is declared", every_config_key_read_is_declared),
                  ("merge path (dry run)", merge_path)]:
     check(name, fn)
 

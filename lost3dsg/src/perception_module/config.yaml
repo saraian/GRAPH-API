@@ -33,6 +33,40 @@ association:
   reevaluation_radius_m: 2.0   # GA-49: radius (m) within which a changed object re-evaluates its neighbours
                                # (replaced max_match_distance_m, which no code has read since GA-04)
 
+  # --- merge thresholds: THE NAMES THE CODE ACTUALLY READS -------------------------------
+  # `cost_ratio`, `min_consecutive` and `mode` above are read by NOTHING (GA-341). These are
+  # the names object_services reads. The values below are what the code already falls back to,
+  # so writing them down changes no behaviour -- note merge_min_consecutive is 2, which is what
+  # every recipe stamps and every bundle ran with, not the 3 the dead key claims.
+  merge_engine: legacy        # legacy | evidence -- which merge path decides
+  merge_cost_ratio: 20.0      # false-merge cost / missed-merge cost; the commit threshold is
+                              # log(ratio), so raising it makes merging strictly harder
+  merge_min_consecutive: 2    # consecutive sweeps a pair must hold before it commits. Raise it
+                              # and fewer wrong merges commit, but a pair that leaves view
+                              # before confirmation is lost. Override with MERGE_MIN_CONSECUTIVE.
+  merge_max_distance_m: 0.8   # centre distance beyond which a pair is never merged
+  merge_min_similarity: 0.925 # MUST stay strictly above sim_threshold above, or a merge fuses
+                              # pairs the association loop has just refused. object_services
+                              # asserts this at load and the merge service refuses a request
+                              # that carries a lower floor.
+  merge_knn_k: null           # null = the covariance-derived search reach decides how many
+                              # candidates a pair search considers
+  # --- what may absorb, move or delete an object ------------------------------------------
+  update_in_place_distance_m: 0.5   # a new box this close updates the object in place; further
+                                    # away it is treated as a move, which re-files the room
+  transition_move_distance_m: 0.35  # movement that promotes exploration into tracking mode
+  uncertain_move_distance_m: 0.8    # an uncertain object that moves further is a new object
+  max_misses_before_delete: 5       # sweeps an object may go unseen in its own view before it
+                                    # is deleted; lower loses objects behind occluders
+  delete_undetected: true           # remove an object that goes unseen inside its own view
+  max_observations_per_object: 64   # sightings kept per object, oldest dropped. The co-visibility
+                                    # channel walks these pairwise, so raising it is quadratic.
+  # A box larger than either of these is refused as implausible. Both entered as bare literals
+  # with no measured basis; when a reference box exists they scale to the admitted size, so an
+  # object legitimately larger than the cap can still absorb its own re-measurement (GA-365).
+  suspicious_max_extent_m: 3.0
+  suspicious_max_volume_m3: 1.5
+
 frames:
   # OPTICAL frame (x right, y down, z forward) the perception back-projects
   # into. If you point this at a BODY frame (x forward, z up), depth lands in
@@ -144,6 +178,85 @@ habitat:
   dwell_frames: 60        # frames stationary / dwelling for 3D perception
   fps: 3.0                # simulator framerate
 
+  # --- the camera the simulator renders ------------------------------------------------
+  hfov: 90.0               # horizontal field of view in degrees; this sets the intrinsics,
+                           # so changing it changes every projected box in the run
+  camera_pitch_deg: 0.0    # negative looks down. A downward tilt sees more floor clutter and
+                           # loses the top of tall furniture, so it changes WHAT is detected,
+                           # not just how it looks. Override per run with FEED_CAMERA_PITCH_DEG.
+  # --- how the agent tours a house -----------------------------------------------------
+  floor_confinement: teleport  # teleport to the next storey when one is done. `single_floor`
+                               # above still decides whether a single launch may leave its own
+                               # storey; this decides what a full-house tour does between them.
+  tour_all_floors: false   # a full-house base run sets this; a single-storey launch does not
+  tour_end_settle_s: 90.0  # stand still this long at the end of a tour, so merges that need
+                           # one more sighting can commit before the launch closes
+  min_floor_share: 0.10    # a storey holding less than this share of the navmesh is a landing
+                           # or a stairwell, not a storey, and is not toured
+  dataset_root: /root/exchange/lost3dsg/habitat
+
+
+# ---------------------------------------------------------------------------------------
+# run: the choices a person makes when starting a run.
+#
+# PRECEDENCE, one sentence: this file is the source of truth, an environment variable is a
+# documented per-run override, and run_metadata.json records which one won. The pattern is
+# `os.environ.get("FEED_CAMERA_PITCH_DEG", hab_cfg.get("camera_pitch_deg", 0.0))`.
+#
+# STATE, so nobody is misled: the perception side of this file is live. The LAUNCHER keys
+# below are declared here first so the scripts have something to read; until the simulator
+# lane lands its half, the launcher still takes them from the environment and these values
+# are documentation rather than behaviour. Each says which variable overrides it.
+#
+# NOT HERE, deliberately: credentials and machine paths live in lost3dsg/test/env.local.sh.
+# A URL that buys GPU time is a credential, and a machine path committed here is wrong on
+# every machine but one.
+# ---------------------------------------------------------------------------------------
+run:
+  # --- how long, and when to start -------------------------------------------------------
+  # LEAVE UNSET for a base run: a full-house tour has no cap and a completed tour is what
+  # ends a launch. The key exists so a deliberately short run can still be asked for.
+  # Override: CAP_MIN (minutes).
+  cap_min: null
+  start_after_stack: true   # wait for the stack to be up before the agent starts moving, so
+                            # the first cycles are not spent on a half-started graph
+  # --- where the run publishes ------------------------------------------------------------
+  bridge_port: 8081         # the dashboard and the object manager both talk to this port; move
+                            # it when another project already answers there. Override: BRIDGE_PORT.
+  rviz: true                # start the RViz sibling beside the stack. Override: RVIZ=0.
+  show: true                # draw the simulator's own window. Override: FEED_SHOW.
+  overlay: true             # draw belief boxes on the simulator's view. Override: FEED_OVERLAY.
+  # --- mapping and localisation ------------------------------------------------------------
+  mapping_only: false       # map and DO NOT run the detector. A mapping bundle with zero
+                            # detections is a mapping run, not a detection run that found
+                            # nothing, and the two are otherwise indistinguishable afterwards.
+  map_draw: true            # render the top-down map into the bundle
+  rtabmap_slam: false       # SLAM is banned by ruling; a run localises against a published map
+  rtabmap_localize_db: ''   # the published map to localise against; empty means map fresh
+  rtabmap_close_timeout: 150  # seconds to let rtabmap close its database cleanly at teardown;
+                              # too short and the map is written half-finished
+  rtabmap_grid_args: ''     # extra grid parameters passed straight to rtabmap
+  localize_db_copy: true    # work on a COPY of the published map, so a run can never modify
+                            # the map every other run localises against
+  pose_source: simulator    # simulator | rtabmap -- where the robot's position comes from.
+                            # Only one may publish map->odom, so this also decides which
+                            # component owns that transform. Override: FEED_POSE_SOURCE.
+  # --- what the perception side runs --------------------------------------------------------
+  wall_detector: false      # run the wall detector node. Override: WALL_DETECTOR.
+  gt_semantic: true         # render the simulator's semantic frame so archived detections can
+                            # be joined to ground truth offline. It never reaches the runtime
+                            # decision path; a preflight probe refuses a reader that tries.
+  gt_scene_instance: ''     # the ground-truth inventory a run is scored against; empty lets the
+                            # offline reader pick by scene name, which is what the bundle then
+                            # cannot attest. Override: GT_SCENE_INSTANCE.
+  # --- the house ---------------------------------------------------------------------------
+  house_id: ''              # groups the storey bundles of one house; empty means a single run
+  house_floors: ''          # storeys to tour, empty means every storey the scene has
+  # --- the environment the container runs in -------------------------------------------------
+  hf_offline: true          # NO IN-RUN FETCHES. Everything is cached before a run starts, so a
+                            # missing model fails at the gate instead of downloading mid-run and
+                            # changing what the run measured. Override: FEED_HF_OFFLINE=0.
+  cfg_name: regolo_config.yaml  # which recipe the container loads. Override: CFG_NAME.
 hooks:
   # extension seam (hooks.py): admission Filter / node Refiner loaded from another
   # package by dotted path; empty = the pass-through blueprints (today's behaviour)

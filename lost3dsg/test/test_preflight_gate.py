@@ -1079,6 +1079,90 @@ def test_a7_at_teardown_judges_only_the_live_roots():
         check(list(d["mismatches"]) == ["found_live"], f"a moved live root must be the only mismatch: {d['mismatches']}")
 
 
+def test_found_exercised_auto_follows_the_configured_hook():
+    """GA-435. "is this a detection run" is not "does this run execute extension code".
+
+    The caller passed 1 for every run that was not MAPPING_ONLY, so on a deployment with NO
+    extension a7 failed with live_roots_undeclared and the gate refused every run. Measured on Gin,
+    where no hooks are configured and no EXT_* variable is set.
+    """
+    import importlib
+    import sys
+    import types
+    g = importlib.import_module("preflight_gate")
+    saved = sys.modules.get("config")
+    try:
+        # explicit answers still mean what they meant
+        assert g._found_exercised("1") is True
+        assert g._found_exercised("0") is False
+
+        fake = types.ModuleType("config")
+        # A module:Class the way an extension exports one. The literal used to name a real
+        # deployment, which made this repository fail its own boundary check on a fixture.
+        fake.CFG = {"hooks": {"filter": "yourpkg.filter:OntologicalFilter"}}
+        sys.modules["config"] = fake
+        assert g._found_exercised("auto") is True, "a configured filter means extension code runs"
+
+        fake.CFG = {"hooks": {"search_paths": ["/found"], "filter": ""}}
+        assert g._found_exercised("auto") is False, "no filter means nothing extends this run"
+
+        fake.CFG = {}
+        assert g._found_exercised("auto") is False, "no hooks section at all"
+    finally:
+        if saved is None:
+            sys.modules.pop("config", None)
+        else:
+            sys.modules["config"] = saved
+
+
+def test_a4_asserts_every_hub_model_a_run_loads():
+    """GA-438. The cache check sat inside `backend == "local"`, so a cloud run asserted nothing.
+
+    MiniLM and both dinov2 sizes load on EVERY run whatever the backend -- nlp_utils for semantic
+    matching, visual_reid for the crop embedder, which picks -base over -small on measured VRAM, so
+    both must be present or the run downloads whichever it chooses.
+    """
+    import os
+    import tempfile
+    from preflight_gate import HF_MODELS_EVERY_RUN, _hf_models_present
+
+    saved = {k: os.environ.get(k) for k in ("PREFLIGHT_HF_CACHE", "HF_HOME", "TRANSFORMERS_CACHE")}
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            os.environ["PREFLIGHT_HF_CACHE"] = td
+            for k in ("HF_HOME", "TRANSFORMERS_CACHE"):
+                os.environ.pop(k, None)
+
+            _, missing, seen = _hf_models_present(local_backend=False)
+            check(len(missing) == len(HF_MODELS_EVERY_RUN) and not seen,
+                  f"an empty cache must report every always-loaded model missing: {missing}")
+
+            # A DIRECTORY IS NOT A CACHED MODEL: huggingface creates it before the fetch finishes,
+            # and an interrupted download leaves snapshots/ empty. That must still read as missing.
+            stem = os.path.join(td, "hub", "models--facebook--dinov2-small")
+            os.makedirs(os.path.join(stem, "snapshots", "abc123"))
+            _, missing, seen = _hf_models_present(local_backend=False)
+            check("facebook/dinov2-small" in missing,
+                  "an empty snapshots/ directory must NOT count as cached")
+
+            open(os.path.join(stem, "snapshots", "abc123", "config.json"), "w").write("{}")
+            _, missing, seen = _hf_models_present(local_backend=False)
+            check("facebook/dinov2-small" in seen and "facebook/dinov2-small" not in missing,
+                  f"a snapshot holding a file must count as cached: {missing}")
+
+            # the local backend asks for one more model than a cloud backend
+            _, m_cloud, _ = _hf_models_present(local_backend=False)
+            _, m_local, _ = _hf_models_present(local_backend=True)
+            check(len(m_local) == len(m_cloud) + 1,
+                  f"the local backend must also assert the detector: {m_local} vs {m_cloud}")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 if __name__ == "__main__":
     # Mirrors src/perception_module/test_config.py: every function is a pytest test AND
     # this file still runs as a script. It collected ZERO tests under pytest before, because
@@ -1124,6 +1208,7 @@ def test_a12_refuses_a_gt_reader_outside_the_allow_list_and_passes_the_clean_tre
     pass. Rule 18/26: run it, do not predict it."""
     import shutil
     import tempfile
+
     from preflight_gate import a12_gt_isolation
     lost = os.path.dirname(HERE)
     ignore = shutil.ignore_patterns("__pycache__", ".ruff_cache", "*.pyc", "output", "probe_assets")
