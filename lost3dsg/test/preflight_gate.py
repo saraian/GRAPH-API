@@ -257,7 +257,15 @@ def a2_config_identity(expect_name=None, expect_sha=None, expect_merged=None):
     loaded_path = getattr(cfgmod, "CFG_PATH", None)
     merged = merged_cfg_sha(cfgmod.CFG)
     file_sha = file_sha16(loaded_path) if loaded_path else None
+    # THE LOCAL OVERRIDE IS RECORDED HERE, and it has to be. It used to be folded into CFG_PATH as
+    # "<config> + <local>", which is not a path: this probe opens loaded_path to hash it, so with an
+    # override in force a2 raised FileNotFoundError and SKIPPED -- and a skipped probe fails the
+    # gate. Splitting the two values fixed that, and this is where the override must reappear, or
+    # an overridden run and a plain one are identical in the bundle.
+    local_path = getattr(cfgmod, "CFG_LOCAL_PATH", None)
     detail = {"env_path": env_path, "loaded_path": loaded_path,
+              "local_override_path": local_path,
+              "local_override_sha256_16": file_sha16(local_path) if local_path else None,
               "merged_cfg_sha256_16": merged, "config_file_sha256_16": file_sha,
               "perception_backend": (cfgmod.CFG.get("perception") or {}).get("backend"),
               "hooks_filter": (cfgmod.CFG.get("hooks") or {}).get("filter")}
