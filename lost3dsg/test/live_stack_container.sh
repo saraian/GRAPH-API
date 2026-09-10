@@ -402,18 +402,13 @@ echo ">>> pose source: ${FEED_POSE_SOURCE:-simulator} (rtabmap publish_tf_map:=$
 # and rcl refuses an empty -p value, so the node defaults stand: odom_frame_id "" from the /odom topic). Namespace /rtabmap and node name rtabmap are kept, so /rtabmap/map and
 # /rtabmap/cloud_map (read by object_manager_6) do not move. The library args stay positional and
 # override any node parameter, as before ("Update ... from arguments" in the log).
-echo "rtabmap_args: $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS | node: publish_tf=$_RT_PUBLISH_TF_MAP pub_loc_pose_only_when_localizing=true direct-launch" > /tmp/rtabmap.log
-ros2 run rtabmap_slam rtabmap $_RT_DB_ARGS --RGBD/NeighborLinkRefining false $RTABMAP_GRID_ARGS --ros-args \
-  -r __ns:=/rtabmap -r __node:=rtabmap \
-  -p subscribe_depth:=true -p subscribe_rgb:=true -p approx_sync:=true \
-  -p frame_id:=base_link -p map_frame_id:=map \
-  -p publish_tf:="$_RT_PUBLISH_TF_MAP" -p pub_loc_pose_only_when_localizing:=true \
-  -p database_path:="$_RT_DB_PATH" \
-  -p topic_queue_size:=10 -p sync_queue_size:=10 -p wait_for_transform:=0.2 \
-  -p qos_image:=0 -p qos_odom:=0 -p qos_camera_info:=0 \
-  -r rgb/image:=/camera/rgb -r depth/image:=/camera/depth -r rgb/camera_info:=/camera/camera_info -r odom:=/odom \
-  >> /tmp/rtabmap.log 2>&1 &
-RTABMAP_PID=$!   # now the node itself, not a launcher: the close path's SIGINT reaches it directly
+# OUR DIRECT rtabmap INVOCATION IS RETIRED (owner 2026-09-10). It stood here and started a SECOND
+# rtabmap beside the one habitat_launch.py starts — same namespace, same node name, both
+# subscribing the same topics and both publishing map->odom. That double start was introduced
+# when the launch route was added and never exercised through this script, only through a
+# standalone harness; removing the flag is what made it visible. Her launch file owns rtabmap
+# now, including its parameters, and `localization_mode` there decides publish_tf_map by
+# construction, which is the single-authority property our publish_tf juggling was reaching for.
 # GA-359 (C): RECORD /rtabmap/localization_pose FOR THE WHOLE RUN, so perception's covariance gate
 # gets a MEASURED threshold from the first rtabmap-mode bundle instead of an invented one. CSV, one
 # line per message, no header (ros2 topic echo --csv): header.stamp.sec, header.stamp.nanosec,
@@ -438,56 +433,19 @@ ros2 topic echo --csv --full-length /rtabmap/localization_pose geometry_msgs/msg
 # RTABMAP_PID becomes the `ros2 launch` process rather than the node — harmless, since the close
 # also signals by pattern (`pkill -INT -f rtabmap_slam/rtabmap`, the case this file was originally
 # written for), but not yet exercised through a full close.
-if [ "${LEGACY_NODE_STARTS:-0}" != "1" ]; then
-  _wall_arg=$([ "${WALL_DETECTOR:-0}" = "1" ] && echo true || echo false)
-  _loc_arg=$([ "${FEED_POSE_SOURCE:-simulator}" = "rtabmap" ] && echo rtabmap || echo ground_truth)
-  echo ">>> stack via habitat_launch.py (use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg)"
-  ros2 launch lost3dsg habitat_launch.py \
-      use_wall_detector:="$_wall_arg" localization_mode:="$_loc_arg" \
-      > /tmp/launch.log 2>&1 &
-  LAUNCH_PID=$!
-  # The close path signals rtabmap by PATTERN as well as by pid, so a launcher pid here is safe.
-  RTABMAP_PID=$LAUNCH_PID; OM6_PID=""; PERCEPTION_PID=""; WALLS_PID=""
-else
-ros2 run lost3dsg object_manager_6.py > /tmp/om6.log 2>&1 &
-OM6_PID=$!
-python3 /ws/install/lost3dsg/lib/lost3dsg/graph_api_bridge.py > /tmp/bridge.log 2>&1 &
-# MAPPING_ONLY: the detector is NOT STARTED. Not idled, not stubbed -- absent. A mapping run
-# needs no detections and every Modal call it makes is money spent on an image nobody reads.
-if [ "${MAPPING_ONLY:-0}" = "1" ]; then
-  echo ">>> MAPPING_ONLY=1: perception_2 and the cloud path are OFF. No detector, no Modal calls."
-  PERCEPTION_PID=""
-else
-  echo ">>> MAPPING_ONLY is ${MAPPING_ONLY:-unset} — normal run, detector ON."
-  ros2 run lost3dsg perception_2.py > /tmp/perception.log 2>&1 &
-  PERCEPTION_PID=$!
-fi
-
-# GA-29 / wall_detector's FIRST LAUNCH. Four reasons it never produced a wall, and the first was
-# that nothing ever started it — this line. It is in CMakeLists.txt:66 so `ros2 run` resolves it;
-# it subscribes /camera/depth and /camera/camera_info, the topics rtabmap already takes above, and
-# publishes /detected_wall_segments in the schema object_manager_6.walls_callback actually reads.
-# GA-206. OPT-OUT, default OFF for this run. wall_detector.py measured at 4.4 CORES on
-# 2026-09-01 while rtabmap -- the ONLY source of the map->odom transform perception waits on --
-# was taking 2.1-2.4 s per iteration against its own 1.0 s rate limit. Every frame then aged out
-# with "Synced data not ready, missing: transform", and six launch attempts produced zero
-# detection cycles.
-#
-# The layer it feeds is separately known to produce nothing: ridge segmentation yields ZERO
-# critical points on ~87% of sweeps (GA-195), so no doorway is ever cut and no room is split.
-# Spending 4.4 cores on it while starving the transform chain buys a room layer that does not
-# work at the cost of the detections that do.
-#
-# WALL_DETECTOR=1 restores it. This is a resource decision for a contended machine, NOT a
-# claim that wall detection is wrong.
-if [ "${WALL_DETECTOR:-0}" = "1" ]; then
-  ros2 run lost3dsg wall_detector.py > /tmp/walls.log 2>&1 &
-else
-  echo ">>> wall_detector DISABLED (WALL_DETECTOR=1 to enable) — 4.4 cores returned to rtabmap"
-  : > /tmp/walls.log
-fi
-WALLS_PID=$!
-fi   # end of the legacy one-by-one starts
+# THE ONE START PATH (owner 2026-09-10). Her configuration IS the configuration: our direct
+# rtabmap invocation is retired, not kept as a second route. The LEGACY_NODE_STARTS escape that
+# stood here for one cycle is REMOVED — a retired configuration kept behind a flag is a
+# configuration somebody will set, and then two machines run different stacks and nothing says so.
+_wall_arg=$([ "${WALL_DETECTOR:-0}" = "1" ] && echo true || echo false)
+_loc_arg=$([ "${FEED_POSE_SOURCE:-simulator}" = "rtabmap" ] && echo rtabmap || echo ground_truth)
+echo ">>> stack via habitat_launch.py (use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg)"
+ros2 launch lost3dsg habitat_launch.py \
+    use_wall_detector:="$_wall_arg" localization_mode:="$_loc_arg" \
+    > /tmp/launch.log 2>&1 &
+LAUNCH_PID=$!
+# The close path signals rtabmap by PATTERN as well as by pid, so a launcher pid here is safe.
+RTABMAP_PID=$LAUNCH_PID; OM6_PID=""; PERCEPTION_PID=""; WALLS_PID=""
 
 # periodic snapshots of the annotated detection image for the host
 ros2 run image_view image_saver --ros-args -r image:=/image_with_bb \
