@@ -995,6 +995,7 @@ TOUR_END_SETTLE_S = float(os.environ.get("FEED_TOUR_END_SETTLE_S",
 #
 # WITH NO SCHEDULE CONFIGURED NOTHING CHANGES: the run takes the walk/dwell path it always took.
 SCHEDULE_PATH = os.environ.get("FEED_SCHEDULE", hab_cfg.get("schedule", "") or "").strip()
+SCHEDULE_OVERLAY = None      # filled when a schedule is loaded; null in the payload when none is
 EXPLORATION_LAPS = int(os.environ.get("FEED_EXPLORATION_LAPS",
                                       hab_cfg.get("exploration_laps", 3)))
 # GA-466 (owner 2026-09-10). HOW THE AGENT GETS FROM ONE STOP TO THE NEXT, chosen by
@@ -1575,6 +1576,31 @@ class ScheduledTour:
                 "stops_skipped": len(self.skipped), "skipped": self.skipped[:40]}
 
 
+def schedule_overlay(schedule, laps):
+    """-> the schedule in ROS ground coords for the viewer, or None.
+
+    Three lists, because they are drawn differently: `path` is the polyline the agent follows,
+    `stops` are the 360 scan points in visit order, `root` is where the search starts. `y` rides
+    along on every point so the 3D scene can place them at the storey's height instead of guessing.
+    """
+    if not schedule:
+        return None
+
+    def ros(p):
+        return [round(-float(p[2]), 3), round(-float(p[0]), 3), round(float(p[1]), 3)]
+
+    traj = schedule.get("trajectory") or []
+    return {
+        "storey_y": schedule.get("height"),
+        "laps": laps,
+        "path": [ros(t["xyz"]) for t in traj],
+        "stops": [{"order": t.get("stop"), "xyz": ros(t["xyz"]), "scan_deg": t["scan_deg"]}
+                  for t in traj if t.get("scan_deg")],
+        "root": ros(schedule["root"]) if schedule.get("root") else None,
+        "note": "ROS ground coords, the same frame as agent and map.bounds_*; y is the storey height",
+    }
+
+
 def load_schedule(path, floor_y, tol=0.75):
     """-> the storey's schedule from a scene schedule file, or None.
 
@@ -2047,8 +2073,9 @@ def main():
         if MOVE_FN not in MOVERS:
             raise SystemExit(f"[feed] FEED_MOVE_FN={MOVE_FN!r} is not one of {sorted(MOVERS)}")
         _floor_now = float(agent.get_state().position[1])
-        tour = ScheduledTour(sim, load_schedule(SCHEDULE_PATH, _floor_now),
-                             EXPLORATION_LAPS, MOVE_FN)
+        _sched_doc = load_schedule(SCHEDULE_PATH, _floor_now)
+        SCHEDULE_OVERLAY = schedule_overlay(_sched_doc, EXPLORATION_LAPS)
+        tour = ScheduledTour(sim, _sched_doc, EXPLORATION_LAPS, MOVE_FN)
     else:
         tour = Tour(sim, rng) if have_nav else None
     poller = None
@@ -2575,6 +2602,16 @@ def main():
                 # "map" keeps its meaning and its readers: the single map for the floor the
                 # agent is on. "maps" is ADDED beside it, never in place of it.
                 "map": active_map,
+                # GA-470 (owner 2026-09-10). THE SCHEDULE AS DATA, for the minimap and the 3D scene
+                # to draw. Published here rather than painted into the minimap PNG, because the
+                # image is the background and the drawing is the dashboard's: a vector overlay can
+                # be toggled, hit-tested and drawn in the mesh view, and a baked one cannot.
+                #
+                # ROS GROUND COORDS, the same frame as "agent" and as map.bounds_min/bounds_max, so
+                # a client places a point with (p[0] - bounds_min[0]) / scale and nothing else. The
+                # schedule itself is habitat coords; converting here means one conversion in one
+                # place instead of one per consumer. ROS = (-hab_z, -hab_x, hab_y).
+                "schedule": SCHEDULE_OVERLAY,
                 "stats": feed_stats,
                 "auto_mode": CTRL.auto_mode,
                 "config": CTRL.config,
