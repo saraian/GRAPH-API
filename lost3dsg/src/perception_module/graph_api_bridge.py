@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 import rclpy
 import uvicorn
+from config import CFG  # GA-341: merge-request defaults from the SAME config block the service reads
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -437,12 +438,24 @@ def update_object(object_id: str, body: dict):
     }
 
 
+# GA-341. The body defaults used to be the literals 0.8 / 0.75 -- and 0.75 sits BELOW
+# association.sim_threshold (0.85), the floor object_services asserts at load and now refuses
+# per request, so an empty POST /merge would be a guaranteed 400 carrying a dead number. These
+# are the same keys, with the same derivation, as object_services.MERGE_MAX_DISTANCE and
+# MERGE_MIN_SIMILARITY (that module owns the thresholds; it is not imported here because it
+# pulls ROS, the world model and the sentence encoder into the bridge process).
+_SIM_THRESHOLD = float(CFG["association"]["sim_threshold"])
+MERGE_MAX_DISTANCE_DEFAULT = float(CFG["association"].get("merge_max_distance_m", 0.8))
+MERGE_MIN_SIMILARITY_DEFAULT = float(CFG["association"].get(
+    "merge_min_similarity", _SIM_THRESHOLD + (1.0 - _SIM_THRESHOLD) / 2.0))
+
+
 @app.post("/merge")
 def merge_objects(body: dict = None):
     body = body or {}
     req = MergeObjects.Request()
-    req.max_distance = float(body.get("max_distance", 0.8))
-    req.min_similarity = float(body.get("min_similarity", 0.75))
+    req.max_distance = float(body.get("max_distance", MERGE_MAX_DISTANCE_DEFAULT))
+    req.min_similarity = float(body.get("min_similarity", MERGE_MIN_SIMILARITY_DEFAULT))
     req.dry_run = bool(body.get("dry_run", False))
 
     res = require_node().call('merge', req)

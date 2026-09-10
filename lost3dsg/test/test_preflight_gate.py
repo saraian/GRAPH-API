@@ -25,6 +25,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import preflight_gate as g  # noqa: E402
 
+
+def _fake_frame():
+    """The frame the host tests INJECT into a4 (`frame` is injected only by the host tests).
+
+    Two callers referenced this and it was never defined, so both died with NameError before
+    reaching what they assert — ruff F821 names it in one line. a4 reads only `frame.shape` and
+    hands the object to the backend, which these tests stub, so the smallest real array serves.
+    This is NOT the fallback a4 refuses to build for itself: that refusal is about the PROBE
+    substituting a synthetic frame in a container, and it stays intact above.
+    """
+    import numpy as np
+    return np.zeros((4, 4, 3), dtype=np.uint8)
+
 try:
     import pytest
 except ImportError:      # script mode on a host without pytest; the marker below still records the gap
@@ -124,12 +137,18 @@ def test_a_probe_that_raises_is_skipped_not_passed():
         raise RuntimeError("deliberate: the harness must record this, not pass it")
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "p.json")
-        saved = dict(g.PROBES)
-        g.PROBES["zz"] = ("deliberately_raises", _raises)
+        # Registering a NEW id in PROBES alone is now a misconfiguration the gate refuses by
+        # design: `bound` is the second half of the registration and a test cannot reach it
+        # (it is a local literal in main()). That guard exists because a9 and a10 each shipped
+        # half-registered. So make an ALREADY-registered probe raise instead -- `bound` reads
+        # the module global when main() runs, so patching the function is enough, and the path
+        # under test (a probe raises -> recorded, never passed) is exactly the same one.
+        saved_fn = g.a4_perception_twice
+        g.a4_perception_twice = _raises
         try:
-            rc = g.main(["--only", "zz", "--out", out])
+            rc = g.main(["--only", "a4", "--out", out])
         finally:
-            g.PROBES.clear(); g.PROBES.update(saved)
+            g.a4_perception_twice = saved_fn
         check(rc == 1, "a probe that raises must abort, not pass")
         rep = json.load(open(out))
         check(rep["probes"][0]["ok"] is None, rep)

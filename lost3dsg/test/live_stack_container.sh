@@ -424,6 +424,31 @@ RTABMAP_PID=$!   # now the node itself, not a launcher: the close path's SIGINT 
 # ("Could not determine the type", run 20260907_170421, 2 lines, nothing recorded) -- rtabmap starts
 # ~120 s after this line. With the type it subscribes now and waits.
 ros2 topic echo --csv --full-length /rtabmap/localization_pose geometry_msgs/msg/PoseWithCovarianceStamped > /tmp/localization_pose.log 2>&1 &
+# ===== HER PROCEDURE (owner 2026-09-09): the stack comes up through the ROS launch file =====
+# "From now on we have to use habitat launch ros2 launch file and then run the feed separately."
+# The feed host (host side) and habitat_feed_node (above) stay separate, as they already were;
+# what changes is that rtabmap, perception_2, object_manager_6, graph_api_bridge, rviz2 and the
+# wall detector are started by lost3dsg/launch/habitat_launch.py instead of one by one here.
+# The launch file is Sara's, taken from GRAPH-API main: it carries the rtabmap settings her working
+# localisation uses (exact sync, empty odom frame, the publish_tf split) and it is the only version
+# that declares use_wall_detector. EXERCISED end to end on 2026-09-09 before this was written:
+# rtabmap, perception_2, object_manager_6, rviz2 and wall_detector all up, first cycle 5 detections.
+#
+# LEGACY=1 restores the one-by-one starts below. Kept for one cycle because the close path's
+# RTABMAP_PID becomes the `ros2 launch` process rather than the node — harmless, since the close
+# also signals by pattern (`pkill -INT -f rtabmap_slam/rtabmap`, the case this file was originally
+# written for), but not yet exercised through a full close.
+if [ "${LEGACY_NODE_STARTS:-0}" != "1" ]; then
+  _wall_arg=$([ "${WALL_DETECTOR:-0}" = "1" ] && echo true || echo false)
+  _loc_arg=$([ "${FEED_POSE_SOURCE:-simulator}" = "rtabmap" ] && echo rtabmap || echo ground_truth)
+  echo ">>> stack via habitat_launch.py (use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg)"
+  ros2 launch lost3dsg habitat_launch.py \
+      use_wall_detector:="$_wall_arg" localization_mode:="$_loc_arg" \
+      > /tmp/launch.log 2>&1 &
+  LAUNCH_PID=$!
+  # The close path signals rtabmap by PATTERN as well as by pid, so a launcher pid here is safe.
+  RTABMAP_PID=$LAUNCH_PID; OM6_PID=""; PERCEPTION_PID=""; WALLS_PID=""
+else
 ros2 run lost3dsg object_manager_6.py > /tmp/om6.log 2>&1 &
 OM6_PID=$!
 python3 /ws/install/lost3dsg/lib/lost3dsg/graph_api_bridge.py > /tmp/bridge.log 2>&1 &
@@ -462,6 +487,7 @@ else
   : > /tmp/walls.log
 fi
 WALLS_PID=$!
+fi   # end of the legacy one-by-one starts
 
 # periodic snapshots of the annotated detection image for the host
 ros2 run image_view image_saver --ros-args -r image:=/image_with_bb \
@@ -573,6 +599,25 @@ while [ -z "$_dead_node" ]; do
       _dead_node="$_n"; break
     fi
   done
+  # UNDER THE LAUNCH FILE THE PID WATCH SEES ONE PROCESS, NOT SIX. `ros2 launch` keeps running when
+  # a node under it dies — measured 2026-09-09: perception_2 died at startup and rtabmap carried on
+  # for minutes — so without this the run would continue with the detector gone. The launch output
+  # names the node and its exit code, so that line ends the run and supplies GA-430's field. It is
+  # prose rather than an interface, which is exactly what GA-430 was written to stop depending on;
+  # under this route it is the only source there is, and the field is parsed from it ONCE here
+  # rather than grepped by every reader afterwards.
+  if [ -z "$_dead_node" ] && [ -n "${LAUNCH_PID:-}" ] && [ -f /tmp/launch.log ]; then
+    _died=$(grep -m1 -oE "\[[a-zA-Z0-9_.-]+\]: process has died \[pid [0-9]+, exit code -?[0-9]+" /tmp/launch.log || true)
+    if [ -n "$_died" ]; then
+      _dead_node=$(printf '%s' "$_died" | sed -E 's/^\[([a-zA-Z0-9_.-]+)\].*/\1/')
+      _dead_rc=$(printf '%s' "$_died" | sed -E 's/.*exit code (-?[0-9]+)/\1/')
+      break
+    fi
+    if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
+      _dead_rc=0; wait "$LAUNCH_PID" || _dead_rc=$?
+      _dead_node="ROS2_LAUNCH"; break
+    fi
+  fi
   # THE PID WATCH ABOVE WOULD NOT HAVE CAUGHT RUN A, and saying so is the point of this block.
   # RTABMAP_PID is the `ros2 launch` process, not the rtabmap node. In run A the node aborted
   # ("[ERROR] [rtabmap-1]: process has died [pid 1458, exit code -6]") and the LAUNCH SURVIVED it,

@@ -34,6 +34,8 @@ from hooks import DecisionLog, load_hooks
 from nav_msgs.msg import Path
 from nlp_utils import get_embedding, lost_similarity, lost_similarity_detailed, world2vec
 from object_services import (
+    MERGE_MAX_DISTANCE,
+    MERGE_MIN_SIMILARITY,
     ObjectServices,
     ensure_relations,
     fuse_orientation,
@@ -1634,6 +1636,12 @@ class ObjectManagerService(Node):
                     # generic annotation, so the merge survivor rule (`merge_rank`) can put
                     # credibility before age. None when the hook wrote no verdict.
                     new_obj.admission_grade = (ann.get("verdict") or {}).get("grade")
+                    # GA-372 (GA-314 tie-break, owner ruling 2026-09-08). How many of the verdict's
+                    # property slots the proposal filled (0-8: dimensions, entity, colour,
+                    # material, description, orientation, room, relations). Equal grades are
+                    # broken on this before age, so the better-observed identity survives.
+                    # None when the hook wrote no gaps block.
+                    new_obj.admission_filled = (ann.get("gaps") or {}).get("filled")
 
                     new_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
                     current_perception_objects.append(new_obj)
@@ -1967,9 +1975,11 @@ class ObjectManagerService(Node):
             # 0.8 and 0.75 against a sim_threshold of 0.85, so merge fused pairs the
             # association loop had just refused. object_services asserts the ordering at
             # load; these are read from the same block.
-            "max_distance": CFG["association"].get("merge_max_distance_m", 0.8),
-            "min_similarity": CFG["association"].get(
-                "merge_min_similarity", SIM_THRESHOLD + (1.0 - SIM_THRESHOLD) / 2.0),
+            # GA-341: ONE source. object_services owns the five merge thresholds (it reads the
+            # config and asserts the ordering at load); this client no longer carries its own
+            # copy of the fallbacks, which could drift from the service's.
+            "max_distance": MERGE_MAX_DISTANCE,
+            "min_similarity": MERGE_MIN_SIMILARITY,
             "dry_run": False,
         }
 

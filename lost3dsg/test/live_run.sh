@@ -569,6 +569,21 @@ fi
 EXT_E_ARGS=""
 for _v in ${EXT_ENV_PASS:-}; do EXT_E_ARGS="$EXT_E_ARGS -e $_v"; done
 
+# A CONFIG THAT NAMES AN EXTENSION FILTER NEEDS THAT EXTENSION'S ENVIRONMENT. Without it the
+# object manager dies at the first proposal carrying a room, mid-run, twenty minutes in --
+# measured 2026-09-09 by the simulator lane running the launch path by hand. A launch-time
+# refusal is the same information, an hour earlier and with the map still unbuilt.
+if [ -z "${EXT_ENV_FILE:-}" ] && grep -qE '^\s*filter:\s*"[^"]+"' "$HERE/$CFG_NAME" 2>/dev/null; then
+  echo "!! $CFG_NAME wires an extension filter but EXT_ENV_FILE is unset."
+  echo "   The extension's variables would never reach the container and the run would die"
+  echo "   at the first proposal that needs one. Set EXT_ENV_FILE, or clear hooks.filter."
+  exit 1
+fi
+
+# CAMERA PITCH, in degrees, negative looks DOWN. It reaches the feed host and the bundle: a
+# setting that changes what the camera SEES and is not recorded is the shape that made six days
+# of tour runs unreadable.
+export FEED_CAMERA_PITCH_DEG="${FEED_CAMERA_PITCH_DEG:-0}"
 export ROOM_FRAME_MAX="${ROOM_FRAME_MAX:-5}"
 export ROOM_FRAME_STRIDE_M="${ROOM_FRAME_STRIDE_M:-1.5}"
 # GA-359 (owner 2026-09-07 ~18:20 "switch to rtabmap localised poses"; design plan/14). The pose
@@ -954,6 +969,8 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "mapping_seconds": $FEED_MAPPING_SECONDS,
     "mapping_only": $([ "$MAPPING_ONLY" = "1" ] && echo true || echo false),
     "spawn_floor_requested": $([ -n "$FEED_SPAWN_FLOOR" ] && echo "$FEED_SPAWN_FLOOR" || echo null),
+    "camera_pitch_deg": $FEED_CAMERA_PITCH_DEG,
+    "camera_pitch_note": "negative looks DOWN, applied to rgb, depth and semantic together. 0 is the level camera every run before 2026-09-09 used.",
     "seed_source": "$SEED_SOURCE",
     "scene_source": "$SCENE_SOURCE",
     "draw_note": "drawn = this run chose it among the published per-floor maps (MAP_DRAW=1); pinned = the recipe named it. An A/B arm pins both.",
