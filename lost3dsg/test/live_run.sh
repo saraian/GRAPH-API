@@ -715,50 +715,39 @@ sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2]
       echo "    scene-level map stamped for floor $FEED_SPAWN_FLOOR — using it"
     fi
   fi
-  if [ -f "$_mapdir/rtabmap.db" ]; then
-    # GA-336. LOCALIZE AGAINST A WRITABLE COPY, NEVER THE CANONICAL FILE.
+if [ -f "$_mapdir/rtabmap.db" ]; then
+    # GA-433 (2026-09-10). THE PUBLISHED MAP IS NOT USED, AND THIS SAYS SO INSTEAD OF PRETENDING.
     #
-    # GA-295 mounts maps/ :ro so a run can never mutate the published map — that rule stands and
-    # it caught a real mutation (§27). But in localization mode rtabmap is handed the map as its
-    # OWN database_path, and its close path writes the 2D occupancy grid back into it. Measured
-    # in run 20260907_004128, the first localization run ever to reach a graceful shutdown:
-    #   [FATAL] DBDriverSqlite3.cpp:5348::save2DMapQuery() Condition (rc == SQLITE_DONE) not met!
-    #           [DB error (0.23.7): attempt to write a readonly database]   -> UException, exit -6
-    # Every earlier run died in the map::at abort band before reaching close, which is why a
-    # read-only mount and a writing close path coexisted for days without anyone seeing it.
+    # Until today this branch copied the map to scratch (~1.2 GB, 12 s), exported
+    # RTABMAP_LOCALIZE_DB and printed "localizing against a scratch COPY". habitat_launch.py owns
+    # rtabmap now and hardcodes database_path /root/.ros/rtabmap.db with --delete_db_on_start, so
+    # the copy was never opened: the run mapped fresh while its log and its bundle said localized.
+    # That is the failure GA-380 refuses in the other direction, so the copy and the claim are gone
+    # and the regime is named in run_metadata.json instead (localization_regime).
     #
-    # SCRATCH, NOT THE BUNDLE: the copy is ~1.2 GB and it is not evidence — the canonical file's
-    # provenance sidecar is. $OUT_DIR is the live scratch mount (/out in the container) and the
-    # cleanup trap only archives *.json/*.jsonl/*.log from it, so a .db never reaches the bundle.
-    # The trap deletes it after the container has exited, i.e. after rtabmap has closed.
-    _canon_db="$_mapdir/rtabmap.db"
-    LOCALIZE_DB_COPY="$OUT_DIR/localize_db_copy.db"
-    cp "$_canon_db" "$LOCALIZE_DB_COPY" || { echo "!! could not copy the localization map to scratch — aborting rather than localizing against the read-only canonical file"; exit 1; }
-    # The container refuses a map without its .params-sha sidecar (live_stack_container.sh, the
-    # MAP PARAMETER MISMATCH check), so the copy must carry the sidecar too, or every localization
-    # run refuses to start. Measured cost of the copy on this host: 12 s for 1.2 GB (2026-09-07).
-    cp "$_canon_db.params-sha" "$LOCALIZE_DB_COPY.params-sha" || { echo "!! could not copy $_canon_db.params-sha — the container would refuse the map without it"; exit 1; }
-    # The bundle must still name EXACTLY which map ran. The sha is recomputed here, not read from
-    # the sidecar: the sidecar records the file at publish time, and this records the file that
-    # this run actually opened.
-    LOCALIZE_DB_SOURCE="$_canon_db"
-    LOCALIZE_DB_SHA=$(sha256sum "$_canon_db" | cut -c1-16)
-    export RTABMAP_LOCALIZE_DB="/out/localize_db_copy.db"
+    # THE MAP LIBRARY IS DEAD CODE UNDER THIS CONFIGURATION — the params-sha sidecar, the :ro
+    # canonical mount (GA-295/158), the scratch copy (GA-336) and the per-floor publish refusal
+    # (GA-380). It is left standing, unused, pending the owner's ruling on the localization regime.
+    LOCALIZE_DB_SOURCE=""
+    LOCALIZE_DB_SHA=""
     export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-0}"
-    echo "    localizing against a scratch COPY of $_canon_db (sha $LOCALIZE_DB_SHA, mapping phase 0s)"
+    echo "    a published map exists at $_mapdir/rtabmap.db and THIS RUN WILL NOT USE IT."
+    echo "    habitat_launch.py maps fresh every launch (--delete_db_on_start); see PLAN_1.3 §67."
   elif ls -d "$WORKSPACE_ROOT/maps/$SCENE_ARG"/floor_* >/dev/null 2>&1; then
     # GA-380 (2026-09-08). Maps are published PER FLOOR now and the scene-level rtabmap.db of
     # hm3d_00861 was moved aside on 7 Sep, so an unpinned localisation run would have fallen
     # through to "map from scratch" with a note nobody reads — a verification run that was meant
     # to localise would have mapped for 150 s and measured a different regime (rule 14: the
     # fallback is the defect). Refuse and name the floors that exist.
+    # GA-433 (2026-09-10): no run localises any more, so the refusal no longer protects a regime.
+    # It is kept because it still forces the spawn floor to be chosen deliberately rather than
+    # inherited from seed-7's unconstrained spawn, which lands on whichever storey it lands on.
     echo "!! NO map at $_mapdir, but this scene has per-floor maps: $(ls -d "$WORKSPACE_ROOT/maps/$SCENE_ARG"/floor_* | xargs -n1 basename | tr '\n' ' ')"
     echo "   Pin FEED_SPAWN_FLOOR=<z> to localise against one of them (or set RTABMAP_LOCALIZE_DB). Refusing to map from scratch by accident."
     exit 1
   else
-    echo "    NO published map at $_mapdir — this run will MAP from scratch."
-    echo "    That is the fallback, not the intent: publish a map for this scene and floor and"
-    echo "    subsequent runs will localize instead of re-mapping."
+    echo "    NO published map at $_mapdir. This run maps from scratch — as every run does now."
+    echo "    Publishing a map will NOT change that: habitat_launch.py passes --delete_db_on_start."
   fi
 fi
 if [ "$MAPPING_ONLY" = "1" ]; then
@@ -1012,6 +1001,7 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
                "note": "raised from 640x480 by owner ruling 25. A gain measured here is a gain of the SYSTEM: resolution moves detector, segmentation, depth and describer together and cannot be attributed to one without a second arm."},
     "gt_semantic": ${FEED_GT_SEMANTIC:-0},
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
+    "localization_regime": "fresh_map_per_launch",
     "localize_db_note": "GA-336: localize_db points at a SCRATCH COPY deleted at exit, so the path alone identifies nothing. localize_db_source + localize_db_sha256_16 name the canonical file this run actually opened.",
     "localize_db_source": $([ -n "${LOCALIZE_DB_SOURCE:-}" ] && echo "\"$LOCALIZE_DB_SOURCE\"" || echo null),
     "localize_db_sha256_16": $([ -n "${LOCALIZE_DB_SHA:-}" ] && echo "\"$LOCALIZE_DB_SHA\"" || echo null),
