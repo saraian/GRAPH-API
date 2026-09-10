@@ -124,7 +124,7 @@ export HF_HOME="${HF_HOME:-/models/hf}"
 #
 # THE CACHE WAS WARMED FIRST AND THE LOADS WERE MEASURED, not assumed. facebook/dinov2-small and
 # facebook/dinov2-base were cached NOWHERE on this host until 2026-09-10 -- not in
-# /DATA/huggingface_cache, not in /DATA/FOUND/.hf_cache, not in ~/.cache/huggingface -- and
+# /DATA/huggingface_cache, not in any extension's own cache, not in ~/.cache/huggingface -- and
 # visual_reid.py loads one of them on EVERY run whatever the backend. All four models were then
 # loaded inside this image with HF_HUB_OFFLINE=1: dinov2-small, dinov2-base,
 # all-MiniLM-L6-v2 and owlv2-base-patch16-ensemble. a4 asserts the same four, so a cold cache is
