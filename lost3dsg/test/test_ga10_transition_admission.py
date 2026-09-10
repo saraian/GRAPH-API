@@ -41,6 +41,9 @@ def run(update_ok):
     n._note_update = lambda *a, **k: None
     n.update_spatial_relations = lambda: None
     n.room_manager.update_current_room_semantics = lambda objs: None
+    # object_tracking_callback calls the ALL-rooms variant since the room resegmentation
+    # landed; a stub carrying only the old name made this test die on the rename.
+    n.room_manager.update_all_rooms_semantics = lambda objs: None
     for f in ("publish_persistent_bboxes", "publish_persistent_centroids", "publish_uncertain_bboxes",
               "publish_uncertain_centroids", "save_uncertain_objects", "save_persistent_perceptions"):
         setattr(om6, f, lambda *a, **k: None)

@@ -195,7 +195,7 @@ if CFG_PATH is None:
 W = int(os.environ.get("FEED_WIDTH", hab_cfg.get("width", 1280)))
 H = int(os.environ.get("FEED_HEIGHT", hab_cfg.get("height", 960)))
 HFOV = float(os.environ.get("FEED_HFOV", hab_cfg.get("hfov", 90.0)))
-CAMERA_PITCH_DEG = float(os.environ.get("FEED_CAMERA_PITCH_DEG", "0.0"))
+CAMERA_PITCH_DEG = float(os.environ.get("FEED_CAMERA_PITCH_DEG", hab_cfg.get("camera_pitch_deg", 0.0)))
 SENSOR_HEIGHT = 1.5
 
 
@@ -1315,6 +1315,11 @@ class Tour:
             if not hasattr(self, "_tour") or self._tour is None:
                 self._tour = self._tour_waypoints(TEST_TOUR)
                 self._tour_i = 0
+                # GA-431. Reaches are COUNTED, not inferred from the index. The index also advances
+                # when a dwell ends, and a tour still walking toward waypoint 3 has the same index as
+                # one that has just arrived at it -- so an index alone cannot answer "did the tour
+                # finish", which is the question a baseline turns on.
+                self._tour_reached = 0
                 self._tour_scan = 0
                 self._dwelling = False
                 self._dwell_frames = 0
@@ -1361,6 +1366,7 @@ class Tour:
             except Exception:
                 action = None
             if action is None:
+                self._tour_reached += 1                                    # GA-431
                 print(f"[feed] TEST TOUR: reached waypoint {self._tour_i}", flush=True)
                 self._tour_scan = max(TEST_TOUR_SCAN, TOUR_DWELL_MIN) if TOUR_DWELL_DYNAMIC \
                     else TEST_TOUR_SCAN
@@ -1677,7 +1683,8 @@ def main():
     # is not the only way this file is started, and a run started any other way was exactly how
     # run 19 became unrecoverable. This line costs nothing and fails closed.
     print(f"[feed] resolved: walk={walk_frames} dwell={dwell_frames} fps={FPS} "
-          f"mapping_seconds={MAPPING_SECONDS} seed={SEED} scene={SCENE}", flush=True)
+          f"mapping_seconds={MAPPING_SECONDS} seed={SEED} scene={SCENE} "
+          f"camera_pitch_deg={CAMERA_PITCH_DEG}", flush=True)
     print(f"[feed] dwell_mode={DWELL_MODE} hold_min={DWELL_MIN} hold_max={DWELL_MAX} "
           f"signal_max_age_s={DWELL_SIGNAL_MAX_AGE_S} signal={_MERGE_PENDING_PATH}"
           + (" (FEED_DWELL is IGNORED in adaptive mode)" if DWELL_MODE == "adaptive" else ""),
@@ -1824,6 +1831,17 @@ def main():
                 "dwell_min_frames": DWELL_MIN,
                 "dwell_max_frames": DWELL_MAX,
                 "dwell_signal_max_age_s": DWELL_SIGNAL_MAX_AGE_S,
+                # GA-431. The tour existed only as log text, so no bundle could say whether its own
+                # tour FINISHED. Four keys, and the first two are settings while the last two are
+                # outcomes -- the distinction that let a configured tour be read as a completed one
+                # for six days (rule 68). `requested` is what the recipe asked for; `planned` is what
+                # farthest-point sampling could actually place on the storey, which can be fewer;
+                # `reached` is the count of arrivals; `ended_on_index` is where the run stopped.
+                # A tour finished when reached == planned and planned > 0.
+                "tour_waypoints_requested": TEST_TOUR,
+                "tour_waypoints_planned": len(getattr(tour, "_tour", None) or []) if tour else 0,
+                "tour_waypoints_reached": getattr(tour, "_tour_reached", 0) if tour else 0,
+                "tour_ended_on_index": getattr(tour, "_tour_i", None) if tour else None,
                 **hold.stats(),
                 "mapping_seconds": MAPPING_SECONDS,
                 # GA-219: the walk radius was a measurement nobody could reproduce because no
