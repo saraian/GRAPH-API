@@ -314,6 +314,13 @@ PY
     # not failing loudly: it is silently skipping whatever the trap had left to do.
     if [ "${MAPPING_ONLY:-0}" = "1" ]; then
       echo "GA-293 store repair: skipped, MAPPING_ONLY run has no extension store" >> "$RUN_DIR/logs/store_repair.log"
+    elif [ -z "${EXT_STORE_REPAIR:-}" ]; then
+      # NO HOOK IS A SKIP, NOT A SUCCESS. The command below read `${EXT_STORE_REPAIR:-true}`, so
+      # with no hook configured the container ran `true <path>`: nothing done, exit 0, and the
+      # guard -- which tests rc -ne 0 -- recorded a SUCCESSFUL repair. A default that cannot fail
+      # is not a default, it is a silent pass. Absent-hook and failed-repair are different states.
+      echo "GA-293 store repair: skipped, no extension repair hook configured (EXT_STORE_REPAIR unset)" \
+        >> "$RUN_DIR/logs/store_repair.log"
     else
       _kg="$RUN_DIR/knowledge_graph.ttl"
       _kg_before=$( [ -f "$_kg" ] && wc -l < "$_kg" || echo 0 )
@@ -322,11 +329,14 @@ PY
       # wall deleting a root-owned store from my scratch. EXERCISED here, which the author could not
       # do: --user with PYTHONUSERBASE installs the wheel with pip --user and the artefacts come out
       # owned by the invoking user. The one warning it prints is pip's cache being unwritable.
+      # THE TWO EXT_ VARIABLES MUST BE PASSED WITH -e. They are HOST variables; inside the
+      # single-quoted block below they expand in the CONTAINER, where they are unset.
       docker run --rm --entrypoint bash --user "$(id -u):$(id -g)" -e PYTHONUSERBASE=/tmp/pyuser \
+        -e EXT_MOUNT_POINT -e EXT_STORE_REPAIR \
         -v "$WORKSPACE_ROOT":"$EXT_MOUNT_POINT":ro -v "$RUN_DIR":/ws/output "$IMAGE_TAG" -lc '
           python3 -c "import pyoxigraph" 2>/dev/null ||
             pip install --user --quiet --no-index --find-links="$EXT_MOUNT_POINT"/vendor/wheels pyoxigraph
-          cd "$EXT_MOUNT_POINT" && ${EXT_STORE_REPAIR:-true} /ws/output/knowledge_graph.ttl
+          cd "$EXT_MOUNT_POINT" && $EXT_STORE_REPAIR /ws/output/knowledge_graph.ttl
         ' >> "$RUN_DIR/logs/store_repair.log" 2>&1
       _repair_rc=$?
       _kg_after=$( [ -f "$_kg" ] && wc -l < "$_kg" || echo 0 )
