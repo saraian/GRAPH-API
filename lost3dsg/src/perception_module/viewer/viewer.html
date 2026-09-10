@@ -2319,6 +2319,117 @@
         });
       }
 
+      // 3a. DETECTED ROOM AREAS. The polygons the run's own room segmentation produced,
+      // from room.json via /bev_data (the dashboard joins the two files; the feed host
+      // publishes no `rooms` key). Drawn BEFORE the trajectory and the objects so it reads as
+      // ground rather than as another marker on top of them.
+      //
+      // Each room gets a hue from its id, so the same room keeps its colour across a redraw
+      // and two adjacent rooms cannot come out the same by accident.
+      if (Array.isArray(data.rooms) && data.rooms.length) {
+        data.rooms.forEach((rm, i) => {
+          const poly = rm.polygon;
+          if (!Array.isArray(poly) || poly.length < 3) return;
+          const hue = (i * 67) % 360;
+          ctx.beginPath();
+          poly.forEach((pt, k) => {
+            const px = cx + (pt[0] - ax) * scale;
+            const py = cy + (pt[1] - az) * scale;
+            if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          });
+          ctx.closePath();
+          ctx.fillStyle = 'hsla(' + hue + ', 70%, 55%, 0.16)';
+          ctx.fill();
+          ctx.strokeStyle = 'hsla(' + hue + ', 80%, 65%, 0.75)';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          // The label sits at the room's own centroid, not at the polygon's bounding-box
+          // centre: a concave room's box centre can fall outside the room entirely.
+          const c = rm.centroid;
+          if (c && c.length >= 2 && currentZoom > 0.6) {
+            const lx = cx + (c[0] - ax) * scale, ly = cy + (c[1] - az) * scale;
+            ctx.fillStyle = 'hsla(' + hue + ', 90%, 80%, 0.95)';
+            ctx.font = '600 9px ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            const txt = (rm.label || rm.room_id || '') +
+                        (rm.area_m2 ? '  ' + Number(rm.area_m2).toFixed(1) + 'm2' : '');
+            ctx.fillText(txt, lx, ly);
+            ctx.textAlign = 'start';
+          }
+        });
+      }
+
+      // 3b. DETECTED WALLS, kept visually distinct from the ground-truth walls the 3D view
+      // draws in grey: these are what the wall detector FOUND, and conflating a measurement
+      // with its reference is the mistake this whole dashboard is written against.
+      // Amber, and thicker than the grid.
+      //
+      // Every recorded bundle so far carries an EMPTY list here, because these runs launch
+      // with `use_wall_detector:=false` (measured: 0 of 126 bundles have a non-empty
+      // `detected_walls`). The layer draws nothing until the detector runs, and that is the
+      // correct behaviour -- an absent thing must not look like a broken one.
+      if (Array.isArray(data.detected_walls) && data.detected_walls.length) {
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        data.detected_walls.forEach(wl => {
+          // Two shapes are accepted because the producer has not settled: a segment as
+          // [[x1,y1],[x2,y2]], or an object carrying a `points` polyline.
+          const seg = Array.isArray(wl) ? wl : (wl && wl.points);
+          if (!Array.isArray(seg) || seg.length < 2) return;
+          seg.forEach((pt, k) => {
+            if (!pt || pt.length < 2) return;
+            const px = cx + (pt[0] - ax) * scale;
+            const py = cy + (pt[1] - az) * scale;
+            if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          });
+        });
+        ctx.stroke();
+      }
+
+      // 3c. THE EXPLORATION SCHEDULE: the route the run was told to walk, as against the
+      // trajectory it actually walked (section 4). Two different claims, so two different
+      // looks -- the plan is a dashed violet polyline, the traveled path a solid emerald one.
+      // `schedule` is null when no schedule drives the run, and the whole block is skipped.
+      if (data.schedule && Array.isArray(data.schedule.path) && data.schedule.path.length > 1) {
+        const sch = data.schedule;
+        ctx.save();
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = 'rgba(167, 139, 250, 0.85)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        sch.path.forEach((pt, k) => {
+          const px = cx + (pt[0] - ax) * scale;
+          const py = cy + (pt[1] - az) * scale;
+          if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // The 360-degree scan points, numbered in visit order so the route can be followed.
+        (sch.stops || []).forEach(st => {
+          const xyz = st.xyz || st;
+          if (!xyz || xyz.length < 2) return;
+          const px = cx + (xyz[0] - ax) * scale, py = cy + (xyz[1] - az) * scale;
+          ctx.beginPath(); ctx.arc(px, py, 3.5, 0, 2 * Math.PI);
+          ctx.fillStyle = '#a78bfa'; ctx.fill();
+          if (currentZoom > 0.8 && st.order != null) {
+            ctx.fillStyle = '#ede9fe';
+            ctx.font = '600 8px ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(String(st.order), px, py - 5);
+            ctx.textAlign = 'start';
+          }
+        });
+        // The root of the depth-first search, ringed so the start of the route is findable.
+        const rt = sch.root;
+        if (rt && rt.length >= 2) {
+          const px = cx + (rt[0] - ax) * scale, py = cy + (rt[1] - az) * scale;
+          ctx.strokeStyle = '#c4b5fd'; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(px, py, 7, 0, 2 * Math.PI); ctx.stroke();
+        }
+        ctx.restore();
+      }
+
       // 4. Traveled Path Trajectory (Glowing Emerald)
       const path = (data.traveled_path && data.traveled_path.length > 1) ? data.traveled_path : clientTraveledPath;
       if (path && path.length > 1) {

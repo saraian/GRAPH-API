@@ -50,6 +50,7 @@ Box3 against the ground truth's own AABB and paints the status line red when it 
 """
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 try:
@@ -351,7 +352,30 @@ def scene_payload(bundle, gt_scene=None):
     d = RUNS_DIR / bundle
     out = {"bundle": bundle, "objects": [], "walls": [], "openings": [],
            "agent": None, "floor": None, "gt_scene": None, "gt_regions": 0,
-           "gt_aabb": None}
+           "gt_aabb": None,
+           # SEPARATE KEYS, for the reason the docstring above already gives about measured
+           # vs truth: `walls` is GROUND TRUTH from the scene file, `detected_walls` is what
+           # the wall detector FOUND, and `schedule` is what the run was TOLD to walk. Three
+           # different claims; merging any two would let the page render one as another.
+           "detected_walls": [], "schedule": None}
+
+    # The run's own room segmentation and the plan it followed. Both are optional: every
+    # bundle recorded so far has an empty `detected_walls` because these runs launch with
+    # `use_wall_detector:=false` (measured: 0 of 126), and `schedule` is null unless a
+    # schedule drove the run.
+    try:
+        _room = json.loads((d / "room.json").read_text())
+        if isinstance(_room, dict):
+            out["detected_walls"] = [w for w in (_room.get("detected_walls") or [])
+                                     if isinstance(w, (list, dict))]
+    except (OSError, ValueError):
+        pass
+    try:
+        _bev = json.loads((d / "bev_data.json").read_text())
+        if isinstance(_bev, dict) and isinstance(_bev.get("schedule"), dict):
+            out["schedule"] = _bev["schedule"]
+    except (OSError, ValueError):
+        pass
 
     pp = d / "persistent_perception.json"
     if pp.is_file():
@@ -770,12 +794,15 @@ function holdAim() {
 }
 
 const G = {};
-for (const k of ['floor', 'mesh', 'wall', 'open', 'obj', 'path', 'robot']) {
+// `dwall` and `sched` are their own groups, NOT extra children of `wall` and `path`: the
+// GT walls and the traveled path are a different claim from the detected walls and the
+// planned route, and one toggle over both would make them one thing on screen.
+for (const k of ['floor', 'mesh', 'wall', 'dwall', 'open', 'obj', 'path', 'sched', 'robot']) {
   G[k] = new THREE.Group();
   scene.add(G[k]);
 }
 const show = {obj: true, wall: true, open: true, path: true, label: false, floor: true,
-              mesh: true, robot: true};
+              mesh: true, robot: true, dwall: true, sched: true};
 
 // THE ORBIT CENTRE, DRAWN. There was no marker here before this round -- the centre was an
 // invisible point you could only locate by orbiting and watching what stood still. Three
@@ -963,6 +990,66 @@ for (const w of P.wall_mass) {
 
 // An opening NO surface claimed is still drawn, as the box it always was. Dropping it would
 // make an aperture the ground truth does have look like one it does not.
+// ---- DETECTED WALLS AND THE PLANNED ROUTE ---------------------------------------------
+// Both are drawn at the storey height rather than guessed: every schedule point carries its
+// own y, and a detected wall is a ground-plane segment lifted to the floor it belongs to.
+// AMBER for detected, against the grey of ground truth, and VIOLET dashes for the plan
+// against the solid line of the path actually walked.
+const DWALL_MAT = new THREE.LineBasicMaterial({color: 0xf59e0b, linewidth: 2});
+const SCHED_MAT = new THREE.LineDashedMaterial({color: 0xa78bfa, dashSize: 0.25, gapSize: 0.18});
+
+function wallSegments(w) {
+  // The producer has not settled on one shape, so both are read: a bare [[x,y],[x,y]]
+  // segment, or an object with a `points` polyline and an optional `z`.
+  const pts = Array.isArray(w) ? w : (w && w.points);
+  if (!Array.isArray(pts) || pts.length < 2) return null;
+  const z = (w && typeof w.z === 'number') ? w.z : (P.floor && P.floor.z) || 0;
+  const out = [];
+  for (const q of pts) {
+    if (!q || q.length < 2) continue;
+    // A 3-component point states its own height; a 2-component one sits on the storey.
+    out.push(new THREE.Vector3(q[0], q[1], q.length > 2 ? q[2] : z));
+  }
+  return out.length >= 2 ? out : null;
+}
+
+for (const w of (P.detected_walls || [])) {
+  const pts = wallSegments(w);
+  if (!pts) continue;
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), DWALL_MAT);
+  line.userData = {floor: (w && w.floor) != null ? w.floor : null};
+  G.dwall.add(line);
+}
+
+if (P.schedule && Array.isArray(P.schedule.path) && P.schedule.path.length > 1) {
+  const sy = typeof P.schedule.storey_y === 'number' ? P.schedule.storey_y : 0;
+  const at = q => new THREE.Vector3(q[0], q[1], q.length > 2 ? q[2] : sy);
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(P.schedule.path.map(at)), SCHED_MAT);
+  // computeLineDistances or the dashes never appear -- a dashed material on a Line draws
+  // solid without it, which would make the plan indistinguishable from the walked path.
+  line.computeLineDistances();
+  G.sched.add(line);
+  // Each 360-degree scan point as a small ring lying in the floor plane, so it reads as a
+  // place to stand rather than as another detected object.
+  const ringGeo = new THREE.RingGeometry(0.12, 0.2, 20);
+  const ringMat = new THREE.MeshBasicMaterial({color: 0xa78bfa, side: THREE.DoubleSide,
+                                               transparent: true, opacity: 0.9});
+  for (const st of (P.schedule.stops || [])) {
+    const q = st && (st.xyz || st);
+    if (!q || q.length < 2) continue;
+    const r = new THREE.Mesh(ringGeo, ringMat);
+    r.position.copy(at(q));
+    r.userData = {order: st && st.order};
+    G.sched.add(r);
+  }
+  if (Array.isArray(P.schedule.root) && P.schedule.root.length >= 2) {
+    const rootRing = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.42, 24), ringMat);
+    rootRing.position.copy(at(P.schedule.root));
+    G.sched.add(rootRing);
+  }
+}
+
 for (const w of P.openings) {
   if (w.cut) continue;
   const [x, y, z] = w.pos, [ex, ey, ez] = w.ext;
@@ -1299,8 +1386,12 @@ function render() {
   queued = true;
   requestAnimationFrame(() => {
     queued = false;
-    for (const k of ['floor', 'mesh', 'wall', 'open', 'obj', 'path', 'robot'])
-      G[k].visible = show[k];
+    // EVERY GROUP, from G itself rather than from a list repeated here. The list was
+    // hardcoded and did not include the two groups added later (`dwall`, `sched`), so their
+    // toggles set a flag that nothing read: the buttons appeared to work and changed nothing.
+    // Deriving the loop from G means a group cannot be added and forgotten.
+    for (const k of Object.keys(G))
+      if (k in show) G[k].visible = show[k];
     // FLOOR MAP IS WHAT YOU SEE WITH THE MESH OFF (owner decision 2026-09-06). Both
     // defaulted on and the GLB is opaque with its own floor at the deck's height -- the
     // deck sits at z 1.21 on hm3d_00861 and the agent walked 1.190 .. 1.217 -- so the plan
@@ -1785,6 +1876,8 @@ cv.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
 function tog(k, el) { show[k] = !show[k]; el.classList.toggle('on', show[k]); render(); }
 document.getElementById('bObj').onclick = e => tog('obj', e.target);
 document.getElementById('bWall').onclick = e => tog('wall', e.target);
+document.getElementById('bDWall').onclick = e => tog('dwall', e.target);
+document.getElementById('bSched').onclick = e => tog('sched', e.target);
 document.getElementById('bOpen').onclick = e => tog('open', e.target);
 document.getElementById('bPath').onclick = e => tog('path', e.target);
 document.getElementById('bFloor').onclick = e => tog('floor', e.target);
@@ -2163,6 +2256,8 @@ def page(bundle):
 <div class="bar">
   <button id="bObj" class="on">OBJECTS</button>
   <button id="bWall" class="on">GT WALLS</button>
+  <button id="bDWall" class="on">DET WALLS</button>
+  <button id="bSched" class="on">SCHEDULE</button>
   <button id="bOpen" class="on">GT OPENINGS</button>
   <button id="bPath" class="on">AGENT PATH</button>
   <button id="bFloor" class="on">FLOOR MAP</button>
@@ -2342,8 +2437,38 @@ def _check_floors():
           "missing bev_data both refused as NOT MEASURED")
 
 
+def _check_layers():
+    """Every scene group is toggleable, and the visibility loop is derived from the groups.
+
+    WHERE THIS CHECK USED TO SIT, and why that was worthless: in the `__main__` block, AFTER
+    `assert a, "no gt_aabb ..."`. On any bundle without ground truth that assertion aborts the
+    run first, so these two lines never executed -- they passed a mutation that hardcoded the
+    loop again and a mutation that added a group with no flag. A check below the thing that can
+    stop the runner is not a check. It needs only the page source, so it runs first now.
+    """
+    h = page("__layers__")
+    # THE VISIBILITY LOOP MUST BE DERIVED FROM G, not from a list repeated beside it. The
+    # hardcoded version silently skipped the two groups added after it was written (`dwall`,
+    # `sched`), so their buttons toggled a flag nothing read: they looked wired and did nothing.
+    assert "for (const k of Object.keys(G))" in h, \
+        "render() iterates a hardcoded group list again; a new group will be skipped"
+    groups = re.search(r"for \(const k of \[([^\]]+)\]\) \{\n  G\[k\]", h)
+    assert groups, "the group list moved; this check is looking at the wrong place"
+    names = [x.strip().strip("'\"") for x in groups.group(1).split(",") if x.strip()]
+    assert {"wall", "dwall", "sched"} <= set(names), names
+    show = re.search(r"const show = \{([^}]+)\}", h)
+    assert show, "the show table moved"
+    missing = [n for n in names if f"{n}:" not in show.group(1)]
+    assert not missing, f"groups with no show flag, so never toggleable: {missing}"
+    for btn in ("bObj", "bWall", "bDWall", "bSched", "bOpen", "bPath", "bFloor", "bLabel",
+                "bReset", "bMesh"):
+        assert f'id="{btn}' in h and f"getElementById('{btn}')" in h, f"{btn} lost its handler"
+    print(f"  layers: {len(names)} groups, each with a show flag and the loop derived from G")
+
+
 if __name__ == "__main__":
     import sys
+    _check_layers()
     _check_merge_walls()
     _check_cut_openings()
     _check_floors()
@@ -2450,7 +2575,7 @@ if __name__ == "__main__":
         "the mesh is no longer clipped to the picked storey"
     assert "function applyFloor(" in h and "function setFloor(" in h, "the storey picker is gone"
     assert "MAPPED" in h, "the page no longer says which storey the run mapped"
-    for btn in ("bObj", "bWall", "bOpen", "bPath", "bFloor", "bLabel", "bReset", "bMesh"):
+    for btn in ("bObj", "bWall", "bDWall", "bSched", "bOpen", "bPath", "bFloor", "bLabel", "bReset", "bMesh"):
         assert f'id="{btn}' in h and f"getElementById('{btn}')" in h, f"{btn} lost its handler"
     # BROWSER FINDINGS, 2026-09-04: the KG viewport did not follow a container resize
     # (39 of 77 nodes rendered inside after one window resize vs 77 of 77 at load), the
