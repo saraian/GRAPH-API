@@ -5,5 +5,5 @@
 # EMPTY: it named one machine's package and path, and a clean clone then depended on a checkout
 # nobody else had. The repository ships the seam; the deployment ships the wiring.
 hooks:
-  search_paths: ["/path/to/your/extension/checkout"]   # e.g. /root/exchange/FOUND
-  filter: "yourpkg.filter:YourFilterClass"             # e.g. found.filter:OntologicalFilter
+  search_paths: ["/path/to/your/extension/checkout"]   # wherever the extension is mounted
+  filter: "yourpkg.filter:YourFilterClass"             # module:Class, as the extension exports it

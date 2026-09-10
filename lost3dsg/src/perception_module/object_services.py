@@ -213,6 +213,18 @@ def fuse_orientation(obj, bbox):
         view = {"yaw": float(bbox["yaw"]),
                 "oriented_center": [float(v) for v in bbox["oriented_center"]],
                 "oriented_extents": [float(v) for v in bbox["oriented_extents"]]}
+    if view is None:
+        # A LEGACY accumulator: n/c/s written by an older build, no representative. The object's
+        # own persisted box is a REAL measured view, so seed from it rather than inventing extents
+        # or dropping an orientation the object legitimately has. If there is no prior either, the
+        # count has no subject: keep the axis out of the box instead of fabricating one.
+        prior_box = getattr(obj, "bbox", None) if obj is not None else None
+        if not _is_oriented(prior_box):
+            acc["view"] = None
+            return out, acc
+        view = {"yaw": float(prior_box["yaw"]),
+                "oriented_center": [float(v) for v in prior_box["oriented_center"]],
+                "oriented_extents": [float(v) for v in prior_box["oriented_extents"]]}
     acc["view"] = view
     out["yaw"] = float(fused)
     out["oriented_center"] = list(view["oriented_center"])
@@ -224,9 +236,21 @@ def fuse_orientation(obj, bbox):
 
 
 def _acc_add(acc, bbox):
+    """Add one ORIENTED view to the axial accumulator.
+
+    The representative is seeded HERE when there is none. Seeding the accumulator from an
+    object's persisted box incremented `n` without ever storing a view, so the next CLIPPED
+    (yaw-less) arrival found `n > 0` and `view is None` and subscripted None. A count and a
+    representative are one fact and must move together.
+    """
     th = 2.0 * float(bbox["yaw"])
+    view = acc["view"]
+    if view is None:
+        view = {"yaw": float(bbox["yaw"]),
+                "oriented_center": [float(v) for v in bbox["oriented_center"]],
+                "oriented_extents": [float(v) for v in bbox["oriented_extents"]]}
     return {"n": acc["n"] + 1, "c": acc["c"] + math.cos(th), "s": acc["s"] + math.sin(th),
-            "view": acc["view"]}
+            "view": view}
 
 
 # GA-314. Credibility order of the admission grades for the merge survivor rule. An ungraded
