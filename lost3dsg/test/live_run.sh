@@ -251,7 +251,7 @@ cleanup() {
     # GA-437 (2026-09-10). tools/ IS THE EXTENSION'S, NOT THIS STACK'S, so its absence is normal.
     # A GRAPH-API-only checkout has no tools/ and every run on Gin printed
     # "ModuleNotFoundError: No module named 'tools'" -- non-fatal, but it is an extension-only tool
-    # survived the 2026-09-09 removal ("this repository names none of them"), and the boundary
+    # that survived the 2026-09-09 removal ("this repository names none of them"), and the boundary
     # checker cannot see it because the name contains no "found". Skipped with a REASON rather than
     # a stack trace; its proper home is EXT_POST_RUN, which the extension already supplies.
     if [ -f "$WORKSPACE_ROOT/tools/class_counts.py" ]; then
