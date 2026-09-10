@@ -213,7 +213,10 @@ cleanup() {
   # pkill here would let two concurrent live_run.sh instances destroy
   # each other's feed host (seen live 2026-08-25).
   [ -n "$MON_PID" ] && kill -9 "$MON_PID" 2>/dev/null || true
-  docker rm -f graphapi_rviz >/dev/null 2>&1 || true   # GA-371: the RViz sibling started below
+  # GA-464: this lane no longer starts a sibling RViz -- the launch file's is the only one. The
+  # removal stays so a stale graphapi_rviz from an older run cannot sit on the network holding
+  # subscriptions and a window that shows the WRONG run's topics.
+  docker rm -f graphapi_rviz >/dev/null 2>&1 || true
   [ -n "$FEED_PID" ] && kill -9 "$FEED_PID" 2>/dev/null || true
   # Archive the HOST-written artefacts here rather than only after the container exits. The
   # per-frame viewpoint series and the feed host's own log are written on this side, and the
@@ -564,6 +567,14 @@ fi
 # 20260902_125130: every dwell line read "? merges pending (sweep None)" and every waypoint
 # ran to the 90-frame cap.
 export RUN_DIR
+# GA-463. rtabmap's database is written to /root/.ros, which habitat_launch.py hardcodes, and until
+# now that was the container's own writable layer -- outside every mount and discarded by --rm.
+# MEASURED: no bundle since the launch-file route holds an rtabmap.db, and the integrity check reads
+# /ws/output/rtabmap.db, a path nothing writes, so it printed "no rtabmap.db — nothing to check" on
+# every run. That reads like a benign skip and is a missing map. Mounting the storey's own directory
+# there writes the database outside docker AND into the bundle, and a later launch cannot destroy it
+# with --delete_db_on_start because each storey has its own.
+mkdir -p "$RUN_DIR/ros"
 mkdir -p "$RUN_DIR/logs" "$RUN_DIR/crops" "$RUN_DIR/snapshots"
 # GA-381. THE DIRECTORY IS CREATED BEFORE THE CHECKS RUN, so every early refusal (a10, the mapping
 # cap check, the missing-map refusal, a bad config) leaves a directory that a sweep cannot tell from
@@ -945,6 +956,16 @@ IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || ech
 # /models/hf, whose host side is HF_SHARED_CACHE, so that is the directory whose refs describe the
 # run. Same value the container now sets HF_HOME to (live_stack_container.sh).
 HF_CACHE=${HF_CACHE:-${HF_SHARED_CACHE:-/DATA/huggingface_cache}}
+
+# GA-463 (2026-09-10). THE BUILD TREE IS AN EXTERNAL DIRECTORY, NOT A DOCKER-MANAGED VOLUME.
+# Owner instruction: "both input dataset and output data is stored in directories external to the
+# docker mounted as volumes." `-v graphapi_ws:/ws` put build, install, src and log inside
+# /DATA/docker/volumes/graphapi_ws/_data, where nothing lists them and nobody checks them. That is
+# also where the sixteen-day-old belief files hid underneath the /ws/output bind mount: a stale
+# world model that any launch omitting that mount would have read.
+WS_DIR=${WS_DIR:-$WORKSPACE_ROOT/ws}
+mkdir -p "$WS_DIR"
+echo "    build tree: $WS_DIR (external, was the docker volume graphapi_ws)"
 # >>> TEST-EXTRACT _enc_rev  (test_env_stamp.sh sources the block between these markers.
 # It guessed the boundary with a sed pattern twice and was wrong twice: /^$/ swallowed the
 # call sites below, and /; }$/ ran to end-of-file because this definition is a single line,
@@ -1189,26 +1210,28 @@ for i in $(seq 1 90); do grep -q "listening" "$OUT_DIR/feed_host.log" 2>/dev/nul
 grep -q "listening" "$OUT_DIR/feed_host.log" || { echo "feed host failed:"; tail -20 "$OUT_DIR/feed_host.log"; exit 1; }
 echo "    feed host up"
 
-# GA-371 (owner 2026-09-08 13:05): every launch also opens RViz, beside Habitat and the dashboard.
-# Sibling container graphapi_rviz on the host network (view_rviz.sh), started here so DDS discovery
-# sees the stack's topics as they appear. RVIZ=0 opts out (headless hosts). Absent display or
-# opt-out is RECORDED in run_metadata (rviz_started false + rviz_reason), never skipped silently.
-# The log rides the existing $OUT_DIR/*.log archive into logs/rviz.log. Stopped in cleanup().
-RVIZ="${RVIZ:-1}"; RVIZ_STARTED=false; RVIZ_REASON=""; RVIZ_DISPLAY="${DISPLAY:-:1}"   # same default the feed host uses
+# GA-464 (owner 2026-09-10). ONE RVIZ, AND IT IS THE LAUNCH FILE'S. Two were being started and
+# neither knew about the other: habitat_launch.py declares use_rviz with default true (:70) and
+# live_stack_container.sh passed only use_wall_detector and localization_mode, while this file also
+# started the sibling container graphapi_rviz. MEASURED on the running system: rviz2 pid 415260 in
+# graphapi_rviz and pid 416147 in graphapi_live, two containers, two windows. The sibling is gone.
+#
+# THE STACK CONTAINER HAD DISPLAY BUT NO WAY TO USE IT. It was given -e DISPLAY and neither the X
+# socket nor a render device, so the surviving rviz was the one that could not draw. Both are added
+# to the docker run below. GA-371's opt-out and its record are kept: RVIZ=0 for a headless host, no
+# X socket means use_rviz:=false rather than a launch that dies, and run_metadata still carries
+# rviz_started and rviz_reason so a bundle says whether anybody was watching.
+RVIZ="${RVIZ:-1}"; RVIZ_STARTED=false; RVIZ_REASON=""; RVIZ_DISPLAY="${DISPLAY:-:1}"
 if [ "$RVIZ" != "1" ]; then
   RVIZ_REASON="RVIZ=$RVIZ opt-out"
 elif [ ! -S "/tmp/.X11-unix/X${RVIZ_DISPLAY#:}" ]; then
   RVIZ_REASON="no X socket for DISPLAY=$RVIZ_DISPLAY"
 else
-  LOG="$OUT_DIR/rviz.log" DISPLAY="$RVIZ_DISPLAY" IMAGE_TAG="$IMAGE_TAG" \
-    setsid nohup bash "$HERE/view_rviz.sh" >/dev/null 2>&1 < /dev/null &
-  for _i in $(seq 1 15); do docker ps --format '{{.Names}}' | grep -qx graphapi_rviz && break; sleep 2; done
-  if docker ps --format '{{.Names}}' | grep -qx graphapi_rviz; then
-    RVIZ_STARTED=true; RVIZ_REASON="graphapi_rviz up (DISPLAY=$RVIZ_DISPLAY, dri=$([ -d /dev/dri ] && echo yes || echo no))"
-  else
-    RVIZ_REASON="graphapi_rviz not up 30 s after start; see logs/rviz.log"
-  fi
+  RVIZ_STARTED=true
+  RVIZ_REASON="habitat_launch.py use_rviz:=true (DISPLAY=$RVIZ_DISPLAY, dri=$([ -d /dev/dri ] && echo yes || echo no))"
 fi
+# Read by live_stack_container.sh and handed to the launch file, so the decision is made once here.
+export USE_RVIZ=$([ "$RVIZ_STARTED" = "true" ] && echo true || echo false)
 echo "    rviz: started=$RVIZ_STARTED ($RVIZ_REASON)"
 python3 - "$RUN_DIR/run_metadata.json" "$RVIZ_STARTED" "$RVIZ_REASON" <<'PY'
 import json, sys
@@ -1260,7 +1283,9 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -e FEED_HOST -e FEED_PORT -e FEED_CTRL_HOST -e FEED_CTRL_PORT -e LOST3DSG_OUTPUT_DIR \
   -e GRAPH_API_AUTOSTART -e GRAPH_API_BASE_URL -e GRAPH_API_TIMEOUT \
   -e ROOM_VLM_MODEL -e OPENROUTER_API_KEY -e REGOLO_API_KEY \
-  -e HABITAT_EXAMPLE_OBJECTS_DIR -e DISPLAY \
+  -e HABITAT_EXAMPLE_OBJECTS_DIR -e DISPLAY -e USE_RVIZ -e QT_X11_NO_MITSHM=1 \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
+  $([ -d /dev/dri ] && echo "--device /dev/dri") \
   -e PREFLIGHT_EXPECT_CFG_SHA -e PREFLIGHT_EXPECT_MERGED_SHA -e PREFLIGHT_EXPECT_SRC_SHA \
   -e PREFLIGHT_EXPECT_CYCLE_S \
   -e ARCHIVE_DEPTH -e FEED_HFOV -e BRIDGE_OVERLAY -e BRIDGE_OVERLAY_CAM_FRAME -e BRIDGE_OVERLAY_MAP_FRAME \
@@ -1268,7 +1293,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
  -e OPENAI_BASE_URL \
   $EXT_E_ARGS \
   -v "$REPO":/graph_api:ro \
-  -v graphapi_ws:/ws \
+  -v "$WS_DIR":/ws \
   ${EXT_MOUNTS:-} \
   `# GA-295. THE MAP LIBRARY IS READ-ONLY, AND UNTIL NOW ONLY THE COMMENT SAID SO.
    # live_stack_container.sh has claimed since GA-158 that "the map is mounted read-only, not
@@ -1281,6 +1306,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
    # The deeper mount wins, so runs still read the library and can no longer write it.` \
   -v "$WORKSPACE_ROOT/maps":"$EXT_MOUNT_POINT"/maps:ro \
   -v "$RUN_DIR":/ws/output \
+  -v "$RUN_DIR/ros":/root/.ros \
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
   -v "${HF_SHARED_CACHE:-/DATA/huggingface_cache}":/models/hf \
   -v "$OUT_DIR":/out \

@@ -2,9 +2,19 @@
 # Runs INSIDE the container: build, then start the full stack against the host
 # habitat feed. Started by live_run.sh — not meant to be run directly.
 set -e
-# Console into the bundle: the "!! <node> exited" verdicts went to the terminal only, so three of
-# the 3 Sep runs have no recorded cause. /tmp/*.log is copied to $LOG_DIR at exit.
-exec > >(tee -a /tmp/stack.log) 2>&1
+# GA-463. DEFINED FIRST, BEFORE ANY WRITE. /ws/output is the bundle, bind-mounted from the host, so
+# everything written under it is external by construction. It used to be set at :164, after the
+# build, so a build log addressed to $LOG_DIR would have gone to /build.log inside the container.
+LOG_DIR=/ws/output/logs
+mkdir -p "$LOG_DIR"
+
+# Console STRAIGHT INTO THE BUNDLE, not into /tmp to be copied at exit. Owner instruction
+# 2026-09-10: output data is written to directories external to the docker. A copy-at-exit is
+# exactly what a container that DIES does not perform -- and the 20260910_125420 run on Gin died
+# when rviz aborted, which is the case where this transcript is the only account of what happened.
+# The "!! <node> exited" verdicts went to the terminal only before this, so three of the 3 Sep runs
+# have no recorded cause.
+exec > >(tee -a "$LOG_DIR/stack.log") 2>&1
 source /opt/ros/humble/setup.bash
 
 # GA-157. /ws IS A NAMED VOLUME NOW, so the build tree survives `docker run --rm`.
@@ -63,8 +73,12 @@ _build_t0=$(date +%s)
 # hash that does not describe what executed. Only the copied .py files go; the generated
 # interfaces live under local/ and share/ and are what the build key exists to preserve.
 rm -rf /ws/install/lost3dsg/lib/lost3dsg
-colcon build --packages-select lost3dsg --cmake-args -DCMAKE_BUILD_TYPE=Release >/tmp/build.log 2>&1 \
-  || { tail -30 /tmp/build.log; exit 1; }
+# GA-463. The build log goes straight to the bundle: a build that fails leaves the container at
+# once, and /tmp/build.log went with it. $LOG_DIR is /ws/output/logs, an external bind mount, and
+# the launcher creates it before the container starts.
+colcon build --packages-select lost3dsg --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  >"$LOG_DIR/build.log" 2>&1 \
+  || { tail -30 "$LOG_DIR/build.log"; exit 1; }
 _build_t1=$(date +%s)
 printf '%s' "$BUILD_KEY" > /ws/.build_key
 # In the bundle, so "it reused" is a recorded fact and not an inference from a fast run.
@@ -157,7 +171,7 @@ if ! python3 -c "import pyoxigraph" 2>/dev/null; then
   pip install --quiet --no-index --find-links="$EXT_MOUNT_POINT"/vendor/wheels pyoxigraph 2>&1 | tail -1 ||     echo "!! pyoxigraph install failed; the triple store will use the slow in-memory path"
 fi
 python3 -c "import pyoxigraph as _o; print('    triple store: pyoxigraph', _o.__version__)" 2>/dev/null ||   echo "    triple store: rdflib in-memory (pyoxigraph unavailable)"
-LOG_DIR=/ws/output/logs
+LOG_DIR=/ws/output/logs   # restated; set at the top of this file, before the build log
 mkdir -p "$LOG_DIR" /ws/output/crops /ws/output/snapshots /out
 
 # Ensure logs stream directly to the persistent host-mounted volume
@@ -419,7 +433,7 @@ echo ">>> pose source: ${FEED_POSE_SOURCE:-simulator} (rtabmap publish_tf_map:=$
 # The TYPE IS GIVEN: without it `ros2 topic echo` exits at once when the topic is not yet advertised
 # ("Could not determine the type", run 20260907_170421, 2 lines, nothing recorded) -- rtabmap starts
 # ~120 s after this line. With the type it subscribes now and waits.
-ros2 topic echo --csv --full-length /rtabmap/localization_pose geometry_msgs/msg/PoseWithCovarianceStamped > /tmp/localization_pose.log 2>&1 &
+ros2 topic echo --csv --full-length /rtabmap/localization_pose geometry_msgs/msg/PoseWithCovarianceStamped > "$LOG_DIR/localization_pose.log" 2>&1 &
 # ===== HER PROCEDURE (owner 2026-09-09): the stack comes up through the ROS launch file =====
 # "From now on we have to use habitat launch ros2 launch file and then run the feed separately."
 # The feed host (host side) and habitat_feed_node (above) stay separate, as they already were;
@@ -443,7 +457,8 @@ _loc_arg=$([ "${FEED_POSE_SOURCE:-simulator}" = "rtabmap" ] && echo rtabmap || e
 echo ">>> stack via habitat_launch.py (use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg)"
 ros2 launch lost3dsg habitat_launch.py \
     use_wall_detector:="$_wall_arg" localization_mode:="$_loc_arg" \
-    > /tmp/launch.log 2>&1 &
+    use_rviz:="${USE_RVIZ:-true}" \
+    > "$LOG_DIR/launch.log" 2>&1 &
 LAUNCH_PID=$!
 # The close path signals rtabmap by PATTERN as well as by pid, so a launcher pid here is safe.
 RTABMAP_PID=$LAUNCH_PID; OM6_PID=""; PERCEPTION_PID=""; WALLS_PID=""
@@ -596,8 +611,8 @@ except Exception:
   # prose rather than an interface, which is exactly what GA-430 was written to stop depending on;
   # under this route it is the only source there is, and the field is parsed from it ONCE here
   # rather than grepped by every reader afterwards.
-  if [ -z "$_dead_node" ] && [ -n "${LAUNCH_PID:-}" ] && [ -f /tmp/launch.log ]; then
-    _died=$(grep -m1 -oE "\[[a-zA-Z0-9_.-]+\]: process has died \[pid [0-9]+, exit code -?[0-9]+" /tmp/launch.log || true)
+  if [ -z "$_dead_node" ] && [ -n "${LAUNCH_PID:-}" ] && [ -f "$LOG_DIR/launch.log" ]; then
+    _died=$(grep -m1 -oE "\[[a-zA-Z0-9_.-]+\]: process has died \[pid [0-9]+, exit code -?[0-9]+" $LOG_DIR/launch.log || true)
     if [ -n "$_died" ]; then
       _dead_node=$(printf '%s' "$_died" | sed -E 's/^\[([a-zA-Z0-9_.-]+)\].*/\1/')
       _dead_rc=$(printf '%s' "$_died" | sed -E 's/.*exit code (-?[0-9]+)/\1/')
