@@ -92,7 +92,7 @@ def generate_launch_description():
 
     use_wall_detector_arg = DeclareLaunchArgument(
         'use_wall_detector',
-        default_value='false',
+        default_value='true',
         description="Avvia wall_detector.py se true",
     )
 
