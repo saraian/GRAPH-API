@@ -2153,14 +2153,14 @@ def with_tools_menu(html: str) -> str:
 # The checkout the runs directory sits in, used only to DISPLAY default paths in the
 # launcher form. Derived, never a literal, so it names no deployment.
 RUNS_PARENT = RUNS_ROOT.parent
-LIVE_RUN = GRAPH_API_ROOT / "run.sh"   # was run.sh; inlined into run.sh 2026-09-11
+LIVE_RUN = GRAPH_API_ROOT / "run_sim.sh"   # was run_sim.sh; inlined into run_sim.sh 2026-09-11
 LAUNCH_LOG_DIR = Path(tempfile.gettempdir()) / "found-launcher"
 
 # The four the script's own `case` statement accepts. Anything else exits 1 before it starts,
 # so the form offers exactly these rather than a free-text box that fails a minute later.
 SCENES = ["hm3d_00861", "hm3d_00337", "hm3d_00770", "mp3d_17DRP"]
 
-# EVERY variable run.sh reads, grouped, each with THE SCRIPT'S OWN DEFAULT as its
+# EVERY variable run_sim.sh reads, grouped, each with THE SCRIPT'S OWN DEFAULT as its
 # placeholder. Read out of the script rather than remembered: a form that offers a stale
 # default is worse than one that offers none, because it looks authoritative.
 #
@@ -2188,7 +2188,7 @@ RUN_SETTINGS = [
         ("FEED_FPS", "3", "text", "frames per second published to the stack"),
         ("FEED_SEED", "7", "text", "spawn seed -- same seed, same starting point"),
         # The sampling policy is removed (owner 2026-09-11), so FEED_WALK, FEED_DWELL,
-        # FEED_TEST_TOUR and FEED_TEST_TOUR_SCAN are gone from this form: run.sh refuses a run
+        # FEED_TEST_TOUR and FEED_TEST_TOUR_SCAN are gone from this form: run_sim.sh refuses a run
         # that sets any of them. A schedule states its own stops and its own scan at each.
         ("FEED_EXPLORATION_LAPS", "3", "text", "complete passes of the storey's roadmap"),
         ("FEED_MOVE_FN", "navigate", "choice:navigate|teleport",
@@ -2201,7 +2201,7 @@ RUN_SETTINGS = [
     ("MAP", "rtabmap: where this run spawns and what it maps against", [
         # MAPPING_ONLY and FEED_MAPPING_SECONDS selected the mapping phase, which went with the
         # sampling policy on 2026-09-11. A scheduled run maps while it drives the roadmap, so
-        # there is no separate phase to time; run.sh refuses both names.
+        # there is no separate phase to time; run_sim.sh refuses both names.
         ("FEED_SPAWN_FLOOR", "", "text", "spawn height; blank lets the navmesh choose"),
         ("RTABMAP_LOCALIZE_DB", "", "text", "localise against this .db instead of mapping"),
     ]),
@@ -2231,7 +2231,7 @@ _SECRET_NAMES = {f[0] for _, _, fields in RUN_SETTINGS for f in fields if f[2] =
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,60}$")
 
 # The launched run, as this process knows it. `pid` is the process GROUP leader, because
-# run.sh is started in its own session -- see _start_run for why that matters to stopping.
+# run_sim.sh is started in its own session -- see _start_run for why that matters to stopping.
 RUN_PROC = {"pid": None, "scene": None, "log": None, "started": None}
 
 
@@ -2272,7 +2272,7 @@ CONTAINER = "graphapi_live"
 
 
 def _container_up() -> bool:
-    """Is the run's container up. run.sh refuses to start over one (fixed name, fixed
+    """Is the run's container up. run_sim.sh refuses to start over one (fixed name, fixed
     ports), and its EXIT trap does not stop it: the trap kills the feed and archives the
     bundle, and leaves `docker run` to the signal. So the container can outlive the run."""
     try:
@@ -2403,7 +2403,13 @@ START_PAGE_CSS = """
 
 
 def _bundle_tag(name):
-    """(short tag, long title) for a bundle -- what it holds, in the reader's words.
+    """(machine, short tag, long title) for a bundle -- what it holds, in the reader's words.
+
+    THREE elements, not two: the machine that recorded the run was added in front once bundles
+    began arriving from other hosts (lost3dsg/test/follow_remote_run.sh), and a row that does
+    not say where a run came from lets a followed run pass for a local one. The docstring said
+    two for a while after the code returned three, and the test that pinned the shape was left
+    on the old one -- so it failed with a tuple that was CORRECT.
 
     GA-398, owner 2026-09-08: a run with no frames offered a player that did nothing, and the
     picker gave no way to tell an empty launch from the archive that carries the citable evidence.
@@ -2432,7 +2438,12 @@ def _bundle_tag(name):
     elif _m:
         _mach_long = f"recorded on this machine ({_m}). "
     else:
-        _mach_short, _mach_long = "", "machine not recorded (bundle predates the field). "
+        # "?", NOT "". Two lines set this column for the same case -- `_m or "?"` above and this
+        # one -- and the later won, so an unrecorded machine rendered as an EMPTY column. That
+        # is the exact ambiguity the comment above says the column exists to remove: a blank
+        # reads as "nothing to say here", which is indistinguishable from a run whose machine
+        # simply was not written down. "?" says the second thing out loud.
+        _mach_short, _mach_long = "?", "machine not recorded (bundle predates the field). "
     frames, dets = c.get("frames") or 0, c.get("detections") or 0
     kinds = c.get("decisions") or {}
     decisions = sum(v for v in kinds.values() if isinstance(v, int))
@@ -2456,7 +2467,7 @@ def _bundle_tag(name):
 def _start_page_html(bundles, current, mode, why):
     """The initial window: pick a recorded run, or configure and launch a new one.
 
-    EVERY variable run.sh reads is on the form, grouped and collapsed. The alternative --
+    EVERY variable run_sim.sh reads is on the form, grouped and collapsed. The alternative --
     a short list of "the ones that matter" -- was rejected by the owner, and the objection is
     sound: which ones matter is a property of the experiment, not of the launcher, so a
     launcher that decides for you is a launcher you have to leave to change one field.
@@ -2469,6 +2480,12 @@ def _start_page_html(bundles, current, mode, why):
     rows = []
     for b in bundles:
         cur = " cur" if current and b == current else ""
+        # A LISTED RUN THAT IS NOT ON DISK IS NOT LISTED. `results/latest` is a symlink and it
+        # goes dangling the moment its target is deleted; before this, the picker still drew the
+        # row, the click loaded nothing, and the page said nothing about why. Skipped here rather
+        # than handled at open time, so a name that cannot be opened is never offered.
+        if not (RUNS_ROOT / b).is_dir():
+            continue
         machine, tag, title = _bundle_tag(b)
         empty = " empty" if tag.startswith(("EMPTY", "NO FRAMES")) else ""
         # The row is clickable to OPEN; the delete button stops the click reaching it, or every
@@ -2532,7 +2549,7 @@ def _start_page_html(bundles, current, mode, why):
             + ("" if dash_env.flag("DASH_PUBLIC") else
                '<section><h2>Start a new run</h2>'
                f'<div><label for="f_scene">scene</label><select id="f_scene">{scene_opts}</select>'
-               '<div class="hint">the four run.sh accepts; override the paths under SCENE</div></div>'
+               '<div class="hint">the four run_sim.sh accepts; override the paths under SCENE</div></div>'
                f'{"".join(groups)}'
                '<div class="bar"><button id="go" onclick="startRun()">LAUNCH RUN</button>'
                '<button class="plain stop" id="stopBtn" onclick="stopRun()" hidden>STOP (SIGINT)</button>'
@@ -2647,6 +2664,13 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
     from fastapi import Request
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+    def _safe_current(fn):
+        """current_fn() or None. It touches the filesystem and a delete guard must not die on it."""
+        try:
+            return fn()
+        except Exception:
+            return None
+
     def _local(request) -> bool:
         return (request.client.host if request and request.client else "") in (
             "127.0.0.1", "::1", "localhost")
@@ -2692,14 +2716,32 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         if not is_run_dir(target):
             return JSONResponse(status_code=400, content={
                 "deleted": False, "error": f"{name!r} does not look like a run bundle"})
-        try:
-            current = current_fn()
-        except OSError:
-            current = None
-        if current and Path(current).resolve() == target:
+        # WHAT "THE CURRENT BUNDLE" MEANS, and it is more than one path.
+        #
+        # MEASURED 2026-09-11, and it cost the best bundle of the day: this guard compared
+        # `current_fn()` against the target and let the served bundle through, because the server
+        # was started as `--bundle latest` and `current_fn()` answered with the SYMLINK's name
+        # while the target was the resolved directory. Two spellings of one directory compared
+        # unequal, the run was deleted, and `results/latest` was left dangling.
+        #
+        # Every spelling is resolved and ALL of them are refused: what current_fn says, what
+        # GRAPH_API_OUTPUT_DIR says, and whatever `latest` points at. A path that cannot be
+        # resolved is skipped rather than treated as a match -- a broken symlink must not make
+        # every bundle undeletable.
+        protected = set()
+        for cand in (_safe_current(current_fn), os.environ.get("GRAPH_API_OUTPUT_DIR"),
+                     RUNS_ROOT / "latest"):
+            if not cand:
+                continue
+            try:
+                protected.add(Path(cand).resolve())
+            except OSError:
+                continue
+        if target in protected:
             return JSONResponse(status_code=409, content={
                 "deleted": False,
-                "error": "this is the bundle being served; open another run first"})
+                "error": "this is the bundle being served (or the one `latest` points at); "
+                         "open another run first"})
         import shutil as _sh
         size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
         try:
@@ -2925,7 +2967,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
 
     @app.post("/start_run")
     async def _start_run(request: Request):
-        """Launch run.sh with the submitted settings.
+        """Launch run_sim.sh with the submitted settings.
 
         LOOPBACK ONLY. The run opens a habitat window on the SERVER's display and takes the
         server's GPU, ROS graph and control ports; from another machine the person pressing
@@ -2934,7 +2976,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         A NEW SESSION, deliberately (`start_new_session=True`). Two things follow, both
         wanted: the run survives a restart of this dashboard, and it gets its own process
         group, which is the only way `/stop_run` can deliver SIGINT to the whole stack.
-        run.sh publishes the map from an EXIT trap, so the documented way to stop it is
+        run_sim.sh publishes the map from an EXIT trap, so the documented way to stop it is
         the interrupt -- kill the pid alone and the trap runs while its children keep the
         ports.
         """
@@ -2958,7 +3000,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         if _container_up():
             return JSONResponse(status_code=409, content={
                 "started": False,
-                "why": (f"container {CONTAINER} is still up; run.sh refuses to start over "
+                "why": (f"container {CONTAINER} is still up; run_sim.sh refuses to start over "
                         f"it. Press STOP, or: docker stop {CONTAINER}")})
         try:
             body = await request.json()
@@ -3013,7 +3055,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         if not _pid_alive(pid):
             return JSONResponse(status_code=409, content={
                 "stopped": False, "why": "no run launched from here is running"})
-        # SIGINT, not SIGTERM, and to the GROUP. run.sh publishes the map from its EXIT
+        # SIGINT, not SIGTERM, and to the GROUP. run_sim.sh publishes the map from its EXIT
         # trap and documents Ctrl-C as the way to stop it; SIGTERM to the leader alone leaves
         # the container and the feed holding their ports.
         try:

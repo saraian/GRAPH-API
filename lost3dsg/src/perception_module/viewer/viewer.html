@@ -880,9 +880,15 @@
               <button class="graph-tool-btn" onclick="zoomCy(1.25)" title="Zoom In"><i data-lucide="zoom-in" style="width:14px;height:14px;"></i></button>
               <button class="graph-tool-btn" onclick="zoomCy(0.8)" title="Zoom Out"><i data-lucide="zoom-out" style="width:14px;height:14px;"></i></button>
               <button id="graphMaxBtn" class="graph-tool-btn" onclick="toggleGraphMax()"
-                      title="Maximise the graph panel (Esc restores)"><i data-lucide="maximize-2" style="width:14px;height:14px;"></i></button>
+                      title="Make the graph panel fill the window (Esc restores); FIT is the one that scales the graph"><i data-lucide="maximize-2" style="width:14px;height:14px;"></i></button>
               <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
-              <button id="btnFitGraph" class="graph-layout-pill" onclick="fitCy()" title="Fit the whole graph in the window">⤢ FIT</button>
+              <!-- FIT AND MAXIMIZE ARE NOT THE SAME ACTION and must not carry the same glyph.
+                 Both used U+2922 (the outward diagonal arrows), so the toolbar showed one icon
+                 for "scale the graph to the panel" and for "make the panel fill the window".
+                 Inward arrows for fit, outward for maximize, which is the convention a reader
+                 already has from every media player. -->
+            <button id="btnFitGraph" class="graph-layout-pill" onclick="fitCy()"
+                    title="Fit the whole graph inside the panel (does not resize the panel)">&#x2925; FIT</button>
               <button id="btnPhysics" class="graph-layout-pill" onclick="toggleGraphPhysics()" title="Force-directed relaxation. Separate from the layout mode: it re-settles whatever mode is selected, and it is expensive above a few hundred nodes.">⚡ PHYSICS: OFF</button>
               <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
               <!-- GA-251. Six layout pills in a row is most of the toolbar's width, and only
@@ -956,7 +962,7 @@
                owns its three.js, mesh loader and controls); the frame is in the DOM from page load
                so the 38 MB mesh streams in while the user is on another tab. -->
           <div id="tabContentScene3d" class="tab-content" style="padding: 0;">
-            <button id="scene3dMaxBtn" type="button" onclick="toggleScene3dMax()" title="Maximize the 3D scene into an overlay (Esc closes)">&#x2922; MAXIMIZE</button>
+            <button id="scene3dMaxBtn" type="button" onclick="toggleScene3dMax()" title="Make this panel fill the window (Esc restores); it does not change the zoom">&#x2922; MAXIMIZE</button>
             <iframe id="scene3dFrame" src="/scene3d" title="Scene 3D" loading="eager"
                     style="flex:1; width:100%; height:100%; border:0; background:#090d16;"></iframe>
           </div>

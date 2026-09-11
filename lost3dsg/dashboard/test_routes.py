@@ -731,13 +731,20 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
             assert "_bundle_tag" in (HERE / "replay_server.py").read_text()
             # the fixture HAS one frame, so it must not be tagged empty; a name with nothing behind
             # it must be. Both directions, so the tag cannot be a constant.
+            # THREE elements: (machine, short tag, long title). The machine came first when
+            # bundles began arriving from other hosts; this check was written against the
+            # two-element shape and failed on a tuple that was correct. Indexed by position
+            # with the shape asserted, so the next element added here fails loudly rather than
+            # silently shifting what "the short tag" means.
             tag_frames = rs._bundle_tag("20260101_000000_test")
-            assert tag_frames[0].startswith("1 frames"), tag_frames
-            assert "no detections.jsonl" in tag_frames[1], tag_frames
+            assert len(tag_frames) == 3, tag_frames
+            assert tag_frames[1].startswith("1 frames"), tag_frames
+            assert "no detections.jsonl" in tag_frames[2], tag_frames
             (Path(td) / "20260101_000001_bare").mkdir()
             tag_empty = rs._bundle_tag("20260101_000001_bare")
-            assert tag_empty[0].startswith("EMPTY"), tag_empty
-            assert "aborted launch or a mapping-only run" in tag_empty[1], tag_empty
+            assert len(tag_empty) == 3, tag_empty
+            assert tag_empty[1].startswith("EMPTY"), tag_empty
+            assert "aborted launch or a mapping-only run" in tag_empty[2], tag_empty
             start_page = c.get("/").text
             assert "location.href = location.pathname.replace" in start_page, \
                 "the start page still navigates to an absolute /dash"
@@ -1011,17 +1018,28 @@ def test_the_bundle_tag_says_which_machine_recorded_it():
                     meta["machine"] = machine
                 (d / "run_metadata.json").write_text(_json.dumps(meta))
             rs._load_bundle_index().RUNS_DIR = Path(td)
-            local_s, local_l = rs._bundle_tag("20260101_000000_local")
-            remote_s, remote_l = rs._bundle_tag("20260101_000001_remote")
-            old_s, old_l = rs._bundle_tag("20260101_000002_old")
-            # the OTHER machine is named in the row itself, not only in a title nobody hovers
-            assert remote_s.startswith("[somewhere-else] "), remote_s
+            # THREE elements: (machine, short tag, long title). This check was written when the
+            # machine was a PREFIX on the short tag and unpacked two; the machine is its own
+            # element now, so unpacking two raised ValueError on a correct return. The
+            # assertions below were already aimed at the right thing, they just had the wrong
+            # name bound to it.
+            local_m, local_s, local_l = rs._bundle_tag("20260101_000000_local")
+            remote_m, remote_s, remote_l = rs._bundle_tag("20260101_000001_remote")
+            old_m, old_s, old_l = rs._bundle_tag("20260101_000002_old")
+            # THE MACHINE IS ITS OWN COLUMN (owner 2026-09-11), so it is the bare name, not a
+            # bracketed prefix on the tag. The bracket form was the previous design and this
+            # check still asserted it. Every case is named, including this machine -- "no
+            # marking" used to mean both "recorded here" and "nobody recorded one", which is
+            # the ambiguity the column removes.
+            assert remote_m == "somewhere-else", remote_m
             assert "not this machine" in remote_l, remote_l
-            # this machine is not shouted at the reader in every row, but the title still says it
-            assert not local_s.startswith("["), local_s
+            # a run recorded HERE names this host rather than being left blank
+            assert local_m == here, (local_m, here)
             assert here in local_l, local_l
             # and an OLD bundle says it does not know, rather than reading as local
-            assert not old_s.startswith("["), old_s
+            # "?" and not "": a blank column cannot be told apart from a column with nothing
+            # to say, which is the ambiguity this column was added to remove.
+            assert old_m == "?", old_m
             assert "not recorded" in old_l, old_l
             assert here not in old_l, "a bundle with no machine key must not read as this machine"
         finally:
