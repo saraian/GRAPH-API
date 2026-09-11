@@ -29,6 +29,7 @@ from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG
 from cv_bridge import CvBridge
 from cv_utils import publish_persistent_bboxes
+from detection_index import bounds as spatial_bounds
 from geometry_msgs.msg import PoseStamped
 from hooks import DecisionLog, load_hooks
 from nav_msgs.msg import Path
@@ -132,6 +133,7 @@ REEVALUATION_MAX_FANOUT = int(CFG["association"].get("reevaluation_max_fanout", 
 # and it would give om6 a camera-pose dependency; it stays the third arm of the D1 switch.
 TRACKING_FALLBACK_RADIUS_M = float(CFG["association"].get("tracking_fallback_radius_m", 1.0))
 TRACKING_MIN_EVIDENCE = int(CFG["association"].get("merge_min_evidence", 1))
+ASSOCIATION_MARGIN_M = float(CFG["association"].get("association_margin_m", 0.3))
 
 
 def _bbox_centre(b):
@@ -194,6 +196,20 @@ def locality_ok(bbox, obj, threshold):
     if bbox is None or getattr(obj, "bbox", None) is None:
         return False
     return compute_iou_3d(bbox, obj.bbox) >= threshold
+
+
+def _association_candidates(bbox):
+    """Return the old cleanup branch's conservative AABB candidate set.
+
+    This is only a broad phase.  The exploration/tracking loops below still run their exact
+    IoU and semantic gates.  Invalid detector geometry produces no candidate rather than
+    making the callback fail before the normal admission path can report it.
+    """
+    try:
+        spatial_bounds(bbox)
+        return wm.candidates(bbox, ASSOCIATION_MARGIN_M)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return []
 
 
 def bbox_center_distance(a, b):
@@ -1397,6 +1413,10 @@ class ObjectManagerService(Node):
             already_seen = False
             transition = False
 
+            # Candidate generation is the cleanup branch's conservative AABB broad phase.
+            # The exact locality and semantic criteria remain in the loops below.
+            candidates = _association_candidates(bbox)
+
             if in_exploration:
                 transition, obj, distance = self.check_tracking_transition(
                     label_base, color, material, description_embedding, bbox
@@ -1434,7 +1454,7 @@ class ObjectManagerService(Node):
                     # the tracking loop (it would re-run the update that just failed).
 
             if in_exploration:
-                for obj in wm.snapshot():
+                for obj in candidates:
                     # GA-04: locality first. Previously the overlap test was conjoined with the
                     # similarity test below, so attributes were compared against every object in
                     # the map before geometry could rule any of them out.
@@ -1499,6 +1519,7 @@ class ObjectManagerService(Node):
                         # GA-315 part 2: the AABB is this view's; the axis is fused over
                         # every accepted view, never the last one's alone.
                         obj.bbox, obj._yaw_acc = fuse_orientation(obj, bbox)
+                        wm.refresh_spatial(obj)
                         objects_modified = True
                         # GA-11: an in-place box write is a change to THIS object; queue it.
                         self._note_update(getattr(obj, "object_id", None) or obj.label, reason="box_written")
@@ -1508,7 +1529,7 @@ class ObjectManagerService(Node):
                 best_match = None
                 best_score = 0
 
-                for obj in wm.snapshot():
+                for obj in candidates:
                     # GA-04: in TRACKING mode there was NO locality gate at all --
                     # TRACKING_IOU_THRESHOLD's only use raised the score to 1.0, and the
                     # centre-distance guard below was disabled by its own shipped config. So

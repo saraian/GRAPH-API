@@ -15,6 +15,7 @@ import rclpy
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG
 from cv_utils import publish_persistent_centroids, publish_pov_volume
+from detection_index import DetectionIndex
 from hooks import DecisionLog, load_store
 from map_database import MapDatabase
 from nlp_utils import _known, get_embedding, lost_similarity_detailed, world2vec
@@ -73,6 +74,17 @@ UNCERTAIN_MOVE_DISTANCE_M = CFG["association"].get("uncertain_move_distance_m", 
 # sim_threshold 0.85 that is 0.925. It is a knob, and it is the one to turn if the merge
 # rate is still high.
 MERGE_MAX_DISTANCE = CFG["association"].get("merge_max_distance_m", 0.8)
+# AABB broad-phase radius for the legacy merge criterion.  It is deliberately at least the
+# criterion's centre-distance threshold: a smaller margin could hide a valid merge before the
+# exact distance/similarity checks get to evaluate it.  This is a candidate-generation value,
+# not a second merge criterion.
+MERGE_AABB_MARGIN_M = float(CFG["association"].get(
+    "merge_aabb_margin_m", MERGE_MAX_DISTANCE))
+if MERGE_AABB_MARGIN_M < MERGE_MAX_DISTANCE:
+    raise ValueError(
+        f"association.merge_aabb_margin_m ({MERGE_AABB_MARGIN_M}) must be >= "
+        f"merge_max_distance_m ({MERGE_MAX_DISTANCE}) so the AABB broad phase cannot hide "
+        "a pair that the legacy merge criterion would evaluate")
 # GA-101: how many of the three OPTIONAL terms (colour, material, description) must have
 # been comparable for a merge to be allowed. 0 restores the old behaviour, where a pair
 # with nothing measurable scored 1.0000 on label agreement alone and merged.
@@ -90,10 +102,10 @@ if MERGE_MIN_SIMILARITY <= SIM_THRESHOLD:
 
 # GA-186. Which association engine decides a merge.
 #
-#   "legacy"   -- the hard-gate cascade: ALL PAIRS, then room-inequality -> similarity <
-#                 MERGE_MIN_SIMILARITY -> evidence -> distance > MERGE_MAX_DISTANCE, each a
-#                 refusal on a calibrated constant. This is what every run up to and
-#                 including 20260901_055513 measured.
+#   "legacy"   -- the hard-gate cascade: AABB candidates, then room-inequality -> similarity
+#                 < MERGE_MIN_SIMILARITY -> evidence -> distance > MERGE_MAX_DISTANCE, each
+#                 a refusal on a calibrated constant. The AABB stage is a broad phase and
+#                 does not change any of those exact merge criteria.
 #   "evidence" -- association.py: kNN candidates from each object's OWN covariance shell,
 #                 then fused log-odds over overlap / separation / co-visibility / ontology
 #                 / appearance / room, committed against log(cost_ratio). No calibrated
@@ -1142,17 +1154,58 @@ class ObjectServices(Node):
     def _merge_candidates(self, objects, _refused):
         """-> (pairs, ctx, assoc_objects). Which pairs are even offered to a decision.
 
-        GA-186. The legacy engine offers EVERY pair, which is what the 961,074-pair sweep of
-        run 20260901_055513 was. The evidence engine offers only pairs inside the two
-        objects' combined covariance shells, and every exclusion is logged with its distance
-        and the radius that excluded it -- because a pair that is never compared is
-        invisible in exactly the way refusals were before they were logged, and that is how
-        eight air-conditioner pairs disappeared without trace.
+        The legacy engine uses the old merge gates, but its all-pairs enumeration is now
+        narrowed by the cleanup branch's binary-search AABB index.  The index is a broad
+        phase only: every candidate still goes through the unchanged room, distance,
+        similarity, and evidence checks below.  Objects with malformed/missing boxes are
+        retained as explicit fallback pairs so they still reach the existing
+        ``bbox_absent`` diagnostic instead of disappearing silently.
+
+        The evidence engine retains its covariance-shell candidate generator, because its
+        spatial shell is part of that engine's decision model rather than the legacy AABB
+        broad phase.
         """
         if MERGE_ENGINE == "legacy":
+            index = DetectionIndex()
+            indexed = {}
+            valid = []
+            invalid = []
+            examined = 0
+            for i, obj in enumerate(objects):
+                key = f"merge:{i}"
+                try:
+                    index.upsert(key, obj.bbox)
+                    indexed[key] = i
+                    valid.append(i)
+                except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+                    invalid.append(i)
+
+            pair_indices = set()
+            for i in valid:
+                key = f"merge:{i}"
+                for hit in index.query(objects[i].bbox, MERGE_AABB_MARGIN_M):
+                    examined += index.last_examined
+                    j = indexed[hit]
+                    if i < j:
+                        pair_indices.add((i, j))
+
+            # A missing/invalid box cannot be safely pruned by geometry.  Keep all pairs
+            # involving it so the exact merge loop logs ``bbox_absent`` as before.
+            for i in invalid:
+                for j in range(i + 1, len(objects)):
+                    pair_indices.add((i, j))
+                for j in range(i):
+                    pair_indices.add((j, i))
+
             pairs = [(objects[i], objects[j], {})
-                     for i in range(len(objects))
-                     for j in range(i + 1, len(objects))]
+                     for i, j in sorted(pair_indices)]
+            all_pairs = len(objects) * max(0, len(objects) - 1) // 2
+            self.log_both(
+                'info',
+                f"[MERGE AABB] objects={len(objects)} all_pairs={all_pairs} "
+                f"candidates={len(pairs)} examined={examined} "
+                f"invalid_bbox={len(invalid)} margin={MERGE_AABB_MARGIN_M:.3f}m",
+            )
             return pairs, None, {}
 
         ctx, built = self._assoc_build(objects)
@@ -1254,7 +1307,13 @@ class ObjectServices(Node):
             MIN_SIMILARITY = request.min_similarity
             dry_run        = getattr(request, 'dry_run', False)
 
-            objects = list(wm.persistent_perceptions)
+            # Take the comparison snapshot under the world-model lock.  The legacy path
+            # intentionally performs its expensive similarity work outside the lock, but
+            # copying the live list without the lock allowed an admission/removal callback
+            # to race the iterator and made a scan-complete merge see a partially changed map.
+            # `wm.snapshot()` keeps the short critical section at the snapshot boundary;
+            # the existing membership checks below still protect the later write-back.
+            objects = wm.snapshot()
             to_remove       = set()
             # One dict per pair, not a tuple. It was a 3-tuple, then a 4-tuple when the
             # similarity had to reach the decision record, and GA-80 needs the rooms there
@@ -1983,6 +2042,7 @@ class ObjectServices(Node):
                 if old_bbox is None:
                     best_match.bbox = bbox
                     best_match._yaw_acc = yaw_acc   # GA-315 part 2
+                    wm.refresh_spatial(best_match)
                     save_persistent_perceptions(self)
                     response.success = True
                     response.message = "bbox initialized"
@@ -2178,6 +2238,11 @@ class ObjectServices(Node):
             if hasattr(request, "material") and request.material:
                 updated_obj.material = request.material
 
+            # Several legacy update branches write ``best_match.bbox`` in place.  Keep the
+            # derived AABB index synchronized before the next detection or scan-complete
+            # merge uses it.  Replacement moves already invalidated the index through the
+            # tracked world-model list, so refresh_spatial is harmless there too.
+            wm.refresh_spatial(updated_obj)
             save_persistent_perceptions(self)
 
             replaced = updated_obj is not best_match

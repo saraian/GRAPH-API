@@ -32,6 +32,7 @@ association:
   bbox_reduction_ratio: 0.30
   reevaluation_radius_m: 2.0   # GA-49: radius (m) within which a changed object re-evaluates its neighbours
                                # (replaced max_match_distance_m, which no code has read since GA-04)
+  association_margin_m: 0.3    # AABB broad-phase margin used before exact association gates
 
   # --- merge thresholds: THE NAMES THE CODE ACTUALLY READS -------------------------------
   # `cost_ratio`, `min_consecutive` and `mode` above are read by NOTHING (GA-341). These are
@@ -45,6 +46,7 @@ association:
                               # and fewer wrong merges commit, but a pair that leaves view
                               # before confirmation is lost. Override with MERGE_MIN_CONSECUTIVE.
   merge_max_distance_m: 0.8   # centre distance beyond which a pair is never merged
+  merge_aabb_margin_m: 0.8    # AABB broad-phase margin; must be >= merge_max_distance_m
   merge_min_similarity: 0.925 # MUST stay strictly above sim_threshold above, or a merge fuses
                               # pairs the association loop has just refused. object_services
                               # asserts this at load and the merge service refuses a request
