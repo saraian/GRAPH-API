@@ -1,3 +1,6 @@
+import os
+import time
+
 import torch
 import numpy as np
 import cv2
@@ -11,6 +14,32 @@ from efficientvit.inference import SamDecoder, SamEncoder
 # went with it: they served nothing else in this file.
 from PIL import Image
 from transformers import Owlv2Processor, Owlv2ForObjectDetection
+
+
+def write_vitsam_status(status):
+    """Publish VitSAM startup state to the optional run-level startup gate.
+
+    The launcher and the perception node live in different processes.  A marker in the
+    shared run directory lets the host-side Habitat feed wait for the *same* ONNX Runtime
+    sessions that will serve real detections, instead of warming a short-lived helper
+    process whose CUDA/ORT state could not be reused.
+    """
+    path = os.environ.get("VITSAM_READY_FILE", "").strip()
+    if not path:
+        return
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        temporary = f"{path}.tmp.{os.getpid()}"
+        with open(temporary, "w", encoding="utf-8") as marker:
+            marker.write(f"{status}\n")
+        os.replace(temporary, path)
+    except OSError as exc:
+        # A marker is only a coordination aid. It must never hide the actual model
+        # error or make a standalone perception run fail merely because no shared
+        # output directory is writable.
+        print(f"VitSam status marker unavailable ({path}): {type(exc).__name__}: {exc}")
 
 class OWLv2():
     def __init__(self, model_id="google/owlv2-base-patch16-ensemble"):
@@ -106,24 +135,88 @@ class OWLv2():
 class VitSam():
 
     def __init__(self, encoder_model, decoder_model):
-        # GA-15: both arms of this selector read "cpu", directly under a comment saying
-        # the device is chosen so the ONNX encoder/decoder use CUDA when available. So
-        # every published sam_ms was a CPU ONNX number presented as the system's
-        # segmentation cost -- an honest measurement of what the code did, which is why
-        # it was invisible in the number alone, and not comparable with the cloud
-        # backend's GPU SAM.
-        #
-        # torch.cuda.is_available() is not sufficient on its own: SamEncoder/SamDecoder
-        # pass the choice straight to onnxruntime as providers=["CUDAExecutionProvider"],
-        # and torch can see a GPU in a container whose onnxruntime build has no CUDA
-        # provider at all. Ask onnxruntime what it actually has.
+        # VitSAM is an ONNX model. Select the device from ONNX Runtime's providers, not
+        # from torch.cuda.is_available(): PyTorch and ONNX Runtime can have different CUDA
+        # installations, and the latter is the runtime that executes these two models.
         import onnxruntime as ort
-        _cuda = torch.cuda.is_available() and "CUDAExecutionProvider" in ort.get_available_providers()
-        self.device = "cuda" if _cuda else "cpu"
-        print("VitSam device:", self.device)
 
-        self.decoder = SamDecoder(decoder_model, device=self.device)
-        self.encoder = SamEncoder(encoder_model, device=self.device)
+        write_vitsam_status("loading")
+
+        cuda_available = "CUDAExecutionProvider" in ort.get_available_providers()
+        requested_device = "cuda" if cuda_available else "cpu"
+        self.device = requested_device
+
+        def make_sessions(device):
+            return (
+                SamDecoder(decoder_model, device=device),
+                SamEncoder(encoder_model, device=device),
+            )
+
+        self.decoder, self.encoder = make_sessions(requested_device)
+
+        # ONNX Runtime may list CUDAExecutionProvider but silently fall back to CPU when
+        # one of its shared-library dependencies or NVIDIA device permissions is missing.
+        # Check the providers selected by both actual sessions so the log never claims GPU
+        # execution when VitSAM is really running on CPU.
+        actual_providers = set(self.decoder.session.get_providers()) | set(
+            self.encoder.session.get_providers())
+        if requested_device == "cuda" and "CUDAExecutionProvider" not in actual_providers:
+            print("VitSam CUDA provider failed to initialize; falling back to CPU")
+            self.device = "cpu"
+            self.decoder, self.encoder = make_sessions("cpu")
+            actual_providers = set(self.decoder.session.get_providers()) | set(
+                self.encoder.session.get_providers())
+
+        print(
+            "VitSam device:", self.device,
+            "encoder providers:", self.encoder.session.get_providers(),
+            "decoder providers:", self.decoder.session.get_providers(),
+        )
+
+        # The first ONNX Runtime execution can be substantially slower than steady
+        # state because CUDA kernels, execution graphs, and provider memory are
+        # initialized lazily.  Pay that cost while the node is starting, rather than
+        # blocking the first real perception cycle after the robot has begun moving.
+        # The switch is useful for lightweight import/startup tests, but is enabled by
+        # default for an actual run.
+        if os.environ.get("VITSAM_WARMUP", "1").strip().lower() not in {"0", "false", "no", "off"}:
+            if self._warmup():
+                write_vitsam_status("warmed")
+            else:
+                write_vitsam_status("failed")
+                if os.environ.get("VITSAM_REQUIRE_WARMUP", "0").strip().lower() in {
+                    "1", "true", "yes", "on"
+                }:
+                    raise RuntimeError(
+                        "VitSam warmup failed and VITSAM_REQUIRE_WARMUP is enabled"
+                    )
+        else:
+            print("VitSam warmup disabled by VITSAM_WARMUP")
+            write_vitsam_status("warmed-disabled")
+
+
+    def _warmup(self):
+        """Execute one end-to-end synthetic segmentation before live data arrives."""
+        warmup_image = np.zeros((256, 256, 3), dtype=np.uint8)
+        warmup_bbox = [64.0, 64.0, 192.0, 192.0]
+        started = time.perf_counter()
+        try:
+            with torch.inference_mode():
+                masks, _ = self(warmup_image, warmup_bbox)
+            elapsed = time.perf_counter() - started
+            print(
+                f"VitSam warmup inference done: {elapsed:.3f}s "
+                f"(device={self.device}, masks_shape={np.asarray(masks).shape})"
+            )
+            return True
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            print(
+                f"VitSam warmup failed after {elapsed:.3f}s: "
+                f"{type(exc).__name__}: {exc}. "
+                "The first live inference may still pay initialization cost."
+            )
+            return False
 
 
     def __call__(self, img, bboxes):

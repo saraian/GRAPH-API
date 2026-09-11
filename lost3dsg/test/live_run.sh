@@ -1354,11 +1354,22 @@ else
   echo "    schedule: $FEED_SCHEDULE (given, not generated)"
 fi
 
+# VitSAM is warmed by the perception process that will serve the run.  The feed host may open
+# its socket first so the ROS node can connect, but it must not release a frame until this marker
+# says that the real encoder/decoder sessions and perception subscriptions are ready.  The path is
+# expressed once in the container and maps to this run directory through /ws/output.
+VITSAM_WARMUP="${VITSAM_WARMUP:-1}"
+VITSAM_REQUIRE_WARMUP="${VITSAM_REQUIRE_WARMUP:-1}"
+VITSAM_READY_FILE="${VITSAM_READY_FILE:-/ws/output/vitsam_ready}"
+export VITSAM_WARMUP VITSAM_REQUIRE_WARMUP VITSAM_READY_FILE
+
 # bundle stamped with the requested one.
 HABITAT_SCENE=${HABITAT_SCENE:-$DEF_SCENE} \
 HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
 DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
 GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
+FEED_START_GATE_FILE="$RUN_DIR/vitsam_ready" \
+FEED_START_GATE_TIMEOUT_S="${FEED_START_GATE_TIMEOUT_S:-900}" \
   nohup "$HOME/miniconda3/envs/habitat_env/bin/python" "$HERE/habitat_feed_host.py" \
   > "$RUN_DIR/logs/feed_host.log" 2>&1 &
 FEED_PID=$!
@@ -1428,6 +1439,7 @@ rm -f "$RUN_DIR/NOT_STARTED"   # GA-381: past every check; from here the directo
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
   -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
   -e MERGE_MIN_CONSECUTIVE \
+  -e VITSAM_WARMUP -e VITSAM_REQUIRE_WARMUP -e VITSAM_READY_FILE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
   -e MAPPING_ONLY -e FEED_MAPPING_SECONDS -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
   -e FEED_HF_OFFLINE -e PREFLIGHT_HF_CACHE \

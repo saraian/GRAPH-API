@@ -70,7 +70,7 @@ from cv_utils import (  # noqa: E402
 )
 from detection_pipeline import DetectionPipelineMixin  # noqa: E402
 from input_output import PerceptionIOMixin  # noqa: E402
-from models import VitSam  # noqa: E402
+from models import VitSam, write_vitsam_status  # noqa: E402
 from object_info import Object  # noqa: E402
 from perception_utils import compute_fov_volume_from_depth, get_project_root  # noqa: E402
 from tf_transformations import euler_from_quaternion, quaternion_inverse, quaternion_multiply  # noqa: E402
@@ -81,8 +81,10 @@ from world_model import wm  # noqa: E402
 
 from lost3dsg.msg import Bbox3d, Bbox3dArray, ObjectDescription, ObjectDescriptionArray  # noqa: E402
 
-if torch.cuda.is_available():
-    torch.backends.cudnn.benchmark = True
+# Do not probe torch CUDA during module import. The local VitSAM path is ONNX-based and
+# selects its provider in models.VitSam; probing here used to emit a misleading CUDA warning
+# before the node had even selected its backend. The optional OWLv2 path configures its own
+# device when it is instantiated.
 
 PROJECT_ROOT = get_project_root(__file__)
 LOG_DIR = os.path.join(PROJECT_ROOT, "output")
@@ -238,7 +240,13 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # The unified VLM response supplies the 2D boxes, so this path does
             # not need to load a separate OWLv2 detector.
             self.detector = None
-            self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
+            try:
+                self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
+            except Exception:
+                # Do not leave the host-side feed waiting for its timeout when model startup
+                # fails before VitSam can publish the final status itself.
+                write_vitsam_status("failed")
+                raise
             self.file_logger.info("Using unified whole-scene VLM boxes with local VitSAM")
         else:
             self.detector = None
@@ -326,6 +334,13 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                                      self._gt_semantic_callback, 30)
             self.log_both("info", f"[GT] semantic frame cache: {GT_SEMANTIC_CACHE_FRAMES} frames "
                                   f"(compressed, decoded at lookup)")
+
+        # The launcher opens the feed socket before ROS so habitat_feed_node can connect, but
+        # it must not release the first simulator frame until the actual perception process has
+        # finished VitSAM warmup AND completed its own subscriptions/timers setup.  The marker is
+        # atomically written into the shared run directory by models.write_vitsam_status().
+        write_vitsam_status("ready")
+        self.get_logger().info("Perception startup ready; releasing the Habitat feed gate")
 
     def _on_cloud_map(self, msg):
         """Keep the newest cloud as an (N,3) array. GA-218.
@@ -1609,7 +1624,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = DetectObjectsNode()
+    try:
+        node = DetectObjectsNode()
+    except Exception:
+        # Wake the host-side startup gate immediately if node construction fails anywhere
+        # before the final ready marker, rather than making it wait for its full timeout.
+        write_vitsam_status("failed")
+        rclpy.shutdown()
+        raise
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
 

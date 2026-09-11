@@ -79,6 +79,11 @@ SEED = int(os.environ.get("FEED_SEED", "7"))
 # environment variable flips ONE run without editing a file everyone shares.
 SHOW = os.environ.get("FEED_SHOW", "1" if hab_cfg.get("show", False) else "0") == "1"
 OVERLAY = os.environ.get("FEED_OVERLAY", "1" if hab_cfg.get("overlay", False) else "0") == "1"
+# The host process starts before ROS so that the feed node has a socket to connect to.  The
+# socket is deliberately allowed to open, but the simulator must not step or publish a frame
+# until the real perception process has constructed and warmed its own VitSAM sessions.
+START_GATE_FILE = os.environ.get("FEED_START_GATE_FILE", "").strip()
+START_GATE_TIMEOUT_S = float(os.environ.get("FEED_START_GATE_TIMEOUT_S", "900"))
 
 # GA-265. WHAT THE HABITAT WINDOW DRAWS, toggleable from the window itself AND from the
 # dashboard, with one shared state so the two can never disagree.
@@ -630,6 +635,48 @@ def start_ctrl_server():
           "(frame.jpg feed.mjpg bev_data logs auto_mode action set_config object_command)")
 
 
+def wait_for_start_gate():
+    """Wait until the in-process perception warmup has completed.
+
+    The feed socket is already connected while this waits. That is intentional: it avoids a
+    connection race, while the absence of a frame guarantees that the robot has not started its
+    mapping/tour schedule and that RTAB-Map has not received live camera data yet.
+    """
+    if not START_GATE_FILE:
+        return
+
+    deadline = None
+    if START_GATE_TIMEOUT_S > 0:
+        deadline = time.monotonic() + START_GATE_TIMEOUT_S
+    print(f"[feed] waiting for perception startup gate: {START_GATE_FILE} "
+          f"(timeout={START_GATE_TIMEOUT_S:.0f}s)", flush=True)
+    while True:
+        status = ""
+        try:
+            with open(START_GATE_FILE, "r", encoding="utf-8") as marker:
+                status = marker.read().strip().lower()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"[feed] startup gate read failed: {type(exc).__name__}: {exc}", flush=True)
+
+        if status.startswith("ready"):
+            print(f"[feed] perception startup gate open ({status}); starting Habitat feed",
+                  flush=True)
+            return
+        if status.startswith("failed"):
+            raise SystemExit(
+                "[feed] perception startup gate reported failed VitSAM warmup; "
+                "refusing to start the run"
+            )
+        if deadline is not None and time.monotonic() >= deadline:
+            raise SystemExit(
+                f"[feed] perception startup gate did not open within "
+                f"{START_GATE_TIMEOUT_S:.0f}s ({START_GATE_FILE})"
+            )
+        time.sleep(0.25)
+
+
 class DynamicObjectController:
     """Rigid-object operations used by run_habitat_script through the feed node.
 
@@ -1112,6 +1159,18 @@ if DWELL_MODE not in ("adaptive", "fixed"):
 DWELL_MIN = int(os.environ.get("FEED_DWELL_MIN", 18))
 DWELL_MAX = int(os.environ.get("FEED_DWELL_MAX", 90))
 DWELL_SIGNAL_MAX_AGE_S = float(os.environ.get("FEED_DWELL_SIGNAL_MAX_AGE_S", 10.0))
+
+
+def _aabb_center(aabb):
+    """Return an AABB center across Habitat API variants.
+
+    Habitat-Sim has exposed ``center`` both as a property and as a method
+    across versions.  Keep the feed compatible with either representation.
+    """
+    center = aabb.center
+    if callable(center):
+        center = center()
+    return np.asarray(center, dtype=np.float32)
 
 
 def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
@@ -2350,6 +2409,7 @@ def main():
     conn, addr = srv.accept()
     conn.settimeout(SEND_TIMEOUT)  # a hard-killed container must not hang sendall forever
     print(f"[feed] connected: {addr}")
+    wait_for_start_gate()
 
     period = 1.0 / FPS
     walk_frames = int(os.environ.get("FEED_WALK", hab_cfg.get("walk_frames", 6)))
