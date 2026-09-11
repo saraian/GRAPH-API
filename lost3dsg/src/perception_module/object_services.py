@@ -13,7 +13,7 @@ import association as assoc
 import numpy as np
 import rclpy
 from builtin_interfaces.msg import Time as TimeMsg
-from config import CFG
+from config import CFG, world_frame
 from cv_utils import publish_persistent_centroids, publish_pov_volume
 from detection_index import DetectionIndex
 from hooks import DecisionLog, load_store
@@ -147,7 +147,13 @@ PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir e
 # world2vec is imported explicitly above -- loaded once in nlp_utils.
 OPERATIONS_LOG = CFG["paths"]["operations_log"]
 
-log_dir = os.path.join(PROJECT_ROOT, "output")
+def resolve_output_root():
+    return (os.environ.get("GRAPH_API_OUTPUT_DIR")
+            or os.environ.get("LOST3DSG_OUTPUT_DIR")
+            or os.path.join(PROJECT_ROOT, "output"))
+
+
+log_dir = resolve_output_root()
 os.makedirs(log_dir, exist_ok=True)
 SYNTHETIC_LOG_FILE = os.path.join(log_dir, "operations.txt")
 
@@ -478,7 +484,7 @@ def save_uncertain_objects(node):
 
 
 def save_persistent_perceptions(node):
-    output_dir = os.path.join(PROJECT_ROOT, "output")
+    output_dir = resolve_output_root()
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, "persistent_perception.json")
 
@@ -578,7 +584,7 @@ def publish_persistent_bboxes(node, wm, pub):
         if obj.bbox is None or "door" in obj.label.lower():
              continue
         marker = Marker()
-        marker.header.frame_id = "map"
+        marker.header.frame_id = world_frame()
         obj_stamp = getattr(obj, "last_perception_time", None)
         marker.header.stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
         marker.id = i

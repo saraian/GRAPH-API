@@ -93,6 +93,7 @@ paths:
   visual_prompt: ""          # empty -> <package>/prompts/visual_prompt.txt
 
 tf:
+  world_frame: "map"      # TIAGo may override this with its connected localization frame
   lookup_timeout: 0.1  # seconds to wait for a transform before dropping the frame
 walls:
   # Fast 2.5D detector: metric cells with vertical support, Hough candidates, TLS refinement.

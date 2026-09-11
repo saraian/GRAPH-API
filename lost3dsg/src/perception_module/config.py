@@ -303,6 +303,9 @@ _DEFAULTS = {
         "dir": "",
     },
     "tf": {
+        # Common frame for robot poses, occupancy grids and projected 3D boxes. Habitat keeps
+        # the historical ``map`` frame; a TIAGo config can select its connected world frame.
+        "world_frame": "map",
         # seconds to wait for a transform lookup before giving up on the frame
         "lookup_timeout": 0.1,
         # GA-95: the TF buffer's cache window. A frame whose stamp is older than this can
@@ -574,6 +577,27 @@ CFG, CFG_PATH, CFG_LOCAL_PATH = _load()
 
 # Backward compatibility: utils.py does `import config` / `config.simulation`.
 simulation = CFG["simulation"]
+
+
+def vlm_completion_kwargs():
+    """Return provider-specific completion options without hard-coding a backend.
+
+    llama.cpp accepts ``chat_template_kwargs.enable_thinking`` through the OpenAI client's
+    ``extra_body`` argument.  Other compatible providers can still supply their own body through
+    ``vlm.extra_body``; an empty result keeps the historical request unchanged.
+    """
+    vlm = CFG.get("vlm") or {}
+    extra = dict(vlm.get("extra_body") or {})
+    if vlm.get("enable_thinking") is False:
+        template = dict(extra.get("chat_template_kwargs") or {})
+        template["enable_thinking"] = False
+        extra["chat_template_kwargs"] = template
+    return {"extra_body": extra} if extra else {}
+
+
+def world_frame():
+    """Return the configured frame shared by perception, markers and the robot BEV."""
+    return str((CFG.get("tf") or {}).get("world_frame") or "map")
 
 
 def visibility(live=None):
