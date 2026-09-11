@@ -2005,15 +2005,26 @@ TOOLS_MENU_TEMPLATE = """
      camera and no bridge; a control that cannot do its job should say so before it is pressed,
      not after. The recorded runs are reached through LOAD instead. -->
 <div id="toolsMenu" style="position:fixed;left:0;top:0;bottom:0;z-index:99999;
-     font:600 11px ui-monospace,monospace;display:flex;align-items:flex-start;">
+     font:600 11px ui-monospace,monospace;">
+  <!-- BOTH CHILDREN ARE ABSOLUTE, AND BOTH START AT left:0. They used to be flex items in a row,
+       which put the panel to the RIGHT of the button: the button is only ~31 px tall, so below it
+       the page showed through a column the width of the button for the whole height of the
+       sidebar. That strip is the gap the owner saw. Overlaying the button on the panel instead
+       means the drawer reaches the screen edge and the button does not move when it opens. -->
   <button id="toolsToggle" onclick="toggleTools()" title="Menu"
-          style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-left:0;
+          style="position:absolute;left:0;top:10px;z-index:1;
+                 background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-left:0;
                  border-radius:0 6px 6px 0;padding:9px 10px;cursor:pointer;font:inherit;
-                 margin-top:10px;line-height:1;">&#9776;</button>
+                 line-height:1;">&#9776;</button>
+  <!-- ONE `display` DECLARATION. There were two -- `display:none` first and `display:flex` last --
+       and the last one wins, so the panel was OPEN on every load while the comment below claimed
+       its own inline `display:none` kept it shut. `flex-direction` and `gap` are inert until
+       `toggleTools` sets `display:flex`, so they can stay. -->
   <div id="toolsPanel"
-       style="display:none;height:100%;background:#0b1220;border-right:1px solid #334155;padding:12px 10px;
-              min-width:210px;box-shadow:6px 0 24px rgba(0,0,0,.5);overflow:auto;
-              display:flex;flex-direction:column;gap:6px;">
+       style="display:none;flex-direction:column;gap:6px;
+              position:absolute;left:0;top:0;bottom:0;
+              background:#0b1220;border-right:1px solid #334155;padding:44px 10px 12px;
+              min-width:210px;box-shadow:6px 0 24px rgba(0,0,0,.5);overflow:auto;">
     <div style="color:#64748b;margin-bottom:2px;letter-spacing:.05em;">MENU</div>
     <a href="./"      style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">NEW &rarr;</a>
     <a id="liveLink" href="dash" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LIVE &rarr;</a>
@@ -2040,6 +2051,15 @@ __EXT_LINKS____INTERNAL_LINKS__  </div>
     if (!p) return;
     p.addEventListener('click', function (e) {
       if (e.target.closest('a,button')) p.style.display = 'none';
+    });
+    // AND A CLICK ANYWHERE ELSE CLOSES IT (owner 2026-09-11). `toolsMenu` holds the panel AND
+    // the hamburger, so a press on the hamburger is never "outside" and `toggleTools` keeps
+    // both directions. Registered on the document, not the page body, because the dashboard's
+    // own panels stop propagation in places and a body listener would miss those clicks.
+    document.addEventListener('click', function (e) {
+      if (p.style.display === 'none') return;
+      var m = document.getElementById('toolsMenu');
+      if (m && !m.contains(e.target)) p.style.display = 'none';
     });
   })();
   (function () {

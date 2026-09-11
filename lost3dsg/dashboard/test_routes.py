@@ -1075,6 +1075,42 @@ def test_the_bundle_tag_says_which_machine_recorded_it():
 
 
 
+def test_the_sidebar_is_closed_on_load_and_can_be_clicked_away():
+    """Two defects in one style attribute, and neither is visible by reading it left to right.
+
+    `#toolsPanel` carried `display:none` AND, forty characters later, `display:flex`. The last
+    declaration wins, so the sidebar was open on every page load while the code comment beside it
+    said its own `display:none` kept it shut. CSS decides that, not reading order, so the check
+    counts the declarations rather than looking for the one it hopes is there.
+
+    The panel also has to close when the reader clicks the page instead of the menu.
+    """
+    whole = (HERE / "replay_server.py").read_text()
+    # SCOPE IT TO THE TEMPLATE. The first draft searched the whole file for
+    # `document.addEventListener('click'` and matched an unrelated one in the BEV declutter
+    # block, then asserted about that. A check that reads the wrong region is a check that
+    # answers a question nobody asked.
+    src = whole[whole.index("TOOLS_MENU_TEMPLATE = "):]
+    src = src[:src.index('\n"""', src.index('"""') + 3)]
+    i = src.index('<div id="toolsPanel"')
+    style = src[src.index('style="', i) + 7:src.index('">', i)]
+    decls = [d.strip() for d in style.split(";") if d.strip().startswith("display")]
+    assert len(decls) == 1, f"#toolsPanel declares display {len(decls)} times: {decls}"
+    assert decls[0].replace(" ", "") == "display:none", \
+        f"the sidebar is not closed on load: {decls[0]}"
+    # It must still be able to OPEN as a flex column, or the fix above closes it forever.
+    assert "flex-direction:column" in style.replace(" ", "").replace("\n", "")
+    assert "p.style.display = 'flex'" in src or "'none' : 'flex'" in src, \
+        "nothing reopens the panel"
+    # And a click outside it closes it (owner 2026-09-11). `toolsMenu` wraps the panel AND the
+    # hamburger, so the containment test must name the WRAPPER: testing against the panel alone
+    # would close the sidebar on the press that opened it.
+    assert "document.addEventListener('click'" in src, "no outside-click handler"
+    outside = src[src.index("document.addEventListener('click'"):]
+    outside = outside[:outside.index("});")]
+    assert "toolsMenu" in outside and "contains(e.target)" in outside, outside
+
+
 if __name__ == "__main__":
     # REBUILT 2026-09-10 after a bad slice removed it. A suite whose runner is gone still EXITS 0
     # and prints nothing, which is the most dangerous green there is -- so the names are derived
@@ -1102,6 +1138,7 @@ if __name__ == "__main__":
     test_the_bundle_tag_says_which_machine_recorded_it()
     test_an_empty_timeline_names_this_runs_reason_not_a_generic_one()
     test_only_directories_named_like_a_run_are_served()
-    _ran = 20
+    test_the_sidebar_is_closed_on_load_and_can_be_clicked_away()
+    _ran = 21
     print(f"all {_ran} checks passed (viewer fetches {len(fetched)} endpoints: "
           f"{', '.join(fetched)})")
