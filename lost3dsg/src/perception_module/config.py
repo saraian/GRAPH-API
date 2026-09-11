@@ -103,6 +103,12 @@ _DEFAULTS = {
         "merge_cost_ratio": 20.0,          # false-merge cost / missed-merge cost; threshold = log(ratio)
         "merge_min_consecutive": 2,        # consecutive sweeps a pair must hold before it commits
         "merge_max_distance_m": 0.8,       # centre distance beyond which a pair is never merged
+        # DECLARED 2026-09-11. Both were read from the config and absent from these defaults, so a
+        # deployment whose yaml omits them took the module fallback silently -- the same fault as
+        # camera_pitch_deg and max_frame_age_s. Values are the fallbacks the code already used:
+        # object_manager_6.py:136 and object_services.py:82.
+        "association_margin_m": 0.3,
+        "merge_aabb_margin_m": 0.8,
         # Must stay STRICTLY above `sim_threshold` or a merge fuses pairs the association loop
         # just refused; object_services asserts that at load and the service now refuses a
         # request that carries a lower floor.
