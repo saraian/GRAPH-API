@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 
@@ -1745,8 +1746,27 @@ class ObjectManagerService(Node):
                     "crop_path": crop_path,
                 }
                 decision = self.filter_hook.judge(proposal)
+                # EVERY ADMISSION CARRIES A decision_id, WHOEVER THE FILTER IS.
+                #
+                # The `link` row below joins an admission to the object it produced, and it is
+                # written only when the filter put a decision_id in its own annotation. No filter
+                # in THIS repository does: neither the pass-through in hooks.py nor
+                # envelope_size.SizeFilter mentions the word. MEASURED on 20260911_160215 --
+                # 43 admissions, 27 of them admitted, and ZERO link rows.
+                #
+                # Without the link the only key shared by the decision log and the world model is
+                # the label, which joined 9 of 11 objects on the 26 August run, and the analysis
+                # falls back to label plus centroid rounded to a grid -- making a published count
+                # a function of the rounding constant (54 at 0.1 m, 33 at 1.0 m, same run).
+                #
+                # Generated HERE rather than asked of every filter: the seam must not require a
+                # courtesy from an extension to stay joinable, and the run the owner asked for
+                # next has NO filter at all. A filter that supplies its own id keeps it.
+                _ann = dict(decision.annotation or {})
+                _ann.setdefault("decision_id", uuid.uuid4().hex[:16])   # opaque, and unique ACROSS
+                #   runs, so two bundles can be read together without their ids colliding
                 self.decision_log.write("admission", label, filter=self.filter_hook.name, outcome=decision.outcome,
-                                        reason=decision.reason, annotation=decision.annotation)
+                                        reason=decision.reason, annotation=_ann)
                 if not decision.admitted:
                     self.object_services.log_both('warn', f"[{self.filter_hook.name}] refused {label}: {decision.reason}")
                     continue
@@ -1768,7 +1788,7 @@ class ObjectManagerService(Node):
                     #
                     # decision_id is an opaque string the hook put in its own annotation dict:
                     # generic seam data, nothing imported from any particular filter.
-                    decision_id = (decision.annotation or {}).get("decision_id")
+                    decision_id = _ann.get("decision_id")
                     linked_id = getattr(new_obj, "object_id", None)
                     if decision_id and linked_id:
                         self.decision_log.write("link", linked_id,

@@ -488,9 +488,12 @@ _DEFAULTS = {
         # OWN transform, because a snapshot cannot be invalidated by motion after it.
         # MEASURED, and this is why it exists: two COMPLETE tours produced ONE and TWO cycles
         # out of 4344 frames each (20260911_133641, _140421).
-        # Keep it SHALLOW. compute_fov_volume_from_depth looks TF up by the frame's stamp and
-        # the TF buffer holds 30 s; at ~3.2 s a cycle, a queue deeper than about nine frames
-        # hands it a stamp the buffer has already dropped.
+        # CORRECTED 2026-09-11 by the first armed run: depth is NOT bounded by the TF buffer.
+        # Full discards the oldest, so a popped frame's age is depth x CAPTURE interval
+        # (measured 0.53 s), about 4.2 s at depth 8 -- not depth x cycle time. That run logged
+        # no TF failure at all. What depth actually costs is STALENESS, and while the queue is
+        # saturated it buys lag rather than coverage; `queue_age_s` on the per-cycle row is
+        # the measurement.
         "frame_queue_max": 0,
         # A frame joins the queue only if the viewpoint moved this far since the last one
         # ACCEPTED. Translation and rotation are SEPARATE thresholds: the motion gate's own

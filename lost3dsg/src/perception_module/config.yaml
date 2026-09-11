@@ -354,3 +354,16 @@ perception:
   # Structural surfaces and openings already come from room geometry. Set [] to let
   # the whole-scene VLM return them.
   excluded_labels: ["wall", "floor", "ceiling", "door", "doorway", "door frame", "doorframe"]
+
+# THE FRAME ARCHIVE. The replay dashboard's timeline reads frames/ plus detections.jsonl, and only
+# this writes them (perception_2.py:327 -> detection_archive.py). The module default is False
+# (config.py:322), so with this key absent EVERY bundle reads "NO FRAMES" or "EMPTY" in the picker
+# and nothing can be stepped through.
+#
+# MEASURED 2026-09-11: absent from this file since the 2026-09-10 tree consolidation. The old
+# untracked regolo_config.yaml set it and its own comment warned that losing it made "every run
+# after it produce a bundle the dashboard could only report as recorded no frames". Regenerating
+# the arm configs from this file carried the absence into all of them, so the warning came true a
+# second time. Set HERE, in the tracked config, so no arm can lose it again.
+archive:
+  per_detection: true

@@ -11,8 +11,8 @@
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
-# generated_at:   2026-09-11T15:01:59
-# generated_from: lost3dsg/src/perception_module/config.yaml sha256 db9c737547b39927
+# generated_at:   2026-09-11T16:51:57
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 7a57373d68b25d44
 #
 # A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
 # code then takes its module fallback instead. If a bundle's config is missing a key
@@ -200,3 +200,5 @@ perception:
   - doorway
   - door frame
   - doorframe
+archive:
+  per_detection: true

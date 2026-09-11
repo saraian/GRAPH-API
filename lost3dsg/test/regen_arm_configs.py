@@ -85,6 +85,17 @@ ARMS = [
         "THE KEY IS NOT HERE. It lives in lost3dsg/test/env.local.sh as REGOLO_API_KEY, gitignored,",
         "because a key in a tracked config is GA-319 and was committed once already.",
     ]),
+    ("08_no_filter", {"vlm.base_url": "https://api.regolo.ai/v1", "vlm.model": "gemma4-31b",
+                      "hooks.filter": ""}, [
+        "NO ADMISSION FILTER. Owner 2026-09-11. Identical to 06_vlm_online except that nothing",
+        "judges a proposal: hooks.Filter's pass-through admits everything, so every new-object",
+        "proposal becomes an object.",
+        "WHAT IT ISOLATES. On 20260911_160215 the envelope filter admitted 27 of 43 proposals and",
+        "ABSTAINED on 16 -- 'no envelope for this kind: it has never been measured'. An abstain is",
+        "admissible by this seam's definition, so those 16 entered anyway; what the filter changed",
+        "was the annotation, not the map. This arm is the control that shows whether that holds.",
+        "The admission rows are still written, so the two arms are compared on the same log.",
+    ]),
     ("07_vlm_offline", {"vlm.base_url": "http://localhost:11434/v1", "vlm.model": "gemma3:27b"}, [
         "THE SAME RUN WITH NOTHING LEAVING THE MACHINE. The labelling VLM is served by ollama on",
         "the host; the detector and segmenter were already local, so this arm makes the run fully",
