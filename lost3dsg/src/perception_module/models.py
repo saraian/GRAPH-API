@@ -1,5 +1,4 @@
 import os
-import time
 
 import torch
 import numpy as np
@@ -15,31 +14,6 @@ from efficientvit.inference import SamDecoder, SamEncoder
 from PIL import Image
 from transformers import Owlv2Processor, Owlv2ForObjectDetection
 
-
-def write_vitsam_status(status):
-    """Publish VitSAM startup state to the optional run-level startup gate.
-
-    The launcher and the perception node live in different processes.  A marker in the
-    shared run directory lets the host-side Habitat feed wait for the *same* ONNX Runtime
-    sessions that will serve real detections, instead of warming a short-lived helper
-    process whose CUDA/ORT state could not be reused.
-    """
-    path = os.environ.get("VITSAM_READY_FILE", "").strip()
-    if not path:
-        return
-    try:
-        parent = os.path.dirname(path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        temporary = f"{path}.tmp.{os.getpid()}"
-        with open(temporary, "w", encoding="utf-8") as marker:
-            marker.write(f"{status}\n")
-        os.replace(temporary, path)
-    except OSError as exc:
-        # A marker is only a coordination aid. It must never hide the actual model
-        # error or make a standalone perception run fail merely because no shared
-        # output directory is writable.
-        print(f"VitSam status marker unavailable ({path}): {type(exc).__name__}: {exc}")
 
 class OWLv2():
     def __init__(self, model_id="google/owlv2-base-patch16-ensemble"):
@@ -140,8 +114,6 @@ class VitSam():
         # installations, and the latter is the runtime that executes these two models.
         import onnxruntime as ort
 
-        write_vitsam_status("loading")
-
         cuda_available = "CUDAExecutionProvider" in ort.get_available_providers()
         requested_device = "cuda" if cuda_available else "cpu"
         self.device = requested_device
@@ -172,52 +144,6 @@ class VitSam():
             "encoder providers:", self.encoder.session.get_providers(),
             "decoder providers:", self.decoder.session.get_providers(),
         )
-
-        # The first ONNX Runtime execution can be substantially slower than steady
-        # state because CUDA kernels, execution graphs, and provider memory are
-        # initialized lazily.  Pay that cost while the node is starting, rather than
-        # blocking the first real perception cycle after the robot has begun moving.
-        # The switch is useful for lightweight import/startup tests, but is enabled by
-        # default for an actual run.
-        if os.environ.get("VITSAM_WARMUP", "1").strip().lower() not in {"0", "false", "no", "off"}:
-            if self._warmup():
-                write_vitsam_status("warmed")
-            else:
-                write_vitsam_status("failed")
-                if os.environ.get("VITSAM_REQUIRE_WARMUP", "0").strip().lower() in {
-                    "1", "true", "yes", "on"
-                }:
-                    raise RuntimeError(
-                        "VitSam warmup failed and VITSAM_REQUIRE_WARMUP is enabled"
-                    )
-        else:
-            print("VitSam warmup disabled by VITSAM_WARMUP")
-            write_vitsam_status("warmed-disabled")
-
-
-    def _warmup(self):
-        """Execute one end-to-end synthetic segmentation before live data arrives."""
-        warmup_image = np.zeros((256, 256, 3), dtype=np.uint8)
-        warmup_bbox = [64.0, 64.0, 192.0, 192.0]
-        started = time.perf_counter()
-        try:
-            with torch.inference_mode():
-                masks, _ = self(warmup_image, warmup_bbox)
-            elapsed = time.perf_counter() - started
-            print(
-                f"VitSam warmup inference done: {elapsed:.3f}s "
-                f"(device={self.device}, masks_shape={np.asarray(masks).shape})"
-            )
-            return True
-        except Exception as exc:
-            elapsed = time.perf_counter() - started
-            print(
-                f"VitSam warmup failed after {elapsed:.3f}s: "
-                f"{type(exc).__name__}: {exc}. "
-                "The first live inference may still pay initialization cost."
-            )
-            return False
-
 
     def __call__(self, img, bboxes):
         raw_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
