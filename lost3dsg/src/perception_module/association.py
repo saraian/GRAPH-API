@@ -983,9 +983,18 @@ class Hypothesis:
             self.history.append({"frame": frame_id, "veto": list(pair_score.vetoed_by)})
             return self
         # REPLACE, never accumulate: each channel reports on the current state.
-        for name, ch in pair_score.channels.items():
-            if "log_odds" in ch:
-                self.state[name] = ch["log_odds"]
+        #
+        # A previous implementation only overwrote channels present in this update.  That
+        # left stale evidence behind when a channel became inapplicable: for example, a pair
+        # could receive separation=-8 while its boxes were disjoint, then overlap on a later
+        # sweep and abstain on separation, while the old -8 remained in the hypothesis total.
+        # The current score is authoritative, so an abstaining/missing channel must disappear
+        # from the state rather than continue to influence a later decision.
+        self.state = {
+            name: ch["log_odds"]
+            for name, ch in pair_score.channels.items()
+            if "log_odds" in ch
+        }
         self.history.append({"frame": frame_id,
                              "total": round(self.total, 4),
                              "containment_unchecked": pair_score.containment_unchecked,

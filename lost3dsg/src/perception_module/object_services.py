@@ -74,6 +74,19 @@ UNCERTAIN_MOVE_DISTANCE_M = CFG["association"].get("uncertain_move_distance_m", 
 # sim_threshold 0.85 that is 0.925. It is a knob, and it is the one to turn if the merge
 # rate is still high.
 MERGE_MAX_DISTANCE = CFG["association"].get("merge_max_distance_m", 0.8)
+# A very close, substantially overlapping re-detection of the same base label is stronger
+# identity evidence than a fluctuating VLM description. This is a separate geometry-
+# dominant lane rather than a lower global similarity threshold: distant or merely nearby
+# objects still have to satisfy the ordinary semantic gate.
+MERGE_NEAR_DISTANCE = float(CFG["association"].get("merge_near_distance_m", 0.02))
+MERGE_NEAR_IOU_THRESHOLD = float(CFG["association"].get(
+    "merge_near_iou_threshold", 0.25))
+if MERGE_NEAR_DISTANCE < 0.0:
+    raise ValueError(
+        f"association.merge_near_distance_m ({MERGE_NEAR_DISTANCE}) must be >= 0")
+if not 0.0 <= MERGE_NEAR_IOU_THRESHOLD <= 1.0:
+    raise ValueError(
+        f"association.merge_near_iou_threshold ({MERGE_NEAR_IOU_THRESHOLD}) must be in [0, 1]")
 # AABB broad-phase radius for the legacy merge criterion.  It is deliberately at least the
 # criterion's centre-distance threshold: a smaller margin could hide a valid merge before the
 # exact distance/similarity checks get to evaluate it.  This is a candidate-generation value,
@@ -99,6 +112,33 @@ if MERGE_MIN_SIMILARITY <= SIM_THRESHOLD:
         f"association.merge_min_similarity ({MERGE_MIN_SIMILARITY}) must be STRICTLY greater "
         f"than association.sim_threshold ({SIM_THRESHOLD}): merging two objects destroys an "
         f"identity and must demand more evidence than matching them, never less")
+
+
+def _merge_base_label(label):
+    """Return the identity label used by the geometry-dominant merge lane."""
+    return str(label or "").split("#", 1)[0].strip().casefold()
+
+
+def _near_geometry_duplicate(a, b, distance):
+    """Whether a close same-label pair has enough 3D overlap to bypass VLM similarity.
+
+    The distance check alone is intentionally insufficient: two small, adjacent objects can
+    have nearby centres without being the same object. Requiring AABB overlap keeps this
+    exception tied to the same measured volume rather than turning it into a broad distance
+    relaxation. Invalid geometry follows the normal gate.
+    """
+    if distance > MERGE_NEAR_DISTANCE:
+        return False, None
+    if _merge_base_label(getattr(a, "label", None)) != _merge_base_label(
+            getattr(b, "label", None)):
+        return False, None
+    try:
+        iou = float(compute_iou_3d(a.bbox, b.bbox))
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return False, None
+    if not math.isfinite(iou):
+        return False, iou
+    return iou >= MERGE_NEAR_IOU_THRESHOLD, iou
 
 # GA-186. Which association engine decides a merge.
 #
@@ -1466,6 +1506,9 @@ class ObjectServices(Node):
                         _refused(a, b, "already_condemned", None)
                         continue
 
+                    near_geometry_override = False
+                    near_geometry_iou = None
+
                     if a.bbox is None or b.bbox is None:
                         # THE LAST UNLOGGED EXIT IN THE SELECTION PATH, and it matters more
                         # than its two lines suggest. MEASURED in run 20260831_184822: a
@@ -1628,6 +1671,10 @@ class ObjectServices(Node):
                         continue
 
                     if MERGE_ENGINE == "legacy":
+                        near_geometry_override, near_geometry_iou = _near_geometry_duplicate(
+                            a, b, dist)
+
+                    if MERGE_ENGINE == "legacy":
                         # Embedding lazy; missing description embeddings are absent evidence,
                         # not a reason to skip the pair (lost_similarity renormalises).
                         # GUARDED: in evidence mode `sim` and `ev` are already the fused
@@ -1648,7 +1695,8 @@ class ObjectServices(Node):
                     # were correctly refused, and were then fused anyway. Overlap is locality,
                     # not similarity; the same confusion as GA-05, in the one operation that
                     # destroys an identity.
-                    if MERGE_ENGINE == "legacy" and sim < MIN_SIMILARITY:
+                    if (MERGE_ENGINE == "legacy" and sim < MIN_SIMILARITY
+                            and not near_geometry_override):
                         print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {MIN_SIMILARITY})")
                         # Unit-typed key (joint rename with the ontology lane, their
                         # inbox 00002/00004/00005): `threshold` was unit-polymorphic -- 0.925
@@ -1664,6 +1712,16 @@ class ObjectServices(Node):
                                  threshold_similarity=MIN_SIMILARITY,
                                  room_a=room_a, room_b=room_b)
                         continue
+
+                    decision_reason = (
+                        "near_geometry_label_iou"
+                        if near_geometry_override else
+                        ("similarity" if MERGE_ENGINE == "legacy" else "evidence"))
+                    if near_geometry_override:
+                        print(
+                            f"   ✅ GEOMETRY OVERRIDE: same label, centre distance {dist:.3f}m, "
+                            f"AABB IoU {near_geometry_iou:.3f}; similarity {sim:.3f} is non-authoritative"
+                        )
 
                     # GA-101: a score that passed the gate on NOTHING must not merge.
                     # With colour, material and description all absent the divisor is the
@@ -1726,6 +1784,10 @@ class ObjectServices(Node):
                     to_remove_pairs.append({
                         "keeper": keeper, "discard": discard, "bbox": merged_bbox,
                         "similarity": sim,
+                        "distance": dist,
+                        "decision_reason": decision_reason,
+                        "near_geometry_override": near_geometry_override,
+                        "near_geometry_iou": near_geometry_iou,
                         "keeper_room": room_a if keeper is a else room_b,
                         "discard_room": room_b if keeper is a else room_a,
                     })
@@ -1742,6 +1804,26 @@ class ObjectServices(Node):
                         "discarded_room": room_b if keeper is a else room_a,
                         "distance":    round(dist, 3),
                         "similarity":  round(sim, 3),
+                        "decision_reason": decision_reason,
+                        "near_geometry_override": near_geometry_override,
+                        "near_geometry_iou": (
+                            round(near_geometry_iou, 3)
+                            if near_geometry_iou is not None else None),
+                        # Keep the same evidence metadata on accepted merges that the
+                        # refusal path already records. A similarity of 1.0 is not enough
+                        # to calibrate this gate: it can come from a label-only/identical
+                        # attribute comparison, or from several genuinely agreeing fields.
+                        "evidence_count": ev.get("optional_count"),
+                        "engine": MERGE_ENGINE,
+                        "score_type": "log_odds" if MERGE_ENGINE == "evidence" else "similarity",
+                        "threshold_similarity": MIN_SIMILARITY if MERGE_ENGINE == "legacy" else None,
+                        "threshold_distance_m": MAX_DISTANCE if MERGE_ENGINE == "legacy" else None,
+                        "threshold_near_distance_m": (
+                            MERGE_NEAR_DISTANCE if MERGE_ENGINE == "legacy" else None),
+                        "threshold_near_iou": (
+                            MERGE_NEAR_IOU_THRESHOLD if MERGE_ENGINE == "legacy" else None),
+                        "threshold_log_odds": threshold if MERGE_ENGINE == "evidence" else None,
+                        "decision_details": rec if MERGE_ENGINE == "evidence" else None,
                         "merged_bbox": merged_bbox,
                         # GA-20: `merged_bbox` keeps its name -- it is still the box after the
                         # merge -- but it is now an observation rather than a synthesis, so
@@ -1769,7 +1851,16 @@ class ObjectServices(Node):
                         merged_from=getattr(discard, "object_id", discard.label),
                         keeper_label=keeper.label, discarded_label=discard.label,
                         keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
-                        similarity=pair["similarity"], dry_run=bool(dry_run))
+                        similarity=pair["similarity"],
+                        decision_reason=pair.get("decision_reason"),
+                        near_geometry_override=pair.get("near_geometry_override", False),
+                        near_geometry_iou=pair.get("near_geometry_iou"),
+                        distance=pair.get("distance"),
+                        threshold_near_distance_m=(
+                            MERGE_NEAR_DISTANCE if pair.get("near_geometry_override") else None),
+                        threshold_near_iou=(
+                            MERGE_NEAR_IOU_THRESHOLD if pair.get("near_geometry_override") else None),
+                        dry_run=bool(dry_run))
                 except Exception as e:
                     self.get_logger().error(f"decision_log merge failed: {e}")
 

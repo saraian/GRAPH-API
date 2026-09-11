@@ -458,6 +458,22 @@ def merge_path():
     assert "threshold" not in sr, "the legacy key is retired on the similarity arm"
     assert "threshold_distance_m" not in sr, "the similarity arm must not carry the distance key"
 
+    # Geometry-dominant lane: the same base label, coincident overlapping boxes, and
+    # disagreeing VLM attributes must merge even when semantic similarity is below the
+    # configured floor. The optional-evidence requirement remains active.
+    e = object_info.Object("chair", None, BOX, description="a chair", color="red", material="wood")
+    f = object_info.Object("chair", None, BOX, description="a table", color="blue", material="metal")
+    e.object_id, f.object_id = "obj_e", "obj_f"
+    e.creation_time, f.creation_time = 100.0, 200.0
+    wm.persistent_perceptions.clear()
+    wm.persistent_perceptions.extend([e, f])
+    object_services.ObjectServices._cb_merge_objects(svc, req, resp)
+    assert resp.success and resp.merged_count == 1, resp.message
+    accepted = json.loads(resp.merge_log_json)[0]
+    assert accepted["near_geometry_override"] is True, accepted
+    assert accepted["decision_reason"] == "near_geometry_label_iou", accepted
+    assert accepted["near_geometry_iou"] == 1.0, accepted
+
 
 def merge_request_distance_survives_the_broad_phase():
     """The AABB broad phase must WIDEN to the request's distance, never narrow it.

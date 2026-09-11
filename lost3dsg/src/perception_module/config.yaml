@@ -46,6 +46,11 @@ association:
                               # and fewer wrong merges commit, but a pair that leaves view
                               # before confirmation is lost. Override with MERGE_MIN_CONSECUTIVE.
   merge_max_distance_m: 0.8   # centre distance beyond which a pair is never merged
+  # Geometry dominates the VLM similarity score for a very close duplicate observation.
+  # The override also requires the same base label and sufficient 3D AABB overlap; the
+  # normal optional-evidence requirement still applies.
+  merge_near_distance_m: 0.02    # 2 cm centre distance, configurable for sensor noise
+  merge_near_iou_threshold: 0.25 # minimum 3D AABB IoU for the geometry override
   merge_aabb_margin_m: 0.8    # AABB broad-phase margin; must be >= merge_max_distance_m
   merge_min_similarity: 0.925 # MUST stay strictly above sim_threshold above, or a merge fuses
                               # pairs the association loop has just refused. object_services

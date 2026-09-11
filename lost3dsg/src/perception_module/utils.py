@@ -499,8 +499,8 @@ def draw_detections(img, detections):
         
         # Unified scene boxes carry no calibrated confidence. Showing 1.00 would
         # invent one; omit the suffix when the producing model supplied no score.
-        text = (detection.label if detection.score is None
-                else f"{detection.label}: {detection.score:.2f}")
+        score = getattr(detection, "score", None)
+        text = detection.label if score is None else f"{detection.label}: {score:.2f}"
         (text_width, text_height), baseline = cv2.getTextSize(
             text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2
         )
