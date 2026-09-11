@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs INSIDE the container: build, then start the full stack against the host
-# habitat feed. Started by live_run.sh — not meant to be run directly.
+# habitat feed. Started by run.sh — not meant to be run directly.
 set -e
 # GA-463. DEFINED FIRST, BEFORE ANY WRITE. /ws/output is the bundle, bind-mounted from the host, so
 # everything written under it is external by construction. It used to be set at :164, after the
@@ -151,12 +151,12 @@ else
   echo "   run, in the first perception cycle. Owner policy 2026-09-10 is no in-run fetches."
 fi
 
-# CFG_NAME comes from live_run.sh (regolo_config.yaml when an API key is set).
+# CFG_NAME comes from run.sh (regolo_config.yaml when an API key is set).
 # No default. This line used to read ${CFG_NAME:-smoke_config.yaml}, and because
-# live_run.sh assigned CFG_NAME without exporting it, `docker run -e CFG_NAME`
+# run.sh assigned CFG_NAME without exporting it, `docker run -e CFG_NAME`
 # passed nothing and every live run silently used the smoke config while the bundle
 # recorded regolo. Guessing here is what made that invisible.
-: "${CFG_NAME:?CFG_NAME not set — live_run.sh must export it; refusing to guess a config}"
+: "${CFG_NAME:?CFG_NAME not set — run.sh must export it; refusing to guess a config}"
 export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/${CFG_NAME}
 # The config must EXIST. config.py::_load returns the defaults when it does not, silently —
 # so a mistyped or unported config name yields a run with hooks.filter empty, the extension out of
@@ -316,7 +316,15 @@ trap container_exit_cleanup EXIT
 # base_link, which sits on the floor; the camera is 1.5 m up, ceilings ~2.7 m.
 RTABMAP_GRID_ARGS=${RTABMAP_GRID_ARGS:-"--Grid/NormalsSegmentation false --Grid/MaxGroundHeight 0.25 --Grid/MaxObstacleHeight 1.8 --Grid/RangeMax 4.0 --Grid/RayTracing true --Grid/NoiseFilteringRadius 0.1 --Grid/NoiseFilteringMinNeighbors 5 --Grid/CellSize 0.05"}
 
-echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> web viewer :${BRIDGE_PORT:-8081})"
+echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> bridge :${BRIDGE_PORT:-8081})"
+# THE BRIDGE PORT IS NOT THE DASHBOARD. :8081 serves the bridge's own control page -- no 3D
+# tab, no layers, no replay timeline, no tools menu, and the undocked minimap. This line used
+# to call it "web viewer", which is what sent a reader there: four separate bug reports in one
+# session ("no 3D tab", "no layers nor timeline", "minimap is distorted") were all one fact,
+# that the page being looked at was :8081 and not the dashboard.
+echo "    the DASHBOARD is a separate process -- :8081 is the bridge's own page and has no"
+echo "    3D tab, layers or replay timeline. Start the dashboard with:"
+echo "      python3 lost3dsg/dashboard/replay_server.py --mode live --port 8086"
 ros2 run lost3dsg habitat_feed_node.py > /tmp/feed_node.log 2>&1 &
 
 # ---- Class A pre-flight gate -------------------------------------------------------------
@@ -341,7 +349,7 @@ else
   # Every other probe blocks as usual: a mapping run that mapped the wrong scene with the wrong
   # camera is worse than no map, and a2/a5/a6/a7 are what catch that.
   # MAPPING_ONLY relaxed a4/a8 to OBSERVE because a map-only run loaded no detector. That shape
-  # went with the sampling policy (owner 2026-09-11) and live_run.sh refuses the name, so every
+  # went with the sampling policy (owner 2026-09-11) and run.sh refuses the name, so every
   # run now loads a detector and every probe blocks as usual.
   PREFLIGHT_OBSERVE=""
   echo ">>> pre-flight gate (Class A)"
@@ -501,6 +509,27 @@ ros2 run image_view image_saver --ros-args -r image:=/image_with_bb \
   fi
 ) &
 
+# ---- a6 camera_pose_offset, RUN HERE RATHER THAN IN THE GATE (2026-09-11) ---------------
+# a6 asserts that the camera pose differs from the base pose by the mount height -- the check
+# that caught a viewpoint series describing an eye 1.5 m below the rendering one. It reads a TF
+# the feed NODE publishes only once frames arrive, and the feed HOST now waits for VitSAM's
+# warmup file, written by perception_2, which starts after the gate. Inside the gate a6 could
+# not pass by construction. Same shape as a13 below: wait for the precondition, sample, BLOCK.
+_a6_gate_file="${VITSAM_READY_FILE:-/ws/output/vitsam_ready}"
+_a6_deadline=$(( $(date +%s) + 300 ))
+until grep -qi "ready" "$_a6_gate_file" 2>/dev/null; do
+  [ "$(date +%s)" -ge "$_a6_deadline" ] && { echo "!! a6: the VitSAM warmup gate did not open in 300 s; sampling anyway"; break; }
+  sleep 3
+done
+if python3 /graph_api/lost3dsg/test/preflight_gate.py --only a6 \
+     --camera-height "${PREFLIGHT_CAMERA_HEIGHT:-1.5}" --out /ws/output/preflight_a6.json \
+     >> /tmp/a6.log 2>&1; then
+  echo ">>> a6 camera_pose_offset: the camera sits at its mount height"
+else
+  echo "!! a6 camera_pose_offset FAILED — ending the run. $(tail -3 /tmp/a6.log | tr '\n' ' ')"
+  exit 3
+fi
+
 # GA-359 / probe a13. EXACTLY ONE AUTHORITY FOR map->odom. Measured on 20260907_152446: with
 # rtabmap publishing map->odom (publish_tf_map defaulted true; publish_tf was never a launch
 # argument) AND the feed node's static identity, tf2 served rtabmap's correction for 108 s and
@@ -563,7 +592,7 @@ TAIL_PID=$!
 # in a SUBSHELL, and a subshell cannot `wait` on the parent's children — it returned rc=-1 for a
 # node that had exited 7, so the status this run reports would have been meaningless. Measured on
 # a standalone harness before landing; the loop below returns 7 for an exit 7 and 0 for a clean 0.
-# MAPPING_ONLY and its deadline went with the sampling policy (owner 2026-09-11): live_run.sh
+# MAPPING_ONLY and its deadline went with the sampling policy (owner 2026-09-11): run.sh
 # refuses the name, so there is no map-only shape left to watch a shorter node list for. Every run
 # watches every node, and the feed's own end is what stops it.
 _WATCH_NODES="PERCEPTION RTABMAP OM6 WALLS"

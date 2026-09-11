@@ -400,6 +400,28 @@ def _install_ros_stubs():
         shutdown=lambda *a, **k: None, ok=lambda: True)
     mod("rclpy.node", Node=_Stub)
     sys.modules["rclpy"].node = sys.modules["rclpy.node"]
+    # rclpy.qos, because the bridge imports FOUR NAMES FROM IT BY NAME
+    # (graph_api_bridge.py:28: `from rclpy.qos import DurabilityPolicy, HistoryPolicy,
+    # QoSProfile, ReliabilityPolicy`). A `from X import a, b` fails on a stub module that
+    # lacks the attributes, and `rclpy` here is a plain module rather than a package, so the
+    # submodule has to be registered in sys.modules explicitly -- the error is the misleading
+    # "'rclpy' is not a package" rather than a missing name.
+    #
+    # THIS IS STUB DRIFT AND IT WILL RECUR. The dashboard loads the bridge in-process to reuse
+    # its routes; every ROS import the bridge grows has to appear here or the dashboard stops
+    # starting at all, which is how it failed today after a QoS import landed upstream. The
+    # values are inert: nothing in a replay reads a QoS profile, it only has to import.
+    # The policy names are used as ENUMS -- `ReliabilityPolicy.BEST_EFFORT` -- so attribute
+    # access happens on the CLASS, which never reaches _Stub's instance __getattr__. A
+    # metaclass answers any member, so the stub does not have to know which constants the
+    # bridge picks today or grows tomorrow.
+    class _AnyMember(type):
+        def __getattr__(cls, _):
+            return 0
+    _Policy = _AnyMember("_Policy", (), {})
+    mod("rclpy.qos", DurabilityPolicy=_Policy, HistoryPolicy=_Policy,
+        QoSProfile=_Stub, ReliabilityPolicy=_Policy)
+    sys.modules["rclpy"].qos = sys.modules["rclpy.qos"]
     mod("cv2", imencode=lambda *a, **k: (False, None), imdecode=lambda *a, **k: None,
         cvtColor=lambda *a, **k: None, COLOR_BGR2RGB=4)
     mod("cv_bridge", CvBridge=_Stub)
@@ -673,7 +695,18 @@ def _replay_mode_html(bundle: Path) -> str:
   // ---- badge + canvas ----------------------------------------------------------------
   const badge = document.createElement('div');
   badge.id = 'replayBadge';
+  // THE HOST IS PART OF THE RUN'S IDENTITY, not decoration. Bundles are followed from other
+  // machines now (lost3dsg/test/follow_remote_run.sh), so a reader looking at a timeline has
+  // no way to tell a local run from one pulled off the lab machine unless the page says. The
+  // value is the bundle's OWN `machine` stamp, written by live_run.sh at launch -- not this
+  // process's hostname, which would name the machine doing the SERVING and be wrong for every
+  // followed run. Absent on bundles recorded before the stamp existed, and then it is omitted
+  // rather than guessed.
   badge.textContent = (LIVE_MODE ? 'LIVE' : 'REPLAY') + ' \u00b7 ' + BUNDLE;
+  fetch(PFX + '/replay/host/' + encodeURIComponent(BUNDLE))
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {{ if (d && d.machine) badge.textContent += ' \u00b7 ' + d.machine; }})
+    .catch(() => {{}});
   wrap.appendChild(badge);
 
   const cv = document.createElement('canvas');
@@ -2113,14 +2146,14 @@ def with_tools_menu(html: str) -> str:
 # The checkout the runs directory sits in, used only to DISPLAY default paths in the
 # launcher form. Derived, never a literal, so it names no deployment.
 RUNS_PARENT = RUNS_ROOT.parent
-LIVE_RUN = GRAPH_API_ROOT / "lost3dsg/test/live_run.sh"
+LIVE_RUN = GRAPH_API_ROOT / "run.sh"   # was run.sh; inlined into run.sh 2026-09-11
 LAUNCH_LOG_DIR = Path(tempfile.gettempdir()) / "found-launcher"
 
 # The four the script's own `case` statement accepts. Anything else exits 1 before it starts,
 # so the form offers exactly these rather than a free-text box that fails a minute later.
 SCENES = ["hm3d_00861", "hm3d_00337", "hm3d_00770", "mp3d_17DRP"]
 
-# EVERY variable live_run.sh reads, grouped, each with THE SCRIPT'S OWN DEFAULT as its
+# EVERY variable run.sh reads, grouped, each with THE SCRIPT'S OWN DEFAULT as its
 # placeholder. Read out of the script rather than remembered: a form that offers a stale
 # default is worse than one that offers none, because it looks authoritative.
 #
@@ -2148,7 +2181,7 @@ RUN_SETTINGS = [
         ("FEED_FPS", "3", "text", "frames per second published to the stack"),
         ("FEED_SEED", "7", "text", "spawn seed -- same seed, same starting point"),
         # The sampling policy is removed (owner 2026-09-11), so FEED_WALK, FEED_DWELL,
-        # FEED_TEST_TOUR and FEED_TEST_TOUR_SCAN are gone from this form: live_run.sh refuses a run
+        # FEED_TEST_TOUR and FEED_TEST_TOUR_SCAN are gone from this form: run.sh refuses a run
         # that sets any of them. A schedule states its own stops and its own scan at each.
         ("FEED_EXPLORATION_LAPS", "3", "text", "complete passes of the storey's roadmap"),
         ("FEED_MOVE_FN", "navigate", "choice:navigate|teleport",
@@ -2161,7 +2194,7 @@ RUN_SETTINGS = [
     ("MAP", "rtabmap: where this run spawns and what it maps against", [
         # MAPPING_ONLY and FEED_MAPPING_SECONDS selected the mapping phase, which went with the
         # sampling policy on 2026-09-11. A scheduled run maps while it drives the roadmap, so
-        # there is no separate phase to time; live_run.sh refuses both names.
+        # there is no separate phase to time; run.sh refuses both names.
         ("FEED_SPAWN_FLOOR", "", "text", "spawn height; blank lets the navmesh choose"),
         ("RTABMAP_LOCALIZE_DB", "", "text", "localise against this .db instead of mapping"),
     ]),
@@ -2191,7 +2224,7 @@ _SECRET_NAMES = {f[0] for _, _, fields in RUN_SETTINGS for f in fields if f[2] =
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,60}$")
 
 # The launched run, as this process knows it. `pid` is the process GROUP leader, because
-# live_run.sh is started in its own session -- see _start_run for why that matters to stopping.
+# run.sh is started in its own session -- see _start_run for why that matters to stopping.
 RUN_PROC = {"pid": None, "scene": None, "log": None, "started": None}
 
 
@@ -2232,7 +2265,7 @@ CONTAINER = "graphapi_live"
 
 
 def _container_up() -> bool:
-    """Is the run's container up. live_run.sh refuses to start over one (fixed name, fixed
+    """Is the run's container up. run.sh refuses to start over one (fixed name, fixed
     ports), and its EXIT trap does not stop it: the trap kills the feed and archives the
     bundle, and leaves `docker run` to the signal. So the container can outlive the run."""
     try:
@@ -2407,7 +2440,7 @@ def _bundle_tag(name):
 def _start_page_html(bundles, current, mode, why):
     """The initial window: pick a recorded run, or configure and launch a new one.
 
-    EVERY variable live_run.sh reads is on the form, grouped and collapsed. The alternative --
+    EVERY variable run.sh reads is on the form, grouped and collapsed. The alternative --
     a short list of "the ones that matter" -- was rejected by the owner, and the objection is
     sound: which ones matter is a property of the experiment, not of the launcher, so a
     launcher that decides for you is a launcher you have to leave to change one field.
@@ -2477,7 +2510,7 @@ def _start_page_html(bundles, current, mode, why):
             + ("" if dash_env.flag("DASH_PUBLIC") else
                '<section><h2>Start a new run</h2>'
                f'<div><label for="f_scene">scene</label><select id="f_scene">{scene_opts}</select>'
-               '<div class="hint">the four live_run.sh accepts; override the paths under SCENE</div></div>'
+               '<div class="hint">the four run.sh accepts; override the paths under SCENE</div></div>'
                f'{"".join(groups)}'
                '<div class="bar"><button id="go" onclick="startRun()">LAUNCH RUN</button>'
                '<button class="plain stop" id="stopBtn" onclick="stopRun()" hidden>STOP (SIGINT)</button>'
@@ -2804,7 +2837,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
 
     @app.post("/start_run")
     async def _start_run(request: Request):
-        """Launch live_run.sh with the submitted settings.
+        """Launch run.sh with the submitted settings.
 
         LOOPBACK ONLY. The run opens a habitat window on the SERVER's display and takes the
         server's GPU, ROS graph and control ports; from another machine the person pressing
@@ -2813,7 +2846,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         A NEW SESSION, deliberately (`start_new_session=True`). Two things follow, both
         wanted: the run survives a restart of this dashboard, and it gets its own process
         group, which is the only way `/stop_run` can deliver SIGINT to the whole stack.
-        live_run.sh publishes the map from an EXIT trap, so the documented way to stop it is
+        run.sh publishes the map from an EXIT trap, so the documented way to stop it is
         the interrupt -- kill the pid alone and the trap runs while its children keep the
         ports.
         """
@@ -2837,7 +2870,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         if _container_up():
             return JSONResponse(status_code=409, content={
                 "started": False,
-                "why": (f"container {CONTAINER} is still up; live_run.sh refuses to start over "
+                "why": (f"container {CONTAINER} is still up; run.sh refuses to start over "
                         f"it. Press STOP, or: docker stop {CONTAINER}")})
         try:
             body = await request.json()
@@ -2892,7 +2925,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         if not _pid_alive(pid):
             return JSONResponse(status_code=409, content={
                 "stopped": False, "why": "no run launched from here is running"})
-        # SIGINT, not SIGTERM, and to the GROUP. live_run.sh publishes the map from its EXIT
+        # SIGINT, not SIGTERM, and to the GROUP. run.sh publishes the map from its EXIT
         # trap and documents Ctrl-C as the way to stop it; SIGTERM to the leader alone leaves
         # the container and the feed holding their ports.
         try:
@@ -3014,6 +3047,12 @@ def _install_decision_reader(m, bundle: Path):
         resolves per call, not the one this process started on."""
         configured = os.environ.get("GRAPH_API_OUTPUT_DIR")
         return (Path(configured) if configured else bundle) / "hook_decisions.jsonl"
+
+    # EXPOSED, so a route that is asked for ANOTHER bundle can read that bundle's log through
+    # the same filter and the same memo. Without this the only reader outside this closure was
+    # the process-wide `_DECISIONS_CACHE`, which is why /replay/events served the wrong run.
+    # Not a second parser: one function, two callers.
+    m._blob_for = _blob_for
 
     def _cached_records():
         log = _current_log()
@@ -3268,6 +3307,22 @@ def build_app(bundle: Path):
         snapshot. `match` says whether the row is this frame's or the preceding cycle's."""
         return JSONResponse(_load_replay_view().cycle_for_frame(bundle, frame_id))
 
+    @m.app.get("/replay/host/{bundle}")
+    def _replay_host(bundle: str):
+        """Which machine recorded this bundle, from its own run_metadata.
+
+        Read per bundle, never from this process: a dashboard can serve a run pulled off
+        another machine, and answering with the SERVER's hostname would label every followed
+        run as local. `machine` is stamped by live_run.sh at launch; older bundles have none
+        and get null, which the page renders as nothing at all.
+        """
+        try:
+            meta = json.loads((RUNS_ROOT / bundle / "run_metadata.json").read_text())
+        except (OSError, ValueError):
+            return JSONResponse({"machine": None})
+        mach = meta.get("machine")
+        return JSONResponse({"machine": str(mach) if mach else None})
+
     @m.app.get("/replay/events/{bundle}")
     def _replay_events(bundle: str):
         """Timestamped events for the scrubber. GA-229.
@@ -3276,8 +3331,24 @@ def build_app(bundle: Path):
         never disagree about what happened. `merge_refused` is deliberately absent: 2.35 M
         ticks is not a timeline, it is a solid bar.
         """
+        # THE BUNDLE THAT WAS ASKED FOR, not the one this process happens to be serving. This
+        # endpoint took `bundle` and then read `m._DECISIONS_CACHE`, which `_cached_records`
+        # fills from `_current_log()` -- the SERVED run. So selecting any other run in the
+        # picker drew that run's frames under the served run's ticks and verdicts.
+        # MEASURED: asking for 20260910_125420 (0 frames, no decisions) returned the same 98
+        # events, with the same first timestamp, as asking for 20260910_170036. The owner saw
+        # it as "only the feed is live, the rest comes from the wrong run", which is exactly
+        # what a per-bundle route reading a process-wide cache produces.
+        #
+        # `_blob_for` already memoises per (path, mtime, size) and keeps the last few, so
+        # reading another bundle here costs one parse and does not evict the served run's.
+        log = (RUNS_ROOT / bundle / "hook_decisions.jsonl")
+        try:
+            st = log.stat()
+        except OSError:
+            return JSONResponse({"events": [], "error": f"no hook_decisions.jsonl in {bundle}"})
         out = []
-        for r in m._DECISIONS_CACHE["records"]:
+        for r in m._blob_for(log, st)["records"]:
             t = r.get("t")
             if not isinstance(t, (int, float)):
                 continue
