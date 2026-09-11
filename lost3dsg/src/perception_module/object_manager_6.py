@@ -26,7 +26,7 @@ import rclpy
 import requests
 from association import AssocObject, Observation, search_radius
 from builtin_interfaces.msg import Time as TimeMsg
-from config import CFG
+from config import CFG, world_frame
 from cv_bridge import CvBridge
 from cv_utils import publish_persistent_bboxes
 from detection_index import bounds as spatial_bounds
@@ -226,7 +226,13 @@ PROJECT_ROOT = current_dir.split('/install/')[0] if '/install/' in current_dir e
 # world2vec is imported explicitly above -- loaded once in nlp_utils.
 
 # Setup path per il file sintetico di operazioni
-log_dir = os.path.join(PROJECT_ROOT, "output")
+def resolve_output_root():
+    return (os.environ.get("GRAPH_API_OUTPUT_DIR")
+            or os.environ.get("LOST3DSG_OUTPUT_DIR")
+            or os.path.join(PROJECT_ROOT, "output"))
+
+
+log_dir = resolve_output_root()
 os.makedirs(log_dir, exist_ok=True)
 SYNTHETIC_LOG_FILE = os.path.join(log_dir, "operations.txt")
 AGENT_POSES_LOG_FILE = os.path.join(log_dir, "agent_poses.json")
@@ -507,7 +513,7 @@ def _stamp_key_str(stamp_msg):
 def publish_agent_path(node, agent_poses, pub):
     """Publish all accumulated agent poses together as a nav_msgs/Path (for RViz)."""
     path_msg = Path()
-    path_msg.header.frame_id = "map"
+    path_msg.header.frame_id = world_frame()
     if agent_poses:
         last_timestamp = agent_poses[-1].get("timestamp")
         path_msg.header.stamp = _stamp_from_seconds(last_timestamp) if last_timestamp is not None else node.get_clock().now().to_msg()
@@ -516,7 +522,7 @@ def publish_agent_path(node, agent_poses, pub):
 
     for entry in agent_poses:
         pose_stamped = PoseStamped()
-        pose_stamped.header.frame_id = "map"
+        pose_stamped.header.frame_id = world_frame()
         timestamp_sec = entry.get("timestamp")
         pose_stamped.header.stamp = _stamp_from_seconds(timestamp_sec) if timestamp_sec is not None else node.get_clock().now().to_msg()
         pose_stamped.pose.position.x = entry["x"]
@@ -536,7 +542,7 @@ def publish_persistent_centroids(node, wm, pub):
         if obj.bbox is None or "door" in obj.label.lower():
              continue
         marker = Marker()
-        marker.header.frame_id = "map"
+        marker.header.frame_id = world_frame()
         marker.header.stamp = _stamp_from_seconds(
             getattr(obj, "last_perception_time", None)
         ) if getattr(obj, "last_perception_time", None) else node.get_clock().now().to_msg()
@@ -559,7 +565,7 @@ def publish_uncertain_bboxes(node, uncertain_objects, pub):
         if obj.bbox is None or "door" in obj.label.lower():
              continue
         marker = Marker()
-        marker.header.frame_id = "map"
+        marker.header.frame_id = world_frame()
         marker.header.stamp = _stamp_from_seconds(
             getattr(obj, "last_perception_time", None)
         ) if getattr(obj, "last_perception_time", None) else node.get_clock().now().to_msg()
@@ -584,7 +590,7 @@ def publish_uncertain_centroids(node, uncertain_objects, pub):
         if obj.bbox is None or "door" in obj.label.lower(): 
             continue
         marker = Marker()
-        marker.header.frame_id = "map"
+        marker.header.frame_id = world_frame()
         marker.header.stamp = _stamp_from_seconds(
             getattr(obj, "last_perception_time", None)
         ) if getattr(obj, "last_perception_time", None) else node.get_clock().now().to_msg()
@@ -604,7 +610,7 @@ def publish_uncertain_centroids(node, uncertain_objects, pub):
 def publish_pov_volume(node, pov_volume, pub):
     marker_array = MarkerArray()
     marker = Marker()
-    marker.header.frame_id = "map"
+    marker.header.frame_id = world_frame()
     marker.header.stamp = node.get_clock().now().to_msg()
     marker.id = 0
     marker.type = Marker.CUBE
@@ -745,6 +751,11 @@ class ObjectManagerService(Node):
 
         qos_latch = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         qos_standard = QoSProfile(depth=10)
+        qos_camera = QoSProfile(
+            depth=1,
+            history=HistoryPolicy.KEEP_LAST,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
         
         
         # Publishers
@@ -757,7 +768,7 @@ class ObjectManagerService(Node):
         self.uncertain_objects = self.object_services.uncertain_objects
         self.tracking_activated_pub = self.create_publisher(Bool, '/tracking_mode_activated', qos_standard)
         # GA-350: the room-frame source. The raw camera topic, not the annotated one.
-        self.create_subscription(Image, '/camera/rgb', self._room_rgb_callback, qos_standard)
+        self.create_subscription(Image, '/camera/rgb', self._room_rgb_callback, qos_camera)
         
         self.agent_path_pub = self.create_publisher(Path, '/agent_path', qos_latch)
         
@@ -862,13 +873,17 @@ class ObjectManagerService(Node):
         stamp = msg.header.stamp
         timestamp_sec = stamp.sec + stamp.nanosec * 1e-9
 
+        configured_agent_pose = (CFG.get("frames", {}) or {}).get("agent_pose")
+        if not bool(CFG.get("simulation", True)) and configured_agent_pose in (
+                None, "", "habitat_camera"):
+            configured_agent_pose = "base_footprint"
         entry = {
             "timestamp": timestamp_sec,
             "datetime": _utc_iso_from_seconds(timestamp_sec),
             "tracked_frame": (CFG.get("frames", {}) or {}).get(
-                "agent_pose", "habitat_camera"
+                "agent_pose", configured_agent_pose or "habitat_camera"
             ),
-            "reference_frame": msg.header.frame_id or "map",
+            "reference_frame": msg.header.frame_id or world_frame(),
             "x": msg.pose.position.x,
             "y": msg.pose.position.y,
             "z": msg.pose.position.z,
@@ -2524,7 +2539,7 @@ class ObjectManagerService(Node):
             poly = data.get("polygon", [])
             if len(poly) >= 3:
                 m = Marker()
-                m.header.frame_id = "map"
+                m.header.frame_id = world_frame()
                 m.header.stamp = self.get_clock().now().to_msg()
                 m.id = i
                 m.type = Marker.LINE_STRIP

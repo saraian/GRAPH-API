@@ -25,7 +25,18 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
+
+# Physical TIAGo camera drivers publish sensor data as BEST_EFFORT. A RELIABLE
+# subscription does not match that publisher, leaving the bridge apparently live
+# while no image ever arrives. Keep only the newest frame for the browser.
+_QOS_CAMERA = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+)
 
 from lost3dsg.srv import (
     AddObject,
@@ -117,9 +128,21 @@ _node = None
 
 app.mount("/viewer", StaticFiles(directory=str(VIEWER_DIR)), name="viewer")
 
+
+def _viewer_path():
+    """Use the robot dashboard only for a physical run."""
+    try:
+        from config import CFG as runtime_cfg
+        physical = not bool(runtime_cfg.get("simulation", True))
+    except (ImportError, AttributeError, TypeError):
+        physical = os.environ.get("PAL_ROBOT_CONNECTED", "").lower() in (
+            "1", "true", "yes", "on")
+    tiago = VIEWER_DIR / "tiago_viewer.html"
+    return tiago if physical and tiago.exists() else VIEWER_DIR / "viewer.html"
+
 @app.get("/", include_in_schema=False)
 def viewer(request: Request = None):
-    path = VIEWER_DIR / "viewer.html"
+    path = _viewer_path()
     try:
         st = path.stat()
         etag = f'"{int(st.st_mtime)}-{st.st_size}"'
@@ -188,6 +211,10 @@ class BridgeNode(Node):
             'delete_objects': self.create_client(DeleteObjects, '/graph/delete_objects'),
             'query_objects': self.create_client(QueryObjects, '/graph/query_objects'),
         }
+        self.ros_bev = None
+        if (_BRIDGE_CFG.get('bev') or {}).get('source') == 'ros':
+            from ros_bev import RosBEV
+            self.ros_bev = RosBEV(self, _BRIDGE_CFG)
         self.latest_jpeg = None       # /image_with_bb: one frame per perception cycle
         self.last_frame_time = 0.0
         # Arrival times of the last 24 annotated frames, for the MEASURED frame period. The
@@ -210,7 +237,7 @@ class BridgeNode(Node):
         from std_msgs.msg import String as _WallStr
         self.latest_walls, self.walls_stamp = [], 0.0
         self.create_subscription(_WallStr, '/detected_wall_segments', self._on_walls, 10)
-        self.create_subscription(Image, '/camera/rgb', self._on_raw_image, 10)
+        self.create_subscription(Image, '/camera/rgb', self._on_raw_image, _QOS_CAMERA)
         self.create_subscription(Image, '/image_with_bb', self._on_annotated_image, 10)
 
         # TF, for the live overlay's camera pose. Optional on purpose: if tf2_ros is not
@@ -1310,8 +1337,14 @@ except ImportError:                                   # launched by file path, n
 OVERLAY_ON = os.environ.get("BRIDGE_OVERLAY", "1") == "1"
 # The frame the world model is expressed in, and the camera frame to look it up as. Both are
 # configurable because a rename in the TF tree must not silently draw boxes in the wrong place.
-OVERLAY_MAP_FRAME = os.environ.get("BRIDGE_OVERLAY_MAP_FRAME", "map")
-OVERLAY_CAM_FRAME = os.environ.get("BRIDGE_OVERLAY_CAM_FRAME", "habitat_camera_optical")
+OVERLAY_MAP_FRAME = os.environ.get(
+    "BRIDGE_OVERLAY_MAP_FRAME",
+    str((CFG.get("tf") or {}).get("world_frame") or "map"),
+)
+OVERLAY_CAM_FRAME = os.environ.get(
+    "BRIDGE_OVERLAY_CAM_FRAME",
+    str((CFG.get("frames") or {}).get("camera") or "habitat_camera_optical"),
+)
 
 _OVERLAY_OBJ = {"key": None, "objects": []}
 _OVERLAY_INTR = {"key": None, "value": None}
@@ -1536,7 +1569,7 @@ def _best_frame_pick():
     if node and node.latest_jpeg and (now - node.last_frame_time) < ANNOTATED_MAX_AGE_SEC:
         _last_frame_source = "perception overlay"
         return node.latest_jpeg
-    if now >= _feed_probe_blocked_until:
+    if _SVC_B.get("feed_enabled", True) and now >= _feed_probe_blocked_until:
         try:
             with urllib.request.urlopen(f"{FEED_HOST}/frame.jpg", timeout=0.4) as r:
                 data = r.read()
@@ -1677,6 +1710,8 @@ def _externalise_map(entry):
     mime = header[5:].split(";", 1)[0] or "image/png"
     map_id = hashlib.sha1(raw).hexdigest()[:16]
     _BEV_MAP_BYTES[map_id] = (mime, raw)
+    while len(_BEV_MAP_BYTES) > 32:
+        _BEV_MAP_BYTES.pop(next(iter(_BEV_MAP_BYTES)))
     out = {k: v for k, v in entry.items() if k != "image"}
     out["url"] = f"/bev_map/{map_id}"
     return out
@@ -1720,6 +1755,22 @@ def proxy_bev_data(floor_y: str = None):
                 status_code=400,
                 detail=f"floor_y must be a number or 'auto', got {floor_y!r}",
             )
+
+    if (_BRIDGE_CFG.get("bev") or {}).get("source") == "ros":
+        if _node is None or _node.ros_bev is None:
+            return JSONResponse(content={
+                "agent": None, "map": None, "floors": [],
+                "source_errors": ["ROS BEV subscriber is not running"],
+            })
+        data = _externalise_maps(_node.ros_bev.payload())
+        latency_file = _active_output_dir() / "perception_latencies.json"
+        if latency_file.exists():
+            try:
+                data["latencies"] = json.loads(latency_file.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                data.setdefault("source_errors", []).append(
+                    f"{latency_file}: {type(exc).__name__}: {exc}")
+        return JSONResponse(content=data)
 
     data = {}
 
@@ -2008,7 +2059,8 @@ def get_rtabmap_nodes(per_room: bool = False):
     that stops rotating on the wrong one would stop on a failure.
     """
     out = _active_output_dir()
-    candidates = [out / "rtabmap.db", out.parent / "rtabmap.db", Path("/tmp/rtabmap.db")]
+    candidates = [Path(os.environ.get("TIAGO_RTABMAP_DB", str(out / "rtabmap.db"))),
+                  out / "rtabmap.db", out.parent / "rtabmap.db", Path("/tmp/rtabmap.db")]
     db = next((c for c in candidates if c.exists()), None)
     if db is None:
         return JSONResponse(
@@ -2187,7 +2239,9 @@ def get_pipeline_health():
     node = get_node()
     if node and node.latest_jpeg and (time.time() - node.last_frame_time) < 15.0:
         feed_active = True
-    else:
+    elif node and node.raw_jpeg and (time.time() - node.last_raw_time) < 15.0:
+        feed_active = True
+    elif _SVC_B.get("feed_enabled", True):
         try:
             with urllib.request.urlopen(f"{FEED_HOST}/bev_data", timeout=0.5):
                 feed_active = True
@@ -2258,10 +2312,12 @@ def get_logs(lines: int = 200):
         ("perception", "/tmp/perception.log"),
         ("object_manager", "/tmp/om6.log"),
         ("bridge", "/tmp/bridge.log"),
+        ("rtabmap", "/tmp/rtabmap.log"),
     ]
     for tag, filepath in log_files:
-        p = Path(filepath)
-        if p.exists():
+        p = _pick_run_file([_active_output_dir(), Path("/tmp")],
+                           Path(filepath).name, log_problems)
+        if p is not None:
             try:
                 content = p.read_text().splitlines()[-lines:]
                 for line in content:
@@ -2270,15 +2326,16 @@ def get_logs(lines: int = 200):
             except OSError as exc:
                 log_problems.append(f"{filepath}: {type(exc).__name__}: {exc}")
 
-    try:
-        with urllib.request.urlopen(f"{FEED_HOST}/logs", timeout=1.5) as r:
-            data = json.loads(r.read().decode())
-            if isinstance(data, dict) and "logs" in data:
-                for line in data["logs"]:
-                    if line.strip():
-                        output.append(f"[feed] {line}")
-    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as exc:
-        log_problems.append(f"{FEED_HOST}/logs: {type(exc).__name__}: {exc}")
+    if _SVC_B.get("feed_enabled", True):
+        try:
+            with urllib.request.urlopen(f"{FEED_HOST}/logs", timeout=1.5) as r:
+                data = json.loads(r.read().decode())
+                if isinstance(data, dict) and "logs" in data:
+                    for line in data["logs"]:
+                        if line.strip():
+                            output.append(f"[feed] {line}")
+        except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as exc:
+            log_problems.append(f"{FEED_HOST}/logs: {type(exc).__name__}: {exc}")
 
     if not output:
         # This said "[bridge] System active and listening. Log stream initialized." -- an

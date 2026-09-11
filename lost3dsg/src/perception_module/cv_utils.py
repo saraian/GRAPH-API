@@ -15,7 +15,7 @@ import json
 from geometry_msgs.msg import Point
 from utils import statistical_outlier_removal, get_distinct_color
 from box_view import BOX_EDGES, box_corners_map, project_visible
-from config import CFG
+from config import CFG, vlm_completion_kwargs, world_frame
 import struct
 from openai import OpenAI
 import base64
@@ -265,7 +265,7 @@ def mask_list_to_pointcloud2(
     ]
 
     if transform is not None:
-        header = Header(stamp=camera_info.header.stamp, frame_id="map")
+        header = Header(stamp=camera_info.header.stamp, frame_id=world_frame())
     else:
         header = Header(stamp=camera_info.header.stamp, frame_id=camera_frame)
     cloud_msg = point_cloud2.create_cloud(header, fields, current_points)
@@ -353,8 +353,9 @@ def publish_individual_pointclouds_by_id(masks, depth_image, camera_info, node, 
 
 
 def points_list_to_rviz_3d(points, node, centroid_marker_pub=None, labels=None,
-                            frame_id="map", topic="/centroid_markers", marker_scale=0.06,
+                            frame_id=None, topic="/centroid_markers", marker_scale=0.06,
                             stamp=None):
+    frame_id = frame_id or world_frame()
     if centroid_marker_pub is None:
         centroid_marker_pub = node.create_publisher(
             MarkerArray, topic, QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -522,10 +523,11 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                                     bbox_marker_pub=None, centroid_marker_pub=None,
                                     max_points_per_obj=20000, remove_outliers=True,
                                     sor_k=30, sor_std=1.5, transform=None,
-                                    output_frame="map", points_out=None):
+                                    output_frame=None, points_out=None):
     """`points_out`, when a list, receives one entry per mask: the map-frame points the
     box was measured from, or None where no box was produced. The PCA stage reads them
     instead of re-running the projection and the outlier removal on the same mask."""
+    output_frame = output_frame or world_frame()
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
     camera_frame = CFG["frames"]["camera"]
     centroids_3d, bboxes_3d, all_markers = [], [], []
@@ -694,8 +696,8 @@ def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix=""):
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
         cx, cy, cz = _centroid_from_bbox(obj.bbox)
-        ma.markers.append(_make_marker("map", stamp, ns, i, Marker.SPHERE, 0.08, color, (cx, cy, cz)))
-        ma.markers.append(_make_text_marker("map", stamp, ns+"_labels", i+10000,
+        ma.markers.append(_make_marker(world_frame(), stamp, ns, i, Marker.SPHERE, 0.08, color, (cx, cy, cz)))
+        ma.markers.append(_make_text_marker(world_frame(), stamp, ns+"_labels", i+10000,
                                             obj.label.replace(' ', '') + label_suffix, (cx, cy, cz)))
     if ma.markers:
         pub.publish(ma)
@@ -703,7 +705,7 @@ def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix=""):
 
 def publish_pov_volume(node, pov_volume, considered_volume_pub=None):
     m = Marker()
-    m.header.frame_id = "map"
+    m.header.frame_id = world_frame()
     m.header.stamp    = node.get_clock().now().to_msg()
     m.ns, m.id, m.type, m.action = "pov_volume", 0, Marker.CUBE, Marker.ADD
     m.pose.position.x = (pov_volume["x_min"] + pov_volume["x_max"]) / 2
@@ -738,7 +740,7 @@ def _publish_bbox_markers(node, objects, pub, ns, color):
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
         cx, cy, cz = _centroid_from_bbox(obj.bbox)
-        m = _make_marker("map", stamp, ns, i * 2, Marker.CUBE, None, color, (cx, cy, cz))
+        m = _make_marker(world_frame(), stamp, ns, i * 2, Marker.CUBE, None, color, (cx, cy, cz))
         m.scale.x = obj.bbox["x_max"] - obj.bbox["x_min"]
         m.scale.y = obj.bbox["y_max"] - obj.bbox["y_min"]
         m.scale.z = obj.bbox["z_max"] - obj.bbox["z_min"]

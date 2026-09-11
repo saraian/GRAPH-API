@@ -13,7 +13,9 @@ find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(tf2_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
@@ -60,6 +62,8 @@ install(PROGRAMS
   # one of which already said "that module also imports habitat_sim".
   src/perception_module/habitat_feed_node.py
   src/perception_module/graph_api_bridge.py
+  src/perception_module/check_mapping_tf.py
+  src/perception_module/ros_bev.py
   src/perception_module/live_overlay.py
   src/perception_module/vlm_call.py
   src/perception_module/scene_analysis.py
