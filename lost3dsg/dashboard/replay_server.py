@@ -3756,7 +3756,7 @@ def build_app(bundle: Path):
     @m.app.get("/logs")
     def _bundle_logs(lines: int = 400):
         rv = _load_replay_view()
-        out, missing = [], []
+        out, missing, per_source, stampless = [], [], [], []
         for name in _LOG_ORDER:
             path = rv.log_path(bundle.name, name)
             if path is None:
@@ -3770,11 +3770,59 @@ def build_app(bundle: Path):
                 if size > 262144:
                     f.readline()
                 tail = f.read().decode("utf-8", errors="replace").splitlines()
-            for ln in tail[-lines:]:
-                out.append((_line_stamp(ln), f"{tag} {ln}"))
+            # THE CONTINUATION STAMP IS PER FILE. `_line_stamp` carries the last stamp it saw
+            # so a traceback line stays attached to the message above it -- but the carry used
+            # to survive from one FILE to the next, which is a different claim entirely.
+            # MEASURED on 20260911_184539: launch.log carries a stamp on 355 of 400 lines while
+            # feed_host.log and system_health.log carry NONE AT ALL, so those two inherited
+            # launch.log's final stamp, sorted to the very end, and the `[-lines:]` below kept
+            # nothing but them. The panel showed one source and the owner reported exactly that.
+            _last_stamp[0] = 0.0
+            block = [(_line_stamp(ln), f"{tag} {ln}") for ln in tail[-lines:]]
+            # A source with no stamp anywhere cannot be placed chronologically, and pinning it
+            # at 0.0 would bury it just as surely as inheriting someone else's stamp floated it.
+            # Its mtime is when its last line was written, so the block is laid out ending
+            # there, one millisecond apart, which keeps the file's own order and puts it at
+            # roughly its own time among the stamped sources.
+            if block and not any(t for t, _ in block):
+                stampless.append((len(per_source), path.stat().st_mtime))
+            per_source.append(block)
+        # PLACE THE STAMPLESS SOURCES ACROSS THE RUN, not at the end of it. A file with no
+        # stamp anywhere still covers roughly the same wall-clock span as the stamped ones, so
+        # spreading its tail over that span interleaves it. Bunching it against its own mtime
+        # instead put the whole file inside the last fraction of a second, where it outranked
+        # every stamped line: measured on 20260911_184539, feed_host.log alone took 250 of the
+        # 400 slots that way. Its mtime is the fallback when nothing carries a stamp at all.
+        stamped = [t for b in per_source for t, _ in b if t]
+        lo, hi = (min(stamped), max(stamped)) if stamped else (0.0, 0.0)
+        for idx, mtime in stampless:
+            blk = per_source[idx]
+            if not blk:
+                continue
+            if stamped and hi > lo:
+                step = (hi - lo) / len(blk)
+                per_source[idx] = [(lo + i * step, txt) for i, (_, txt) in enumerate(blk)]
+            else:
+                per_source[idx] = [(mtime - (len(blk) - i) * 0.001, txt)
+                                   for i, (_, txt) in enumerate(blk)]
         # Sorted by the ROS stamp so the merge is chronological rather than file-ordered.
         # Lines without a stamp keep the stamp of the line above them, so a traceback stays
         # attached to the message that introduced it instead of migrating to the top.
+        #
+        # EVERY SOURCE THAT HAS CONTENT GETS A SHARE. Sorting the union and cutting the tail
+        # lets the chattiest file own the whole window: launch.log's 400-line tail spans about
+        # 20 seconds of a 25-minute run, so on time alone it wins every slot. The panel is a
+        # merge of sources, so each one is guaranteed a floor and the remainder is filled
+        # chronologically from what is left.
+        live = [b for b in per_source if b]
+        if live:
+            floor = max(1, lines // (len(live) * 2))
+            for b in live:
+                out.extend(b[-floor:])
+            taken = {id(x) for b in live for x in b[-floor:]}
+            rest = sorted((x for b in live for x in b if id(x) not in taken),
+                          key=lambda x: x[0])
+            out.extend(rest[-(lines - len(out)):] if lines > len(out) else [])
         out.sort(key=lambda x: x[0])
         return JSONResponse({
             "logs": [t for _, t in out][-lines:],

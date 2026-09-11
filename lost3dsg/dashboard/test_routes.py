@@ -9,6 +9,7 @@ whether or not the endpoint exists, so only a check that reads both sides finds 
 Run: python3 found/dashboard/test_routes.py
 """
 import ast
+import collections
 import importlib.util
 import json
 import os
@@ -1111,6 +1112,69 @@ def test_the_sidebar_is_closed_on_load_and_can_be_clicked_away():
     assert "toolsMenu" in outside and "contains(e.target)" in outside, outside
 
 
+def test_the_log_panel_shows_every_source_not_just_the_loudest():
+    """The terminal merges several log files. Every one that has content must appear in it.
+
+    TWICE this panel has shown ONE source and looked like a broken feed. The mechanism is the
+    same both times: `_line_stamp` carries the last stamp it saw so a traceback line stays
+    attached to the message above it, and that carry used to survive from one FILE to the next.
+    MEASURED on 20260911_184539: launch.log carries a ROS stamp on 355 of 400 lines while
+    feed_host.log and system_health.log carry NONE, so those two inherited launch.log's final
+    stamp, sorted to the very end, and the tail cut kept nothing else. Before launch.log was
+    added to the order the same carry started at 0.0 and system_health won instead.
+
+    The fixture reproduces exactly that shape -- one stamped source, two stampless ones -- and
+    asserts what the panel is FOR, which is the merge. Asserting only "some lines came back"
+    is what let this ship twice.
+    """
+    from fastapi.testclient import TestClient
+    rs = _replay_server()
+    with tempfile.TemporaryDirectory() as td:
+        b = Path(td) / "20260101_000000_test"
+        (b / "frames").mkdir(parents=True)
+        (b / "persistent_perception.json").write_text("[]")
+        logs = b / "logs"
+        logs.mkdir()
+        # STAMPED, and chatty: 800 lines inside two seconds, the way a ros2 launch log runs.
+        (logs / "launch.log").write_text("".join(
+            f"[object_manager_6.py-4] [INFO] [178900000{i % 10}.{i:09d}] [om6]: cycle {i}\n"
+            for i in range(800)))
+        # STAMPLESS, both of them, exactly like the real files.
+        (logs / "feed_host.log").write_text("".join(
+            f"[feed] frame {i} rendered\n" for i in range(300)))
+        (logs / "system_health.log").write_text("".join(
+            f"=== health sample {i} ===\n" for i in range(300)))
+        prev_runs = os.environ.get("GRAPH_API_RUNS_DIR")
+        os.environ["GRAPH_API_RUNS_DIR"] = td
+        _rv = ("replay_view", f"{__package__}.replay_view" if __package__ else "replay_view")
+        parked = {k: sys.modules.pop(k) for k in _rv if k in sys.modules}
+        before = set(sys.modules)
+        try:
+            rs.RUNS_ROOT = Path(td)
+            rs.MODE.update(mode="replay", why="test")
+            m = rs.build_app(b)
+            got = TestClient(m.app).get("/logs?lines=400").json()
+            lines = got.get("logs") or []
+            assert len(lines) > 0, f"the panel returned nothing: {got}"
+            tags = collections.Counter(
+                ln.split("]")[0].lstrip("[") for ln in lines if ln.startswith("["))
+            for want in ("launch", "feed_host", "system_health"):
+                assert tags.get(want), (
+                    f"{want} is missing from the merged panel; it showed {dict(tags)}")
+            # And no single source may own the window: that is the failure wearing its
+            # other face, and a floor of one line each would satisfy the loop above.
+            assert max(tags.values()) < len(lines), f"one source took everything: {dict(tags)}"
+            assert max(tags.values()) <= 0.9 * len(lines), \
+                f"one source took {max(tags.values())} of {len(lines)} lines: {dict(tags)}"
+        finally:
+            if prev_runs is None:
+                os.environ.pop("GRAPH_API_RUNS_DIR", None)
+            else:
+                os.environ["GRAPH_API_RUNS_DIR"] = prev_runs
+            _purge_modules(before)
+            sys.modules.update(parked)
+
+
 if __name__ == "__main__":
     # REBUILT 2026-09-10 after a bad slice removed it. A suite whose runner is gone still EXITS 0
     # and prints nothing, which is the most dangerous green there is -- so the names are derived
@@ -1139,6 +1203,7 @@ if __name__ == "__main__":
     test_an_empty_timeline_names_this_runs_reason_not_a_generic_one()
     test_only_directories_named_like_a_run_are_served()
     test_the_sidebar_is_closed_on_load_and_can_be_clicked_away()
-    _ran = 21
+    test_the_log_panel_shows_every_source_not_just_the_loudest()
+    _ran = 22
     print(f"all {_ran} checks passed (viewer fetches {len(fetched)} endpoints: "
           f"{', '.join(fetched)})")
