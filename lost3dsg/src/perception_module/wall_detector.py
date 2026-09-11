@@ -43,6 +43,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
 
 import numpy as np
 
@@ -72,9 +73,17 @@ def _walls_cfg():
 
 _WCFG = _walls_cfg()
 MIN_INTERVAL_S = float(_WCFG.get("min_interval_s", 0.5))
-LINE_INLIER_TOL_M = 0.05          # source-point distance to a Hough candidate
-MIN_INLIERS = 60
-MIN_SEGMENT_LEN_M = 0.5
+HEIGHT_BAND_M = tuple(float(v) for v in _WCFG.get("height_band_m", HEIGHT_BAND_M))
+DEPTH_RANGE_M = tuple(float(v) for v in _WCFG.get("depth_range_m", DEPTH_RANGE_M))
+PIXEL_STRIDE = int(_WCFG.get("pixel_stride", PIXEL_STRIDE))
+MIN_VERTICAL_EXTENT_M = float(_WCFG.get("min_vertical_extent_m", MIN_VERTICAL_EXTENT_M))
+LINE_INLIER_TOL_M = float(_WCFG.get("line_inlier_tolerance_m", 0.05))
+DEPTH_NOISE_PER_M = float(_WCFG.get("depth_noise_per_m", 0.006))
+MIN_INLIERS = int(_WCFG.get("min_inliers", 60))
+MIN_INLIERS_FLOOR = int(_WCFG.get("min_inliers_floor", 20))
+INLIER_REFERENCE_RANGE_M = float(_WCFG.get("inlier_reference_range_m", 2.0))
+MIN_SEGMENT_LEN_M = float(_WCFG.get("min_segment_length_m", 0.5))
+MAX_INLIER_RMS_M = float(_WCFG.get("max_inlier_rms_m", 0.05))
 MAX_SEGMENTS = int(_WCFG.get("max_segments", 12))
 GRID_RESOLUTION_M = float(_WCFG.get("grid_resolution_m", 0.05))
 VERTICAL_BANDS = int(_WCFG.get("vertical_bands", 4))
@@ -99,8 +108,132 @@ PLANE_CLUSTER_ANGLE_DEG = float(_WCFG.get("plane_cluster_angle_deg", 4.0))
 PLANE_CLUSTER_DISTANCE_M = float(_WCFG.get("plane_cluster_distance_m", 0.08))
 PLANE_CLUSTER_MIN_OVERLAP = float(_WCFG.get("plane_cluster_min_overlap", 0.35))
 
+if (len(HEIGHT_BAND_M) != 2 or HEIGHT_BAND_M[0] >= HEIGHT_BAND_M[1] or
+        len(DEPTH_RANGE_M) != 2 or DEPTH_RANGE_M[0] >= DEPTH_RANGE_M[1]):
+    raise ValueError("walls height_band_m/depth_range_m must be increasing pairs")
+if PIXEL_STRIDE < 1:
+    raise ValueError("walls.pixel_stride must be >= 1")
+if not 1 <= VERTICAL_BANDS <= 16 or not 1 <= MIN_VERTICAL_BANDS <= VERTICAL_BANDS:
+    raise ValueError("walls vertical bands must satisfy 1 <= minimum <= total <= 16")
 
-def _refine_vertical_wall(pts, zs):
+
+def _adaptive_min_inliers(range_m):
+    """Keep the support requirement metric as angular sampling becomes sparser."""
+    if not np.isfinite(range_m) or range_m <= INLIER_REFERENCE_RANGE_M:
+        return MIN_INLIERS
+    scaled = MIN_INLIERS * (INLIER_REFERENCE_RANGE_M / range_m) ** 2
+    return max(MIN_INLIERS_FLOOR, min(MIN_INLIERS, int(round(scaled))))
+
+
+def _voxel_downsample(xy, z, ranges, voxel_m):
+    """Average points in 3-D metric voxels, removing repeated temporal samples."""
+    if len(xy) == 0 or voxel_m <= 0.0:
+        return xy, z, ranges
+    xyz = np.column_stack((xy, z)).astype(np.float64, copy=False)
+    keys = np.floor(xyz / voxel_m).astype(np.int64)
+    _, inverse = np.unique(keys, axis=0, return_inverse=True)
+    counts = np.bincount(inverse).astype(np.float64)
+    out = np.column_stack([
+        np.bincount(inverse, weights=xyz[:, axis]) / counts for axis in range(3)
+    ])
+    out_ranges = np.bincount(inverse, weights=ranges) / counts
+    return out[:, :2].astype(np.float32), out[:, 2].astype(np.float32), out_ranges.astype(np.float32)
+
+
+class _TemporalPointBuffer:
+    """Bounded sliding window of map-frame wall candidates from recent depth frames."""
+    def __init__(self, window_s, max_frames, voxel_m, floor_reset_m):
+        self.window_s = max(0.0, float(window_s))
+        self.max_frames = max(1, int(max_frames))
+        self.voxel_m = max(0.0, float(voxel_m))
+        self.floor_reset_m = max(0.0, float(floor_reset_m))
+        self.frames = deque()
+        self.floor_z = None
+
+    def add(self, stamp_s, xy, z, ranges, floor_z, camera_xy=None):
+        if (self.floor_z is not None and self.floor_reset_m > 0.0 and
+                abs(float(floor_z) - self.floor_z) > self.floor_reset_m):
+            self.frames.clear()
+        self.floor_z = float(floor_z)
+        camera_xy = (None if camera_xy is None else
+                     np.asarray(camera_xy, dtype=np.float64).reshape(2))
+        self.frames.append((float(stamp_s), np.asarray(xy), np.asarray(z),
+                            np.asarray(ranges), camera_xy))
+        while len(self.frames) > self.max_frames:
+            self.frames.popleft()
+        if self.window_s > 0.0:
+            cutoff = float(stamp_s) - self.window_s
+            while self.frames and self.frames[0][0] < cutoff:
+                self.frames.popleft()
+        all_xy = np.concatenate([frame[1] for frame in self.frames], axis=0)
+        all_z = np.concatenate([frame[2] for frame in self.frames], axis=0)
+        all_ranges = np.concatenate([frame[3] for frame in self.frames], axis=0)
+        xy_ds, z_ds, range_ds = _voxel_downsample(all_xy, all_z, all_ranges, self.voxel_m)
+        return xy_ds, z_ds, range_ds, len(self.frames)
+
+    def camera_positions(self):
+        return [frame[4].copy() for frame in self.frames if frame[4] is not None]
+
+
+def _distinct_viewpoint_count(camera_positions, separation_m=0.15):
+    kept = []
+    for point in camera_positions:
+        point = np.asarray(point, dtype=np.float64)
+        if not any(float(np.linalg.norm(point - old)) < separation_m for old in kept):
+            kept.append(point)
+    return len(kept)
+
+
+def _organized_surface_masks(depth, fx, fy, cx, cy, rotation,
+                             max_depth_jump_ratio=0.08,
+                             vertical_normal_tolerance_deg=20.0):
+    """Classify locally connected depth patches by their map-frame normal.
+
+    Returns masks for vertical surfaces (wall candidates) and horizontal surfaces
+    (floor-datum candidates). Invalid pixels and depth discontinuities are excluded.
+    """
+    depth = np.asarray(depth, dtype=np.float64)
+    h, w = depth.shape
+    ys, xs = np.indices((h, w), dtype=np.float64)
+    xs *= PIXEL_STRIDE
+    ys *= PIXEL_STRIDE
+    with np.errstate(invalid="ignore", over="ignore"):
+        xyz = np.stack(((xs - cx) * depth / fx,
+                        (ys - cy) * depth / fy, depth), axis=-1)
+        dx = np.zeros_like(xyz)
+        dy = np.zeros_like(xyz)
+        dx[:, 1:-1] = xyz[:, 2:] - xyz[:, :-2]
+        dy[1:-1, :] = xyz[2:, :] - xyz[:-2, :]
+        normals = np.cross(dx, dy)
+        norm = np.linalg.norm(normals, axis=2)
+    valid = np.isfinite(depth) & np.isfinite(norm) & (norm > 1e-10)
+    jump = np.maximum(0.02, max_depth_jump_ratio * depth)
+    valid[:, 1:-1] &= (np.abs(depth[:, 2:] - depth[:, :-2]) <= 2.0 * jump[:, 1:-1])
+    valid[1:-1, :] &= (np.abs(depth[2:, :] - depth[:-2, :]) <= 2.0 * jump[1:-1, :])
+    unit = np.zeros_like(normals)
+    unit[valid] = normals[valid] / norm[valid, None]
+    map_normals = unit @ np.asarray(rotation, dtype=np.float64).T
+    nz = np.abs(map_normals[:, :, 2])
+    tolerance = math.radians(vertical_normal_tolerance_deg)
+    return valid & (nz <= math.sin(tolerance)), valid & (nz >= math.cos(tolerance))
+
+
+def _estimate_floor_z(points_map, floor_mask, camera_z, min_points=20):
+    """Robust local floor datum from pixels whose normals are near vertical."""
+    z = np.asarray(points_map)[np.asarray(floor_mask, dtype=bool), 2]
+    z = z[np.isfinite(z) & (z < float(camera_z) - 0.20) &
+          (z > float(camera_z) - 2.5)]
+    if z.size < int(min_points):
+        return None, int(z.size)
+    # Choose the densest 5 cm height bin, then trim within that physical surface.
+    bins = np.floor(z / 0.05).astype(np.int64)
+    values, counts = np.unique(bins, return_counts=True)
+    mode = values[int(np.argmax(counts))]
+    support = z[np.abs(z - (mode + 0.5) * 0.05) <= 0.075]
+    return float(np.median(support)), int(support.size)
+
+
+def _refine_vertical_wall(pts, zs, min_inliers=MIN_INLIERS):
     """Fit and validate one gravity-aligned planar wall patch.
 
     In a gravity-aligned ``map`` frame a vertical plane has normal ``(nx, ny,
@@ -109,7 +242,7 @@ def _refine_vertical_wall(pts, zs):
     plane's own coordinates (distance along the trace and height).  This is a
     constrained plane fit, rather than the old "long top-down line" heuristic.
     """
-    if len(pts) < MIN_INLIERS:
+    if len(pts) < min_inliers:
         return None
     centre = pts.mean(axis=0)
     _, _, vh = np.linalg.svd(pts - centre, full_matrices=False)
@@ -142,6 +275,8 @@ def _refine_vertical_wall(pts, zs):
 
     normal = np.array([-direction[1], direction[0]])
     rms = float(np.sqrt(np.mean(((pts - centre) @ normal) ** 2)))
+    if rms > MAX_INLIER_RMS_M:
+        return None
     return (centre + direction * lo, centre + direction * hi,
             float(zlo), float(zhi), int(len(pts)), rms)
 
@@ -187,7 +322,8 @@ def _consolidate_plane_landmarks(xy, z, candidates):
             if _same_plane_landmark(cluster["segment"], segment):
                 cluster["indices"].append(source_idx)
                 merged_idx = np.unique(np.concatenate(cluster["indices"]))
-                refined = _refine_vertical_wall(xy[merged_idx], z[merged_idx])
+                refined = _refine_vertical_wall(
+                    xy[merged_idx], z[merged_idx], min_inliers=MIN_INLIERS_FLOOR)
                 # The original cluster remains valid if a partial overlap has
                 # too little 2-D support after de-duplication.
                 if refined is not None:
@@ -198,19 +334,23 @@ def _consolidate_plane_landmarks(xy, z, candidates):
     return [cluster["segment"] for cluster in clusters[:MAX_SEGMENTS]]
 
 
-def _fit_segments_grid_hough(xy, z):
+def _fit_segments_grid_hough(xy, z, ranges=None):
     """Extract walls from a metric 2.5D grid, then refine them against the source points.
 
     Pixel density affects cell counts but not the size of the Hough problem. Requiring support
     in several vertical bands rejects low furniture before line extraction. Hough supplies only
     candidates; PCA/TLS and robust percentiles produce the published geometry.
     """
-    if len(xy) < MIN_INLIERS:
+    if len(xy) < MIN_INLIERS_FLOOR:
         return []
     import cv2
 
     xy = np.asarray(xy, dtype=np.float32)
     z = np.asarray(z, dtype=np.float32)
+    ranges = (np.asarray(ranges, dtype=np.float32) if ranges is not None
+              else np.full(len(xy), INLIER_REFERENCE_RANGE_M, dtype=np.float32))
+    if ranges.shape != (len(xy),):
+        raise ValueError("ranges must contain one value per point")
     origin = np.floor(xy.min(axis=0) / GRID_RESOLUTION_M) * GRID_RESOLUTION_M
     ij = np.floor((xy - origin) / GRID_RESOLUTION_M).astype(np.int32)
     width, height = int(ij[:, 0].max()) + 1, int(ij[:, 1].max()) + 1
@@ -272,8 +412,12 @@ def _fit_segments_grid_hough(xy, z):
         line_len = float(np.linalg.norm(b - a))
         along = (xy - a) @ direction
         distance = np.abs((xy - a) @ normal)
-        near_idx = np.flatnonzero(distance <= max(LINE_INLIER_TOL_M, GRID_RESOLUTION_M))
-        if len(near_idx) < MIN_INLIERS:
+        tolerances = np.maximum(
+            GRID_RESOLUTION_M, LINE_INLIER_TOL_M + DEPTH_NOISE_PER_M * ranges)
+        near_idx = np.flatnonzero(distance <= tolerances)
+        candidate_range = float(np.median(ranges[near_idx])) if len(near_idx) else float("inf")
+        required_inliers = _adaptive_min_inliers(candidate_range)
+        if len(near_idx) < required_inliers:
             continue
         # Extend the Hough seed over its connected support, but never bridge a door/gap.
         order = np.argsort(along[near_idx])
@@ -283,11 +427,11 @@ def _fit_segments_grid_hough(xy, z):
         groups = np.split(ordered_idx, cuts)
         seed_t = line_len * 0.5
         group = min(groups, key=lambda g: abs(float(np.median(along[g])) - seed_t))
-        if len(group) < MIN_INLIERS:
+        if len(group) < required_inliers:
             continue
         pts, zs = xy[group], z[group]
 
-        refined = _refine_vertical_wall(pts, zs)
+        refined = _refine_vertical_wall(pts, zs, min_inliers=required_inliers)
         if refined is not None:
             candidates.append((refined, group))
 
@@ -299,7 +443,8 @@ def _node_class():
     above stays testable on a host with no ROS: `python3 wall_detector.py --selfcheck`."""
     import tf2_ros
     from cv_bridge import CvBridge
-    from cv_utils import _apply_transform, _pixels_to_points_habitat_camera
+    from cv_utils import _apply_transform, _get_R_and_T, _pixels_to_points_habitat_camera
+    from geometry_msgs.msg import PoseWithCovarianceStamped
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import CameraInfo, Image
@@ -315,6 +460,14 @@ def _node_class():
             self._last_fit = 0.0
             self._pending = None
             self._deferred_depth = None
+            self._floor_z = None
+            self._floor_seen_at = None
+            self._pose_std_m = None
+            self._temporal = _TemporalPointBuffer(
+                _WCFG.get("temporal_window_s", 2.5),
+                _WCFG.get("temporal_max_frames", 8),
+                _WCFG.get("temporal_voxel_m", 0.035),
+                _WCFG.get("floor_reset_m", 0.60))
             self._wake = threading.Event()
             self._stop = threading.Event()
             self._worker = threading.Thread(target=self._fit_worker, daemon=True)
@@ -322,6 +475,9 @@ def _node_class():
                 "depth_frames": 0, "tf_failures": 0, "jobs_queued": 0,
                 "fits_completed": 0, "valid_depth_points": 0,
                 "height_band_points": 0, "walls_last_fit": 0,
+                "normal_wall_points": 0, "temporal_frames": 0,
+                "temporal_points": 0, "floor_z": None, "floor_source": "none",
+                "wall_confidence_mean": None, "wall_confidence_max": None,
                 "last_fit_ms": None, "last_reason": "waiting_for_camera_info",
             }
             self._worker.start()
@@ -331,6 +487,10 @@ def _node_class():
                                      qos_profile_sensor_data)
             self.create_subscription(Image, "/camera/depth", self._depth_cb,
                                      qos_profile_sensor_data)
+            self.create_subscription(
+                PoseWithCovarianceStamped,
+                str(_WCFG.get("pose_covariance_topic", "/rtabmap/localization_pose")),
+                self._pose_cb, qos_profile_sensor_data)
             # Topic and String/JSON envelope unchanged: object_manager_6 already subscribes and
             # its callback is wired. Only the schema inside is corrected -- see reason 4 above.
             self.pub = self.create_publisher(String, "/detected_wall_segments", 10)
@@ -349,12 +509,19 @@ def _node_class():
             if self._stats["last_reason"] == "waiting_for_camera_info":
                 self._stats["last_reason"] = "waiting_for_depth"
 
+        def _pose_cb(self, msg):
+            covariance = np.asarray(msg.pose.covariance, dtype=np.float64).reshape(6, 6)
+            xy = covariance[:2, :2]
+            eigenvalues = np.linalg.eigvalsh(xy)
+            self._pose_std_m = math.sqrt(max(0.0, float(eigenvalues[-1])))
+            self._stats["pose_std_m"] = round(self._pose_std_m, 4)
+
         def _publish_status(self):
             status = dict(self._stats)
             status["camera_info_received"] = self.camera_info is not None
             status["fit_pending"] = self._pending is not None
             status["depth_waiting_for_tf"] = self._deferred_depth is not None
-            status["method"] = "grid_hough"
+            status["method"] = "temporal_normals_grid_hough_tls"
             self.status_pub.publish(String(data=json.dumps(status)))
 
         def _depth_cb(self, msg):
@@ -404,7 +571,11 @@ def _node_class():
         def _process_depth(self, msg, t):
             depth = np.asarray(self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough"),
                                dtype=np.float32)
-            if np.nanmax(depth) > 100.0:            # millimetres, as some encodings publish
+            finite_depth = depth[np.isfinite(depth)]
+            if finite_depth.size == 0:
+                self._stats["last_reason"] = "no_finite_depth"
+                return
+            if float(finite_depth.max()) > 100.0:   # millimetres, as some encodings publish
                 depth = depth / 1000.0
             depth = depth[::PIXEL_STRIDE, ::PIXEL_STRIDE]
 
@@ -418,12 +589,55 @@ def _node_class():
             pts_cam = _pixels_to_points_habitat_camera(
                 xs * PIXEL_STRIDE, ys * PIXEL_STRIDE, depth[ys, xs], k[0], k[4], k[2], k[5])
             pts_map = _apply_transform(pts_cam, t)
+            rotation, translation = _get_R_and_T(t)
 
-            band = ((pts_map[:, 2] >= HEIGHT_BAND_M[0]) & (pts_map[:, 2] <= HEIGHT_BAND_M[1]))
+            use_normals = bool(_WCFG.get("use_normal_prefilter", True))
+            if use_normals:
+                wall_mask, floor_mask = _organized_surface_masks(
+                    depth, k[0], k[4], k[2], k[5], rotation,
+                    float(_WCFG.get("normal_max_depth_jump_ratio", 0.08)),
+                    float(_WCFG.get("vertical_normal_tolerance_deg", 20.0)))
+                # Connected image regions reject isolated normals before the metric fit.
+                import cv2
+                count, labels = cv2.connectedComponents(wall_mask.astype(np.uint8), 8)
+                component_min = max(1, int(_WCFG.get("normal_min_component_px", 12)))
+                sizes = np.bincount(labels.ravel(), minlength=count)
+                keep_labels = np.flatnonzero(sizes >= component_min)
+                keep_labels = keep_labels[keep_labels != 0]
+                wall_mask = np.isin(labels, keep_labels)
+                wall_pixels = wall_mask[ys, xs]
+                floor_pixels = floor_mask[ys, xs]
+            else:
+                wall_pixels = np.ones(len(xs), dtype=bool)
+                floor_pixels = np.zeros(len(xs), dtype=bool)
+
+            now = time.monotonic()
+            floor_z, floor_points = _estimate_floor_z(
+                pts_map, floor_pixels, float(translation[2]),
+                int(_WCFG.get("floor_min_points", 20)))
+            if floor_z is not None:
+                self._floor_z, self._floor_seen_at = floor_z, now
+                floor_source = "depth_normals"
+            elif (self._floor_z is not None and self._floor_seen_at is not None and
+                  now - self._floor_seen_at <= float(_WCFG.get("floor_cache_s", 10.0))):
+                floor_z = self._floor_z
+                floor_source = "cached_depth_normals"
+            else:
+                camera_height = float(_WCFG.get("floor_fallback_camera_height_m", 1.5))
+                floor_z = float(translation[2]) - camera_height
+                floor_source = "configured_camera_height"
+            self._stats["floor_z"] = round(float(floor_z), 3)
+            self._stats["floor_source"] = floor_source
+            self._stats["floor_points"] = floor_points
+
+            relative_z = pts_map[:, 2] - floor_z
+            band = (wall_pixels & (relative_z >= HEIGHT_BAND_M[0]) &
+                    (relative_z <= HEIGHT_BAND_M[1]))
             band_points = int(band.sum())
             self._stats["height_band_points"] = band_points
-            if band_points < MIN_INLIERS:
-                self._stats["last_reason"] = "too_few_points_in_height_band"
+            self._stats["normal_wall_points"] = int(wall_pixels.sum())
+            if band_points < MIN_INLIERS_FLOOR:
+                self._stats["last_reason"] = "too_few_connected_vertical_surface_points"
                 return
             # The fit is the only expensive step, and it runs OFF the executor thread.
             # rclpy.spin() is single-threaded, so a 164 ms fit inside this callback also
@@ -431,7 +645,13 @@ def _node_class():
             # above reads. Blocking here makes the detector fail its own TF lookups.
             # numpy releases the GIL inside the einsum, so the worker really does run beside
             # the executor rather than interleaving with it.
-            self._pending = (pts_map[band][:, :2].copy(), pts_map[band][:, 2].copy())
+            xy, z, ranges, frame_count = self._temporal.add(
+                now, pts_map[band][:, :2].copy(), pts_map[band][:, 2].copy(),
+                depth[ys[band], xs[band]].copy(), floor_z, translation[:2])
+            self._stats["temporal_frames"] = frame_count
+            self._stats["temporal_points"] = int(len(xy))
+            self._pending = (xy, z, ranges, frame_count, float(floor_z), floor_source,
+                             self._temporal.camera_positions(), self._pose_std_m)
             self._stats["jobs_queued"] += 1
             self._stats["last_reason"] = "fit_queued"
             self._wake.set()
@@ -449,7 +669,11 @@ def _node_class():
                     continue
                 try:
                     fit_start = time.perf_counter()
-                    walls = segments_to_wall_dicts(_fit_segments_grid_hough(job[0], job[1]))
+                    segments = _fit_segments_grid_hough(job[0], job[1], job[2])
+                    walls = segments_to_wall_dicts(
+                        segments, temporal_frames=job[3], floor_z=job[4],
+                        floor_source=job[5], evidence_points=(job[0], job[1], job[2]),
+                        camera_positions=job[6], pose_std_m=job[7])
                 except Exception:
                     self._stats["last_reason"] = "fit_exception"
                     # A worker thread that dies silently leaves a node that looks healthy and
@@ -460,6 +684,11 @@ def _node_class():
                     (time.perf_counter() - fit_start) * 1000.0, 2)
                 self._stats["fits_completed"] += 1
                 self._stats["walls_last_fit"] = len(walls)
+                confidences = [float(wall["confidence"]) for wall in walls]
+                self._stats["wall_confidence_mean"] = (
+                    round(float(np.mean(confidences)), 4) if confidences else None)
+                self._stats["wall_confidence_max"] = (
+                    round(float(np.max(confidences)), 4) if confidences else None)
                 self._stats["last_reason"] = "walls_found" if walls else "fit_completed_no_walls"
                 # Empty is a measurement too: without it, consumers display the last wall set
                 # forever after the camera moves to a view containing no supported wall.
@@ -507,7 +736,82 @@ def _node_class():
     return WallDetector
 
 
-def segments_to_wall_dicts(segments):
+def _wall_confidence(segment, temporal_frames=1, evidence_points=None,
+                     camera_positions=None, pose_std_m=None):
+    """Calibratable evidence score; no single density-dependent term dominates it."""
+    p0, p1, zmin, zmax, n, rms = segment
+    length = float(np.linalg.norm(p1 - p0))
+    direction = (p1 - p0) / max(length, 1e-9)
+    normal = np.array([-direction[1], direction[0]])
+    vertical = float(zmax - zmin)
+    length_score = min(1.0, length / max(2.0 * MIN_SEGMENT_LEN_M, 1e-6))
+    vertical_score = min(1.0, vertical / max(1.5 * MIN_VERTICAL_EXTENT_M, 1e-6))
+    rms_score = max(0.0, 1.0 - float(rms) / max(MAX_INLIER_RMS_M, 1e-6))
+    point_score = min(1.0, int(n) / max(2.0 * MIN_INLIERS_FLOOR, 1.0))
+    distinct_views = _distinct_viewpoint_count(
+        camera_positions or [], float(_WCFG.get("viewpoint_separation_m", 0.15)))
+    temporal_support = distinct_views if camera_positions else int(temporal_frames)
+    temporal_score = min(1.0, temporal_support /
+                         max(1, int(_WCFG.get("confidence_target_frames", 4))))
+    scores = [(0.15, length_score), (0.15, vertical_score), (0.20, rms_score),
+              (0.10, point_score), (0.15, temporal_score)]
+    evidence = {
+        "length": round(length_score, 4), "vertical": round(vertical_score, 4),
+        "planarity": round(rms_score, 4), "point_support": round(point_score, 4),
+        "temporal_support": round(temporal_score, 4),
+    }
+    if evidence_points is not None:
+        xy, zs, ranges = (np.asarray(value) for value in evidence_points)
+        along = (xy - p0) @ direction
+        distance = np.abs((xy - p0) @ normal)
+        tolerances = np.maximum(
+            GRID_RESOLUTION_M, LINE_INLIER_TOL_M + DEPTH_NOISE_PER_M * ranges)
+        selected = ((along >= 0.0) & (along <= length) & (distance <= tolerances) &
+                    (zs >= zmin) & (zs <= zmax))
+        cell = max(SUPPORT_CELL_M, 1e-6)
+        nt = max(1, int(math.ceil(length / cell)))
+        nz = max(1, int(math.ceil((zmax - zmin) / cell)))
+        occupied = np.zeros((nz, nt), dtype=bool)
+        if np.any(selected):
+            ti = np.clip((along[selected] / cell).astype(np.int32), 0, nt - 1)
+            zi = np.clip(((zs[selected] - zmin) / cell).astype(np.int32), 0, nz - 1)
+            occupied[zi, ti] = True
+        along_coverage = float(occupied.any(axis=0).mean())
+        height_coverage = float(occupied.any(axis=1).mean())
+        surface_coverage = float(occupied.mean())
+        coverage_score = float(np.mean((along_coverage, height_coverage, surface_coverage)))
+        median_range = float(np.median(ranges[selected])) if np.any(selected) else None
+        evidence.update({
+            "along_coverage": round(along_coverage, 4),
+            "height_coverage": round(height_coverage, 4),
+            "surface_coverage": round(surface_coverage, 4),
+            "median_range_m": round(median_range, 3) if median_range is not None else None,
+        })
+        scores.append((0.15, coverage_score))
+    if camera_positions:
+        midpoint = (p0 + p1) * 0.5
+        incidence = []
+        for camera in camera_positions:
+            ray = midpoint - np.asarray(camera, dtype=np.float64)
+            ray /= max(float(np.linalg.norm(ray)), 1e-9)
+            incidence.append(abs(float(ray @ normal)))
+        incidence_score = float(np.mean(incidence))
+        evidence["view_incidence"] = round(incidence_score, 4)
+        evidence["distinct_viewpoints"] = distinct_views
+        scores.append((0.10, incidence_score))
+    if pose_std_m is not None and np.isfinite(pose_std_m):
+        pose_score = max(0.0, 1.0 - float(pose_std_m) /
+                         max(float(_WCFG.get("max_pose_std_m", 0.25)), 1e-6))
+        evidence["pose_std_m"] = round(float(pose_std_m), 4)
+        evidence["pose_quality"] = round(pose_score, 4)
+        scores.append((0.10, pose_score))
+    weight = sum(item[0] for item in scores)
+    confidence = sum(w * score for w, score in scores) / max(weight, 1e-9)
+    return round(float(confidence), 4), evidence
+
+
+def segments_to_wall_dicts(segments, temporal_frames=1, floor_z=None, floor_source=None,
+                           evidence_points=None, camera_positions=None, pose_std_m=None):
     """The schema object_manager_6.walls_callback actually reads: w["start"]["x"] and
     w["end"]["x"]. The previous version emitted a flat [x1, y1, x2, y2], which raises
     TypeError there -- silently, inside that callback's `except Exception: print(...)`.
@@ -521,7 +825,8 @@ def segments_to_wall_dicts(segments):
     schema each, and the consumer matched the one that was never wired. This function converged
     on the same shape independently, by reading the consumer; the dead file confirms it."""
     walls = []
-    for p0, p1, zmin, zmax, n, rms in segments:
+    for segment in segments:
+        p0, p1, zmin, zmax, n, rms = segment
         direction = p1 - p0
         direction /= max(float(np.linalg.norm(direction)), 1e-9)
         normal = np.array([-direction[1], direction[0]])
@@ -533,17 +838,28 @@ def segments_to_wall_dicts(segments):
                  (normal[0] < 0.0 or
                   (abs(normal[0]) <= 1e-9 and normal[1] < 0.0)))):
             normal, offset = -normal, -offset
-        walls.append({
+        confidence, evidence = _wall_confidence(
+            segment, temporal_frames, evidence_points, camera_positions, pose_std_m)
+        wall = {
             "start": {"x": float(p0[0]), "y": float(p0[1])},
             "end": {"x": float(p1[0]), "y": float(p1[1])},
             "z_min": zmin, "z_max": zmax,
             "n_points": n, "inlier_rms_m": round(rms, 4),
+            "confidence": confidence,
+            "evidence": evidence,
+            "temporal_frames": int(temporal_frames),
             # Formal, gravity-constrained vertical-plane representation:
             # normal.x*x + normal.y*y = offset_m.
             "plane": {"normal": {"x": round(float(normal[0]), 6),
                                   "y": round(float(normal[1]), 6)},
                       "offset_m": round(offset, 4)},
-            "source": "depth"})
+            "source": "depth",
+            "method": "temporal_normals_grid_hough_tls"}
+        if floor_z is not None:
+            wall["floor_z"] = round(float(floor_z), 4)
+        if floor_source is not None:
+            wall["floor_source"] = str(floor_source)
+        walls.append(wall)
     return walls
 
 

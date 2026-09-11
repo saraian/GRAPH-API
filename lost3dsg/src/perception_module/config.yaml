@@ -4,8 +4,8 @@
 # file location with GRAPH_API_CONFIG=/path/to/config.yaml.
 
 vlm:
-  base_url: "http://localhost:11434/v1"
-  model: "gemma4:e2b"
+  base_url: "https://api.regolo.ai/v1"
+  model: "gemma4-31b"
   api_key: ""          # empty -> OPENAI_API_KEY env, else legacy api.txt, else "ollama"
   timeout: 30.0        # seconds per request
   retries: 2           # extra attempts on timeout/malformed response, then raise
@@ -118,6 +118,34 @@ tf:
 walls:
   # Fast 2.5D detector: metric cells with vertical support, Hough candidates, TLS refinement.
   min_interval_s: 0.5
+  height_band_m: [0.4, 2.0]
+  depth_range_m: [0.3, 8.0]
+  pixel_stride: 4
+  temporal_window_s: 2.5
+  temporal_max_frames: 8
+  temporal_voxel_m: 0.035
+  floor_reset_m: 0.60
+  floor_min_points: 20
+  floor_cache_s: 10.0
+  floor_fallback_camera_height_m: 1.5
+  use_normal_prefilter: true
+  vertical_normal_tolerance_deg: 20.0
+  normal_max_depth_jump_ratio: 0.08
+  normal_min_component_px: 12
+  # Structural qualification consumed by both wall_detector and RoomManager.
+  min_segment_length_m: 0.50
+  min_vertical_extent_m: 0.80
+  max_inlier_rms_m: 0.05
+  min_confidence: 0.45
+  confidence_target_frames: 4
+  viewpoint_separation_m: 0.15
+  pose_covariance_topic: /rtabmap/localization_pose
+  max_pose_std_m: 0.25
+  line_inlier_tolerance_m: 0.05
+  depth_noise_per_m: 0.006
+  min_inliers: 60
+  min_inliers_floor: 20
+  inlier_reference_range_m: 2.0
   grid_resolution_m: 0.05
   vertical_bands: 4
   min_vertical_bands: 3
@@ -138,7 +166,7 @@ walls:
   max_segments: 12
 rooms:
   default_room_id: ""   # empty = strict: no room known -> object rejected (needs SLAM rooms)
-  gvd_method: medial_axis
+  gvd_method: ridge
   # 2.5D wall evidence from /rtabmap/cloud_map. Points are measured relative
   # to the robot's current floor and must occupy multiple vertical bands, so
   # low furniture and points from another storey do not become room dividers.
@@ -163,17 +191,17 @@ rooms:
   # being used only as a doorway hint.
   enable_detected_wall_support: true
   detected_wall_reinforce_obstacles: true
+  detected_wall_close_free_space: true
   detected_wall_min_observations: 2
   # RTAB-Map loop closures can move map-frame geometry. Re-observe old wall
   # segments instead of letting a stale/false line constrain rooms forever.
   detected_wall_max_age_s: 300.0
-  detected_wall_min_length_m: 1.50
-  detected_wall_min_vertical_extent_m: 1.20
-  detected_wall_max_rms_m: 0.03
-  detected_wall_merge_angle_deg: 8.0
+  # Geometry/RMS/confidence gates come from the shared `walls` block above.
+  detected_wall_merge_angle_deg: 15.0
   detected_wall_merge_distance_m: 0.18
   detected_wall_merge_gap_m: 0.50
-  detected_wall_thickness_m: 0.12
+  detected_wall_interpolation_gap_m: 0.20
+  detected_wall_thickness_m: 0.06
   detected_wall_door_endpoint_radius_m: 0.20
   detected_wall_door_min_support: 0.16
   detected_wall_door_max_m: 2.00
@@ -185,12 +213,32 @@ rooms:
   room_nested_merge_max_area_m2: 8.0
   room_nested_merge_area_ratio: 0.30
   gvd_3d_nonwall_component_ratio: 0.01
-  gvd_door_nms_m: 1.20
+  gvd_door_nms_m: 1.60
   gvd_critical_endpoint_margin_m: 0.20
+  doorway_vlm_enabled: true
+  doorway_vlm_min_confidence: 0.55
+  doorway_vlm_min_confirmations: 1
+  doorway_require_wall_support: true
+  doorway_vlm_key_resolution_m: 0.25
+  doorway_vlm_show_rejected: false
+  doorway_vlm_show_pending: false
+  doorway_vlm_cluster_distance_m: 1.20
+  room_use_watershed: false
+  doorway_vlm_max_candidates_per_call: 8
+  doorway_vlm_retry_s: 8.0
+  doorway_vlm_max_image_age_s: 2.0
+  doorway_vlm_state_max_age_s: 60.0
+  doorway_vlm_camera_topic: "/camera/rgb"
+  doorway_vlm_camera_info_topic: "/camera/camera_info"
+  doorway_vlm_camera_frame: "habitat_camera_optical"
+  window_vlm_enabled: true
+  window_vlm_retry_s: 10.0
   min_room_area_m2: 1.5
   # A split/merge or large boundary change must persist across several map updates.
   room_partition_change_confirmations: 3
+  room_partition_min_area_retention_ratio: 0.75
   room_partition_stable_iou_min: 0.65
+  gvd_fill_cloud_nonwall_direct: true
   gvd_min_robot_component_ratio: 0.15
 
 habitat:

@@ -65,10 +65,10 @@ def _base_label(label):
     return re.sub(r"#\d+$", "", str(label)).strip().lower()
 
 
-def build(gt, run_dir):
+def build(gt, run_dir, persistent_path=None):
     room_doc = _load(run_dir / "room.json", {})
     bev = _load(run_dir / "bev_data.json", {})
-    objects = _load(run_dir / "persistent_perception.json", [])
+    objects = _load(persistent_path or run_dir / "persistent_perception.json", [])
     embeddings = _load(run_dir / "clip_embeddings.json", {})
     result = dict(gt)
 
@@ -88,13 +88,18 @@ def build(gt, run_dir):
     predicted_regions = []
     predicted_room_by_index = []
     for room in room_doc.get("rooms", []) if isinstance(room_doc, dict) else []:
-        if isinstance(room, dict) and room.get("active", True) is False:
+        if not isinstance(room, dict) or room.get("active", True) is False:
             continue
         polygon = room.get("polygon", [])
         if not isinstance(polygon, list) or len(polygon) < 3:
             continue
         predicted_regions.append({"polygon_xz_m": [[-float(p[1]), -float(p[0])] for p in polygon],
                                   "room_id": room.get("room_id"),
+                                  # room.json is an active-run snapshot; all
+                                  # retained rooms belong to the observed
+                                  # floor.  Recording it prevents accidental
+                                  # cross-floor matching in multi-floor GT.
+                                  "floor_index": floor_for_rooms,
                                   "predicted_label": room.get("semantic_label", "")})
         predicted_room_by_index.append(room)
     result["predicted_regions"] = predicted_regions
@@ -123,7 +128,11 @@ def build(gt, run_dir):
         row = {"object_id": obj.get("object_id"), "label": obj.get("label"),
                "room_id": obj.get("room_id"),
                "aabb_min_m": box[0].tolist(), "aabb_max_m": box[1].tolist()}
-        embedding = embeddings.get(obj.get("label")) if isinstance(embeddings, dict) else None
+        # HOV-SG evaluates the appearance embedding belonging to this object.
+        # It is serialized in the persistent object's bbox, not in the
+        # bbox-free top-level object record.
+        bbox_data = obj.get("bbox") if isinstance(obj.get("bbox"), dict) else {}
+        embedding = bbox_data.get("clip_embedding", obj.get("clip_embedding"))
         if isinstance(embedding, list):
             row["embedding"] = embedding
         predicted_objects.append(row)
@@ -132,13 +141,21 @@ def build(gt, run_dir):
     # Una matrice categorie è valida solo se ogni categoria GT ha un embedding
     # con la stessa dimensionalità. Non vengono fabbricati vettori mancanti.
     category_vectors = []
+    category_dimension = None
     for category in sorted(gt.get("categories", []), key=lambda x: int(x["category_id"])):
         name = category["category_name"]
         vector = embeddings.get(name) if isinstance(embeddings, dict) else None
-        if not isinstance(vector, list):
+        try:
+            vector_array = np.asarray(vector, dtype=float)
+        except (TypeError, ValueError):
+            vector_array = np.asarray([])
+        if (not isinstance(vector, list) or vector_array.ndim != 1
+                or vector_array.size == 0 or not np.all(np.isfinite(vector_array))
+                or (category_dimension is not None and vector_array.size != category_dimension)):
             category_vectors = []
             break
         category_vectors.append(vector)
+        category_dimension = int(vector_array.size)
     result["category_embeddings"] = category_vectors
     result["construction_time_s"] = bev.get("stats", {}).get("elapsed_sec")
     result["representation_files"] = [
@@ -159,14 +176,19 @@ def main():
     parser.add_argument("--ground-truth", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--persistent-perception", type=Path,
+                        help="JSON persistente alternativo, eventualmente arricchito con CLIP")
     args = parser.parse_args()
     gt = _load(args.ground_truth, None)
     if not isinstance(gt, dict):
         parser.error(f"manifest GT non valido: {args.ground_truth}")
-    for required in ("room.json", "persistent_perception.json", "bev_data.json"):
+    for required in ("room.json", "bev_data.json"):
         if not (args.run_dir / required).is_file():
             parser.error(f"artefatto mancante: {args.run_dir / required}")
-    result = build(gt, args.run_dir)
+    persistent_path = args.persistent_perception or args.run_dir / "persistent_perception.json"
+    if not persistent_path.is_file():
+        parser.error(f"artefatto mancante: {persistent_path}")
+    result = build(gt, args.run_dir, persistent_path)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False,
                                       allow_nan=False) + "\n", encoding="utf-8")

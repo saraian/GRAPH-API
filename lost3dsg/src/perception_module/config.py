@@ -33,8 +33,8 @@ _DEFAULTS = {
         # against a 0.55 s median) but costs less than paying 5 s every cycle to insure
         # against it. Set to 6 to re-enable; the code is unchanged and self-checking.
         "grid_cells": 0,
-        "base_url": "http://localhost:11434/v1",
-        "model": "gemma4:e2b",
+        "base_url": "https://api.regolo.ai/v1",
+        "model": "gemma4-31b",
         # empty -> use OPENAI_API_KEY env if set, else the legacy api.txt next
         # to cv_utils.py if present, else "ollama" (local server ignores it)
         "api_key": "",
@@ -189,6 +189,39 @@ _DEFAULTS = {
         # core. At 30 fps the detector demanded ~5 cores and starved rtabmap; this is the
         # knob that made it affordable, not a fitter micro-optimisation.
         "min_interval_s": 0.5,
+        "height_band_m": [0.4, 2.0],
+        "depth_range_m": [0.3, 8.0],
+        "pixel_stride": 4,
+        # Accumulate only a short local history; voxelisation prevents a stopped
+        # camera from manufacturing confidence by repeating identical pixels.
+        "temporal_window_s": 2.5,
+        "temporal_max_frames": 8,
+        "temporal_voxel_m": 0.035,
+        "floor_reset_m": 0.60,
+        # Estimate the current floor from connected horizontal depth patches.
+        "floor_min_points": 20,
+        "floor_cache_s": 10.0,
+        "floor_fallback_camera_height_m": 1.5,
+        # Connected, near-vertical depth patches seed the metric line detector.
+        "use_normal_prefilter": True,
+        "vertical_normal_tolerance_deg": 20.0,
+        "normal_max_depth_jump_ratio": 0.08,
+        "normal_min_component_px": 12,
+        # One structural qualification shared with RoomManager.
+        "min_segment_length_m": 0.50,
+        "min_vertical_extent_m": 0.80,
+        "max_inlier_rms_m": 0.05,
+        "min_confidence": 0.45,
+        "confidence_target_frames": 4,
+        "viewpoint_separation_m": 0.15,
+        "pose_covariance_topic": "/rtabmap/localization_pose",
+        "max_pose_std_m": 0.25,
+        # Range-aware support: angular sampling and depth error worsen with range.
+        "line_inlier_tolerance_m": 0.05,
+        "depth_noise_per_m": 0.006,
+        "min_inliers": 60,
+        "min_inliers_floor": 20,
+        "inlier_reference_range_m": 2.0,
         # Validation in the fitted vertical-plane coordinates: a wall must have
         # two-dimensional surface support, rather than a long bird's-eye line.
         "support_cell_m": 0.20,
@@ -372,11 +405,32 @@ _DEFAULTS = {
         # label_diff's 0, with the doorway a clean clearance minimum. Whether it segments a
         # REAL occupancy grid into sensible rooms is what the pre-validation run measures.
         # On-by-default is a decision to measure it, not a claim that it works.
-        "gvd_method": "medial_axis",
+        "gvd_method": "ridge",
         # non-empty -> objects detected before any room polygon exists are
         # assigned to this room instead of being rejected. Empty (default)
         # keeps the strict behaviour: no room known -> AddObject refuses.
         "default_room_id": "",
+        # Doorway proposals from the GVD/wall network are promoted only after a
+        # lazy asynchronous check against the current RGB camera frame.
+        "doorway_vlm_enabled": True,
+        "doorway_vlm_min_confidence": 0.55,
+        "doorway_vlm_min_confirmations": 1,
+        "doorway_require_wall_support": True,
+        "doorway_vlm_key_resolution_m": 0.25,
+        "doorway_vlm_show_rejected": False,
+        "doorway_vlm_show_pending": False,
+        "doorway_vlm_cluster_distance_m": 1.20,
+        "room_use_watershed": False,
+        "gvd_fill_cloud_nonwall_direct": True,
+        "doorway_vlm_max_candidates_per_call": 8,
+        "doorway_vlm_retry_s": 8.0,
+        "doorway_vlm_max_image_age_s": 2.0,
+        "doorway_vlm_state_max_age_s": 60.0,
+        "doorway_vlm_camera_topic": "/camera/rgb",
+        "doorway_vlm_camera_info_topic": "/camera/camera_info",
+        "doorway_vlm_camera_frame": "habitat_camera_optical",
+        "window_vlm_enabled": True,
+        "window_vlm_retry_s": 10.0,
     },
     "habitat": {  # HM3D (Matterport) scenes; defaults = previous hardcoded values
         "localization_mode": "rtabmap",

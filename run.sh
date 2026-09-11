@@ -1075,6 +1075,11 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # The docker run line at the bottom now uses "$IMAGE_TAG" — until this change it hardcoded
 # graphapi-run:humble, so IMAGE_TAG only ever stamped metadata and an override would have
 # launched the pristine image while recording itself as the patched one.
+# THE IMAGE. Upstream changed this default to `hrai/sim:saved` in the same commit range that
+# edited the deleted live_run.sh, and the merge of 2026-09-11 did NOT take it: that image is
+# not on this machine (`docker images` lists graphapi-run:humble-ga290 and :humble only), so
+# adopting it would fail every run here at `docker run`. Recorded rather than silently kept,
+# so the next merge sees a decision instead of a divergence. Override with IMAGE_TAG.
 IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble-ga290}
 IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
 # GA-437 (2026-09-10). THE STAMP MUST READ THE CACHE THE RUN USES. This was

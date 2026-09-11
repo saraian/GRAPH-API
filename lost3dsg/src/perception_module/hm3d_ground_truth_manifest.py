@@ -378,15 +378,33 @@ def _extract_texture_geometry(scene, semantic_mesh, semantic_text,
 def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
             floor_tolerance=0.50, selected_floor=None):
     semantic = sim.semantic_scene
-    semantic_mesh, semantic_text = _semantic_paths(scene)
-    return _extract_texture_geometry(scene, semantic_mesh, semantic_text,
-                                     floor_tolerance, selected_floor)
     habitat_regions = [r for r in (getattr(semantic, "regions", None) or []) if r is not None]
     habitat_objects = [o for o in (getattr(semantic, "objects", None) or []) if o is not None]
 
+    # Prefer the geometry exposed by Habitat-Sim.  The texture parser is only
+    # a compatibility fallback for bindings that do not expose semantic
+    # regions/objects.  Keep this decision before the native processing below:
+    # otherwise a missing/partial SemanticScene would fail much later with a
+    # misleading "no valid AABB" error.
+    native_object_count = sum(_aabb(obj) is not None for obj in habitat_objects)
+    if not habitat_regions or native_object_count == 0:
+        semantic_mesh, semantic_text = _semantic_paths(scene)
+        return _extract_texture_geometry(scene, semantic_mesh, semantic_text,
+                                         floor_tolerance, selected_floor)
+
+    semantic_mesh = semantic_text = None
+    try:
+        semantic_mesh, semantic_text = _semantic_paths(scene)
+    except FileNotFoundError:
+        # Native extraction does not require the files once Habitat-Sim has
+        # loaded the semantic scene; retain a useful source record below.
+        pass
+
     regions = []
     for region in habitat_regions:
-        polygon = [[float(p[0]), float(p[1])]
+        # Habitat-Sim uses Y-up coordinates; room polygons live in the
+        # horizontal X-Z plane, not X-Y.
+        polygon = [[float(p[0]), float(p[2])]
                    for p in (getattr(region, "poly_loop_points", None) or [])]
         box = _aabb(region)
         geometry_source = "semantic_region_poly_loop"
@@ -523,8 +541,8 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
                        for name, value in category_ids.items()],
         "ground_truth_source": {
             "scene": str(scene.resolve()),
-            "semantic_mesh": str(semantic_mesh.resolve()),
-            "semantic_descriptor": str(semantic_text.resolve()),
+            "semantic_mesh": str(semantic_mesh.resolve()) if semantic_mesh else None,
+            "semantic_descriptor": str(semantic_text.resolve()) if semantic_text else None,
             "api": "Habitat-Sim SemanticScene/SemanticRegion/SemanticObject",
             "note": "Polyloop, altezze e AABB letti dall'API nativa; nessuna inferenza da texture.",
             "region_geometry_exact": all(

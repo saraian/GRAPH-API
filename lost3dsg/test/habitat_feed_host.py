@@ -1829,6 +1829,7 @@ class RevisitState:
 
 
 def main():
+    global SCHEDULE_OVERLAY
     global SHOW
     sim = make_sim()
     agent = sim.initialize_agent(0)
