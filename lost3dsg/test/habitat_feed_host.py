@@ -2701,6 +2701,12 @@ def main():
             # 20260906_234050; a PNG was exact but cost 245 ms a frame (run 20260907_001120).
             **({"gt_semantic_rle": _gt_codec.encode(obs["semantic_sensor"])}
                if GT_SEMANTIC and "semantic_sensor" in obs else {}),
+            # GA-479. The exploration schedule, so the ROS side can draw it in rviz. The SAME
+            # payload the dashboard reads out of bev_data.json -- one conversion to ROS ground
+            # coords in one place, so the minimap, the mesh view and rviz cannot disagree about
+            # where a stop is. About 180 points on hm3d_00861, next to a 921 kB RGB frame, so it
+            # rides on every frame rather than on the first one: a reconnect then needs no state.
+            "schedule": schedule_payload,
             "w": W, "h": H, "hfov": HFOV,
         }
         frame_seq += 1

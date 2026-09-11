@@ -256,12 +256,30 @@ def generate_launch_description():
     # ------------------------------------------------------------
     # 4) rviz2
     # ------------------------------------------------------------
+    # GA-479. RVIZ_CONFIG names a .rviz file to open with. EMPTY BY DEFAULT, so a plain
+    # `ros2 launch lost3dsg habitat_launch.py` still opens rviz with its own defaults and this
+    # file behaves exactly as before. live_stack_container.sh sets it to
+    # /graph_api/lost3dsg/test/live.rviz, which carries the map, the clouds, the object markers
+    # and the exploration-schedule display on /schedule_markers.
+    #
+    # Read from the environment rather than as a launch argument because the value is a path
+    # decided by the launcher, and an `arguments` list has to be built here, once. A missing file
+    # is IGNORED WITH A MESSAGE: rviz2 exits immediately on a `-d` it cannot open, and losing the
+    # whole viewer over a mistyped path is worse than losing the layout.
+    _rviz_args = ['--fixed-frame', 'map']
+    _rviz_cfg = os.environ.get('RVIZ_CONFIG', '').strip()
+    if _rviz_cfg and os.path.isfile(_rviz_cfg):
+        _rviz_args += ['-d', _rviz_cfg]
+    elif _rviz_cfg:
+        print(f"[habitat_launch] RVIZ_CONFIG={_rviz_cfg} does not exist; "
+              "starting rviz2 with its own defaults")
+
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
         # La vista resta nel riferimento globale anche quando SLAM corregge map->odom.
-        arguments=['--fixed-frame', 'map'],
+        arguments=_rviz_args,
         output='screen',
         condition=IfCondition(use_rviz),
     )

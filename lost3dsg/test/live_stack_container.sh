@@ -458,7 +458,13 @@ ros2 topic echo --csv --full-length /rtabmap/localization_pose geometry_msgs/msg
 # configuration somebody will set, and then two machines run different stacks and nothing says so.
 _wall_arg=$([ "${WALL_DETECTOR:-0}" = "1" ] && echo true || echo false)
 _loc_arg=$([ "${FEED_POSE_SOURCE:-simulator}" = "rtabmap" ] && echo rtabmap || echo ground_truth)
-echo ">>> stack via habitat_launch.py (use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg)"
+# GA-479. THE LAYOUT THE ONE RVIZ OPENS WITH. habitat_launch.py started rviz2 with no `-d`, so
+# the single surviving viewer (GA-464 removed the sibling container) showed rviz's own defaults:
+# no map, no clouds, no object markers and no schedule. live.rviz carries all of them, including
+# the exploration schedule on /schedule_markers. The launch file ignores an empty or missing path
+# and keeps its defaults, so this cannot cost a run its viewer.
+export RVIZ_CONFIG="${RVIZ_CONFIG:-/graph_api/lost3dsg/test/live.rviz}"
+echo ">>> stack via habitat_launch.py (use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg rviz_config=$RVIZ_CONFIG)"
 ros2 launch lost3dsg habitat_launch.py \
     use_wall_detector:="$_wall_arg" localization_mode:="$_loc_arg" \
     use_rviz:="${USE_RVIZ:-true}" \
