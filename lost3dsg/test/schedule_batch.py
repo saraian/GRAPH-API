@@ -642,15 +642,33 @@ def main():
                     help="build only when missing, stale or --regenerate; then print the path")
     ap.add_argument("--regenerate", action="store_true",
                     help="rebuild even when a matching schedule is cached")
-    ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--mpp", type=float, default=0.05)
-    ap.add_argument("--robot-radius", type=float, default=0.25)
-    ap.add_argument("--spacing", type=float, default=2.0)
-    ap.add_argument("--merge-radius", type=float, default=0.75)
-    ap.add_argument("--simplify", type=float, default=0.20)
-    ap.add_argument("--step", type=float, default=0.15)
-    ap.add_argument("--laps", type=int, default=3)
-    ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--out-dir", required=True,
+                    help="where the schedule files are written. run_sim.sh uses "
+                         "$WORKSPACE_ROOT/schedules")
+    ap.add_argument("--mpp", type=float, default=0.05,
+                    help="m: the size of one cell of the top-down grid the roadmap is drawn on. "
+                         "Smaller sees narrower gaps and costs time and memory as its square")
+    ap.add_argument("--robot-radius", type=float, default=0.25,
+                    help="m: free space is eroded by this before the ridge is drawn, so a waypoint "
+                         "is somewhere the robot fits rather than somewhere a point fits")
+    ap.add_argument("--spacing", type=float, default=2.0,
+                    help="m: how far apart waypoints are placed along the ridge. Larger means "
+                         "fewer stops and less coverage")
+    ap.add_argument("--merge-radius", type=float, default=0.75,
+                    help="m: two waypoints closer than this become one. It also decides when a "
+                         "junction counts as already covered by a nearby stop")
+    ap.add_argument("--simplify", type=float, default=0.20,
+                    help="m: Ramer-Douglas-Peucker tolerance on each leg. A shortcut that leaves "
+                         "free space is rejected and the leg keeps its full ridge path")
+    ap.add_argument("--step", type=float, default=0.15,
+                    help="m: the agent's move_forward distance. Used to turn metres into frames, "
+                         "so it must match habitat.move_step in the config")
+    ap.add_argument("--laps", type=int, default=3,
+                    help="complete passes of the storey. The laps are IDENTICAL by design: a "
+                         "difference between two laps is a difference in the world, not the route")
+    ap.add_argument("--seed", type=int, default=7,
+                    help="chooses the root among the equally-connected candidates, and the "
+                         "candidates sampled by --covering. Same seed, same schedule")
     ap.add_argument("--min-area", type=float, default=5.0,
                     help="m2: a storey smaller than this yields no schedule")
     ap.add_argument("--fps", type=float, default=3.0)
@@ -709,7 +727,7 @@ def main():
                     help="a detection cycle in seconds. MEASURED with time_metrics.py on the two "
                          "complete-tour bundles 20260911_133641 and _140421: total_ms median "
                          "4097-4306, cycle_ms median 4295-4398, of which vlm_ms 3871-4222 -- the "
-                         "labelling call IS the cycle. 3.2 was an estimate and 28% optimistic; a "
+                         "labelling call IS the cycle. 3.2 was an estimate and 28%% optimistic; a "
                          "floor derived from it fell short of merge_min_consecutive. Re-measure "
                          "and pass the new number rather than editing any other value")
     ap.add_argument("--fps-for-budget", dest="fps_budget", type=float, default=3.0,

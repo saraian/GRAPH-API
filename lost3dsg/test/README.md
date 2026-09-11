@@ -62,6 +62,26 @@ stationary per cycle — perception only fires while stationary),
 (camera window with the belief's 3D boxes projected in, visibility-tested),
 `GRAPH_API_CONFIG` (host-side config override), `RTABMAP_GRID_ARGS` (grid hygiene).
 
+## Exploration schedules
+
+`schedule_batch.py` builds them. **The full procedure and every parameter are in the repository
+README, under "Exploration schedules"** — this is the short form.
+
+```bash
+PY=$HOME/miniconda3/envs/habitat_env/bin/python        # the environment with habitat-sim
+$PY schedule_batch.py --navmesh <scene>.basis.navmesh --scene-id <id> \
+    --ensure --out-dir "$WORKSPACE_ROOT/schedules"     # one scene, reuse if settings match
+$PY schedule_batch.py --scene-root <dir> --out-dir "$WORKSPACE_ROOT/schedules"   # every scene
+$PY schedule_batch.py --help                           # every parameter, with its default
+```
+
+`run_sim.sh` does this for you before a run. Generate one by hand for a variant, for a scene the
+launcher does not know, or for a whole dataset. Add `--covering` for a schedule that tops up to
+100% coverage; it is written as a separate `_covering` file.
+
+**After changing `voronoi_roadmap.py` or `schedule_batch.py`, pass `--regenerate`.** The cache key
+covers the settings, not the generator's source, so `--ensure` will otherwise reuse a stale file.
+
 ## Non-regression
 
 ```bash

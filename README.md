@@ -194,6 +194,136 @@ tree is the mounted one, every model the run loads is already cached, a detectio
 completes. A skipped probe fails the gate. Then the nodes start: feed, rtabmap, perception, object
 manager, bridge.
 
+## Exploration schedules
+
+A schedule is one scene's roadmap and the order to walk it. **It is the only motion policy** — the
+sampling tour that used to stand behind it was removed on 2026-09-11, so a run without a schedule
+would publish frames from a robot that never moves. `run_sim.sh` refuses to start one.
+
+**You do not normally generate a schedule by hand.** `run_sim.sh` builds or reuses the scene's
+schedule before it starts anything, and caches it in `$WORKSPACE_ROOT/schedules`. Generate one
+yourself when you want a variant, a scene the launcher does not know, or the whole dataset at once.
+
+### How it is built
+
+1. The navmesh is rendered as a top-down grid of the storey, one cell per `--mpp`, and eroded by
+   `--robot-radius` so a waypoint is somewhere the robot fits.
+2. The **generalized Voronoi diagram** of that free space is drawn — the set of points equidistant
+   from two or more obstacles, which runs down the middle of every corridor and doorway — and
+   thinned to one pixel wide.
+3. Waypoints are placed along it every `--spacing`, merged when closer than `--merge-radius`, and
+   every junction gets one.
+4. The visiting order is a tour over roadmap distances (`--route-order`), starting from the
+   busiest junction. The path between two stops is simplified and straightened.
+5. Each stop turns a full circle. One lap is the file; the run repeats it `--laps` times.
+
+### The procedure
+
+```bash
+PY=$HOME/miniconda3/envs/habitat_env/bin/python      # the environment with habitat-sim
+
+# One scene. --ensure reuses a cached schedule whose settings match, and prints SCHEDULE_FILE=.
+$PY lost3dsg/test/schedule_batch.py \
+    --navmesh /path/to/scene/NAME.basis.navmesh \
+    --scene-id hm3d_00861 --ensure --out-dir "$WORKSPACE_ROOT/schedules"
+
+# Every scene under a root, plus an index.json summarising them.
+$PY lost3dsg/test/schedule_batch.py \
+    --scene-root /path/to/hm3d-val-habitat-v0.2 --out-dir "$WORKSPACE_ROOT/schedules"
+
+# The covering variant: adds stops until every navigable cell is seen. Separate file.
+$PY lost3dsg/test/schedule_batch.py --navmesh ... --covering --ensure --out-dir ...
+```
+
+**Measured: 1.3 to 2.0 s a scene, 5 to 15 s with `--covering`** — so all 100 val scenes take about
+four minutes plain, and half an hour covering. The output is
+`<scene-id>.schedule.json`, or `<scene-id>_covering.schedule.json` for the variant, holding **every
+storey of the scene** — a storey is found from a height histogram of navigable samples, and stair
+landings and galleries are skipped rather than toured.
+
+**The generator is deterministic.** The same navmesh and the same settings give byte-identical
+trajectories; only `scene_id` and `navmesh` change with the path you pass.
+
+**`--ensure` decides on the settings digest, not the file name.** A schedule built at a different
+`--merge-radius` is rebuilt rather than reused. **The digest does NOT cover the generator's own
+source**, so after changing `voronoi_roadmap.py` or `schedule_batch.py` you must pass
+`--regenerate`. `habitat.regenerate_schedule: true` in the config makes `run_sim.sh` do it.
+
+### Parameters
+
+**Geometry — what the roadmap looks like.**
+
+| | default | what it decides |
+|---|---|---|
+| `--mpp` | 0.05 m | grid cell size. Smaller sees narrower gaps and costs time as its square |
+| `--robot-radius` | 0.25 m | free space is eroded by this, so waypoints fit a robot and not a point |
+| `--spacing` | 2.0 m | distance between waypoints. Larger means fewer stops and less coverage |
+| `--merge-radius` | 0.75 m | two waypoints closer than this become one |
+| `--simplify` | 0.20 m | path simplification tolerance. A shortcut leaving free space is rejected |
+| `--step` | 0.15 m | the agent's `move_forward`. Turns metres into frames, so it must match the config |
+| `--min-area` | 5.0 m² | a storey smaller than this is not toured |
+| `--max-bridge` | 2.0 m | the longest gap between two ridge pieces that may be joined |
+| `--max-room-path` | 12.0 m | the longest path used to join a seeded room back to the roadmap |
+
+**The route — how long a lap takes.**
+
+| | default | what it decides |
+|---|---|---|
+| `--laps` | 3 | complete passes. The laps are IDENTICAL: a difference between two is a difference in the world, not the route |
+| `--route-order` | `2opt` | nearest neighbour then 2-opt over roadmap distances. `dfs` is the pre-2026-09-11 order, which drives every backtrack |
+| `--smooth-path` / `--no-smooth-path` | on | drop any path point its neighbours can see past. Corner turning cost as much as driving before this |
+| `--seed` | 7 | chooses the root among equally-connected candidates. Same seed, same schedule |
+
+**Coverage — what "100%" means.** Three models, and a number is meaningless without the model
+beside it. Never compare across them.
+
+| `--coverage-model` | what counts as covered |
+|---|---|
+| `los` *(default)* | what a stop can SEE: the ray to the point is unobstructed, no distance limit. The simulator's depth sensor has none |
+| `los_range` | the same ray test, stopped at `--coverage-range` (8.0 m, CHOSEN, not measured) |
+| `radius` | free space within `--coverage-radius` (3.0 m), straight-line **through walls**. What every schedule before 2026-09-11 used. Kept so old numbers reproduce, not because it is right |
+
+| | default | what it decides |
+|---|---|---|
+| `--covering` | off | keep adding stops until `--coverage-target` is met, by greedy set cover. Writes the `_covering` variant: a promise rather than a measurement |
+| `--coverage-target` | 1.0 | the share `--covering` tops up to |
+| `--max-extra-stops` | 60 | a ceiling on what `--covering` may add, so one bad storey cannot make a schedule nobody can run |
+
+**The scan — and it decides whether a merge can commit at all.** A merge needs
+`merge_min_consecutive` (2) consecutive detection cycles on the same pair, and a cycle takes about
+4.3 s. A full 360° scan costs `360 / --turn-step-deg` frames at 3 f/s:
+
+| turn step | frames | seconds | cycles |
+|---|---|---|---|
+| 10° *(default)* | 36 | 12.0 | **2.79** |
+| 20° | 18 | 6.0 | **1.40 — no stop can ever merge** |
+
+20° was tried on 2026-09-11 for the 36% of run time scans cost, and reverted the same day. A run
+confirmed it: **43 merges before the end of lap zero at 10°, against 5 in a whole tour at 20°.**
+
+| | default | what it decides |
+|---|---|---|
+| `--turn-step-deg` | 10.0 | degrees per turn action. `habitat.turn_step_deg` must match it, or the budget describes a run that did not happen |
+| `--cycle-seconds` | 4.3 | a detection cycle. MEASURED on bundles `20260911_133641` and `_140421`. The scan floor derives from it, so re-measure and pass the new number rather than editing anything else |
+| `--min-scan-cycles` | 2.0 | no stop turns through fewer frames than this many cycles. Matches `merge_min_consecutive` |
+| `--adaptive-scan` / `--full-scan` | full | adaptive turns only through the arc holding unseen ground. Faster, and it left 649 of 1900 stops below the merge threshold — the MEAN was a comfortable 3.5 cycles and the tail was not |
+| `--stepped-scan` | off | hold each heading still for a whole cycle instead of turning every frame. A continuous turn holds a heading for ONE frame, so a scan is a drive-through; stepped makes it a scan |
+| `--scan-hold-frames` | 0 | frames per heading under `--stepped-scan`. 0 derives one whole cycle |
+| `--scan-tilts` | `0` | one full rotation per tilt. `30,0` is the two-rotation ask and doubles the bill |
+
+**Two frame-rate knobs, and neither changes what the agent does.** `--fps` (3.0) turns the frame
+budget into the minutes printed per storey. `--fps-for-budget` (3.0) turns the scan floor into
+frames. Both should equal `habitat.fps`, or the schedule's arithmetic describes a different run.
+
+**`--stepped-scan` costs 13x and is off for that reason**: over 71 storeys, three laps, 22.0 h as
+built against 150.0 h stepped and 287.5 h with two tilts. The tilt rotates the sensor node and **no
+run has confirmed it** — check the published frames actually tilt before quoting a two-rotation run.
+
+**Ground-truth rooms.** `--gt-manifest` takes an HM3D room manifest and adds a stop in any room that
+has none. Only **36 of the 100** HM3D val scenes are annotated (`hm3d_annotated_val_basis.
+scene_dataset_config.json` lists them); 221 scenes are annotated across all splits. Without the
+manifest, `room_seeds` is 0 and only geometric coverage is checked.
+
 ## What you get
 
 **One directory per run, in the repository:** `results/<stamp>_<scene>/`. The live output and the
