@@ -47,7 +47,20 @@ ALLOWED = {
     # before the F); a literal path has no such escape, so it is named here with its reason like any
     # other line. The key carries the surrounding pipes, so a real reference cannot borrow it.
     r'|/DATA/FOUND|/found/': "this file's own pattern: the definition of what to forbid, not a use of it",
+    "python3 -m tools.class_counts": "guarded by a -f test in the same block and skipped with a printed reason; "
+                                     "its home is EXT_POST_RUN, which the extension supplies",
 }
+
+# A MODULE THIS REPOSITORY INVOKES BUT DOES NOT CONTAIN. The patterns above find the extension BY
+# NAME, and that is exactly what they cannot do here: `python3 -m tools.class_counts` names no
+# extension, contains no "found", and resolves only from a workspace this repository does not own.
+# It ran on every Gin launch and printed ModuleNotFoundError, reported by the experiment lane on
+# 2026-09-10. So this check asks a different question -- is the module HERE? -- and needs no list of
+# forbidden names to do it.
+#
+# `python` must appear before the `-m`, because "under -m the bare" is a sentence in a comment in
+# replay_server.py and a check that flags English is a check somebody switches off.
+EXTERNAL_M = re.compile(r"python[0-9.]*\s+(?:-\S+\s+)*-m\s+([A-Za-z_][A-Za-z0-9_.]*)")
 
 
 def offenders(root: pathlib.Path):
@@ -67,21 +80,91 @@ def offenders(root: pathlib.Path):
         except (OSError, UnicodeDecodeError):
             continue
         for n, line in enumerate(text.splitlines(), 1):
-            if not FORBIDDEN.search(line):
+            # EVERY MATCH ON THE LINE, NOT THE FIRST. `search` reports that a line matched, which
+            # on a MINIFIED OR SINGLE-LINE FILE is one instance out of an unknown population:
+            # envelopes.json is one line and held TWO references -- a module path under
+            # `generated_by` and an absolute source path under `source_tree` -- and this printed
+            # only the first of them. A fix guided by
+            # that report would have left the other in place. Found by the ontology lane on
+            # 2026-09-10, which grepped the whole file instead of trusting the line report.
+            hits = [m.group(0) for m in FORBIDDEN.finditer(line)]
+            if not hits:
                 continue
             if any(a in line for a in ALLOWED):
                 continue
-            out.append((rel, n, line.strip()[:110]))
+            shown = line.strip()[:110]
+            uniq = sorted(set(hits))
+            if len(hits) > 1:
+                shown = f"{len(hits)} references on this line {uniq}: {shown}"
+            out.append((rel, n, shown))
+    out.extend(external_modules(root, files))
+    return out
+
+
+def _importable(name: str) -> bool:
+    """True when `name` resolves from the stdlib or an installed package.
+
+    Run with cwd=/ ON PURPOSE: from inside the repository its own directories satisfy the import
+    and every module would look available, which is the answer this check exists to distrust.
+    """
+    return subprocess.run([sys.executable, "-c",
+                           "import importlib.util,sys;"
+                           "sys.exit(0 if importlib.util.find_spec(sys.argv[1]) else 1)", name],
+                          cwd="/", capture_output=True).returncode == 0
+
+
+def _in_repo(root: pathlib.Path, name: str) -> bool:
+    """True when the repository itself carries the top-level module or package."""
+    return (any(root.rglob(f"{name}/__init__.py"))
+            or any(p for p in root.rglob(f"{name}.py") if ".git" not in p.parts))
+
+
+def external_modules(root: pathlib.Path, files):
+    seen, out = {}, []
+    for rel in files:
+        p = root / rel
+        try:
+            text = p.read_text(errors="ignore")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            m = EXTERNAL_M.search(line)
+            if not m or any(a in line for a in ALLOWED):
+                continue
+            top = m.group(1).split(".")[0]
+            if top not in seen:
+                seen[top] = _importable(top) or _in_repo(root, top)
+            if not seen[top]:
+                out.append((rel, n, f"invokes `{m.group(1)}`, which this repository does not "
+                                    f"contain: {line.strip()[:70]}"))
     return out
 
 
 def main() -> int:
-    root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                                       capture_output=True, text=True,
-                                       cwd=pathlib.Path(__file__).parent).stdout.strip())
+    # RULE 77. THIS CHECK USED TO REPORT SUCCESS WHEN IT COULD SEE NOTHING. Exported with
+    # `git archive` into a scratch directory it printed "no extension references in : the seam
+    # holds" -- empty repository name, ZERO FILES SCANNED, rc 0 -- because `--show-toplevel` fails
+    # outside a repository and `ls-files` then returns nothing. A boundary check that passes on an
+    # empty file list is worse than no check: it is a green light nobody earned. Found by the
+    # simulator lane on 2026-09-10 while verifying a tip before pushing it.
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                         cwd=pathlib.Path(__file__).parent)
+    if top.returncode != 0 or not top.stdout.strip():
+        print("REFUSED: not inside a git repository, so no file list can be built.\n"
+              "  This check enumerates with `git ls-files`. Run it in the working tree, or in a\n"
+              "  real git context -- `git worktree add --detach <tip>` -- never in an archive.")
+        return 2
+    root = pathlib.Path(top.stdout.strip())
+    n_files = len(subprocess.run(["git", "-C", str(root), "ls-files", "-c", "-o",
+                                  "--exclude-standard"],
+                                 capture_output=True, text=True).stdout.split())
+    if n_files == 0:
+        print(f"REFUSED: {root} lists no files, so nothing was examined.")
+        return 2
     bad = offenders(root)
     if not bad:
-        print(f"no extension references in {root.name}: the seam holds")
+        print(f"no extension references in {root.name}: the seam holds "
+              f"({n_files} files examined)")
         return 0
     print(f"{len(bad)} extension reference(s) — this repository must not name what extends it:\n")
     for rel, n, line in bad:

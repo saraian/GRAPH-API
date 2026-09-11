@@ -2030,6 +2030,49 @@ __INTERNAL_LINKS__      <button id="rvizLaunchBtn" onclick="startRviz()" hidden
 """
 
 
+def _room_overlays(bundle):
+    """The room polygons and detected walls a bundle recorded, for the minimap and the 3D view.
+
+    WHY THIS IS READ HERE. `room.json` has carried `rooms[].polygon`, `area_m2` and `centroid`
+    all along, and `detected_walls` beside them, but `bev_data.json` carries no `rooms` key at
+    all -- so the minimap had nothing to draw and neither viewer.html nor scene3d.py referenced
+    room.json (measured: 0 occurrences in both). Rather than ask the feed host to publish a
+    second copy, the dashboard joins the two files it already reads.
+
+    THE FRAME IS THE MINIMAP'S OWN, and it was CHECKED rather than assumed. bev_data's map is
+    bounds_min/bounds_max with the storey height in [1], so the horizontal axes are [0] and [2],
+    and `renderCanvasBEV` places a point at `(p[0]-ax, p[1]-az)`. Against run
+    20260910_170036_hm3d_00861: all 176 agent poses fall inside bounds[2] on their second
+    component and NOT inside bounds[0], so the pairing is decided by the data and not merely
+    consistent with it. Room polygons are in that same frame.
+
+    Absent or malformed room.json yields empty lists, never a partial overlay: a room drawn in
+    the wrong place is worse than no room, because nothing on screen would say it was a guess.
+    """
+    try:
+        r = json.loads((bundle / "room.json").read_text())
+    except (OSError, ValueError):
+        return {"rooms": [], "detected_walls": []}
+    if not isinstance(r, dict):
+        return {"rooms": [], "detected_walls": []}
+    rooms = []
+    for rm in (r.get("rooms") or (r.get("building") or {}).get("rooms") or []):
+        poly = rm.get("polygon")
+        if not isinstance(poly, list) or len(poly) < 3:
+            continue                      # fewer than three points is not an area
+        pts = [[float(q[0]), float(q[1])] for q in poly
+               if isinstance(q, (list, tuple)) and len(q) >= 2]
+        if len(pts) < 3:
+            continue
+        rooms.append({"room_id": rm.get("room_id"),
+                      "label": rm.get("semantic_label"),
+                      "polygon": pts,
+                      "area_m2": rm.get("area_m2"),
+                      "centroid": rm.get("centroid")})
+    walls = [w for w in (r.get("detected_walls") or []) if isinstance(w, (list, dict))]
+    return {"rooms": rooms, "detected_walls": walls}
+
+
 def _bundle_names(limit: int = 60):
     """Run directory names, newest first, for the dashboard's bundle picker."""
     try:
@@ -3032,10 +3075,17 @@ def build_app(bundle: Path):
             body = json.loads(bytes(resp.body))
         except (ValueError, TypeError, AttributeError):
             return resp
-        period, n = _frame_period(current_bundle())
+        b = current_bundle()
+        period, n = _frame_period(b)
         if period is not None:
             lat = body.setdefault("latencies", {})
             lat["frame_period_s"], lat["frame_period_n"] = period, n
+        # The room areas and detected walls the minimap draws. Added rather than overwritten:
+        # if a future feed host publishes its own, that one is already the newer answer.
+        ov = _room_overlays(b)
+        for k, v in ov.items():
+            if not body.get(k):
+                body[k] = v
         return JSONResponse(content=body)
 
     # Drop the live camera routes. Their MJPEG generator waits on frames that never

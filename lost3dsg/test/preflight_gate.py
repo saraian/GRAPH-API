@@ -257,7 +257,15 @@ def a2_config_identity(expect_name=None, expect_sha=None, expect_merged=None):
     loaded_path = getattr(cfgmod, "CFG_PATH", None)
     merged = merged_cfg_sha(cfgmod.CFG)
     file_sha = file_sha16(loaded_path) if loaded_path else None
+    # THE LOCAL OVERRIDE IS RECORDED HERE, and it has to be. It used to be folded into CFG_PATH as
+    # "<config> + <local>", which is not a path: this probe opens loaded_path to hash it, so with an
+    # override in force a2 raised FileNotFoundError and SKIPPED -- and a skipped probe fails the
+    # gate. Splitting the two values fixed that, and this is where the override must reappear, or
+    # an overridden run and a plain one are identical in the bundle.
+    local_path = getattr(cfgmod, "CFG_LOCAL_PATH", None)
     detail = {"env_path": env_path, "loaded_path": loaded_path,
+              "local_override_path": local_path,
+              "local_override_sha256_16": file_sha16(local_path) if local_path else None,
               "merged_cfg_sha256_16": merged, "config_file_sha256_16": file_sha,
               "perception_backend": (cfgmod.CFG.get("perception") or {}).get("backend"),
               "hooks_filter": (cfgmod.CFG.get("hooks") or {}).get("filter")}
@@ -733,7 +741,22 @@ def _found_exercised(flag):
     if flag == "auto":
         try:
             import config as cfgmod
-            return bool((cfgmod.CFG.get("hooks") or {}).get("filter"))
+            # GA-476 (2026-09-10, found by the ontology lane, whose run this failed). A FILTER IS
+            # NOT AUTOMATICALLY EXTENSION CODE. GA-435 replaced "is this a detection run" with
+            # "does hooks.filter name something", and wrote that hooks.filter "is the single name
+            # that routes a run into extension code". That was true until this repository started
+            # shipping a filter of its own, hours later: envelope_size:SizeFilter lives in
+            # src/perception_module, needs no extension environment and declares no live root, and
+            # a7 failed it with live_roots_undeclared for existing.
+            #
+            # So the question is WHERE the filter lives, the same correction the launcher's own
+            # guard needed. A dotted name is a package path, so it is split before the file test.
+            filt = ((cfgmod.CFG.get("hooks") or {}).get("filter") or "").strip()
+            if not filt:
+                return False
+            mod = filt.split(":", 1)[0]
+            here = os.path.dirname(os.path.abspath(cfgmod.__file__))
+            return not os.path.exists(os.path.join(here, *mod.split(".")) + ".py")
         except Exception:
             # A config that cannot be read is a2's finding, not a7's. Answer the safer way: assert
             # the live roots, because "no extension" is the claim that would let a moving tree pass.

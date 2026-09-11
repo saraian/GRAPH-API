@@ -1,0 +1,16 @@
+# A SCHEDULE OF RUNS. Each arm is one run with its own configuration.
+#   ./run_headless.sh --schedule schedules/example.runs.yaml
+# The driver writes one real config file per arm into the sweep directory, passes it as
+# GRAPH_API_CONFIG, and records which arm produced which bundle in manifest.json.
+base: lost3dsg/test/graphapi_only_config.yaml
+scene: hm3d_00861
+arms:
+  - name: local_detector
+    config:
+      perception.backend: local
+  - name: local_detector_size_gate
+    config:
+      perception.backend: local
+    env:
+      # No config key for this yet, so it is an env override and marked as such.
+      GRAPH_API_SIZE_ENFORCE: "1"

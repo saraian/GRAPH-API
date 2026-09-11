@@ -7,6 +7,7 @@ defaults below, which reproduce the historical hardcoded behaviour — so a
 checkout with no config.yaml at all runs exactly as before.
 """
 import os
+import sys
 
 _DEFAULTS = {
     # pre-existing flag (this module used to contain only this line)
@@ -513,7 +514,7 @@ def _load():
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml"),
     )
     if not os.path.exists(path):
-        return dict(_DEFAULTS), None
+        return dict(_DEFAULTS), None, None
     import yaml
     with open(path) as f:
         cfg = _merge(_DEFAULTS, yaml.safe_load(f) or {})
@@ -535,15 +536,38 @@ def _load():
             cfg = _merge(cfg, over)
             _keys = sorted(f"{k}.{sk}" if isinstance(v, dict) else k
                            for k, v in over.items() for sk in (v if isinstance(v, dict) else [k]))
-            print(f"[config] local override {local} in force: {', '.join(_keys)}", flush=True)
-            return cfg, f"{path} + {local}"
-    return cfg, path
+            # TO STDERR, NOT STDOUT. The announcement is a message, not a value, and the
+            # launcher CAPTURES this program's stdout to read the merged-config sha
+            # (live_run.sh:949, `--print-merged-sha`). On stdout the line landed INSIDE the JSON
+            # string in run_metadata.json, newline and all, and the launcher then refused the
+            # bundle with "run_metadata.json is not valid JSON". Measured 2026-09-10 on the first
+            # run that ever used a local override -- the feature that makes the override honest
+            # broke the metadata of every run that used it.
+            print(f"[config] local override {local} in force: {', '.join(_keys)}",
+                  file=sys.stderr, flush=True)
+            # THE PATH RETURNED IS A PATH, AND THE OVERRIDE IS ITS OWN VALUE. This used to return
+            # f"{path} + {local}" to keep the override visible, and that string is not openable:
+            # preflight probe a2 opens CFG_PATH to prove the container loaded the file the launcher
+            # intended, so with an override in force a2 raised FileNotFoundError on
+            # "<config> + <local>" and SKIPPED -- and a skipped probe fails the gate. Measured
+            # 2026-09-10 on Gin, where install.sh writes a local override precisely because there
+            # is no labelling credential there, so the thing that made the machine runnable was
+            # the thing that stopped it passing. This module's OWN self-check disagreed with the
+            # old form too (`assert CFG_PATH is None or os.path.exists(CFG_PATH)`).
+            # The override stays visible: it is returned separately and recorded separately.
+            return cfg, path, local
+    return cfg, path, None
 
 
 # CFG_PATH is the file that was read, or None when the defaults are in force. A
 # consumer that logs the configuration must log this beside the values, or the two
 # arms of an ablation are indistinguishable in the bundle.
-CFG, CFG_PATH = _load()
+#
+# CFG_LOCAL_PATH is the local override that won over it, or None. It is a SEPARATE value rather
+# than part of CFG_PATH because CFG_PATH must stay openable -- see the comment at the return.
+# A consumer that records the configuration must record BOTH, or an overridden run and a plain
+# one look the same in the bundle.
+CFG, CFG_PATH, CFG_LOCAL_PATH = _load()
 
 # Backward compatibility: utils.py does `import config` / `config.simulation`.
 simulation = CFG["simulation"]
@@ -588,6 +612,10 @@ if __name__ == "__main__":
     # seeds min_visible_points, and the slider may raise it but not lower it
     assert visibility({"strict_visibility": "true", "min_visible_points": "1"})[0] == 5
     assert visibility({"strict_visibility": "true", "min_visible_points": "8"})[0] == 8
+    # BOTH must be openable when set. The whole point of splitting them is that a consumer can
+    # open either one; a value that only looks like a path is what broke probe a2.
     assert CFG_PATH is None or os.path.exists(CFG_PATH), CFG_PATH
+    assert CFG_LOCAL_PATH is None or os.path.exists(CFG_LOCAL_PATH), CFG_LOCAL_PATH
     print("config OK:", {k: (list(v) if isinstance(v, dict) else v) for k, v in CFG.items()})
     print("config loaded from:", CFG_PATH if CFG_PATH else "<defaults, no file found>")
+    print("local override:   ", CFG_LOCAL_PATH if CFG_LOCAL_PATH else "<none>")

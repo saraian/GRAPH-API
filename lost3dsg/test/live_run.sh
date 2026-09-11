@@ -1,4 +1,54 @@
 #!/usr/bin/env bash
+
+# --help must answer BEFORE anything else parses $1: the scene switch below refused it as a
+# scene name, which is the least useful reply to someone asking what the arguments are.
+case "${1:-}" in
+  -h|--help)
+    cat <<'USAGE'
+live_run.sh — one launch of the GRAPH-API stack against the Habitat feed.
+
+  bash live_run.sh [scene]
+
+SCENE (default hm3d_00861)
+  hm3d_00861  hm3d_00337  hm3d_00770  mp3d_17DRP
+  Any other name is refused; HABITAT_SCENE overrides the path outright.
+
+WHERE THINGS GO
+  WORKSPACE_ROOT   root holding maps/ and results/. MUST hold one of them; it is derived from the
+                   checkout when unset, which is wrong whenever the checkout is not inside it.
+  RESULTS_DIR      run bundles (default $WORKSPACE_ROOT/results). The bundle IS the live output.
+  SCHEDULE_DIR     cached exploration schedules (default $WORKSPACE_ROOT/schedules)
+
+EXPLORATION
+  FEED_SCHEDULE          a schedule file; built and cached automatically when unset
+  FEED_EXPLORATION_LAPS  complete passes of the storey (config habitat.exploration_laps, default 3)
+  FEED_NAVIGATION_MODE   navigate (drive it) or teleport (set the pose)
+  FEED_SPAWN_FLOOR       storey height; REQUIRED when the scene has per-floor maps
+  FEED_TOUR_ALL_FLOORS   1 tours every storey in one launch; default 0, one launch per storey
+
+FEED (each also readable from config.yaml habitat.*)
+  FEED_FPS  FEED_WIDTH  FEED_HEIGHT  FEED_WALK  FEED_DWELL  FEED_DWELL_MODE
+  FEED_MAPPING_SECONDS  FEED_CAMERA_PITCH_DEG  FEED_GT_SEMANTIC  FEED_SHOW  FEED_OVERLAY
+
+STACK
+  CFG_NAME        config file (regolo_config.yaml with an API key, else smoke_config.yaml)
+  RVIZ            0 to run headless; also skipped automatically with no X socket
+  WALL_DETECTOR   1 starts the wall detector (default 0)
+  FEED_HF_OFFLINE 1 refuses to download models mid-run (default 1)
+  IMAGE_TAG       container image (default graphapi-run:humble-ga290)
+
+EXTENSION
+  EXT_ENV_FILE    a shell file the extension ships; REQUIRED when the config names hooks.filter
+  EXT_MOUNTS EXT_ENV_PASS EXT_TREES EXT_POLICY_JSON EXT_STORE_REPAIR EXT_POST_RUN
+
+EXAMPLES
+  bash live_run.sh hm3d_00861
+  FEED_SPAWN_FLOOR=1.21 FEED_EXPLORATION_LAPS=1 bash live_run.sh hm3d_00861
+  RVIZ=0 EXT_ENV_FILE=/path/to/env.sh bash live_run.sh hm3d_00337
+USAGE
+    exit 0
+    ;;
+esac
 # Live demo on this machine: habitat renders on the host (conda habitat_env),
 # the ROS 2 stack runs in the graphapi-run:humble-ga290 container (patched rtabmap, GA-290)
 # over a TCP feed.
@@ -554,6 +604,13 @@ SCENE_ARG=${1:-hm3d_00861}
 RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
 RESULTS_DIR=${RESULTS_DIR:-$REPO/results}
 RUN_DIR="$RESULTS_DIR/$RUN_ID"
+# RUNS_DIR IS THE SAME DIRECTORY NOW, kept as a name because nine places use it: the `latest`
+# symlink, the cycle-budget reader, and run_house.sh's per-storey bookkeeping. MEASURED, and it is
+# why this line exists: when RESULTS_DIR replaced RUNS_DIR and the uses were left behind, the
+# launcher printed "symlinked as /latest" and would have written that symlink at the FILESYSTEM
+# ROOT, while `last_frame_age_rejected.py` was handed an empty argument. Replacing a definition is
+# not replacing its uses.
+RUNS_DIR="$RESULTS_DIR"
 # Stamped BEFORE the directory is created, so every artefact the run legitimately writes is newer
 # than it. The gate's a5 probe fails on anything older -- a directory left dirty by a previous run,
 # or a file copied in by hand.
@@ -678,10 +735,26 @@ for _v in ${EXT_ENV_PASS:-}; do EXT_E_ARGS="$EXT_E_ARGS -e $_v"; done
 # object manager dies at the first proposal carrying a room, mid-run, twenty minutes in --
 # measured 2026-09-09 by the simulator lane running the launch path by hand. A launch-time
 # refusal is the same information, an hour earlier and with the map still unbuilt.
-if [ -z "${EXT_ENV_FILE:-}" ] && grep -qE '^\s*filter:\s*"[^"]+"' "$HERE/$CFG_NAME" 2>/dev/null; then
-  echo "!! $CFG_NAME wires an extension filter but EXT_ENV_FILE is unset."
+# GA-475 (2026-09-10, found by the ontology lane, whose run this refused). NOT EVERY FILTER IS AN
+# EXTENSION FILTER. The test was "the config names a filter", which is one step wider than the
+# reason above: a filter that ships INSIDE this repository needs no extension environment, and
+# there is nothing for EXT_ENV_FILE to point at. The message even offered "or clear hooks.filter",
+# which for an in-repo filter means "or stop using the feature".
+#
+# So ask WHERE the filter lives: take the module before the colon and look for it beside the
+# perception code. Verified against all four configs before landing -- size_gate_config names
+# envelope_size, whose module is present, and is allowed; regolo_config names found.filter, whose
+# module is not, and is refused exactly as before; smoke_config and graphapi_only_config name no
+# filter and are untouched.
+_filter_module=$(grep -E '^[[:space:]]*filter:[[:space:]]*"[^"]+"' "$HERE/$CFG_NAME" 2>/dev/null \
+                 | sed -E 's/.*"([^":]+):.*/\1/')
+# A dotted name is a package path, so it becomes a directory path before the file test.
+_filter_path="$HERE/../src/perception_module/$(printf '%s' "${_filter_module:-}" | tr '.' '/').py"
+if [ -z "${EXT_ENV_FILE:-}" ] && [ -n "$_filter_module" ] && [ ! -f "$_filter_path" ]; then
+  echo "!! $CFG_NAME wires the filter '$_filter_module', which is NOT in this repository"
+  echo "   ($_filter_path does not exist), and EXT_ENV_FILE is unset."
   echo "   The extension's variables would never reach the container and the run would die"
-  echo "   at the first proposal that needs one. Set EXT_ENV_FILE, or clear hooks.filter."
+  echo "   at the first proposal that needs one. Set EXT_ENV_FILE, or name a filter that ships here."
   exit 1
 fi
 
@@ -1044,10 +1117,25 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 # config.CFG_PATH, the file config.py actually read), the feed host's below.
 # Every variable the extension declared must be SET before this heredoc, or the bundle records a
 # value the process never received. This used to name one deployment's eight variables.
+# GA-474 (owner 2026-09-10). ALL OF THEM, IN ONE MESSAGE. This exited on the FIRST missing name, so
+# an extension declaring twelve unset variables cost twelve launches to discover -- measured today:
+# the run died on the extension's first declared variable, then its second, then the next.
+# Collect, then report. (The names are the extension's; this repository must not carry them.)
+_missing_pass=""
 for _v in ${EXT_ENV_PASS:-}; do
   eval "_isset=\${$_v+yes}"
-  [ -n "${_isset:-}" ] || { echo "!! $_v is declared in EXT_ENV_PASS but not set at run_metadata.json"; exit 1; }
+  [ -n "${_isset:-}" ] || _missing_pass="$_missing_pass $_v"
 done
+if [ -n "$_missing_pass" ]; then
+  echo "!! EXT_ENV_PASS names $(echo $_missing_pass | wc -w) variable(s) that are NOT SET:"
+  for _v in $_missing_pass; do echo "     $_v"; done
+  echo "   \`docker run -e VAR\` sends nothing when VAR is unset in the parent, so the container"
+  echo "   would use its own default while run_metadata.json records this launcher's. Export them"
+  echo "   in \$EXT_ENV_FILE ($EXT_ENV_FILE), or drop them from EXT_ENV_PASS."
+  echo "   To run anyway with each of them empty:"
+  echo "     $(for _v in $_missing_pass; do printf '%s= ' "$_v"; done)bash $0 $SCENE_ARG"
+  exit 1
+fi
 # "machine" records WHICH MACHINE made this bundle. Absent until 2026-09-10, and its absence is why
 # bundles from two machines cannot safely share one directory: nothing inside could tell them apart,
 # so a reader comparing them would not know they were comparing different systems. The bundle now
@@ -1228,7 +1316,16 @@ echo "    (latest is repointed at the end, and only if the gate passes)"
 # The navmesh sits next to the scene mesh; a scene shipped without one gets no schedule and the run
 # falls back to the sampling policy, which is SAID rather than left for a reader to infer.
 SCHEDULE_DIR=${SCHEDULE_DIR:-$WORKSPACE_ROOT/schedules}
-if [ -z "${FEED_SCHEDULE:-}" ]; then
+# GA-476. SET-BUT-EMPTY IS AN ANSWER, and `-z "${FEED_SCHEDULE:-}"` could not hear it: empty and
+# unset looked the same, so `FEED_SCHEDULE=` built and exported the cached schedule anyway and there
+# was NO way to ask for the old sampling motion. Measured by the ontology lane, who set it empty on
+# purpose to keep their readings comparable and got 34 scheduled stops instead. `${FEED_SCHEDULE+x}`
+# tests whether the name is set at all, so empty now means "no schedule" and unset still means
+# "build or reuse one".
+if [ -n "${FEED_SCHEDULE+x}" ] && [ -z "$FEED_SCHEDULE" ]; then
+  echo "    schedule: NONE — FEED_SCHEDULE is set and empty, so this run uses the sampling policy"
+  echo "    (that policy moves on 6 of every 96 frames; the two are not comparable on coverage)"
+elif [ -z "${FEED_SCHEDULE:-}" ]; then
   _scene_glb="${HABITAT_SCENE:-$DEF_SCENE}"
   _navmesh="${_scene_glb%.glb}.navmesh"
   _regen=$(python3 -c "

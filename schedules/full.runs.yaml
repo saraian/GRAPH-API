@@ -1,0 +1,22 @@
+# THE RUNS WE HAVE TO PERFORM, in order. Each arm NAMES its own complete config file, so what runs
+# is the file you reviewed rather than a copy generated from overrides.
+#
+#     ./run_headless.sh --schedule schedules/full.runs.yaml
+#
+# ORDER IS DELIBERATE. 01 and 02 differ only in the mapping phase, so they come together and the
+# exploration difference is measured before anything is built on it. 05 repeats 01's configuration
+# three times: until that spread is known, no figure from any of these arms supports a regression
+# claim, so it is a prerequisite rather than an extra.
+scene: hm3d_00861
+arms:
+  - name: reference
+    config_file: schedules/configs/01_reference.yaml
+  - name: no_mapping_phase
+    config_file: schedules/configs/02_no_mapping_phase.yaml
+  - name: size_gate
+    config_file: schedules/configs/03_size_gate.yaml
+  - name: ground_truth_pose
+    config_file: schedules/configs/04_ground_truth_pose.yaml
+  - name: noise_floor
+    config_file: schedules/configs/05_noise_floor.yaml
+    repeat: 3

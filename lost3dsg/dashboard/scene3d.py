@@ -50,6 +50,7 @@ Box3 against the ground truth's own AABB and paints the status line red when it 
 """
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 try:
@@ -342,6 +343,70 @@ def _floor_deck(maps, z):
             "x1": v["bounds_max"][0], "y1": v["bounds_max"][2], "z": v["bounds_min"][1]}
 
 
+def _viewer_kg_style():
+    """The dashboard's OWN cytoscape stylesheet, read from viewer.html.
+
+    The owner's report: the knowledge graph on this page should look like the one on the main
+    dashboard. It did not -- viewer.html styles nodes at 26 px with a labelled background, an
+    arrowed bezier edge and a colour per relation, while this page had a 12 px node, a hairline
+    haystack edge and no relation colours at all. Two stylesheets, one of them a poor relation.
+
+    READ, NOT COPIED. A copy is what produced the divergence in the first place: ~130 lines of
+    selectors that have to be edited in two files to stay one design, and nothing to say when
+    they stop matching. viewer.html stays the single source and this function lifts the literal
+    out of it, so a change there reaches this page with no second edit.
+
+    NOT A SHARED ROUTE, deliberately. `/vendor` is mounted by the dashboard, but viewer.html is
+    ALSO served by the bridge on :8081 in live mode, where a new dashboard route would not
+    exist -- the graph would then break in live mode to fix its looks in replay.
+
+    Returns None when the literal cannot be found, and the caller SAYS so on the page rather
+    than quietly falling back: a graph that silently reverts to the old look is the same
+    divergence again, just harder to notice.
+    """
+    v = _viewer_html_path()
+    if v is None:
+        return None
+    try:
+        h = v.read_text()
+    except OSError:
+        return None
+    i = h.find("cytoscape({")
+    if i == -1:
+        return None
+    j = h.find("style: [", i)
+    if j == -1:
+        return None
+    # LINE BY LINE, WITH `//` COMMENTS STRIPPED, not a character scanner. The first version
+    # balanced brackets over the raw text and ran 43 KB past the end of the array, stopping
+    # inside the regex literal `/[&<>"']/` further down the file -- a bracket in a regex is not
+    # a bracket in the data. The style array is pure data with line comments, so stripping the
+    # comment and counting brackets per line terminates exactly where the array does.
+    lines = h[j:].splitlines(keepends=True)
+    out, depth = [], 0
+    for ln in lines:
+        code = ln.split("//", 1)[0] if "//" in ln and not re.search(r"https?://", ln) else ln
+        out.append(ln)
+        depth += code.count("[") - code.count("]")
+        if depth == 0 and len(out) > 1:
+            body = "".join(out)
+            k = body.index("[")
+            return body[k:body.rindex("]") + 1]
+    return None
+
+
+def _viewer_html_path():
+    """Where viewer.html is, in either tree layout. Same search as the dashboard's own."""
+    here = Path(__file__).resolve()
+    for base in list(here.parents)[:6]:
+        for rel in ("lost3dsg/src/perception_module/viewer/viewer.html",
+                    "src/perception_module/viewer/viewer.html"):
+            cand = base / rel
+            if cand.is_file():
+                return cand
+    return None
+
+
 def scene_payload(bundle, gt_scene=None):
     """-> everything the page draws, in one world frame.
 
@@ -351,7 +416,30 @@ def scene_payload(bundle, gt_scene=None):
     d = RUNS_DIR / bundle
     out = {"bundle": bundle, "objects": [], "walls": [], "openings": [],
            "agent": None, "floor": None, "gt_scene": None, "gt_regions": 0,
-           "gt_aabb": None}
+           "gt_aabb": None,
+           # SEPARATE KEYS, for the reason the docstring above already gives about measured
+           # vs truth: `walls` is GROUND TRUTH from the scene file, `detected_walls` is what
+           # the wall detector measured, and `schedule` is what the run was told to walk. Three
+           # different claims; merging any two would let the page render one as another.
+           "detected_walls": [], "schedule": None}
+
+    # The run's own room segmentation and the plan it followed. Both are optional: every
+    # bundle recorded so far has an empty `detected_walls` because these runs launch with
+    # `use_wall_detector:=false` (measured: 0 of 126), and `schedule` is null unless a
+    # schedule drove the run.
+    try:
+        _room = json.loads((d / "room.json").read_text())
+        if isinstance(_room, dict):
+            out["detected_walls"] = [w for w in (_room.get("detected_walls") or [])
+                                     if isinstance(w, (list, dict))]
+    except (OSError, ValueError):
+        pass
+    try:
+        _bev = json.loads((d / "bev_data.json").read_text())
+        if isinstance(_bev, dict) and isinstance(_bev.get("schedule"), dict):
+            out["schedule"] = _bev["schedule"]
+    except (OSError, ValueError):
+        pass
 
     pp = d / "persistent_perception.json"
     if pp.is_file():
@@ -516,6 +604,17 @@ _CSS = """
   body.embedded > header, body.embedded > .bar,
   body.embedded > #meshStat, body.embedded > #liveStat { display:none; }
   body.embedded #split { height:100vh; }
+  /* THE EMBEDDED PANEL NEVER SCROLLS AT THE DOCUMENT LEVEL. It is exactly the size of the
+     iframe the dashboard gives it, and anything that genuinely scrolls -- the objects table --
+     carries its own scroller.
+     Without this the panel had a scrollbar that APPEARED AND DISAPPEARED, which is a feedback
+     loop rather than a stray element: `resize()` sizes the canvas to `wrap.clientWidth`, so a
+     scrollbar taking its gutter narrows the wrap, which reflows, which clears the scrollbar,
+     which widens it again. MEASURED while maximized: documentElement.scrollWidth 1245 against
+     clientWidth 1240 -- five pixels, the width of a gutter, and gone on the next reading.
+     overflow:hidden on the container removes the only thing the loop can toggle. Scoped to
+     `.embedded` so the standalone page, which is a normal scrolling document, is untouched. */
+  body.embedded { overflow:hidden; }
   /* The knowledge graph and the objects table appear ONLY when the panel is maximized: in a
      quadrant they leave the scene too little room to be worth anything. */
   body.embedded #side { display:none; }
@@ -675,6 +774,30 @@ controls.screenSpacePanning = true;
 // further down owns the button outright instead of fighting one.
 controls.mouseButtons.MIDDLE = null;
 
+// YAW IS NORMALISED BY THE PANEL'S WIDTH, not its height, and this is set when a drag
+// BEGINS so it is always the size the drag is actually happening in.
+//
+// OrbitControls r128 rotates by `2*PI * deltaX / element.clientHeight` -- it divides a
+// HORIZONTAL gesture by a VERTICAL measurement. In a tall window that is merely odd; in the
+// dashboard's 3D tab, which is short and wide, it makes the view uncontrollable. MEASURED in
+// the tab at 606x418: a 100 px drag turned the camera 86.1 degrees and a full turn took
+// 418 px, so there was no such thing as a small adjustment.
+//
+// It bites HERE and not on the standalone page because the panel is shorter, and it bites at
+// all only because the pitch is pinned (`lockPitch`, owner decision 2026-09-04): with the
+// vertical drag doing nothing by design, yaw is the WHOLE control, and it was the one axis
+// scaled by the wrong dimension.
+//
+// rotateSpeed multiplies that angle, so h/w cancels the height and substitutes the width:
+// one full turn per panel width, whatever the shape. ON 'start' RATHER THAN ON RESIZE: the
+// first version set it in resize(), which runs on the maximise event before the panel has
+// its new size, so it kept the small-panel value at full size (0.69 measured where 0.545 was
+// due). A drag cannot begin before the panel exists, so this reading is never early.
+controls.addEventListener('start', () => {
+  const el = renderer.domElement;
+  controls.rotateSpeed = el.clientHeight / Math.max(1, el.clientWidth);
+});
+
 // YAW AND ZOOM ONLY, by owner decision 2026-09-04. Left-drag turns the model about the
 // vertical; it does not tip it.
 //
@@ -735,12 +858,15 @@ function holdAim() {
 }
 
 const G = {};
-for (const k of ['floor', 'mesh', 'wall', 'open', 'obj', 'path', 'robot']) {
+// `dwall` and `sched` are their own groups, NOT extra children of `wall` and `path`: the
+// GT walls and the traveled path are a different claim from the detected walls and the
+// planned route, and one toggle over both would make them one thing on screen.
+for (const k of ['floor', 'mesh', 'wall', 'dwall', 'open', 'obj', 'path', 'sched', 'robot']) {
   G[k] = new THREE.Group();
   scene.add(G[k]);
 }
 const show = {obj: true, wall: true, open: true, path: true, label: false, floor: true,
-              mesh: true, robot: true};
+              mesh: true, robot: true, dwall: true, sched: true};
 
 // THE ORBIT CENTRE, DRAWN. There was no marker here before this round -- the centre was an
 // invisible point you could only locate by orbiting and watching what stood still. Three
@@ -928,6 +1054,80 @@ for (const w of P.wall_mass) {
 
 // An opening NO surface claimed is still drawn, as the box it always was. Dropping it would
 // make an aperture the ground truth does have look like one it does not.
+// ---- DETECTED WALLS AND THE PLANNED ROUTE ---------------------------------------------
+// Both are drawn at the storey height rather than guessed: every schedule point carries its
+// own y, and a detected wall is a ground-plane segment lifted to the floor it belongs to.
+// AMBER for detected, against the grey of ground truth, and VIOLET dashes for the plan
+// against the solid line of the path actually walked.
+const DWALL_MAT = new THREE.LineBasicMaterial({color: 0xf59e0b, linewidth: 2});
+const SCHED_MAT = new THREE.LineDashedMaterial({color: 0xa78bfa, dashSize: 0.25, gapSize: 0.18});
+
+function wallSegments(w) {
+  // THE PRODUCER'S ACTUAL SHAPE IS {start:{x,y}, end:{x,y}}. room_manager.py:2708 reads
+  // `wall["start"]["x"]` and object_manager_6.py's walls_callback says so in as many words,
+  // and room.json's top-level `detected_walls` is that same `_detected_wall_map`
+  // (room_manager.py:3006). The first version of this function accepted only [[x,y],[x,y]]
+  // and {points: [...]} -- two shapes I had INVENTED -- so with the detector switched on this
+  // layer would have drawn nothing and looked like a detector that found no walls. Verifying
+  // a reader against your own guess at the format proves only that the guess is self-consistent.
+  //
+  // The two array forms are kept as tolerated alternatives, cheap and harmless, but `start`
+  // and `end` are the shape that actually arrives.
+  let pts = null;
+  if (w && w.start && w.end &&
+      typeof w.start.x === 'number' && typeof w.end.x === 'number') {
+    pts = [[w.start.x, w.start.y], [w.end.x, w.end.y]];
+  } else {
+    pts = Array.isArray(w) ? w : (w && w.points);
+  }
+  if (!Array.isArray(pts) || pts.length < 2) return null;
+  const z = (w && typeof w.z === 'number') ? w.z : (P.floor && P.floor.z) || 0;
+  const out = [];
+  for (const q of pts) {
+    if (!q || q.length < 2) continue;
+    // A 3-component point states its own height; a 2-component one sits on the storey.
+    out.push(new THREE.Vector3(q[0], q[1], q.length > 2 ? q[2] : z));
+  }
+  return out.length >= 2 ? out : null;
+}
+
+for (const w of (P.detected_walls || [])) {
+  const pts = wallSegments(w);
+  if (!pts) continue;
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), DWALL_MAT);
+  line.userData = {floor: (w && w.floor) != null ? w.floor : null};
+  G.dwall.add(line);
+}
+
+if (P.schedule && Array.isArray(P.schedule.path) && P.schedule.path.length > 1) {
+  const sy = typeof P.schedule.storey_y === 'number' ? P.schedule.storey_y : 0;
+  const at = q => new THREE.Vector3(q[0], q[1], q.length > 2 ? q[2] : sy);
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(P.schedule.path.map(at)), SCHED_MAT);
+  // computeLineDistances or the dashes never appear -- a dashed material on a Line draws
+  // solid without it, which would make the plan indistinguishable from the walked path.
+  line.computeLineDistances();
+  G.sched.add(line);
+  // Each 360-degree scan point as a small ring lying in the floor plane, so it reads as a
+  // place to stand rather than as another detected object.
+  const ringGeo = new THREE.RingGeometry(0.12, 0.2, 20);
+  const ringMat = new THREE.MeshBasicMaterial({color: 0xa78bfa, side: THREE.DoubleSide,
+                                               transparent: true, opacity: 0.9});
+  for (const st of (P.schedule.stops || [])) {
+    const q = st && (st.xyz || st);
+    if (!q || q.length < 2) continue;
+    const r = new THREE.Mesh(ringGeo, ringMat);
+    r.position.copy(at(q));
+    r.userData = {order: st && st.order};
+    G.sched.add(r);
+  }
+  if (Array.isArray(P.schedule.root) && P.schedule.root.length >= 2) {
+    const rootRing = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.42, 24), ringMat);
+    rootRing.position.copy(at(P.schedule.root));
+    G.sched.add(rootRing);
+  }
+}
+
 for (const w of P.openings) {
   if (w.cut) continue;
   const [x, y, z] = w.pos, [ex, ey, ez] = w.ext;
@@ -1177,6 +1377,16 @@ function contentBox() {
   const b = new THREE.Box3();
   for (const m of OBJMESH) b.expandByObject(m);
   for (const m of G.wall.children) b.expandByObject(m);
+  // THE ROUTE AND THE DETECTED WALLS COUNT AS CONTENT. They did not, and on a bundle whose
+  // only content IS the route the view framed nothing: measured on 20260910_185402_hm3d_00861,
+  // which has 0 objects and 0 GT walls -- the schedule group held 36 drawables (a 179-point
+  // path plus 34 stop rings and the root) and the camera pointed away from all of them, so a
+  // layer that WAS drawing looked like a layer that was broken.
+  //
+  // `isEmpty()` in fitView is the tell: an empty box means "nothing to look at", and that
+  // claim has to be made over everything the scene can show, not over two of its groups.
+  for (const m of G.sched.children) b.expandByObject(m);
+  for (const m of G.dwall.children) b.expandByObject(m);
   return b;
 }
 
@@ -1212,6 +1422,22 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / Math.max(1, h);
   camera.updateProjectionMatrix();
+  // YAW IS NORMALISED BY THE PANEL'S WIDTH, not its height. OrbitControls r128 rotates by
+  // `2*PI * deltaX / element.clientHeight` -- it divides a HORIZONTAL gesture by a VERTICAL
+  // measurement. In a tall window that is merely odd; in the dashboard's 3D tab, which is
+  // short and wide, it makes the view uncontrollable. MEASURED in the tab at 606x418: a
+  // 100 px drag turned the camera 86.1 degrees and a full turn took 418 px, so there was no
+  // such thing as a small adjustment.
+  //
+  // It bites HERE and not on the standalone page because the panel is shorter, and it bites
+  // at all only because the pitch is pinned (owner decision 2026-09-04, `lockPitch`): with
+  // the vertical drag doing nothing by design, yaw is the whole control, and it was the one
+  // axis scaled by the wrong dimension.
+  //
+  // (the yaw normalisation that belongs with this is set at DRAG START, not here -- see
+  //  the 'start' handler by the OrbitControls construction. Setting it on resize read the
+  //  panel before the maximise transition had settled: MEASURED 0.69 still in force at
+  //  1255x684, where it should have been 0.545.)
   // The cytoscape canvas does not follow its container on its own: without this the
   // viewport keeps its old size and the graph drifts out of the pane (measured: 77 of 77
   // nodes inside at load, 39 of 77 after one window resize, 77 again after a reload).
@@ -1248,8 +1474,12 @@ function render() {
   queued = true;
   requestAnimationFrame(() => {
     queued = false;
-    for (const k of ['floor', 'mesh', 'wall', 'open', 'obj', 'path', 'robot'])
-      G[k].visible = show[k];
+    // EVERY GROUP, from G itself rather than from a list repeated here. The list was
+    // hardcoded and did not include the two groups added later (`dwall`, `sched`), so their
+    // toggles set a flag that nothing read: the buttons appeared to work and changed nothing.
+    // Deriving the loop from G means a group cannot be added and forgotten.
+    for (const k of Object.keys(G))
+      if (k in show) G[k].visible = show[k];
     // FLOOR MAP IS WHAT YOU SEE WITH THE MESH OFF (owner decision 2026-09-06). Both
     // defaulted on and the GLB is opaque with its own floor at the deck's height -- the
     // deck sits at z 1.21 on hm3d_00861 and the agent walked 1.190 .. 1.217 -- so the plan
@@ -1656,22 +1886,20 @@ function initKG() {
         'no graph in this bundle</div>';
       return;
     }
+    // THE DASHBOARD'S OWN STYLESHEET, lifted from viewer.html at page build (see
+    // `_viewer_kg_style`). This page used to carry a second, thinner one -- 12 px nodes,
+    // hairline haystack edges, no colour per relation -- so the same graph looked like a
+    // different product depending on which panel you opened it in (owner report). The two
+    // selectors below are appended, not merged into that file: `.dim` and `.sel` are this
+    // page's own selection mechanics and mean nothing on the dashboard.
     CYK = cytoscape({
       container: host, elements: els,
-      style: [
-        {selector: 'node', style: {'background-color': '#0284c7', 'label': 'data(label)',
-          'font-size': '7px', 'color': '#cbd5e1', 'width': 12, 'height': 12,
-          'text-valign': 'center', 'text-halign': 'right', 'text-margin-x': 2,
-          'min-zoomed-font-size': 6}},
-        {selector: 'node[type="room"]', style: {'background-color': '#0369a1',
-          'shape': 'round-rectangle', 'width': 26, 'height': 16, 'font-size': '8px'}},
-        {selector: 'edge', style: {'width': 0.6, 'line-color': 'rgba(148,163,184,.35)',
-          'curve-style': 'haystack'}},
+      style: __KGSTYLE__.concat([
         {selector: '.dim', style: {'opacity': 0.12}},
         {selector: '.sel', style: {'background-color': '#38bdf8', 'width': 20, 'height': 20,
           'border-width': 2, 'border-color': '#e2e8f0', 'font-size': '10px',
           'color': '#ffffff', 'z-index': 99}},
-      ],
+      ]),
       layout: {name: 'cose', animate: false, numIter: 250, nodeRepulsion: 9000,
                idealEdgeLength: 40, padding: 12},
     });
@@ -1679,6 +1907,12 @@ function initKG() {
       const id = String(ev.target.id()).replace(/^n_/, '');
       select(id, 'graph');
     });
+    if (__KGWARN__) {
+      const w = document.createElement('div');
+      w.style.cssText = 'padding:4px 8px;color:#eab308;font-size:10px';
+      w.textContent = __KGWARN__;
+      host.parentElement.insertBefore(w, host);
+    }
   }).catch(e => {
     host.innerHTML = '<div style="padding:10px;color:#f87171;font-size:11px">' +
       'knowledge graph unavailable: ' + e.message + '</div>';
@@ -1734,6 +1968,8 @@ cv.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
 function tog(k, el) { show[k] = !show[k]; el.classList.toggle('on', show[k]); render(); }
 document.getElementById('bObj').onclick = e => tog('obj', e.target);
 document.getElementById('bWall').onclick = e => tog('wall', e.target);
+document.getElementById('bDWall').onclick = e => tog('dwall', e.target);
+document.getElementById('bSched').onclick = e => tog('sched', e.target);
 document.getElementById('bOpen').onclick = e => tog('open', e.target);
 document.getElementById('bPath').onclick = e => tog('path', e.target);
 document.getElementById('bFloor').onclick = e => tog('floor', e.target);
@@ -2100,7 +2336,17 @@ def page(bundle):
     except ImportError:
         import dash_ext as _dx
     _brand = _dx.brand()
+    # The dashboard's cytoscape stylesheet, so the graph here is the graph there. When it
+    # cannot be read the page SAYS so on screen rather than reverting to a second look that
+    # nobody would notice was the wrong one -- an empty array styles nothing, which is
+    # unmistakable, and `kgStyleWarn` prints the reason beside the graph.
+    _kg = _viewer_kg_style()
+    _kg_warn = "" if _kg else (
+        "the dashboard stylesheet could not be read from viewer.html; "
+        "this graph is UNSTYLED rather than silently different")
     js = (_JS.replace("__PAYLOAD__", json.dumps(p))
+             .replace("__KGSTYLE__", _kg or "[]")
+             .replace("__KGWARN__", json.dumps(_kg_warn))
              .replace("__BUNDLE__", json.dumps(bundle))
              .replace("__MESHURL__", json.dumps("/scene_mesh?bundle=" + bundle)))
     return f"""<title>{_brand} scene &middot; {bundle}</title>
@@ -2112,6 +2358,8 @@ def page(bundle):
 <div class="bar">
   <button id="bObj" class="on">OBJECTS</button>
   <button id="bWall" class="on">GT WALLS</button>
+  <button id="bDWall" class="on">DET WALLS</button>
+  <button id="bSched" class="on">SCHEDULE</button>
   <button id="bOpen" class="on">GT OPENINGS</button>
   <button id="bPath" class="on">AGENT PATH</button>
   <button id="bFloor" class="on">FLOOR MAP</button>
@@ -2291,8 +2539,48 @@ def _check_floors():
           "missing bev_data both refused as NOT MEASURED")
 
 
+def _check_layers():
+    """Every scene group is toggleable, and the visibility loop is derived from the groups.
+
+    WHERE THIS CHECK USED TO SIT, and why that was worthless: in the `__main__` block, AFTER
+    `assert a, "no gt_aabb ..."`. On any bundle without ground truth that assertion aborts the
+    run first, so these two lines never executed -- they passed a mutation that hardcoded the
+    loop again and a mutation that added a group with no flag. A check below the thing that can
+    stop the runner is not a check. It needs only the page source, so it runs first now.
+    """
+    h = page("__layers__")
+    # THE VISIBILITY LOOP MUST BE DERIVED FROM G, not from a list repeated beside it. The
+    # hardcoded version silently skipped the two groups added after it was written (`dwall`,
+    # `sched`), so their buttons toggled a flag nothing read: they looked wired and did nothing.
+    assert "for (const k of Object.keys(G))" in h, \
+        "render() iterates a hardcoded group list again; a new group will be skipped"
+    groups = re.search(r"for \(const k of \[([^\]]+)\]\) \{\n  G\[k\]", h)
+    assert groups, "the group list moved; this check is looking at the wrong place"
+    names = [x.strip().strip("'\"") for x in groups.group(1).split(",") if x.strip()]
+    assert {"wall", "dwall", "sched"} <= set(names), names
+    show = re.search(r"const show = \{([^}]+)\}", h)
+    assert show, "the show table moved"
+    missing = [n for n in names if f"{n}:" not in show.group(1)]
+    assert not missing, f"groups with no show flag, so never toggleable: {missing}"
+    for btn in ("bObj", "bWall", "bDWall", "bSched", "bOpen", "bPath", "bFloor", "bLabel",
+                "bReset", "bMesh"):
+        assert f'id="{btn}' in h and f"getElementById('{btn}')" in h, f"{btn} lost its handler"
+    # ONE KNOWLEDGE GRAPH, TWO PANELS. The style is read out of viewer.html, so the page must
+    # carry viewer.html's own selectors -- not a second stylesheet that merely looks similar.
+    # Asserted on selectors this file has never defined itself, so a local copy cannot satisfy
+    # it: a relation colour and the concept node are viewer.html's vocabulary alone.
+    kg = _viewer_kg_style()
+    assert kg, "the dashboard stylesheet could not be read; the graph would render unstyled"
+    for sel in ('node[type="concept"]', 'edge[label="supports"]', ':selected'):
+        assert sel in kg and sel in h, f"the graph lost the dashboard's {sel} styling"
+    assert "'width': 26" in h, "node size no longer matches the dashboard's"
+    print("  graph: styled from viewer.html's own stylesheet, not a second copy")
+    print(f"  layers: {len(names)} groups, each with a show flag and the loop derived from G")
+
+
 if __name__ == "__main__":
     import sys
+    _check_layers()
     _check_merge_walls()
     _check_cut_openings()
     _check_floors()
@@ -2399,7 +2687,7 @@ if __name__ == "__main__":
         "the mesh is no longer clipped to the picked storey"
     assert "function applyFloor(" in h and "function setFloor(" in h, "the storey picker is gone"
     assert "MAPPED" in h, "the page no longer says which storey the run mapped"
-    for btn in ("bObj", "bWall", "bOpen", "bPath", "bFloor", "bLabel", "bReset", "bMesh"):
+    for btn in ("bObj", "bWall", "bDWall", "bSched", "bOpen", "bPath", "bFloor", "bLabel", "bReset", "bMesh"):
         assert f'id="{btn}' in h and f"getElementById('{btn}')" in h, f"{btn} lost its handler"
     # BROWSER FINDINGS, 2026-09-04: the KG viewport did not follow a container resize
     # (39 of 77 nodes rendered inside after one window resize vs 77 of 77 at load), the

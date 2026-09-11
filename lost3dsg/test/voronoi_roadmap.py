@@ -96,6 +96,114 @@ def thin(mask):
             return img.astype(bool)
 
 
+def connect_through_free(ridge, free, seed, max_len_px):
+    """Join one seed pixel to the ridge along a path through free space. -> True if joined.
+
+    GA-471. A STRAIGHT BRIDGE IS NOT ENOUGH FOR A DOORWAY. connect_ridge_components refuses a
+    segment that leaves the walkable surface, which is right, but the line from a 0.5 m alcove to
+    the corridor ridge clips the door frame and is refused -- so the alcove was dropped and its
+    ground-truth room read as unreachable while the agent could plainly walk there. MEASURED on
+    hm3d_00861 regions 0 and 21: 0.5 and 1.1 m2 of navigable floor, both inside the main free
+    component, both discarded.
+
+    A breadth-first walk over the free mask finds the shortest pixel path to any ridge pixel, so it
+    succeeds whenever the free space connects at all -- which is the honest test of whether the
+    robot can get there. The path is drawn into the ridge and becomes roadmap.
+    """
+    from collections import deque
+    h, w = free.shape
+    sy, sx = seed
+    if not free[sy, sx]:
+        return False
+    prev = {(sy, sx): None}
+    q = deque([(sy, sx, 0)])
+    while q:
+        y, x, d = q.popleft()
+        if ridge[y, x] and (y, x) != (sy, sx):
+            while (y, x) is not None:
+                ridge[y, x] = True
+                nxt = prev[(y, x)]
+                if nxt is None:
+                    break
+                y, x = nxt
+            return True
+        if d >= max_len_px:
+            continue
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < h and 0 <= nx < w and free[ny, nx] and (ny, nx) not in prev:
+                prev[(ny, nx)] = (y, x)
+                q.append((ny, nx, d + 1))
+    return False
+
+
+def connect_ridge_components(ridge, free, max_gap_px):
+    """Join the ridge's separate pieces through free space. -> (ridge, bridges drawn).
+
+    GA-469 (owner 2026-09-10). largest_component threw away every piece of ridge that did not touch
+    the biggest one, and with it every room whose corridor pinches shut in the raster -- 6 of 24
+    ground-truth rooms on hm3d_00861 had no stop, and 00337's middle storey covered 65% of its own
+    navigable area. The pieces are not unreachable: they are separated by a doorway narrower than
+    twice the robot's clearance, which the ridge cannot run through even though the agent can.
+
+    Each piece is bridged to the main one by the SHORTEST straight segment that stays inside free
+    space. The distance transform from the main component gives, for every pixel, the distance and
+    the index of the nearest main pixel, so the bridge point is the piece's minimum of that -- exact
+    and O(N), not a nearest-pair search. A segment that leaves free space, or is longer than
+    max_gap_px, is refused: two rooms that only look close on the raster are not joined.
+    """
+    lab, n = ndimage.label(ridge, structure=np.ones((3, 3)))
+    if n <= 1:
+        return ridge, 0
+    sizes = ndimage.sum(ridge, lab, range(1, n + 1))
+    main = int(np.argmax(sizes)) + 1
+    out = ridge.copy()
+    bridges = 0
+    for _round in range(n):
+        lab, n2 = ndimage.label(out, structure=np.ones((3, 3)))
+        if n2 <= 1:
+            break
+        sizes = ndimage.sum(out, lab, range(1, n2 + 1))
+        main = int(np.argmax(sizes)) + 1
+        dist, ind = ndimage.distance_transform_edt(lab != main, return_indices=True)
+        best = None
+        for comp in range(1, n2 + 1):
+            if comp == main:
+                continue
+            m = lab == comp
+            # distance FROM the main component, evaluated on this piece
+            d2, ind2 = ndimage.distance_transform_edt(lab != main, return_indices=True)
+            cand = np.where(m)
+            if not len(cand[0]):
+                continue
+            k = int(np.argmin(d2[cand]))
+            py, px_ = int(cand[0][k]), int(cand[1][k])
+            gap = float(d2[py, px_])
+            if best is None or gap < best[0]:
+                best = (gap, (py, px_), (int(ind2[0][py, px_]), int(ind2[1][py, px_])))
+        if best is None or best[0] > max_gap_px:
+            break
+        gap, a_, b_ = best
+        pts = _segment(a_, b_)
+        if not all(free[y, x] for y, x in pts):
+            # The straight line leaves the walkable surface: refuse rather than draw a bridge the
+            # robot cannot walk. The piece stays separate and its rooms are reported uncovered.
+            out[a_] = True
+            break
+        for y, x in pts:
+            out[y, x] = True
+        bridges += 1
+    return out, bridges
+
+
+def _segment(a, b):
+    """Integer points along a to b, inclusive. Bresenham without the branches."""
+    (y0, x0), (y1, x1) = a, b
+    n = max(abs(y1 - y0), abs(x1 - x0)) or 1
+    return [(int(round(y0 + (y1 - y0) * i / n)), int(round(x0 + (x1 - x0) * i / n)))
+            for i in range(n + 1)]
+
+
 NEIGH = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 
 

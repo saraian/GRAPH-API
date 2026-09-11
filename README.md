@@ -1,11 +1,13 @@
-# GRAPH-API — `dev/lost3dsg-cleanup`
+# GRAPH-API — `main`
 
-The LOST-3DSG perception and world-model stack. An extension package may
-vendor this repository as `vendor/graph-api`. Upstream LOST-3DSG (paper, authors, ROS 2 install on a real robot) is documented in
-[`lost3dsg/README.md`](lost3dsg/README.md). This file documents what this branch adds: a
-containerised stack, a Habitat simulator feed, a run harness with a pre-flight gate, cloud
-perception, and a generic extension seam an external package plugs into
-through configuration only.
+The LOST-3DSG perception and world-model stack: a containerised ROS 2 stack, a Habitat simulator
+feed, a run harness with a pre-flight gate, cloud perception, and a generic extension seam that an
+external package plugs into through configuration only.
+
+Upstream LOST-3DSG — the paper, the authors, and the ROS 2 install on a real robot — is documented
+in [`lost3dsg/README.md`](lost3dsg/README.md).
+
+**Start at [Quick start](#quick-start): two scripts, `./install.sh` then `./run.sh`.**
 
 ## What runs where
 
@@ -25,135 +27,252 @@ detector backend       Modal     OWLv2 + SAM + CLIP on a cloud GPU (perception.b
 VLM                    regolo    any OpenAI-compatible endpoint; vlm.base_url / vlm.model
 ```
 
-## Install
+## Quick start
 
-1. **The container image** (~16 GB: ROS 2 Humble, rtabmap, navigation2, torch):
-
-   ```bash
-   docker build -t graphapi-run:humble .        # IMAGE_TAG overrides the name
-   ```
-
-2. **habitat-sim on the host**, in a conda env named `habitat_env`. The launcher calls
-   `$HOME/miniconda3/envs/habitat_env/bin/python` directly. Install per
-   https://github.com/facebookresearch/habitat-sim; the renderer needs the GPU and an X
-   display (`DISPLAY`, default `:1`).
-
-   The installed package is all `habitat_feed_host.py` needs. The two older host nodes,
-   `habitat_camera_node.py` and `habitat_camera_objects_node.py`, also need a habitat-sim
-   **source checkout**: each inserts the hardcoded `/root/exchange/habitat-sim/examples`
-   into `sys.path` and imports `HabitatSimInteractiveViewer` from `viewer` there. Mount or
-   symlink a checkout at that path, at the commit the installed package was built from —
-   `examples/viewer.py` calls the Magnum bindings, whose event and renderer classes are
-   renamed between versions, so a mismatched tree fails at import. Read the pair with
-   `python -c "import habitat_sim; print(habitat_sim.__version__)"`,
-   `conda list -n habitat_env habitat-sim` and `git -C <checkout> log -1 --format=%H`.
-   The pair our runs use (read on the runner host 2026-09-06): `habitat_sim` **0.3.2**, PyPI wheel,
-   conda env `habitat_env` (py3.9, `habitat-sim-mutex 1.0 headless_bullet`, channel `aihabitat`).
-   No source checkout exists on the runner and the live path never needs one; for the two older
-   host nodes, check out tag **`v0.3.2`**, not a nightly.
-
-3. **Scene data.** Public example scenes, no token:
-
-   | var | default | holds |
-   |---|---|---|
-   | `HM3D_ROOT` | `/DATA/habitat_matterport/hm3d_example` | `00861-GLAQ4DNUx5U/…basis.glb` + `hm3d_annotated_basis.scene_dataset_config.json` |
-   | `MP3D_ROOT` | `/DATA/habitat_matterport/versioned_data/mp3d_example_scene_1.1` | the MP3D example scene |
-
-   Optional: `SAM_MODEL_DIR` (EfficientViT-SAM ONNX weights, local backend only),
-   `HF_SHARED_CACHE` (a HuggingFace cache mounted into the container).
-
-4. **Keys.** Export them in the shell that starts the launcher; never write one into a
-   tracked file. The launcher passes each into the container by name.
-
-   | var | used for |
-   |---|---|
-   | `REGOLO_API_KEY` | the VLM. Copied into `OPENAI_API_KEY`, which the OpenAI-compatible client reads. |
-   | `MODAL_PERCEPTION_URL` | the detector service when `perception.backend: "modal"`. **Local setup required:** `cp lost3dsg/test/env.local.sh.example lost3dsg/test/env.local.sh`, fill in the `-predict` URL the deploy prints, `chmod 600`. Every shipped config carries an empty `modal_endpoint` on purpose and the launcher refuses a modal run without this file; the URL is a credential and a pre-commit guard refuses to commit one. |
-   | `OPENROUTER_API_KEY` | only if `vlm.base_url` points at OpenRouter. |
-
-5. **The Modal detector service** (once per account):
-
-   ```bash
-   pip install modal && modal token new
-   modal deploy lost3dsg/src/perception_module/cloud/modal_perception.py
-   ```
-
-   The deploy prints the endpoint URL; export it as `MODAL_PERCEPTION_URL`. A redeploy
-   replaces the running detector for every run that points at that URL, so deploy from a
-   committed tree and record the commit. The service runs OWLv2-L + SAM 2.1 + CLIP on an
-   L4, per-second billing, scale-to-zero; a warm request is ~100 ms of GPU inside a
-   ~1.3-5.5 s HTTP round trip (transport-bound, not compute-bound).
-
-6. **An extension** (optional, e.g. an admission layer). Clone it next to this checkout, or use this
-   tree as its submodule; the seam is configured in step "Extension seam" below.
-
-## Configuration
-
-All runtime values live in `lost3dsg/src/perception_module/config.yaml`. Missing keys
-fall back to the defaults in `config.py`. Point `GRAPH_API_CONFIG` at another yaml to
-override anything; the merge is recursive, so a five-line file is enough. The harness ships
-two: `lost3dsg/test/regolo_config.yaml` (the measured configuration: Modal backend, regolo
-VLM) and `lost3dsg/test/smoke_config.yaml` (no cloud calls). `CFG_NAME` selects one of them
-for `live_run.sh`; the bundle records the resolved values.
-
-| section | keys that matter |
-|---|---|
-| `vlm` | `base_url`, `model`, `timeout`, `retries` (backoff 1 s / 2 s / 4 s between attempts), `crop_timeout` |
-| `perception` | `backend` (`modal` / `managed` / `local`), `modal_endpoint`, `vlm_strikes_max` (default 3: consecutive cycles whose label call failed before the run ends; 0 disables) |
-| `association` | `search_radius`, `merge_min_evidence`, `tracking_fallback_radius_m` (locality gate on the tracking path when an object has no covariance yet), `partial_view_fusion` |
-| `similarity` | the `lost_similarity` term weights; must sum to 1.0 |
-| `frames` | `frames.camera` must be an OPTICAL frame |
-| `habitat` | scenes, `single_floor` |
-| `hooks` | the extension seam, below |
-
-## Run
-
-All commands from `lost3dsg/test/`. Details in [`lost3dsg/test/README.md`](lost3dsg/test/README.md).
+Four scripts at the top of the repository. Nothing else is needed.
 
 ```bash
-./live_run.sh                    # hm3d_00861, the default scene; foreground; Ctrl-C archives the bundle
-./live_run.sh mp3d_17DRP
-MAPPING_ONLY=1 FEED_SPAWN_FLOOR=1.35 ./live_run.sh hm3d_00861   # build the localization map first
-./smoke_test.sh                  # build + import + startup, no cloud calls
-UPDATE_BASELINE=1 ./nonregression.sh ; ./nonregression.sh      # non-regression against a trusted run
+./install.sh          # once. Finds what this machine has and writes your settings file.
+./run.sh              # a base run: the whole house, every storey, no time limit.
+./run_headless.sh     # the same run on a machine with no screen.
+./eval.sh             # score the newest run against the scene's ground truth.
 ```
 
-### Manual ROS launch (legacy)
+`install.sh` **discovers** the container image, the renderer, the scene library, the model cache and
+the results directory, then writes them into your settings file and names the one value no search can
+find —
+the labelling endpoint, which is a credential. Without it, it configures the local detector so a run
+works anyway. It ends by telling you which run script this machine needs. It is safe to run again.
 
-For a simple non-containerized launch, the original ROS sequence is:
+`./run.sh hm3d_00861` picks a scene for one run. `./run.sh --one-storey` does a single storey.
+**Everything else is a setting, not a flag.**
 
-1. Start Gazebo with `ros2 launch simulation.launch.py` when using the Gazebo setup.
-2. For a Matterport/Habitat run, activate the `habitat_env` conda environment and start
-   `ros2 run lost3dsg habitat_camera_node.py`.
-3. Start perception with `ros2 run lost3dsg perception.py --ros-args -p use_sim_time:=True`.
-4. Start the object manager with `ros2 run lost3dsg object_manager_6.py`.
-5. Start the bridge from `lost3dsg/src/perception_module/` with
-   `python3 graph_api_bridge.py`.
+### One run with a config of your own
 
-The containerized `live_run.sh` flow above is the maintained path; this section is kept
-for the older manual setup.
+```bash
+./run.sh --config schedules/configs/01_reference.yaml
+./run_headless.sh --config schedules/configs/03_size_gate.yaml
+```
 
-**Order of events.** The launcher stamps the source tree and the resolved config, starts the
-host feed, then the container: feed node, rtabmap, perception, object manager, bridge. Before
-any node starts, `preflight_gate.py` (probes a1-a8) asserts the identity of what is about to
-run: the real aligner answered, the config the container loaded is the one the launcher
-intended, the executed tree is the mounted one, a detection round-trip completes. A skipped
-probe fails the gate. A run localizes against the published map for its scene and floor and
-maps only when none exists.
+`--config` takes any config file. It sets both variables the launcher reads, so the bundle can never
+name one file while loading another.
 
-**Cap a run** with `docker stop -t 150 graphapi_live`. The 150 s grace lets rtabmap close its
-database (`RTABMAP_CLOSE_TIMEOUT`, 120 s); a shorter grace tears the write.
+### Several runs, each with its own configuration
 
-**Watch:** viewer at http://localhost:8081 (`BRIDGE_PORT`), `./view_rviz.sh` for rviz in a
-sibling container. Frequently used feed knobs: `FEED_SEED`, `FEED_FPS`, `FEED_WALK` /
-`FEED_DWELL` (frames moving / stationary; perception fires only while stationary),
-`FEED_MAPPING_SECONDS`, `FEED_SHOW` / `FEED_OVERLAY` (camera window with the belief's
-boxes projected in), `FEED_SPAWN_FLOOR`, `FEED_GT_SEMANTIC`.
+```bash
+./run_headless.sh --schedule schedules/full.runs.yaml
+```
 
-**What a run leaves behind:** the bundle under `runs/<stamp>_<scene>/` (when launched from
-an extension; `OUT_DIR` otherwise): `run_metadata.json` (resolved config), `preflight.json`,
-`detections.jsonl`, `hook_decisions.jsonl`, `frames/`, `depth/`, `cropped_images/`,
-`knowledge_graph.ttl`, `rtabmap.db`, and one log per node under `logs/`.
+`schedules/full.runs.yaml` is the set of runs we have to perform, and each arm **names its own
+complete config file** in `schedules/configs/` — so what runs is the file you reviewed, not a copy
+generated from a list of overrides:
+
+| config | what differs |
+|---|---|
+| `01_reference.yaml` | the reference run: local detector, rtabmap pose, a mapping phase, no size gate |
+| `02_no_mapping_phase.yaml` | the control: `mapping_seconds: 0`, which is what recent runs used |
+| `03_size_gate.yaml` | the reference plus the size-envelope filter, annotating only |
+| `04_ground_truth_pose.yaml` | ground-truth pose, to separate localisation error from perception error |
+| `05_noise_floor.yaml` | identical to the reference, run three times |
+
+**`mapping_seconds` is not a duration knob, it is a motion policy.** At 0 the whole run uses the
+detection cycle, which gives the agent six frames in ninety-six to move and spends most of those
+turning. The archive splits on that one setting: runs with a mapping phase move in 20–26% of frames,
+runs without it in 1.0–1.8%. That is why `01` and `02` differ only there.
+
+**`repeat: 3` on the noise-floor arm is a prerequisite, not an extra.** No two archived runs are
+comparable *and* normalisable, so the spread between runs of one configuration cannot be recovered
+by analysis. Until it is measured, no figure from any arm supports a regression claim.
+
+An arm may instead give `config:` with dotted keys (`perception.backend: local`) to override the
+base, and `env:` for the few settings that have no config key yet. **An arm may not give both a
+config file and overrides** — with both, a reader of the bundle cannot tell which won.
+
+One bundle per run, and a `manifest.json` naming which arm produced which bundle and how it ended.
+A failed arm does not stop the schedule, and the manifest is rewritten after every arm, so a sweep
+stopped halfway still says what it did. Arms run in the order written: one GPU, one container.
+
+### What you must fill in
+
+`install.sh` creates the settings file and names these. They are per-machine, so no committed value
+can be right for yours.
+
+| value | what it is |
+|---|---|
+| `WORKSPACE_ROOT` | the directory holding `maps/`, `runs/` and `results/` |
+| `HF_SHARED_CACHE` | where the models are cached |
+| `HM3D_ROOT` | the scene library |
+| `SAM_MODEL_DIR` | the two EfficientViT-SAM `.onnx` files |
+| `IMAGE_TAG` | only if your container image is not tagged `graphapi-run:humble` |
+| `MODAL_PERCEPTION_URL` | the labelling endpoint. **Required:** both shipped configs set `perception.backend` to `modal`, so without it the run fails its gate at probe a4. It is a credential — the URL alone spends the account's GPU budget — so it is never committed. |
+
+**Never let `WORKSPACE_ROOT` derive itself.** The launcher computes it as two levels above the
+checkout, which from this repository is `/` — a run would write its bundle to `/runs` and publish
+maps to `/maps`. The launcher refuses that, which is why the value must be set.
+
+### If the machine has no display
+
+**A run will pass its gate and then die.** `rviz`, the camera window and the box overlay all default
+to on, and each one aborts without an X server. Measured on a headless lab machine on 2026-09-10:
+six attempts, all ended with `rviz2 exited with status -6` **after** preflight had passed, because
+the launcher treats a missing node as fatal.
+
+**Use `./run_headless.sh` instead of `./run.sh`.** It takes the same arguments and turns off the two
+things that need a window:
+
+```bash
+./run_headless.sh                 # the whole house
+./run_headless.sh --one-storey    # a single storey
+```
+
+It leaves the box overlay on, because the overlay draws into the frame the dashboard serves over
+HTTP and opens no window — so you still see the boxes in the browser.
+
+`install.sh` detects whether a display exists and tells you which of the two scripts to use.
+
+## Where settings live
+
+| file | what belongs there | committed? |
+|---|---|---|
+| `config.yaml` | every choice about a run: the tour, the camera, mapping, perception | yes |
+| `config.local.yaml` | your machine's paths and your credentials | **no, and never** |
+
+`config.yaml` is the source of truth. A missing key falls back to the default in `config.py`.
+`config.local.yaml` wins key by key and announces which keys it changed on stderr, so a run is never
+silently different from the file you read.
+
+**`config.local.yaml` must sit beside the config that is actually LOADED**, which is the one
+`GRAPH_API_CONFIG` names — not beside the tracked `config.yaml`. An override next to the wrong file
+is ignored without a word.
+
+**Known defect, and it fails the gate: with a local override in force, probe a2 cannot find the
+config.** The config module reports the path as `"<config> + <local>"`, and a2 tries to open that
+string as a file, so the probe skips and a skipped probe fails the gate. Until that is fixed, a run
+that must pass the gate cannot use a local override.
+
+**A credential is not a setting.** The labelling endpoint URL alone spends the account's GPU budget,
+so it lives in the local file. It sat in the tracked config once and was therefore committed; that
+must not happen again.
+
+*The tracked config is at `lost3dsg/src/perception_module/config.yaml` while it is being moved to
+the root, and the local values are still in `lost3dsg/test/env.local.sh`. `install.sh` creates
+whichever is current. The plan is in `.handoff/RUN_SURFACE_SPEC_2026-09-10.md`.*
+
+| section | what it decides |
+|---|---|
+| `habitat` | the scene, how the agent moves, how many storeys it tours, the camera |
+| `perception` | which detector backend runs, and what it is allowed to label |
+| `association` | when two sightings are the same object |
+| `similarity` | the weights of that decision; they must sum to 1.0 |
+| `frames` | which TF frame is which — `frames.camera` must be an OPTICAL frame |
+| `vlm` | the labelling service, its timeout and its retries |
+| `rooms`, `walls` | room splitting and wall detection |
+| `hooks` | the extension seam, below |
+
+---
+
+# Reference
+
+Nothing below is a step. It is here to be looked up.
+
+## What a base run does
+
+It tours a storey until its waypoints are exhausted, closes that storey's map, moves to the next
+storey and starts a fresh map. **You get one bundle per storey, not one per run**, plus a
+`manifest.json` naming every storey with its bundle and how that launch ended.
+
+**Every launch builds its own map.** Nothing localises against a previously published map, so two
+storeys are never compared against the same map. That is deliberate: one map spanning two storeys
+puts the upper walls on top of the lower rooms. **The map library is therefore unused under this
+configuration** — publishing a per-floor map, the canonical read-only mount and asking to localise
+against one are all unreachable, and the variable that used to ask for it now refuses rather than
+being quietly ignored.
+
+**Before any node starts,** `preflight_gate.py` (probes a1 to a13) asserts that what is about to run
+is what was asked for: the config the container loaded is the one the launcher intended, the executed
+tree is the mounted one, every model the run loads is already cached, a detection round-trip
+completes. A skipped probe fails the gate. Then the nodes start: feed, rtabmap, perception, object
+manager, bridge.
+
+## What you get
+
+**One directory per run, in the repository:** `results/<stamp>_<scene>/`. The live output and the
+bundle are the same directory — there is no second copy and nothing is moved at the end.
+
+It holds `run_metadata.json` (the resolved settings), `preflight.json`, `detections.jsonl`,
+`hook_decisions.jsonl`, `actual_perceptions.json`, `frames/`, `depth/`, `cropped_images/`,
+`knowledge_graph.ttl`, `rtabmap.db`, `ros/` (the mapper's own directory) and one log per node under
+`logs/`. `results/latest` points at the newest run that passed its gate.
+
+Everything a run reads or writes is a **host directory mounted into the container**, so it is all
+reachable from outside: the bundle at `/ws/output`, the mapper's directory at `/root/.ros`, the map
+library at `maps/`, the model cache and the build tree. No run data lives in docker-managed storage.
+
+**Watch a run:** the viewer at `http://localhost:8081`.
+
+## Scoring a run
+
+```bash
+./eval.sh                    # the newest run
+./eval.sh results/<stamp>_<scene>     # a particular one
+```
+
+Four steps, into `<bundle>/eval/`: the scene's ground truth, the join to what the run recorded, the
+metrics, and an HTML view of the boxes. **The scene comes from the bundle, not from this file** — a
+hardcoded scene path is how an evaluation comes to describe a different house.
+
+## Stopping a run
+
+A completed tour is what ends a launch normally. There is no time limit, so nothing else stops it.
+
+**To end one early, create `feed_ended.json` in that storey's bundle directory.** The container
+watches for it and closes through the normal archive path, so rtabmap closes its database and the
+bundle is complete. `run_metadata.json` then records `terminating_node.ended: operator_abort`, so a
+run ended by hand can never be read as a finished house tour.
+
+`docker stop -t 150 graphapi_live` is the last resort, for a stack that has stopped responding. It
+kills the nodes where they stand; the grace period lets rtabmap try to close its database, and a
+shorter one tears the write.
+
+**How a launch ended is a field, not a log line.** `terminating_node.ended` is one of
+`tour_complete`, `operator_abort`, `mapping_time`, `node_death`, `unrecorded`. `unrecorded` does not
+mean unknown — it means the container never reached its own end. A watched node exiting with status
+0 is `node_death`, not a clean finish: which node stopped decides, not its exit status.
+
+## The layers under `run.sh`
+
+Internals. Nobody is asked to call them, and a step that names one is wrong.
+
+| | |
+|---|---|
+| `install.sh`, `run.sh`, `run_headless.sh`, `eval.sh` | what a person runs |
+| `lost3dsg/test/run_house.sh` | one launch per storey |
+| `lost3dsg/test/live_run.sh` | one launch |
+| `lost3dsg/test/live_stack_container.sh` | inside the container |
+
+## Other things you can run
+
+```bash
+./lost3dsg/test/smoke_test.sh      # build, import and startup only; no cloud calls
+cd lost3dsg/test && UPDATE_BASELINE=1 ./nonregression.sh && ./nonregression.sh
+```
+
+## What install.sh does, if you would rather do it by hand
+
+1. `docker build -t graphapi-run:humble .` — about 16 GB: ROS 2 Humble, rtabmap, navigation2, torch.
+2. A conda environment named `habitat_env` with habitat-sim in it. The launcher calls
+   `$HOME/miniconda3/envs/habitat_env/bin/python` by absolute path, so another prefix is not a
+   substitute. The renderer needs a GPU and an X display.
+3. Cache all five models, then **load each one with the hub switched off** to prove none will be
+   fetched during a run. Warming alone is not proof: a cache in the old flat layout is found by a
+   file search and not by the loader, which reads `$HF_HOME/hub` and nothing else.
+4. Create the local settings file and name every value to fill in.
+5. Verify each of the above — including that an X display exists — and refuse with a cause.
+
+**One thing to know if you run the inner scripts yourself:** git records `live_run.sh`,
+`run_house.sh` and `live_stack_container.sh` as non-executable, so `./live_run.sh` fails with
+"Permission denied" on a fresh clone. Call them as `bash lost3dsg/test/live_run.sh`, or use
+`./run.sh`, which does that for you.
 
 ## Extension seam (`hooks.py`)
 
