@@ -597,7 +597,7 @@ def variant_suffix(a):
 
 
 def ensure(navmesh, scene_id, out_dir, a):
-    """Cache, or build. -> (path, why). Called by run.sh before every run.
+    """Cache, or build. -> (path, why). Called by run_sim.sh before every run.
 
     A) CACHED when a file exists for this scene AND its recorded settings match this run's.
     B) BUILT when it does not exist, when the settings differ, or when --regenerate says so

@@ -462,7 +462,7 @@ _DEFAULTS = {
         # it on the storey it spawned on, which is what `single_floor` above enforces.
         "floor_confinement": "teleport",
         # THE MOTION POLICY. A schedule is the only one (owner 2026-09-11): the agent drives the
-        # storey's precomputed Voronoi roadmap and turns a full circle at each stop. run.sh
+        # storey's precomputed Voronoi roadmap and turns a full circle at each stop. run_sim.sh
         # builds and caches the schedule per scene, so no path is named here.
         "exploration_laps": 3,      # identical laps; a difference between two is a difference in
         #                             the WORLD, not in the route
@@ -644,7 +644,7 @@ def _load():
                            for k, v in over.items() for sk in (v if isinstance(v, dict) else [k]))
             # TO STDERR, NOT STDOUT. The announcement is a message, not a value, and the
             # launcher CAPTURES this program's stdout to read the merged-config sha
-            # (run.sh, `--print-merged-sha`). On stdout the line landed INSIDE the JSON
+            # (run_sim.sh, `--print-merged-sha`). On stdout the line landed INSIDE the JSON
             # string in run_metadata.json, newline and all, and the launcher then refused the
             # bundle with "run_metadata.json is not valid JSON". Measured 2026-09-10 on the first
             # run that ever used a local override -- the feature that makes the override honest

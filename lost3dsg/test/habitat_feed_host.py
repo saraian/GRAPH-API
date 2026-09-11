@@ -14,7 +14,7 @@ just as it does with habitat_camera_objects_node.py.
 Motion comes from ONE policy: the precomputed exploration schedule named by
 FEED_SCHEDULE. The agent drives the storey's Voronoi roadmap, turns a full
 circle at each stop, and repeats the same lap FEED_LAPS times. There is no
-fallback. A run with no schedule has no motion at all, so run.sh builds or
+fallback. A run with no schedule has no motion at all, so run_sim.sh builds or
 finds the schedule before it starts anything and refuses the run if it cannot.
 
 The sampling policy this replaced — a mapping phase of greedy nearest-unvisited
@@ -1012,7 +1012,7 @@ _TOUR_RETIRED = ("tour_waypoints", "tour_scan_frames", "dwell_dynamic",
 # storey and teleported to it; a schedule is one storey by construction, and a multi-storey schedule
 # would need its own stair-crossing legs that no roadmap in schedules/ contains. So the switch now
 # REFUSES instead of doing nothing: the base-run shape is unchanged (one launch per storey through
-# run.sh), and a config asking for the other shape must be told the shape no longer exists.
+# run_sim.sh), and a config asking for the other shape must be told the shape no longer exists.
 TOUR_ALL_FLOORS = os.environ.get(
     "FEED_TOUR_ALL_FLOORS",
     "1" if hab_cfg.get("tour_all_floors", False) else "0").lower() in ("1", "true", "yes", "on")
@@ -1020,7 +1020,7 @@ if TOUR_ALL_FLOORS:
     raise SystemExit(
         "[feed] FEED_TOUR_ALL_FLOORS / habitat.tour_all_floors asks for one continuous session "
         "across every storey. That shape belonged to the sampling tour, which is removed "
-        "(owner 2026-09-11); a schedule drives one storey. Tour the house with run.sh, "
+        "(owner 2026-09-11); a schedule drives one storey. Tour the house with run_sim.sh, "
         "which relaunches the stack once per storey and is the base-run policy (rule 73).")
 
 # GA-434 / RULE 73. A NO-CAP RUN NEEDS ITS OWN ENDING, and until now it had none.
@@ -1884,13 +1884,13 @@ def main():
     # THE SCHEDULE IS THE ONLY MOTION POLICY (owner 2026-09-11). The sampling tour that used to
     # stand here as the fallback is removed, so there is nothing to fall back TO: a run without a
     # schedule would publish frames from a robot that never moves, which is worse than no run.
-    # run.sh builds or finds the schedule and refuses the launch before this file starts, and
+    # run_sim.sh builds or finds the schedule and refuses the launch before this file starts, and
     # this refusal is the same statement for anyone starting the feed host on its own.
     if not SCHEDULE_PATH:
         raise SystemExit(
             "[feed] FEED_SCHEDULE is not set and the sampling policy is removed, so this run "
             "would have no motion at all. Build the scene's schedule with schedule_batch.py, or "
-            "start the run through run.sh, which does it for you.")
+            "start the run through run_sim.sh, which does it for you.")
     if not have_nav:
         raise SystemExit(
             f"[feed] scene {SCENE} has no loaded navmesh, so a schedule cannot be driven. "
@@ -2134,7 +2134,7 @@ def main():
     # cleanly and its dwell is in NONE of the four places it could be — no feed block in
     # run_metadata.json, no feed_stats.json, and config.yaml records the intent rather than the
     # effect (bundle 20260831_033330 has config.yaml mapping_seconds 0.0 against a feed_stats.json
-    # and a log that both say 150). run.sh now stamps these into the bundle, but run.sh
+    # and a log that both say 150). run_sim.sh now stamps these into the bundle, but run_sim.sh
     # is not the only way this file is started, and a run started any other way was exactly how
     # run 19 became unrecoverable. This line costs nothing and fails closed.
     print(f"[feed] resolved: fps={FPS} laps={EXPLORATION_LAPS} seed={SEED} scene={SCENE} "
