@@ -221,6 +221,19 @@ _DEFAULTS = {
         # second rather than once. A TIAGo deployment sets these to its own frames.
         "motion_watch": ["habitat_camera"],
         "motion_watch_base": [],
+        # DECLARED 2026-09-11. Both were hardcoded in perception_2.py (:404 and :438), so no
+        # run could change them. MEASURED on 20260911_133641 and _140421: two COMPLETE tours,
+        # 4344 frames each, produced ONE and TWO perception cycles. Over 1832 one-second
+        # windows only ~1% fall below 0.05, and the longest continuous still stretch in 24
+        # minutes is 1 SECOND -- the same size as the sampling period, so a 1 Hz sampler
+        # measuring the delta since its last sample almost always straddles the pause.
+        # NOTE, and this is why raising the threshold is not the fix: the score adds METRES to
+        # RADIANS (perception_2.py:1561), so a full turn on the spot scores 6.28 while
+        # standing still, and any threshold that admits a scan rotation admits six metres of
+        # driving. These keys make the gate tunable and record what it costs; they do not make
+        # the quantity it compares physically meaningful.
+        "motion_position_threshold": 0.05,
+        "motion_min_stationary_s": 0.5,
         # The frame the perception back-projects into. Must be an OPTICAL frame
         # (x right, y down, z forward). Publishing a body pose under this name
         # puts depth into the height axis — see habitat_camera_node.py, which
@@ -401,9 +414,11 @@ _DEFAULTS = {
         #                             the WORLD, not in the route
         "navigation_mode": "navigate",   # or "teleport": no travel frames, only the scans
         # Degrees per turn action. ONE number for the agent, the schedule's frame budget and the
-        # scan counter; schedule_batch.py --turn-step-deg must match it. 20 leaves a 4.5x overlap
-        # at a 90 degree field of view, where 10 gave 9x and spent 45% of a run on scans.
-        "turn_step_deg": 20.0,
+        # scan counter; schedule_batch.py --turn-step-deg must match it. It is a MERGE parameter:
+        # a full 360 scan is 360/step frames, and a merge needs merge_min_consecutive cycles at
+        # ~3.2 s to commit. 10 gives 36 frames (3.75 cycles); 20 gives 18 (1.87) and no stop clears
+        # the threshold. Owner 2026-09-11, after 20 was tried and measured.
+        "turn_step_deg": 10.0,
         "tour_end_settle_s": 90.0,  # stand still at the end so the last merges can commit
         "min_floor_share": 0.10,    # a storey holding less than this share of the navmesh is
         #                             not a storey; it is a landing or a stairwell
@@ -467,6 +482,22 @@ _DEFAULTS = {
         "depth_tol_rel": 0.05,
     },
     "perception": {
+        # THE FRAME QUEUE, declared 2026-09-11. OFF at 0, which is what every run before this
+        # did: perception waits for the motion gate and processes the live frame. Above 0,
+        # frames are captured into a queue regardless of motion and each is processed on its
+        # OWN transform, because a snapshot cannot be invalidated by motion after it.
+        # MEASURED, and this is why it exists: two COMPLETE tours produced ONE and TWO cycles
+        # out of 4344 frames each (20260911_133641, _140421).
+        # Keep it SHALLOW. compute_fov_volume_from_depth looks TF up by the frame's stamp and
+        # the TF buffer holds 30 s; at ~3.2 s a cycle, a queue deeper than about nine frames
+        # hands it a stamp the buffer has already dropped.
+        "frame_queue_max": 0,
+        # A frame joins the queue only if the viewpoint moved this far since the last one
+        # ACCEPTED. Translation and rotation are SEPARATE thresholds: the motion gate's own
+        # score adds metres to radians, which is precisely why it cannot say "turning in
+        # place is fine, driving is not". 0.26 rad is about 15 degrees.
+        "frame_queue_min_translation_m": 0.25,
+        "frame_queue_min_rotation_rad": 0.26,
         # GA-276. IoU-NMS cannot see a nested box: fully contained at a 5x size
         # difference gives IoU 0.2. Suppress on IoS (intersection over the SMALLER box)
         # as well. Measured 61 fully-contained same-class pairs in one run, every one
