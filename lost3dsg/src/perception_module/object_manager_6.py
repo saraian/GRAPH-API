@@ -29,6 +29,7 @@ from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG
 from cv_bridge import CvBridge
 from cv_utils import publish_persistent_bboxes
+from detection_index import bounds as spatial_bounds
 from geometry_msgs.msg import PoseStamped
 from hooks import DecisionLog, load_hooks
 from nav_msgs.msg import Path
@@ -132,6 +133,7 @@ REEVALUATION_MAX_FANOUT = int(CFG["association"].get("reevaluation_max_fanout", 
 # and it would give om6 a camera-pose dependency; it stays the third arm of the D1 switch.
 TRACKING_FALLBACK_RADIUS_M = float(CFG["association"].get("tracking_fallback_radius_m", 1.0))
 TRACKING_MIN_EVIDENCE = int(CFG["association"].get("merge_min_evidence", 1))
+ASSOCIATION_MARGIN_M = float(CFG["association"].get("association_margin_m", 0.3))
 
 
 def _bbox_centre(b):
@@ -196,6 +198,20 @@ def locality_ok(bbox, obj, threshold):
     return compute_iou_3d(bbox, obj.bbox) >= threshold
 
 
+def _association_candidates(bbox):
+    """Return the old cleanup branch's conservative AABB candidate set.
+
+    This is only a broad phase.  The exploration/tracking loops below still run their exact
+    IoU and semantic gates.  Invalid detector geometry produces no candidate rather than
+    making the callback fail before the normal admission path can report it.
+    """
+    try:
+        spatial_bounds(bbox)
+        return wm.candidates(bbox, ASSOCIATION_MARGIN_M)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return []
+
+
 def bbox_center_distance(a, b):
     return float(np.linalg.norm([
         (a["x_min"] + a["x_max"] - b["x_min"] - b["x_max"]) / 2.0,
@@ -256,6 +272,8 @@ GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL") or (
 GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
 GRAPH_API_AUTOSTART = os.environ.get("GRAPH_API_AUTOSTART", "1").lower() not in {"0", "false", "no"}
 SYNC_BUFFER_LIMIT = 20
+SCAN_COMPLETE_TOPIC = os.environ.get("SCAN_COMPLETE_TOPIC", "/habitat/scan_complete")
+SCAN_MERGE_SETTLE_S = float(os.environ.get("SCAN_MERGE_SETTLE_S", "1.0"))
 
 def _launch_graph_api_bridge():
     bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph_api_bridge.py")
@@ -680,6 +698,12 @@ class ObjectManagerService(Node):
         self._last_path_publish = 0.0
         self._pending_descriptions = {}
         self._pending_bboxes = {}
+        # The old /merge criterion is evaluated only when navigation announces
+        # that the waypoint's full turn is complete.
+        self._scan_state_lock = threading.RLock()
+        self._scan_merge_pending = None
+        self._scan_merge_timer = None
+        self._last_scan_id = None
         
         # --- INIT ROOM MANAGER ---
         self.room_manager = RoomManager(
@@ -772,6 +796,8 @@ class ObjectManagerService(Node):
         self.create_subscription(Bbox3dArray, '/bbox_3d', self._bboxes_callback, qos_standard)
         self.create_subscription(PoseStamped, '/agent_camera_pose', self._agent_pose_callback, qos_standard)
         self.get_logger().info("Subscribing to /object_descriptions, /bbox_3d and /agent_camera_pose")
+        self.create_subscription(String, SCAN_COMPLETE_TOPIC, self._scan_complete_callback, qos_standard)
+        self.get_logger().info(f"Scan-complete merge hook: {SCAN_COMPLETE_TOPIC}")
         self.get_logger().info(f"Node name={self.get_name()} ns={self.get_namespace()}")
 
         self._bbox_timer = self.create_timer(2.0, self.periodic_bbox_publisher)
@@ -951,6 +977,78 @@ class ObjectManagerService(Node):
         except Exception as exc:
             self.get_logger().warn(f"tracking_scan_summary not written: {exc}")
 
+    def _scan_complete_callback(self, msg):
+        """Schedule one reconciliation pass for the just-finished full turn.
+
+        The final rotated image can still be in flight through VLM/SAM when the
+        navigation node publishes the completion event.  A short executor timer
+        gives that frame a chance to reach this node; the delay is configurable
+        with ``SCAN_MERGE_SETTLE_S`` and is not part of the merge policy itself.
+        """
+        payload = {}
+        raw = str(getattr(msg, "data", "") or "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except (TypeError, ValueError):
+                # A plain string is still a useful source/scan label.
+                payload = {"source": raw}
+
+        scan_id = payload.get("scan_id")
+        if scan_id is None:
+            scan_id = f"scan-{time.monotonic_ns()}"
+        scan_id = str(scan_id)
+        with self._scan_state_lock:
+            if scan_id in (self._last_scan_id, self._scan_merge_pending):
+                return
+            self._scan_merge_pending = scan_id
+            if self._scan_merge_timer is not None:
+                try:
+                    self._scan_merge_timer.cancel()
+                except Exception:
+                    pass
+            self._scan_merge_timer = self.create_timer(
+                max(0.0, SCAN_MERGE_SETTLE_S),
+                self._run_pending_scan_merge,
+            )
+        self.object_services.log_both(
+            'info',
+            f"[SCAN] completed full-turn hook received ({scan_id}); "
+            f"merge scheduled in {SCAN_MERGE_SETTLE_S:.2f}s",
+        )
+
+    def _run_pending_scan_merge(self):
+        with self._scan_state_lock:
+            scan_id = self._scan_merge_pending
+            if scan_id is None:
+                return
+            self._scan_merge_pending = None
+            self._last_scan_id = scan_id
+            timer = self._scan_merge_timer
+            self._scan_merge_timer = None
+
+        if timer is not None:
+            try:
+                timer.cancel()
+                self.destroy_timer(timer)
+            except Exception:
+                pass
+
+        try:
+            merged_count = self.merge_duplicate_objects(scan_id=scan_id)
+        except Exception as exc:
+            self.object_services.log_both(
+                'error', f"[SCAN MERGE] reconciliation failed for {scan_id!r}: {exc}"
+            )
+            return
+
+        self.object_services.log_both(
+            'info',
+            f"[SCAN MERGE] scan {scan_id!r}: {merged_count} merge(s) applied",
+        )
+
     @synchronized_world_model
     def check_tracking_transition(self, label_base, color, material, description_embedding, bbox):
         best_match = None
@@ -978,7 +1076,12 @@ class ObjectManagerService(Node):
         # skips the NEXT object, which is then never considered for association in
         # this pass. The snapshot is the pass's consistent view: it judges the world
         # as it was when the pass began.
-        for obj in wm.snapshot():
+        try:
+            transition_candidates = wm.tracking_candidates(
+                bbox, lambda obj: tracking_reach_m(obj)[0])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            transition_candidates = []
+        for obj in transition_candidates:
             _scan["visited"] += 1
             # GA-12: default is NOW, not the epoch -- an unstamped object is not yet stable.
             _ct = getattr(obj, 'creation_time', None)
@@ -1397,6 +1500,10 @@ class ObjectManagerService(Node):
             already_seen = False
             transition = False
 
+            # Candidate generation is the cleanup branch's conservative AABB broad phase.
+            # The exact locality and semantic criteria remain in the loops below.
+            candidates = _association_candidates(bbox)
+
             if in_exploration:
                 transition, obj, distance = self.check_tracking_transition(
                     label_base, color, material, description_embedding, bbox
@@ -1434,7 +1541,7 @@ class ObjectManagerService(Node):
                     # the tracking loop (it would re-run the update that just failed).
 
             if in_exploration:
-                for obj in wm.snapshot():
+                for obj in candidates:
                     # GA-04: locality first. Previously the overlap test was conjoined with the
                     # similarity test below, so attributes were compared against every object in
                     # the map before geometry could rule any of them out.
@@ -1499,6 +1606,7 @@ class ObjectManagerService(Node):
                         # GA-315 part 2: the AABB is this view's; the axis is fused over
                         # every accepted view, never the last one's alone.
                         obj.bbox, obj._yaw_acc = fuse_orientation(obj, bbox)
+                        wm.refresh_spatial(obj)
                         objects_modified = True
                         # GA-11: an in-place box write is a change to THIS object; queue it.
                         self._note_update(getattr(obj, "object_id", None) or obj.label, reason="box_written")
@@ -1508,7 +1616,7 @@ class ObjectManagerService(Node):
                 best_match = None
                 best_score = 0
 
-                for obj in wm.snapshot():
+                for obj in candidates:
                     # GA-04: in TRACKING mode there was NO locality gate at all --
                     # TRACKING_IOU_THRESHOLD's only use raised the score to 1.0, and the
                     # centre-distance guard below was disabled by its own shipped config. So
@@ -1742,10 +1850,6 @@ class ObjectManagerService(Node):
                     objects_modified = True
 
         self.latest_bboxes.clear()
-
-        merged_any = self.merge_duplicate_objects()
-        if merged_any:
-            objects_modified = True
 
         if objects_modified:
             publish_persistent_bboxes(self, wm, self.persistent_bbox_pub)
@@ -2000,7 +2104,8 @@ class ObjectManagerService(Node):
             self.get_logger().error(f"Update object failed via Graph API: {e}")
         return response
 
-    def merge_duplicate_objects(self):
+    def merge_duplicate_objects(self, scan_id=None):
+        """Run the existing graph-wide merge criterion after a completed scan."""
         payload = {
             # GA-06: from config, and strictly stricter than the match gate. These were
             # 0.8 and 0.75 against a sim_threshold of 0.85, so merge fused pairs the
@@ -2020,14 +2125,20 @@ class ObjectManagerService(Node):
                 # GA-183: HTTP 202 -- the bridge dispatched the request and stopped waiting.
                 # The merge may still land; the next cycle re-reads the world model.
                 self.get_logger().warn(f"Merge dispatched, not confirmed: {result.get('message')}")
-            merged = int(result.get("merged_count", 0)) > 0
-            if merged:
+            merged_count = int(result.get("merged_count", 0))
+            if merged_count:
                 # GA-11. A merge changes the survivor more than anything else does; it never
                 # triggered a second look. The service already reports each pair's keeper.
                 try:
-                    # The bridge returns the parsed list as "merge_log"; "merge_log_json" is the
-                    # ROS field name and never reached this dict, so no survivor was ever queued.
-                    for pair in result.get("merge_log") or json.loads(result.get("merge_log_json") or "[]"):
+                    # The bridge normally returns the parsed list as "merge_log". Keep the
+                    # service-field fallback for direct callers, but do not iterate a JSON
+                    # string character by character if a bridge returns the raw field.
+                    merge_entries = result.get("merge_log")
+                    if isinstance(merge_entries, str):
+                        merge_entries = json.loads(merge_entries or "[]")
+                    if not isinstance(merge_entries, list):
+                        merge_entries = json.loads(result.get("merge_log_json") or "[]")
+                    for pair in merge_entries:
                         # The service's entry names the keeper by LABEL ("keeper": keeper.label)
                         # and carries its id as `keeper_id` / `bbox_from_object_id`. Reading the
                         # label as a dict killed run 20260907_002814 on the first merge.
@@ -2040,10 +2151,10 @@ class ObjectManagerService(Node):
                             self._note_update(kid, reason="merged")
                 except (TypeError, ValueError, AttributeError) as exc:
                     self.get_logger().warn(f"GA-11: merge log unreadable, survivors not queued: {exc}")
-            return merged
+            return merged_count
         except RuntimeError as e:
             self.get_logger().error(f"Merge objects failed via Graph API: {e}")
-            return False
+            return 0
 
     def delete_undetected_objects(self, pov_volume, current_perception_objects, description_received):
         """GA-297. Client half of the disappearance-removal path.

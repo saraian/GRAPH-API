@@ -4,7 +4,8 @@
 Runs in a plain habitat_sim environment (no ROS). The container-side
 habitat_feed_node.py connects, converts, and publishes to ROS topics + TF.
 Protocol: length-prefixed pickle dicts {rgb, depth, cam_pos, cam_quat,
-base_pos, base_quat, t, w, h, hfov}.
+base_pos, base_quat, t, w, h, hfov}; a frame may also carry a
+`scan_complete` event after one uninterrupted 360-degree turn.
 
 The HTTP control port also accepts runtime rigid-object commands from
 habitat_feed_node.py, so run_habitat_script.py works with this headless feed
@@ -58,6 +59,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  (ROS-free)
 from config import CFG, CFG_PATH  # noqa: E402
 import gt_codec as _gt_codec  # noqa: E402
+from scan_hook import FullTurnDetector  # noqa: E402
 
 _print = functools.partial(print, flush=True)  # nohup/file logs must not buffer
 _log_ring = collections.deque(maxlen=400)      # served by the control server's /logs
@@ -80,6 +82,11 @@ SEED = int(os.environ.get("FEED_SEED", "7"))
 # environment variable flips ONE run without editing a file everyone shares.
 SHOW = os.environ.get("FEED_SHOW", "1" if hab_cfg.get("show", False) else "0") == "1"
 OVERLAY = os.environ.get("FEED_OVERLAY", "1" if hab_cfg.get("overlay", False) else "0") == "1"
+# The host process starts before ROS so that the feed node has a socket to connect to.  The
+# socket is deliberately allowed to open, but the simulator must not step or publish a frame
+# until the real perception process has constructed and warmed its own VitSAM sessions.
+START_GATE_FILE = os.environ.get("FEED_START_GATE_FILE", "").strip()
+START_GATE_TIMEOUT_S = float(os.environ.get("FEED_START_GATE_TIMEOUT_S", "900"))
 
 # GA-265. WHAT THE HABITAT WINDOW DRAWS, toggleable from the window itself AND from the
 # dashboard, with one shared state so the two can never disagree.
@@ -495,6 +502,11 @@ class Ctrl:
         # allowed to mutate Habitat's scene graph.
         self.object_commands = collections.deque()
         self.object_catalog = {"templates": []}
+        # Scan completion is produced by the host-side simulator thread and consumed by the
+        # TCP relay when it builds the next ROS message. A queue keeps the producer independent
+        # of frame construction and also prevents an event from being lost if serialization
+        # briefly fails.
+        self.scan_events = collections.deque()
         # Published by the sim thread each frame, read by /revisit_status. Swapped whole.
         self.revisit = None
 
@@ -634,6 +646,48 @@ def start_ctrl_server():
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     print(f"[feed] control server on :{CTRL_PORT} "
           "(frame.jpg feed.mjpg bev_data logs auto_mode action set_config object_command)")
+
+
+def wait_for_start_gate():
+    """Wait until the in-process perception warmup has completed.
+
+    The feed socket is already connected while this waits. That is intentional: it avoids a
+    connection race, while the absence of a frame guarantees that the robot has not started its
+    mapping/tour schedule and that RTAB-Map has not received live camera data yet.
+    """
+    if not START_GATE_FILE:
+        return
+
+    deadline = None
+    if START_GATE_TIMEOUT_S > 0:
+        deadline = time.monotonic() + START_GATE_TIMEOUT_S
+    print(f"[feed] waiting for perception startup gate: {START_GATE_FILE} "
+          f"(timeout={START_GATE_TIMEOUT_S:.0f}s)", flush=True)
+    while True:
+        status = ""
+        try:
+            with open(START_GATE_FILE, "r", encoding="utf-8") as marker:
+                status = marker.read().strip().lower()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"[feed] startup gate read failed: {type(exc).__name__}: {exc}", flush=True)
+
+        if status.startswith("ready"):
+            print(f"[feed] perception startup gate open ({status}); starting Habitat feed",
+                  flush=True)
+            return
+        if status.startswith("failed"):
+            raise SystemExit(
+                "[feed] perception startup gate reported failed VitSAM warmup; "
+                "refusing to start the run"
+            )
+        if deadline is not None and time.monotonic() >= deadline:
+            raise SystemExit(
+                f"[feed] perception startup gate did not open within "
+                f"{START_GATE_TIMEOUT_S:.0f}s ({START_GATE_FILE})"
+            )
+        time.sleep(0.25)
 
 
 class DynamicObjectController:
@@ -1102,6 +1156,18 @@ if _stale or _stale_env:
         + "       Delete them. FEED_SCHEDULE and FEED_LAPS are what set the motion now.")
 
 
+def _aabb_center(aabb):
+    """Return an AABB center across Habitat API variants.
+
+    Habitat-Sim has exposed ``center`` both as a property and as a method
+    across versions.  Keep the feed compatible with either representation.
+    """
+    center = aabb.center
+    if callable(center):
+        center = center()
+    return np.asarray(center, dtype=np.float32)
+
+
 def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
     """A navigable point with the MOST annotated objects around it. GA-212.
 
@@ -1128,7 +1194,7 @@ def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
         print("[feed] test mode: scene carries no annotated objects; ordinary spawn")
         return _spawn_point(sim, spawn_floor), None
 
-    centres = np.array([[o.aabb.center[0], o.aabb.center[1], o.aabb.center[2]] for o in objs])
+    centres = np.asarray([_aabb_center(o.aabb) for o in objs], dtype=np.float32)
 
     # THE SAME-STOREY FILTER IS GONE, AND IT HAS TO BE. Measured on hm3d_00861: EVERY
     # annotated object and region reports `aabb.center[1] == 0.00`, so the height channel
@@ -1446,6 +1512,10 @@ def _fire_post_scan(ctx):
                                  "hook_result": out, "t": time.time()}) + "\n")
     except (OSError, TypeError) as exc:
         print(f"[feed] scan event not recorded: {exc}", flush=True)
+    # The Docker runner uses habitat_feed_host.py, not habitat_nav.py. Queue the same event
+    # for habitat_feed_node.py to publish on /habitat/scan_complete so object_manager_6 sees
+    # exactly one trigger on this execution path too.
+    CTRL.scan_events.append(dict(ctx))
     return out
 
 
@@ -1524,7 +1594,9 @@ class ScheduledTour:
             if self.scan_left == 0:
                 self.scans_done += 1
                 pt = self.points[self.i]
-                _fire_post_scan({"event": "scan_complete", "lap": self.lap,
+                _fire_post_scan({"event": "scan_complete",
+                                 "scan_id": f"schedule-{self.lap}-{self.scans_done}",
+                                 "lap": self.lap,
                                  "stop": pt.get("stop"), "point_index": self.i,
                                  "xyz": pt["xyz"], "scan_deg": pt["scan_deg"],
                                  "scans_done": self.scans_done,
@@ -1960,6 +2032,7 @@ def main():
     conn, addr = srv.accept()
     conn.settimeout(SEND_TIMEOUT)  # a hard-killed container must not hang sendall forever
     print(f"[feed] connected: {addr}")
+    wait_for_start_gate()
 
     period = 1.0 / FPS
 
@@ -2215,6 +2288,7 @@ def main():
 
         cam = ag_state.sensor_states["color_sensor"]
         cam_quat = np.array([cam.rotation.x, cam.rotation.y, cam.rotation.z, cam.rotation.w], dtype=np.float64)
+        scan_complete = CTRL.scan_events.popleft() if CTRL.scan_events else None
         frame = {
             "rgb": np.ascontiguousarray(obs["color_sensor"][..., :3], dtype=np.uint8),
             "depth": np.ascontiguousarray(obs["depth_sensor"], dtype=np.float32),
@@ -2252,6 +2326,7 @@ def main():
             # ABSENT key must not be read as "draw everything": that is indistinguishable from a
             # working toggle, and it is the defect class this whole review has been removing.
             "viz_config": dict(CTRL.config),
+            **({"scan_complete": scan_complete} if scan_complete is not None else {}),
             # NAMED SO IT CANNOT BE MISTAKEN FOR A PERCEPTION OUTPUT. This is habitat's own
             # instance id per pixel — the answer, not an estimate of it. Nothing on the runtime
             # path may read it: a detector that can see the ground truth is not being measured,
