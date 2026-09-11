@@ -60,8 +60,8 @@ frames:
   agent_pose: habitat_camera
 paths:
   operations_log: /root/exchange/output/operations.txt
-  vitsam_encoder: ''
-  vitsam_decoder: ''
+  vitsam_encoder: "/models/vitsam/l2_encoder.onnx"   # the container mount of SAM_MODEL_DIR
+  vitsam_decoder: "/models/vitsam/l2_decoder.onnx"
   identification_prompt: ''
   scene_analysis_prompt: ''
   visual_prompt: ''

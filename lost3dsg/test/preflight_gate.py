@@ -277,8 +277,16 @@ def a2_config_identity(expect_name=None, expect_sha=None, expect_merged=None):
             "is not in the loop. This is a wiring fault, not a configuration choice."))
     # The old comparison was basename(GRAPH_API_CONFIG) against CFG_NAME, and the container
     # builds GRAPH_API_CONFIG from CFG_NAME — true for every value, so it could never fail.
-    if expect_name and os.path.basename(loaded_path) != expect_name:
-        return False, dict(detail, expected_name=expect_name)
+    # BASENAMES ON BOTH SIDES. CFG_NAME may now be a path relative to lost3dsg/test/ rather than a
+    # bare filename -- `--config` accepts a config anywhere, and the launcher resolves the name
+    # against its own directory. Comparing a basename against "../src/perception_module/config.yaml"
+    # failed with no reason attached, which is how this probe reported a WORKING run as broken on
+    # Gin, 2026-09-10. The directory half is already covered by the file-sha comparison below, which
+    # is the stronger check: it proves the CONTENT, not the spelling.
+    if expect_name and os.path.basename(loaded_path) != os.path.basename(expect_name):
+        return False, dict(detail, expected_name=expect_name, why=(
+            f"the container loaded {os.path.basename(loaded_path)!r} but the launcher named "
+            f"{os.path.basename(expect_name)!r} — the two are different files."))
     if expect_sha and file_sha != expect_sha:
         return False, dict(detail, expected_file_sha=expect_sha, why=(
             "the config file differs from the one the launcher hashed — the mounted tree is "
@@ -1235,6 +1243,13 @@ A12_ALLOWED_FILES = {
     "test/habitat_feed_host.py": "renders the semantic sensor (producer)",
     "test/live_run.sh": "exports FEED_GT_SEMANTIC and stamps gt_semantic",
     "test/preflight_gate.py": "this probe names the tokens",
+    # Added 2026-09-11. Verified before listing, the same way the two entries below were:
+    # nothing in CMakeLists' install list carries it (grep: 0), nothing under src/ or test/ imports
+    # it, and it runs AFTER a run from eval.sh -- never in the container and never on the inference
+    # path. Its four tokens are TABLE LABELS: "floors in ground truth", "regions in ground truth",
+    # "ground-truth room labels". A reporter that may not say "ground truth" cannot label a column.
+    "test/eval_report.py": "offline PDF reporter; imported by nothing, installed nowhere",
+
     "test/test_preflight_gate.py": "the negative test names the tokens",
     "src/perception_module/habitat_feed_node.py": "relays the blob to /gt/semantic_instance (transport)",
     "src/perception_module/gt_codec.py": "the run-length codec",

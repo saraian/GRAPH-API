@@ -838,7 +838,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                    localization_pose_topic=(getattr(self, "localization_pose_topic", None)
                                             if isinstance(getattr(self, "localization_pose_topic", None), str) else None),
                    cycles_skipped_unlocalised=(skipped if isinstance(skipped, int) else None))
-        self._io_executor.submit(_append_cycle_row, row)
+        # WRITTEN SYNCHRONOUSLY, NOT QUEUED. Owner 2026-09-11: "measured time is critical,
+        # especially perception loop latency." This row IS that measurement, and going through
+        # _io_executor lost it: MEASURED across the archive, 3 of the 6 bundles whose runs
+        # completed cycles have no perception_latencies.jsonl at all. A queued task is dropped
+        # when the node exits abruptly -- which is how every run that died on a node ends -- so
+        # the timing series went missing exactly in the runs whose timing needs explaining.
+        # The cost is one short append per cycle against a cycle that takes seconds.
+        _append_cycle_row(row)
 
     # last /get_config answer and when it was fetched; rebound per instance on use
     _vis_live = {}

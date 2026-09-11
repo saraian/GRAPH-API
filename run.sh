@@ -61,7 +61,12 @@ if [ -n "$CONFIG" ]; then
   [ -f "$CONFIG" ] || { echo "!! no such config file: $CONFIG" >&2; exit 2; }
   CONFIG="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
   export GRAPH_API_CONFIG="$CONFIG"
-  export CFG_NAME="$(basename "$CONFIG")"
+  # CFG_NAME IS RESOLVED RELATIVE TO lost3dsg/test/, NOT A BARE FILENAME. The launcher checks that
+  # "$HERE/$CFG_NAME" exists, so a basename sent it looking for lost3dsg/test/<name> and it aborted
+  # with "config.yaml does not exist" for a config that was sitting in src/perception_module.
+  # Measured on Gin 2026-09-10, on the first --config run. A path relative to that directory
+  # resolves for the launcher AND inside the container, which mounts the same layout.
+  export CFG_NAME="$(realpath --relative-to="$HERE/lost3dsg/test" "$CONFIG")"
   echo "config: $CONFIG"
 fi
 if [ -n "$SCHEDULE" ] && [ ! -f "$SCHEDULE" ]; then
