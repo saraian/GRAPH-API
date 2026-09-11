@@ -390,7 +390,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.head_joints = list(_frames_cfg.get("motion_watch") or ["habitat_camera"])
         self.base_joints = list(_frames_cfg.get("motion_watch_base") or [])
         self._motion_absent_logged = False
-        self.position_threshold = 0.05
+        self.position_threshold = 4.0
         # GA-359. The pose source, and the gate that refuses to place a box on a stale
         # localisation. Under `rtabmap` the localiser publishes /localization_pose ONLY while
         # localised; a cycle with no pose newer than `localization_max_age_s` is SKIPPED and

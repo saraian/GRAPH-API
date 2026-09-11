@@ -73,10 +73,11 @@ def _on_active_floor(row, scene, predicted, region_map):
         key = "room_id" if predicted else "region_id"
         floor = region_map.get(str(row.get(key)))
     # In manifests produced from a run, predicted rooms without an explicit
-    # floor index are already the active-room set. Keep those rows; GT rows
-    # without membership metadata cannot be safely assigned to a floor.
+    # floor index are already the active-room set. Keep those rows. A GT
+    # object without floor membership metadata must also be kept: dropping it
+    # would erase the entire GT set when native HM3D regions have no geometry.
     if floor is None:
-        return predicted
+        return True
     # A GT manifest generated with --floor-index remaps the retained floor to
     # local index 0, while preserving the original selected index in metadata.
     source = scene.get("ground_truth_source") or {}
