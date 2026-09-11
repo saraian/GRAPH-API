@@ -38,6 +38,7 @@ FRAME_ODOM = "odom"
 FRAME_BASE = "base_link"
 FRAME_CAMERA = "habitat_camera"
 FRAME_OPTICAL = "habitat_camera_optical"
+SCAN_COMPLETE_TOPIC = os.environ.get("SCAN_COMPLETE_TOPIC", "/habitat/scan_complete")
 
 
 # --- habitat (y-up) -> ROS (z-up) pose conversion, copied verbatim from
@@ -145,6 +146,7 @@ class HabitatFeedNode(Node):
         self.pub_depth = self.create_publisher(Image, "/camera/depth", qos)
         self.pub_info = self.create_publisher(CameraInfo, "/camera/camera_info", qos)
         self.pub_odom = self.create_publisher(Odometry, "/odom", qos)
+        self.pub_scan_complete = self.create_publisher(String, SCAN_COMPLETE_TOPIC, qos)
         self.pub_object_capture = self.create_publisher(
             Image, "/habitat/object_capture/rgb", qos)
         self.pub_object_result = self.create_publisher(
@@ -391,6 +393,19 @@ class HabitatFeedNode(Node):
 
         stamp = self.get_clock().now().to_msg()
         w, h = frame["w"], frame["h"]
+
+        # The host-side runner owns Habitat motion, so it carries the completion hook in the
+        # first frame after a full turn. Relay it onto the same topic used by habitat_nav.py;
+        # object_manager_6 can therefore use one trigger regardless of which feed runner is
+        # active.
+        scan_event = frame.get("scan_complete")
+        if scan_event is not None:
+            msg = String()
+            msg.data = json.dumps(scan_event)
+            self.pub_scan_complete.publish(msg)
+            self.get_logger().info(
+                f"completed scan {scan_event.get('scan_id', '?')}; published {SCAN_COMPLETE_TOPIC}"
+            )
 
         cam_pos, cam_quat = habitat_pose_to_ros(frame["cam_pos"], frame["cam_quat"])
         if "base_pos" in frame:

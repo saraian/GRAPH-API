@@ -4,7 +4,8 @@
 Runs in a plain habitat_sim environment (no ROS). The container-side
 habitat_feed_node.py connects, converts, and publishes to ROS topics + TF.
 Protocol: length-prefixed pickle dicts {rgb, depth, cam_pos, cam_quat,
-base_pos, base_quat, t, w, h, hfov}.
+base_pos, base_quat, t, w, h, hfov}; a frame may also carry a
+`scan_complete` event after one uninterrupted 360-degree turn.
 
 The HTTP control port also accepts runtime rigid-object commands from
 habitat_feed_node.py, so run_habitat_script.py works with this headless feed
@@ -55,6 +56,7 @@ from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  
 from config import CFG, CFG_PATH  # noqa: E402
 from adaptive_hold import AdaptiveHold  # noqa: E402  (pure Python, GA-339)
 import gt_codec as _gt_codec  # noqa: E402
+from scan_hook import FullTurnDetector  # noqa: E402
 
 _print = functools.partial(print, flush=True)  # nohup/file logs must not buffer
 _log_ring = collections.deque(maxlen=400)      # served by the control server's /logs
@@ -482,6 +484,11 @@ class Ctrl:
         # allowed to mutate Habitat's scene graph.
         self.object_commands = collections.deque()
         self.object_catalog = {"templates": []}
+        # Scan completion is produced by the host-side simulator thread and consumed by the
+        # TCP relay when it builds the next ROS message. A queue keeps the producer independent
+        # of frame construction and also prevents an event from being lost if serialization
+        # briefly fails.
+        self.scan_events = collections.deque()
         # Published by the sim thread each frame, read by /revisit_status. Swapped whole.
         self.revisit = None
 
@@ -1133,7 +1140,7 @@ def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
         print("[feed] test mode: scene carries no annotated objects; ordinary spawn")
         return _spawn_point(sim, spawn_floor), None
 
-    centres = np.array([[o.aabb.center[0], o.aabb.center[1], o.aabb.center[2]] for o in objs])
+    centres = np.asarray([_aabb_center(o.aabb) for o in objs], dtype=np.float32)
 
     # THE SAME-STOREY FILTER IS GONE, AND IT HAS TO BE. Measured on hm3d_00861: EVERY
     # annotated object and region reports `aabb.center[1] == 0.00`, so the height channel
@@ -1451,6 +1458,10 @@ def _fire_post_scan(ctx):
                                  "hook_result": out, "t": time.time()}) + "\n")
     except (OSError, TypeError) as exc:
         print(f"[feed] scan event not recorded: {exc}", flush=True)
+    # The Docker runner uses habitat_feed_host.py, not habitat_nav.py. Queue the same event
+    # for habitat_feed_node.py to publish on /habitat/scan_complete so object_manager_6 sees
+    # exactly one trigger on this execution path too.
+    CTRL.scan_events.append(dict(ctx))
     return out
 
 
@@ -1529,7 +1540,9 @@ class ScheduledTour:
             if self.scan_left == 0:
                 self.scans_done += 1
                 pt = self.points[self.i]
-                _fire_post_scan({"event": "scan_complete", "lap": self.lap,
+                _fire_post_scan({"event": "scan_complete",
+                                 "scan_id": f"schedule-{self.lap}-{self.scans_done}",
+                                 "lap": self.lap,
                                  "stop": pt.get("stop"), "point_index": self.i,
                                  "xyz": pt["xyz"], "scan_deg": pt["scan_deg"],
                                  "scans_done": self.scans_done,
@@ -1686,6 +1699,27 @@ class Tour:
         self.revisits_requested = 0
         self.revisits_reached = 0
         self.revisits_failed = 0
+        self._scan_detector = FullTurnDetector(full_turn_degrees=360.0)
+        self._scans_done = 0
+
+    def _turn_left(self, agent):
+        """Turn one 10-degree step and fire the shared hook at exactly 360 degrees."""
+        agent.act("turn_left")
+        scan_id = self._scan_detector.update("turn_left", 10.0)
+        if scan_id is None:
+            return
+        self._scans_done += 1
+        _fire_post_scan({
+            "event": "scan_complete",
+            "scan_id": f"tour-{self._scans_done}",
+            "scan_deg": 360,
+            "scans_done": self._scans_done,
+            "waypoint": getattr(self, "_tour_i", None),
+            "floor_y": round(float(self.floor_y), 3),
+        })
+
+    def _reset_turn_detector(self):
+        self._scan_detector.reset()
 
     def bind_floors(self, scene_floors, tol, guard):
         """Plan the remaining storeys. Called from main once the floors are clustered.
@@ -1831,7 +1865,7 @@ class Tour:
                 self._end_revisit("reached")
                 return
             rv.scan_left -= 1
-            agent.act("turn_left")
+            self._turn_left(agent)
             return
 
         if rv.frames_travelled >= REVISIT_MAX_FRAMES:
@@ -1844,6 +1878,7 @@ class Tour:
             return
         if action is not None:
             self.sim.step(action)
+            self._reset_turn_detector()
             rv.frames_travelled += 1
             return
 
@@ -1897,7 +1932,7 @@ class Tour:
                           f"({w[0]:.2f}, {w[1]:.2f}, {w[2]:.2f})", flush=True)
             if self._tour_scan > 0:
                 self._tour_scan -= 1
-                agent.act("turn_left")
+                self._turn_left(agent)
                 # GA-434. THE INDEX ADVANCES HERE WHEN NO DWELL FOLLOWS, and before today nothing
                 # advanced it on that path: `self._tour_i += 1` lived only in the dwell branch, so
                 # with FEED_TEST_DWELL_DYNAMIC=0 the scan ended, the follower was asked for the same
@@ -1922,7 +1957,7 @@ class Tour:
                         print(f"[feed] waypoint {self._tour_i}: dwelling, "
                               f"{pend if pend is not None else '?'} merges pending "
                               f"(sweep {sweep}, frame {self._dwell_frames})", flush=True)
-                    agent.act("turn_left")
+                    self._turn_left(agent)
                     return
                 else:
                     print(f"[feed] waypoint {self._tour_i}: nothing pending after "
@@ -1942,7 +1977,7 @@ class Tour:
                     self.house_done = True
                     print("[feed] HOUSE TOUR COMPLETE: storeys "
                           + ", ".join(f"{z:+.2f}" for z in self.floor_order), flush=True)
-                agent.act("turn_left")
+                self._turn_left(agent)
                 return
             goal = self._tour[self._tour_i]
             try:
@@ -1962,11 +1997,12 @@ class Tour:
                 self._dwell_frames = 0
                 return
             self.sim.step(action)
+            self._reset_turn_detector()
             return
         if TEST_MODE and TEST_WALK_RADIUS <= 0:
             # GA-212: turn, and only turn. No goal, no follower, no path that can fail --
             # the point of test mode is that a stalled run cannot be blamed on navigation.
-            agent.act("turn_left")
+            self._turn_left(agent)
             return
         if TEST_MODE:
             # GA-219: walk, but never further than TEST_WALK_RADIUS from where we started.
@@ -1985,7 +2021,7 @@ class Tour:
                 else:
                     # No reachable goal inside the disc: turn rather than widen it. Widening
                     # silently would defeat the guarantee this mode exists to give.
-                    agent.act("turn_left")
+                    self._turn_left(agent)
                     return
             try:
                 action = self.follower.next_action_along(self.goal)
@@ -1993,12 +2029,13 @@ class Tour:
                 action = None
             if action is None:
                 self.goal = None
-                agent.act("turn_left")   # look around from the new spot, then pick another
+                self._turn_left(agent)   # look around from the new spot, then pick another
                 return
             self.sim.step(action)
+            self._reset_turn_detector()
             return
         if self.scan_left > 0:
-            agent.act("turn_left")
+            self._turn_left(agent)
             self.scan_left -= 1
             return
         if self.goal is None:
@@ -2016,6 +2053,7 @@ class Tour:
             self.scan_left = 36     # 36 x 10° = full turn
             return
         self.sim.step(action)
+        self._reset_turn_detector()
 
 
 def main():
@@ -2654,6 +2692,7 @@ def main():
 
         cam = ag_state.sensor_states["color_sensor"]
         cam_quat = np.array([cam.rotation.x, cam.rotation.y, cam.rotation.z, cam.rotation.w], dtype=np.float64)
+        scan_complete = CTRL.scan_events.popleft() if CTRL.scan_events else None
         frame = {
             "rgb": np.ascontiguousarray(obs["color_sensor"][..., :3], dtype=np.uint8),
             "depth": np.ascontiguousarray(obs["depth_sensor"], dtype=np.float32),
@@ -2691,6 +2730,7 @@ def main():
             # ABSENT key must not be read as "draw everything": that is indistinguishable from a
             # working toggle, and it is the defect class this whole review has been removing.
             "viz_config": dict(CTRL.config),
+            **({"scan_complete": scan_complete} if scan_complete is not None else {}),
             # NAMED SO IT CANNOT BE MISTAKEN FOR A PERCEPTION OUTPUT. This is habitat's own
             # instance id per pixel — the answer, not an estimate of it. Nothing on the runtime
             # path may read it: a detector that can see the ground truth is not being measured,

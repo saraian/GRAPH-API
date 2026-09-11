@@ -46,6 +46,7 @@ install(PROGRAMS
   src/perception_module/perception_utils.py
   src/perception_module/object_manager_6.py
   src/perception_module/object_services.py
+  src/perception_module/scan_hook.py
   src/perception_module/room_manager.py
   # GA-299. habitat_camera_node.py is NOT installed: it is a HOST-side node. It imports
   # habitat_sim, which is not in graphapi-run:humble and is not meant to be -- habitat renders on
@@ -141,6 +142,7 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  ament_add_pytest_test(scan_merge_test test/test_scan_merge.py)
   ament_add_pytest_test(detection_index_test test/test_detection_index.py)
 endif()
 

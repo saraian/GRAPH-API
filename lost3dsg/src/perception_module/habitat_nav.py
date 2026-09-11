@@ -2,6 +2,8 @@
 
 import os
 import math
+import random
+import json
 import numpy as np
 import magnum as mn
 import rclpy
@@ -16,6 +18,7 @@ from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 
 import habitat_sim
 from habitat_sim.utils import common as utils
+from scan_hook import FullTurnDetector
 
 TEST_SCENE = CFG["habitat"]["nav_scene"]
 SCENE_DATASET = CFG["habitat"]["nav_scene_dataset"]
@@ -32,6 +35,7 @@ CONTROL_FREQUENCY = 10.0
 FRAME_SKIP = 6
 DEFAULT_FORWARD_STEP = 0.25
 DEFAULT_TURN_DEG = 30.0
+SCAN_COMPLETE_TOPIC = os.environ.get("SCAN_COMPLETE_TOPIC", "/habitat/scan_complete")
 EPS = 1e-5
 
 
@@ -157,6 +161,7 @@ class HabitatNode(Node):
         self.pub_info = self.create_publisher(CameraInfo, "/camera/camera_info", qos_sensor)
         self.pub_pose = self.create_publisher(PoseStamped, "/habitat/agent_pose", qos_sensor)
         self.pub_collision = self.create_publisher(String, "/habitat/collision", 10)
+        self.pub_scan_complete = self.create_publisher(String, SCAN_COMPLETE_TOPIC, 10)
         self.tf_broadcaster = TransformBroadcaster(self)
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
 
@@ -178,6 +183,7 @@ class HabitatNode(Node):
         self.last_collided = False
         self.pending_discrete_action = None
         self.pending_continuous_cmd = None
+        self.full_turn_detector = FullTurnDetector(full_turn_degrees=360.0)
 
         self.control_timer = self.create_timer(1.0 / CONTROL_FREQUENCY, self.control_loop)
         self.publish_static_tfs()
@@ -269,9 +275,33 @@ class HabitatNode(Node):
         for _frame in range(FRAME_SKIP):
             self.sim.step_physics(self.time_step)
 
+        if action in ("turn_left", "turn_right"):
+            scan_id = self.full_turn_detector.update(
+                action,
+                getattr(discrete_action.actuation, "amount", DEFAULT_TURN_DEG),
+            )
+            if scan_id is not None:
+                state = self.agent.get_state()
+                self.pub_scan_complete.publish(String(data=json.dumps({
+                    "scan_id": scan_id,
+                    "source": "habitat_nav",
+                    "action": action,
+                    "position": [float(value) for value in state.position],
+                })))
+                self.get_logger().info(
+                    f"Completed 360-degree waypoint scan {scan_id}; "
+                    f"published {SCAN_COMPLETE_TOPIC}"
+                )
+        else:
+            self.full_turn_detector.reset()
+
         return did_collide
 
     def execute_continuous_action(self, cmd):
+        # The hook is defined over the discrete turn actions used by the
+        # waypoint tour.  Switching to velocity control must not allow a
+        # partial turn from one control mode to be combined with another scan.
+        self.full_turn_detector.reset()
         self.vel_control.linear_velocity = np.array([0.0, 0.0, -cmd["forward_velocity"]], dtype=np.float32)
         self.vel_control.angular_velocity = np.array([0.0, cmd["rotation_velocity"], 0.0], dtype=np.float32)
         collided = False
