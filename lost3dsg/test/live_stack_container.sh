@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs INSIDE the container: build, then start the full stack against the host
-# habitat feed. Started by run.sh — not meant to be run directly.
+# habitat feed. Started by run_sim.sh — not meant to be run directly.
 set -e
 # GA-463. DEFINED FIRST, BEFORE ANY WRITE. /ws/output is the bundle, bind-mounted from the host, so
 # everything written under it is external by construction. It used to be set at :164, after the
@@ -151,12 +151,12 @@ else
   echo "   run, in the first perception cycle. Owner policy 2026-09-10 is no in-run fetches."
 fi
 
-# CFG_NAME comes from run.sh (regolo_config.yaml when an API key is set).
+# CFG_NAME comes from run_sim.sh (regolo_config.yaml when an API key is set).
 # No default. This line used to read ${CFG_NAME:-smoke_config.yaml}, and because
-# run.sh assigned CFG_NAME without exporting it, `docker run -e CFG_NAME`
+# run_sim.sh assigned CFG_NAME without exporting it, `docker run -e CFG_NAME`
 # passed nothing and every live run silently used the smoke config while the bundle
 # recorded regolo. Guessing here is what made that invisible.
-: "${CFG_NAME:?CFG_NAME not set — run.sh must export it; refusing to guess a config}"
+: "${CFG_NAME:?CFG_NAME not set — run_sim.sh must export it; refusing to guess a config}"
 export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/${CFG_NAME}
 # The config must EXIST. config.py::_load returns the defaults when it does not, silently —
 # so a mistyped or unported config name yields a run with hooks.filter empty, the extension out of
@@ -176,7 +176,9 @@ if ! python3 -c "import pyoxigraph" 2>/dev/null; then
 fi
 python3 -c "import pyoxigraph as _o; print('    triple store: pyoxigraph', _o.__version__)" 2>/dev/null ||   echo "    triple store: rdflib in-memory (pyoxigraph unavailable)"
 LOG_DIR=/ws/output/logs   # restated; set at the top of this file, before the build log
-mkdir -p "$LOG_DIR" /ws/output/crops /ws/output/snapshots /out
+# /ws/output/crops is NOT created: `cropped_images` is the one name, and an empty `crops`
+# shadows it in the dashboard's resolution order (dashboard/server.py:86). See run_sim.sh.
+mkdir -p "$LOG_DIR" /ws/output/snapshots /out
 
 # Ensure logs stream directly to the persistent host-mounted volume
 touch "$LOG_DIR/feed_node.log" "$LOG_DIR/rtabmap.log" "$LOG_DIR/om6.log" "$LOG_DIR/bridge.log" "$LOG_DIR/perception.log" "$LOG_DIR/saver.log" "$LOG_DIR/walls.log"
@@ -349,7 +351,7 @@ else
   # Every other probe blocks as usual: a mapping run that mapped the wrong scene with the wrong
   # camera is worse than no map, and a2/a5/a6/a7 are what catch that.
   # MAPPING_ONLY relaxed a4/a8 to OBSERVE because a map-only run loaded no detector. That shape
-  # went with the sampling policy (owner 2026-09-11) and run.sh refuses the name, so every
+  # went with the sampling policy (owner 2026-09-11) and run_sim.sh refuses the name, so every
   # run now loads a detector and every probe blocks as usual.
   PREFLIGHT_OBSERVE=""
   echo ">>> pre-flight gate (Class A)"
@@ -592,7 +594,7 @@ TAIL_PID=$!
 # in a SUBSHELL, and a subshell cannot `wait` on the parent's children — it returned rc=-1 for a
 # node that had exited 7, so the status this run reports would have been meaningless. Measured on
 # a standalone harness before landing; the loop below returns 7 for an exit 7 and 0 for a clean 0.
-# MAPPING_ONLY and its deadline went with the sampling policy (owner 2026-09-11): run.sh
+# MAPPING_ONLY and its deadline went with the sampling policy (owner 2026-09-11): run_sim.sh
 # refuses the name, so there is no map-only shape left to watch a shorter node list for. Every run
 # watches every node, and the feed's own end is what stops it.
 _WATCH_NODES="PERCEPTION RTABMAP OM6 WALLS"

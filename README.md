@@ -7,7 +7,7 @@ external package plugs into through configuration only.
 Upstream LOST-3DSG — the paper, the authors, and the ROS 2 install on a real robot — is documented
 in [`lost3dsg/README.md`](lost3dsg/README.md).
 
-**Start at [Quick start](#quick-start): two scripts, `./install.sh` then `./run.sh`.**
+**Start at [Quick start](#quick-start): two scripts, `./install.sh` then `./run_sim.sh`.**
 
 ## What runs where
 
@@ -33,8 +33,8 @@ Four scripts at the top of the repository. Nothing else is needed.
 
 ```bash
 ./install.sh          # once. Finds what this machine has and writes your settings file.
-./run.sh              # a base run: the whole house, every storey, no time limit.
-./run_headless.sh     # the same run on a machine with no screen.
+./run_sim.sh              # a base run: the whole house, every storey, no time limit.
+./run_sim_headless.sh     # the same run on a machine with no screen.
 ./eval.sh             # score the newest run against the scene's ground truth.
 ```
 
@@ -44,14 +44,14 @@ find —
 the labelling endpoint, which is a credential. Without it, it configures the local detector so a run
 works anyway. It ends by telling you which run script this machine needs. It is safe to run again.
 
-`./run.sh hm3d_00861` picks a scene for one run. `./run.sh --one-storey` does a single storey.
+`./run_sim.sh hm3d_00861` picks a scene for one run. `./run_sim.sh --one-storey` does a single storey.
 **Everything else is a setting, not a flag.**
 
 ### One run with a config of your own
 
 ```bash
-./run.sh --config schedules/configs/01_reference.yaml
-./run_headless.sh --config schedules/configs/03_size_gate.yaml
+./run_sim.sh --config schedules/configs/01_reference.yaml
+./run_sim_headless.sh --config schedules/configs/03_size_gate.yaml
 ```
 
 `--config` takes any config file. It sets both variables the launcher reads, so the bundle can never
@@ -60,7 +60,7 @@ name one file while loading another.
 ### Several runs, each with its own configuration
 
 ```bash
-./run_headless.sh --schedule schedules/full.runs.yaml
+./run_sim_headless.sh --schedule schedules/full.runs.yaml
 ```
 
 `schedules/full.runs.yaml` is the set of runs we have to perform, and each arm **names its own
@@ -117,12 +117,12 @@ to on, and each one aborts without an X server. Measured on a headless lab machi
 six attempts, all ended with `rviz2 exited with status -6` **after** preflight had passed, because
 the launcher treats a missing node as fatal.
 
-**Use `./run_headless.sh` instead of `./run.sh`.** It takes the same arguments and turns off the two
+**Use `./run_sim_headless.sh` instead of `./run_sim.sh`.** It takes the same arguments and turns off the two
 things that need a window:
 
 ```bash
-./run_headless.sh                 # the whole house
-./run_headless.sh --one-storey    # a single storey
+./run_sim_headless.sh                 # the whole house
+./run_sim_headless.sh --one-storey    # a single storey
 ```
 
 It leaves the box overlay on, because the overlay draws into the frame the dashboard serves over
@@ -239,15 +239,15 @@ shorter one tears the write.
 mean unknown — it means the container never reached its own end. A watched node exiting with status
 0 is `node_death`, not a clean finish: which node stopped decides, not its exit status.
 
-## The layers under `run.sh`
+## The layers under `run_sim.sh`
 
-There is one layer fewer than there used to be. `run.sh` now holds the whole launch: it works out
+There is one layer fewer than there used to be. `run_sim.sh` now holds the whole launch: it works out
 which storeys the house has, then performs one run per storey. It does that by calling itself once
 per storey, so each storey still gets a clean process of its own.
 
 | | |
 |---|---|
-| `install.sh`, `run.sh`, `run_headless.sh`, `eval.sh` | what a person runs |
+| `install.sh`, `run_sim.sh`, `run_sim_headless.sh`, `eval.sh` | what a person runs |
 | `lost3dsg/test/live_stack_container.sh` | inside the container. Nobody calls it by hand |
 
 `lost3dsg/test/live_run.sh` and `lost3dsg/test/run_house.sh` were deleted on 2026-09-11. If a step
@@ -273,9 +273,9 @@ cd lost3dsg/test && UPDATE_BASELINE=1 ./nonregression.sh && ./nonregression.sh
 5. Verify each of the above — including that an X display exists — and refuse with a cause.
 
 **One thing to know about a fresh clone:** git records every script in this repository as
-non-executable, so `./run.sh` fails with "Permission denied" until you either mark it executable
-(`chmod +x run.sh`) or call it as `bash run.sh`. `run_headless.sh` calls `run.sh` through `bash`
-for exactly this reason, so `bash run_headless.sh` always works.
+non-executable, so `./run_sim.sh` fails with "Permission denied" until you either mark it executable
+(`chmod +x run_sim.sh`) or call it as `bash run_sim.sh`. `run_sim_headless.sh` calls `run_sim.sh` through `bash`
+for exactly this reason, so `bash run_sim_headless.sh` always works.
 
 ## Extension seam (`hooks.py`)
 
@@ -302,7 +302,7 @@ hooks.py`, `python3 box_view.py`.
 | path | holds |
 |---|---|
 | `lost3dsg/src/perception_module/` | the nodes (`perception_2.py`, `object_manager_6.py`, `object_services.py`, `room_manager.py`, `graph_api_bridge.py`), `config.py` / `config.yaml`, `hooks.py`, `cloud/` (Modal client + service), `viewer/` |
-| `run.sh` | the whole launch: the storeys, the gate, the host feed, the container, the archive |
+| `run_sim.sh` | the whole launch: the storeys, the gate, the host feed, the container, the archive |
 | `lost3dsg/test/` | `live_stack_container.sh`, `habitat_feed_host.py`, `preflight_gate.py`, `smoke_test.sh`, `nonregression.sh`, the configs, `resource_monitor.py` |
 | `lost3dsg/msg`, `lost3dsg/srv` | the ROS 2 interfaces; `ObjectDescription.msg` carries `crop_path` |
 | `Dockerfile` | the `graphapi-run:humble` image |

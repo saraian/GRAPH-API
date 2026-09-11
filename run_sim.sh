@@ -4,7 +4,7 @@
 # Owner, 2026-09-10: "ONE config file, ONE install script and ONE launch script."
 # Owner, 2026-09-11: "We're not using live_run.sh anymore. The storey schedule should come before
 # as a multi-storey run is actually multiple runs. live_run will have to be discarded and use the
-# official config of run and run_headless.sh". So this file holds BOTH halves:
+# official config of run and run_sim_headless.sh". So this file holds BOTH halves:
 #   the storeys are resolved FIRST, then one run is performed per storey.
 # lost3dsg/test/live_run.sh and lost3dsg/test/run_house.sh are DELETED. If a step anywhere names
 # either of them, the step is wrong.
@@ -14,12 +14,12 @@
 # the house: each storey's map has its own SLAM origin, so coverage, an object seen on two
 # storeys and the duplicate rate are all post-hoc joins across the bundles the manifest names.
 #
-#   ./run.sh                       every storey of the scene in the config
-#   ./run.sh hm3d_00861            that scene, this run only
-#   ./run.sh --one-storey          a single storey
-#   ./run.sh --config <file>       a specific run configuration
-#   ./run.sh --schedule <file>     a list of runs, each with its own configuration
-#   ./run_headless.sh ...          the same, with no rviz and no preview window
+#   ./run_sim.sh                       every storey of the scene in the config
+#   ./run_sim.sh hm3d_00861            that scene, this run only
+#   ./run_sim.sh --one-storey          a single storey
+#   ./run_sim.sh --config <file>       a specific run configuration
+#   ./run_sim.sh --schedule <file>     a list of runs, each with its own configuration
+#   ./run_sim_headless.sh ...          the same, with no rviz and no preview window
 #
 # SETTINGS LIVE IN THE CONFIG FILE, not in flags here. A setting you cannot find in the config is
 # a bug in the config, not a missing flag. The environment still overrides for one run:
@@ -571,7 +571,7 @@ if [ -n "${REGOLO_API_KEY:-}" ]; then
   export OPENAI_API_KEY="${OPENAI_API_KEY:-$REGOLO_API_KEY}"
 fi
 # THE CONFIG COMES FROM THE PARENT, AND ONLY FROM THE PARENT. Owner 2026-09-11: "use the
-# official config of run and run_headless.sh". This used to default CFG_NAME to
+# official config of run and run_sim_headless.sh". This used to default CFG_NAME to
 # regolo_config.yaml when a key was present and smoke_config.yaml when it was not, so a run
 # could load a config nobody chose -- and regolo_config.yaml is UNTRACKED, so the fallback
 # named a file that does not exist in a fresh clone. A missing config is now a refusal.
@@ -580,7 +580,7 @@ fi
 # variable that is only inherited is one some other caller can leave unset, and the stamp then
 # records "" while the run loads a config nobody named. The :? form is both the assignment and
 # the refusal, so there is one place to read rather than two.
-CFG_NAME="${CFG_NAME:?is not set. This section is not an entry point: run ./run.sh or ./run_headless.sh, which read the config and set it. Pass --config <file> to choose one.}"
+CFG_NAME="${CFG_NAME:?is not set. This section is not an entry point: run ./run_sim.sh or ./run_sim_headless.sh, which read the config and set it. Pass --config <file> to choose one.}"
 # EXPORTED, because `docker run -e CFG_NAME` copies the parent process environment and a
 # shell variable that was only assigned is not in it. Without this the echo below prints
 # regolo while the container falls back to smoke_config.yaml — the operator reads one
@@ -682,7 +682,14 @@ export RUN_DIR
 # there writes the database outside docker AND into the bundle, and a later launch cannot destroy it
 # with --delete_db_on_start because each storey has its own.
 mkdir -p "$RUN_DIR/ros"
-mkdir -p "$RUN_DIR/logs" "$RUN_DIR/crops" "$RUN_DIR/snapshots"
+# NO "crops" DIRECTORY. One name for the crops, and it is `cropped_images` -- the name
+# input_output.py writes and graph_api_bridge._crop_dirs reads. This line used to create an
+# EMPTY `crops/` beside it, and that empty directory was not merely untidy: the dashboard
+# resolves `crops` BEFORE `cropped_images` (dashboard/server.py:86, `next(d for d in ... if
+# d.is_dir())`), so it found the empty one and served nothing. MEASURED 2026-09-11: 64
+# bundles on disk carry a crops/ directory and NOT ONE of them has a file in it, while
+# cropped_images/ holds 1012 files and 37 MB for a single run.
+mkdir -p "$RUN_DIR/logs" "$RUN_DIR/snapshots"
 # GA-381. THE DIRECTORY IS CREATED BEFORE THE CHECKS RUN, so every early refusal (a10, the mapping
 # cap check, the missing-map refusal, a bad config) leaves a directory that a sweep cannot tell from
 # a genuine early run — and 67 bundles exist, the oldest of which predate the gate and have no
@@ -1075,13 +1082,32 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # The docker run line at the bottom now uses "$IMAGE_TAG" — until this change it hardcoded
 # graphapi-run:humble, so IMAGE_TAG only ever stamped metadata and an override would have
 # launched the pristine image while recording itself as the patched one.
-# THE IMAGE. Upstream changed this default to `hrai/sim:saved` in the same commit range that
-# edited the deleted live_run.sh, and the merge of 2026-09-11 did NOT take it: that image is
-# not on this machine (`docker images` lists graphapi-run:humble-ga290 and :humble only), so
-# adopting it would fail every run here at `docker run`. Recorded rather than silently kept,
-# so the next merge sees a decision instead of a divergence. Override with IMAGE_TAG.
-IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble-ga290}
-IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
+# THE IMAGE. Owner ruling 2026-09-11: the upstream default `hrai/sim:saved` replaces
+# graphapi-run:humble-ga290. It is NOT on this machine and is not in any registry reachable
+# from here, so it has to be built or loaded before a run works. Checked below rather than
+# discovered at `docker run`, and NOT silently replaced by whatever image happens to be
+# present: a run on a different image is a different experiment.
+IMAGE_TAG=${IMAGE_TAG:-hrai/sim:saved}
+# THE IMAGE MUST EXIST BEFORE ANYTHING ELSE IS SPENT. Checked HERE, where IMAGE_TAG is settled,
+# rather than at `docker run` several hundred lines later: otherwise the gate, the build and the
+# feed host are all paid for first and the failure arrives minutes later as a docker error.
+#
+# It also keeps run_metadata.json valid. MEASURED 2026-09-11: with the image absent,
+# `docker image inspect` printed an EMPTY LINE to stdout and exited non-zero, so the `|| echo`
+# below produced "\nunknown" -- a raw newline inside a JSON string. The bundle then failed to
+# parse at "line 82 column 22" and the run died writing its own header.
+if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+  echo "!! the container image '$IMAGE_TAG' is not on this machine, and no run can start without it."
+  echo "   Build or load it, or name one that is present:"
+  echo "     IMAGE_TAG=<image> ./run_sim_headless.sh ..."
+  echo "   Present now:"
+  docker images --format '     {{.Repository}}:{{.Tag}}' | grep -iE 'graphapi|sim' || echo "     (no image here looks like a run image)"
+  exit 1
+fi
+# `tr -d` as well as the guard above: a digest is a single token, and anything that puts a newline
+# in it corrupts the bundle's header rather than merely reading oddly.
+IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null | tr -d '\r\n' || true)
+IMAGE_DIGEST=${IMAGE_DIGEST:-unknown}
 # GA-437 (2026-09-10). THE STAMP MUST READ THE CACHE THE RUN USES. This was
 # $WORKSPACE_ROOT/.hf_cache, which made WORKSPACE_ROOT do double duty as the data root AND the model
 # cache; after the workspace moved to a neutral directory it names nothing, and _enc_rev below would
@@ -1613,7 +1639,7 @@ _verdict=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('v
   # THE CHILD MUST EXIT HERE. Without this line the engine falls off its own end, reaches the `fi`
   # and RUNS THE PARENT SECTION BELOW -- so every storey that finished started a WHOLE NEW HOUSE
   # RUN, each of which started a child that did it again. MEASURED 2026-09-11: one launch became
-  # house_20260911_133641, _140421 and _143114, seven nested run.sh shells deep, and it would not
+  # house_20260911_133641, _140421 and _143114, seven nested run_sim.sh shells deep, and it would not
   # have stopped on its own. The engine's last statement is an assignment, not an exit, so there
   # is nothing else to stop the fall-through.
   # The engine's own status, not a forced 0: the parent reads it to decide whether the storey
@@ -1651,15 +1677,15 @@ for a in "$@"; do
   esac
 done
 
-# --schedule WITHOUT A FILE MUST REFUSE, NOT FALL THROUGH. Measured 2026-09-10: `./run.sh
+# --schedule WITHOUT A FILE MUST REFUSE, NOT FALL THROUGH. Measured 2026-09-10: `./run_sim.sh
 # --schedule` with the filename forgotten left SCHEDULE empty and STARTED A FULL HOUSE RUN.
 # An option that silently becomes a different command is worse than an unknown option.
 if [ "$_next_is_schedule" = "1" ]; then
-  echo "!! --schedule needs a file: ./run.sh --schedule schedules/<name>.runs.yaml" >&2
+  echo "!! --schedule needs a file: ./run_sim.sh --schedule schedules/<name>.runs.yaml" >&2
   exit 2
 fi
 if [ "$_next_is_config" = "1" ]; then
-  echo "!! --config needs a file: ./run.sh --config schedules/configs/<name>.yaml" >&2
+  echo "!! --config needs a file: ./run_sim.sh --config schedules/configs/<name>.yaml" >&2
   exit 2
 fi
 

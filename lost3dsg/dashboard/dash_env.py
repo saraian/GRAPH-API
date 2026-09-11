@@ -9,7 +9,7 @@ deployment's name.
 
 WHAT THIS IS NOT. An extension's own policy variables — its aligner, its enforcement, its hold band —
 do NOT come through here. They are the extension's vocabulary and reach the dashboard through the
-page/group seam, the same way `run.sh` takes them through `EXT_ENV_FILE` rather than naming
+page/group seam, the same way `run_sim.sh` takes them through `EXT_ENV_FILE` rather than naming
 them.
 
 NO LEGACY SPELLING SHIPS HERE. The alias table is EMPTY upstream, and an extension registers its own

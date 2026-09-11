@@ -24,7 +24,7 @@ import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOST = os.path.join(HERE, "habitat_feed_host.py")
-RUNNER = os.path.join(HERE, "..", "..", "run.sh")
+RUNNER = os.path.join(HERE, "..", "..", "run_sim.sh")
 CONTAINER = os.path.join(HERE, "live_stack_container.sh")
 DEFAULTS = os.path.join(HERE, "..", "src", "perception_module", "config.py")
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -105,7 +105,7 @@ def test_the_launcher_assigns_no_retired_name():
             continue
         m = re.match(r"\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)=", line)
         if m and m.group(1) in RETIRED_ENV:
-            raise AssertionError(f"run.sh still assigns {m.group(1)}: {line.strip()}")
+            raise AssertionError(f"run_sim.sh still assigns {m.group(1)}: {line.strip()}")
 
 
 def test_the_launcher_refuses_a_run_with_no_schedule():

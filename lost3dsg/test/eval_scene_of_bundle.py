@@ -11,7 +11,7 @@ TWO SOURCES, IN ORDER.
    `habitat.scene_dataset` outright. The colleague's configuration does.
 
 2. The scene NAME plus this machine's library. **A bundle records a NAME, not a file**:
-   `run_metadata.json` says `scene: hm3d_00861`, and `run.sh-476` turns that into a path
+   `run_metadata.json` says `scene: hm3d_00861`, and `run_sim.sh-476` turns that into a path
    using `HM3D_ROOT`. So an evaluation is NOT reproducible from a bundle alone -- the same name
    resolves to a different file on a different machine, and nothing in the bundle would show it.
    Filed as GA-464: the launcher should record the resolved paths. Until it does, this repeats the
@@ -28,7 +28,7 @@ import os
 import pathlib
 import sys
 
-# THE LAUNCHER'S OWN TABLE, run.sh-476. Duplicated on purpose and marked as such: the
+# THE LAUNCHER'S OWN TABLE, run_sim.sh-476. Duplicated on purpose and marked as such: the
 # alternative is parsing a bash case statement, and a wrong parse is silent. If the launcher gains
 # a scene, this needs it too -- which is the argument for GA-464 rather than for a cleverer parser.
 _HM3D_CFG = "hm3d_annotated_basis.scene_dataset_config.json"
@@ -50,7 +50,7 @@ def resolve(bundle: pathlib.Path, env=None):
         except Exception:
             name = ""
 
-    # THE NAME IS READ FIRST, AND IT POLICES THE PATH. The launcher owns the scene: `run.sh`
+    # THE NAME IS READ FIRST, AND IT POLICES THE PATH. The launcher owns the scene: `run_sim.sh`
     # picks DEF_SCENE from its own argument (:538) and never reads `habitat.scene`, so a config can
     # carry a scene the run did not drive. MEASURED 2026-09-11: schedules/configs/06 and 07 named
     # 00824-Dd4bFSTQ8gi while every run of them drives hm3d_00861. Trusting the config there would

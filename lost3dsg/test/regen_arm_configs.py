@@ -125,7 +125,7 @@ def _sha16(text: str) -> str:
 
 def header(name: str, diff: dict, note: list[str], base_sha: str, stamp: str) -> str:
     lines = [f"# {name}.yaml — a complete run configuration. Use it directly:",
-             f"#     ./run_headless.sh --config schedules/configs/{name}.yaml",
+             f"#     ./run_sim_headless.sh --config schedules/configs/{name}.yaml",
              "# or name it from a schedule arm with `config_file:`.",
              "#"]
     lines += [f"# {ln}" for ln in note]

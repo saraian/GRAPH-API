@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run a SCHEDULE of runs, each with its own configuration.
 
-    ./run.sh --schedule schedules/example.runs.yaml
-    ./run_headless.sh --schedule schedules/example.runs.yaml     # same, without the viewers
+    ./run_sim.sh --schedule schedules/example.runs.yaml
+    ./run_sim_headless.sh --schedule schedules/example.runs.yaml     # same, without the viewers
 
 A schedule is a list of ARMS. Each arm names itself and gives the configuration keys that differ
 from the base. Nothing else about an arm may vary: same launcher, same gate, same bundle layout.
@@ -123,8 +123,8 @@ def write_arm_config(base_cfg: dict, arm: dict, out_dir: pathlib.Path) -> pathli
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("schedule", type=pathlib.Path)
-    ap.add_argument("--runner", default=str(REPO / "run.sh"),
-                    help="run.sh or run_headless.sh; the schedule does not choose this")
+    ap.add_argument("--runner", default=str(REPO / "run_sim.sh"),
+                    help="run_sim.sh or run_sim_headless.sh; the schedule does not choose this")
     ap.add_argument("--force", action="store_true", help="re-run arms that already have a bundle")
     ap.add_argument("--dry-run", action="store_true", help="write the arm configs and print the plan")
     args = ap.parse_args()

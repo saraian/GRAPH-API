@@ -116,7 +116,7 @@ class PerceptionIOMixin:
         # correctly and then thrown away.
         #
         # `cropped_images` is the name the READER wants -- graph_api_bridge._crop_dirs
-        # searches `_active_output_dir() / "cropped_images"` first. run.sh separately
+        # searches `_active_output_dir() / "cropped_images"` first. run_sim.sh separately
         # creates `$RUN_DIR/crops`, a THIRD name that nothing reads or writes.
         # H12: one resolver for crops, visualizations and the per-cycle JSON alike.
         crops_dir = os.path.join(resolve_output_root(), "cropped_images")

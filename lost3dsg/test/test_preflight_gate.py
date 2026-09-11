@@ -600,9 +600,9 @@ def test_run_output_lives_outside_every_hashed_root():
               f"run output at {out} is inside hashed root {r} — the frozen root cannot hold still")
 
     # and the launcher must actually default there
-    body = open(os.path.join(HERE, "..", "..", "run.sh")).read()
+    body = open(os.path.join(HERE, "..", "..", "run_sim.sh")).read()
     check("RESULTS_DIR=${RESULTS_DIR:-$REPO/results}" in body,
-          "run.sh must default the results directory to $REPO/results, never /tmp")
+          "run_sim.sh must default the results directory to $REPO/results, never /tmp")
     check('export OUT_DIR="$RUN_DIR"' in body,
           "the live output and the bundle must be ONE directory: a scratch directory that is copied "
           "into the bundle at the end is lost whenever the container dies")

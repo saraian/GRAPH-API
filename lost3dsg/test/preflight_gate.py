@@ -86,7 +86,7 @@ NONSENSE_LABEL = "zzqx_not_a_real_object_kind"
 
 
 # ---------------------------------------------------------------------------------------
-# Digests. ONE implementation, used by the probes here AND by run.sh via --print-*,
+# Digests. ONE implementation, used by the probes here AND by run_sim.sh via --print-*,
 # so the launcher never restates the hashing. A check that restates its subject drifts from
 # it in silence, which is how the tautological a2 survived.
 #
@@ -633,7 +633,7 @@ def a4_perception_twice(frame=None):
     return False, detail
 
 
-# Only these reach the bundle: run.sh copies *.json, *.jsonl and *.log out of the
+# Only these reach the bundle: run_sim.sh copies *.json, *.jsonl and *.log out of the
 # scratch directory. Leftover detection_*.png are never archived, and a gate that fails on a
 # file nobody copies gets skipped.
 ARCHIVED_GLOBS = (".json", ".jsonl", ".log")
@@ -682,7 +682,7 @@ def a5_bundle_clean(run_dir, run_start_epoch, scratch_dir=None):
               "stale_count": len(stale), "stale": stale[:20]}
     if stale:
         detail["why"] = ("these artefacts predate this run and would be archived into its "
-                         "bundle under its source hashes. run.sh renames $OUT_DIR before "
+                         "bundle under its source hashes. run_sim.sh renames $OUT_DIR before "
                          "each run; that did not happen. Move /tmp/graphapi_live by hand, then "
                          "restart.")
     return (not stale), detail
@@ -1241,10 +1241,10 @@ GT_TOKENS = r"FEED_GT_|GT_SEMANTIC|gt_semantic|habitat_gt|/gt/semantic_instance|
 # Files that may name a GT token, each with the reason it is allowed. Anything else FAILS.
 A12_ALLOWED_FILES = {
     "test/habitat_feed_host.py": "renders the semantic sensor (producer)",
-    # ../run.sh, not test/run.sh: the launcher was inlined into the repository root on
+    # ../run_sim.sh, not test/run_sim.sh: the launcher was inlined into the repository root on
     # 2026-09-11 (owner: "live_run will have to be discarded"), which moved it OUT of the tree
     # this probe greps. The scan below reaches it by name for that reason.
-    "../run.sh": "exports FEED_GT_SEMANTIC and stamps gt_semantic",
+    "../run_sim.sh": "exports FEED_GT_SEMANTIC and stamps gt_semantic",
     "test/preflight_gate.py": "this probe names the tokens",
     # Added 2026-09-11. Verified before listing, the same way the two entries below were:
     # nothing in CMakeLists' install list carries it (grep: 0), nothing under src/ or test/ imports
@@ -1280,7 +1280,7 @@ A12_ALLOWED_FILES = {
     "src/perception_module/metrics_eval.py":
         "offline HOV-SG metrics; installed, but imported only by two offline tools",
     # Added 2026-09-10. The config DECLARES the `gt_semantic` switch — a config that carries a
-    # setting has to name it, exactly as run.sh does when it exports FEED_GT_SEMANTIC. Both
+    # setting has to name it, exactly as run_sim.sh does when it exports FEED_GT_SEMANTIC. Both
     # entries are a declaration plus a comment; neither reads a ground-truth value. Verified before
     # listing: the only token in either file is the key's own name, once.
     "src/perception_module/config.py": "declares the gt_semantic switch; the key's name, not a read",
@@ -1316,17 +1316,17 @@ def a12_gt_isolation(root=None):
            "--exclude-dir=__pycache__", "--exclude-dir=.ruff_cache"] + dirs
     out = subprocess.run(cmd, cwd=root, capture_output=True, text=True).stdout.split()
     files = sorted(f.replace(os.sep, "/") for f in out)
-    # THE LAUNCHER IS OUTSIDE THIS ROOT AND IS STILL SCANNED. It was run.sh and
+    # THE LAUNCHER IS OUTSIDE THIS ROOT AND IS STILL SCANNED. It was run_sim.sh and
     # was therefore inside the grepped tree; on 2026-09-11 it was inlined into the repository root,
     # which silently took the file that exports FEED_GT_SEMANTIC out of a12's reach. A probe whose
     # coverage shrinks when a file moves, and which keeps passing, is rule 78 exactly: frozen on a
     # pass. Reached by name, and its absence is NOT a pass -- a missing launcher is reported.
-    launcher = os.path.join(os.path.dirname(root), "run.sh")
+    launcher = os.path.join(os.path.dirname(root), "run_sim.sh")
     if not os.path.isfile(launcher):
         return SKIPPED, {"reason": f"the launcher {launcher} is absent, so its GT tokens were "
                                    f"not examined; a12 cannot attest a tree it could not read"}
     if subprocess.run(["/bin/grep", "-qE", GT_TOKENS, launcher]).returncode == 0:
-        files = sorted(files + ["../run.sh"])
+        files = sorted(files + ["../run_sim.sh"])
     not_allowed = [f for f in files if f not in A12_ALLOWED_FILES]
     bad_functions = {}
     p2 = os.path.join(root, "src", "perception_module", "perception_2.py")
