@@ -278,8 +278,14 @@ GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL") or (
 GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
 GRAPH_API_AUTOSTART = os.environ.get("GRAPH_API_AUTOSTART", "1").lower() not in {"0", "false", "no"}
 SYNC_BUFFER_LIMIT = 20
-SCAN_COMPLETE_TOPIC = os.environ.get("SCAN_COMPLETE_TOPIC", "/habitat/scan_complete")
-SCAN_MERGE_SETTLE_S = float(os.environ.get("SCAN_MERGE_SETTLE_S", "1.0"))
+# Config first, environment override second -- the same precedence every other knob uses.
+# These were environment-ONLY, and neither name is on the launcher's -e list, so setting
+# either host-side reached nothing and the settle was fixed at its literal for every run.
+_ASSOC = (CFG.get("association", {}) or {})
+SCAN_COMPLETE_TOPIC = os.environ.get(
+    "SCAN_COMPLETE_TOPIC", _ASSOC.get("scan_complete_topic", "/habitat/scan_complete"))
+SCAN_MERGE_SETTLE_S = float(os.environ.get(
+    "SCAN_MERGE_SETTLE_S", _ASSOC.get("scan_merge_settle_s", 1.0)))
 
 def _launch_graph_api_bridge():
     bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph_api_bridge.py")

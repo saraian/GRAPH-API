@@ -68,6 +68,13 @@ association:
   # object legitimately larger than the cap can still absorb its own re-measurement (GA-365).
   suspicious_max_extent_m: 3.0
   suspicious_max_volume_m3: 1.5
+  # The post-scan merge: object_manager_6 subscribes to this topic and, when a scan reports
+  # complete, waits this long before running the duplicate merge once. The wait lets the last
+  # detections of the scan land and associate first; it is not part of the merge policy.
+  # Both were environment-only until 2026-09-11 and neither reaches the container on the -e
+  # list, so the settle could not be changed for a run at all.
+  scan_complete_topic: "/habitat/scan_complete"
+  scan_merge_settle_s: 1.0
 
 frames:
   # OPTICAL frame (x right, y down, z forward) the perception back-projects
