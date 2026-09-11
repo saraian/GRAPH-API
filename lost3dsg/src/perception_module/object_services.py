@@ -1206,6 +1206,23 @@ class ObjectServices(Node):
                 f"candidates={len(pairs)} examined={examined} "
                 f"invalid_bbox={len(invalid)} margin={MERGE_AABB_MARGIN_M:.3f}m",
             )
+            # GA-232's rule, applied to this engine too: COUNTS, never per-pair rows -- the
+            # per-pair population is what took hook_decisions.jsonl to 1.71 GB. Without this
+            # row the broad phase reintroduces the exact defect `_refused` exists to prevent:
+            # a pair dropped here never reaches the distance check, so no `merge_refused` is
+            # written, and "the gate refused N pairs" and "association produced no pairs"
+            # become one observation again. Its only other trace is the log line above, which
+            # goes to the container log -- a property of the launch, not of the bundle.
+            not_offered = all_pairs - len(pairs)
+            if not_offered > 0:
+                try:
+                    self.decision_log.write(
+                        "not_offered_summary", "<sweep>",
+                        n_pairs=not_offered,
+                        by_reason={"aabb_margin": not_offered})
+                except Exception as e:
+                    self.get_logger().error(
+                        f"decision_log not_offered_summary failed: {e}")
             return pairs, None, {}
 
         ctx, built = self._assoc_build(objects)
@@ -1388,11 +1405,14 @@ class ObjectServices(Node):
             print("══════════════════════════════════════════════")
 
             # GA-186. Candidate generation is a NAMED STEP now, and it is where the two
-            # engines differ first. "legacy" offers every pair, which is what every run to
-            # date measured. "evidence" offers only pairs inside the two objects' own
-            # covariance shells and RETURNS WHAT IT EXCLUDED, so a pair that was never
-            # compared is visible in the bundle instead of being invisible the way refusals
-            # were before they were logged.
+            # engines differ first. "legacy" used to offer EVERY pair, which is what every
+            # run before the dev/lost3dsg-cleanup merge measured; it now applies an AABB
+            # broad phase at `merge_aabb_margin_m` first, so that sentence no longer
+            # describes it. "evidence" offers only pairs inside the two objects' own
+            # covariance shells. BOTH engines now report what they excluded, as a counted
+            # `not_offered_summary` row, so a pair that was never compared is visible in the
+            # bundle instead of being invisible the way refusals were before they were
+            # logged.
             pair_iter, assoc_ctx, assoc_objs = self._merge_candidates(objects, _refused)
 
             for a, b, pair_meta in pair_iter:

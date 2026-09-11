@@ -273,11 +273,17 @@ class WorldModel:
         return obj if obj is not None else self._by_id.get(key)
 
     def tracking_candidates(self, bbox, radius_fn):
-        """Return the conservative AABB candidate set for the tracking transition.
+        """Return ``(candidates, excluded)`` for the tracking transition.
 
         Each stored box is expanded by its own measured/fallback reach and the query box is
         expanded by its half-diagonal.  This is a broad phase only; the existing exact
         centre-distance test remains in ``check_tracking_transition``.
+
+        ``excluded`` is how many live objects this pass did NOT put forward.  It is returned
+        rather than left to the caller because the caller cannot recover it: this runs on the
+        executor thread with no lock held afterwards, so an object added or removed by the
+        HTTP surface between the return and a later subtraction would be charged to locality.
+        GA-289's ``pruned_locality`` counter is the reader.
         """
         with self.lock:
             self._ensure_spatial()
@@ -298,11 +304,12 @@ class WorldModel:
             }
             keys = set(self._tracking_spatial.query(query))
             keys.update(self._tracking_unbounded)
-            return sorted(
+            kept = sorted(
                 (obj for obj in self._persistent_perceptions
                  if self._object_keys.get(id(obj)) in keys),
                 key=lambda obj: self._model_order.get(self._object_keys.get(id(obj)), 0),
             )
+            return kept, len(self._persistent_perceptions) - len(kept)
 
     def clear_actual_perceptions(self):
         with self.lock:

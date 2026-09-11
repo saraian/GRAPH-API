@@ -921,6 +921,11 @@ class ObjectManagerService(Node):
                                 # GA-289: what the two new gates did, so the fix is measured
                                 # from the same row that measured the defect.
                                 "pruned_locality": 0, "locality_unmeasured": 0,
+                                # Of `pruned_locality`, how many the AABB broad phase
+                                # dropped before the loop. A broad phase that silently
+                                # drops everything and a scene with nothing near look
+                                # identical in the folded total; this tells them apart.
+                                "pruned_locality_broad": 0,
                                 "reach_fallback": 0, "refused_evidence": 0}
         self._scan_stats["calls"] += 1
         return self._scan_stats
@@ -1077,10 +1082,22 @@ class ObjectManagerService(Node):
         # this pass. The snapshot is the pass's consistent view: it judges the world
         # as it was when the pass began.
         try:
-            transition_candidates = wm.tracking_candidates(
+            transition_candidates, _pruned_broad = wm.tracking_candidates(
                 bbox, lambda obj: tracking_reach_m(obj)[0])
         except (KeyError, TypeError, ValueError, OverflowError):
-            transition_candidates = []
+            # The generator failed, so nothing was judged for locality at all. The
+            # exclusions are UNMEASURED, not zero, and must not be charged to the
+            # locality counter -- that is what `locality_unmeasured` is for.
+            transition_candidates, _pruned_broad = [], 0
+            _scan["locality_unmeasured"] += 1
+        # GA-289's counters survive the broad phase moving out of this loop. The generator
+        # expands each stored box by that object's own reach and the query box by its
+        # half-diagonal, so a box it excludes is separated on some axis by more than
+        # reach + half-diagonal -- and the centre distance is at least that axis gap, so the
+        # exact test below would prune it too. The two mechanisms answer the same question,
+        # which is why their counts add into one total the bundle can still read.
+        _scan["pruned_locality_broad"] += _pruned_broad
+        _scan["pruned_locality"] += _pruned_broad
         for obj in transition_candidates:
             _scan["visited"] += 1
             # GA-12: default is NOW, not the epoch -- an unstamped object is not yet stable.

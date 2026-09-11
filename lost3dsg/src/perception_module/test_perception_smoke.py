@@ -381,19 +381,38 @@ def merge_path():
     svc.room_manager.room_at_bbox = lambda bbox: None
     refused_rows = []
 
+    summary_rows = []
+
     class _Log:
         def write(self, kind, oid, **kw):
             if kind == "merge_refused":
                 refused_rows.append(kw)
+            elif kind == "not_offered_summary":
+                summary_rows.append(kw)
 
     svc.decision_log = _Log()
 
+    # The legacy engine gained an AABB broad phase at `merge_aabb_margin_m` (0.8 m) in the
+    # dev/lost3dsg-cleanup merge, so a pair far enough apart never reaches the distance gate
+    # and no `merge_refused` row is written for it. BOTH populations are asserted here.
+    #
+    # `b` is the DISTANCE-ARM pair: 1.4 m between centres, which is past the 0.8 m criterion
+    # but only 0.4 m between the boxes, so the broad phase offers it and the exact gate
+    # refuses it. That keeps this arm testing what it was written to test -- the typed
+    # threshold key -- instead of testing the broad phase by accident.
+    # `far` is the BROAD-PHASE population: both of its pairs are dropped before comparison,
+    # and must still be counted in the bundle.
+    NEAR_BUT_PAST_GATE = {"x_min": 1.4, "x_max": 2.4, "y_min": 0.0, "y_max": 1.0,
+                          "z_min": 0.0, "z_max": 1.0}
     a = object_info.Object("chair", None, BOX, description="a chair", color="red", material="wood")
-    b = object_info.Object("chair", None, FAR, description="a chair", color="red", material="wood")
-    a.object_id, b.object_id = "obj_a", "obj_b"
-    a.creation_time, b.creation_time = 100.0, 200.0
+    b = object_info.Object("chair", None, NEAR_BUT_PAST_GATE, description="a chair",
+                           color="red", material="wood")
+    far = object_info.Object("chair", None, FAR, description="a chair", color="red",
+                             material="wood")
+    a.object_id, b.object_id, far.object_id = "obj_a", "obj_b", "obj_far"
+    a.creation_time, b.creation_time, far.creation_time = 100.0, 200.0, 300.0
     wm.persistent_perceptions.clear()
-    wm.persistent_perceptions.extend([a, b])
+    wm.persistent_perceptions.extend([a, b, far])
 
     req = rosstub.Any()
     # GA-341: the request's floor must sit ABOVE sim_threshold (0.85) or the service refuses it.
@@ -413,6 +432,15 @@ def merge_path():
     assert dr.get("threshold_distance_m") == 0.8, dr          # from request.max_distance
     assert "threshold" not in dr, "the legacy key is retired on the distance arm"
     assert "threshold_similarity" not in dr, "the distance arm must not carry the similarity key"
+
+    # The pairs the broad phase dropped are COUNTED, never written one by one (GA-232: the
+    # per-pair population is what took hook_decisions.jsonl to 1.71 GB). Without this row a
+    # pruned pair leaves no trace in the bundle at all, which is the defect `_refused` was
+    # introduced to end. Both of `far`'s pairs are out; the a-b pair is not.
+    assert summary_rows, "the broad phase must record what it never offered"
+    sm = summary_rows[0]
+    assert sm.get("n_pairs") == 2, sm
+    assert sm.get("by_reason") == {"aabb_margin": 2}, sm
 
     # The similarity arm: same position, disagreeing attributes -> refused on similarity,
     # with the UNTYPED quantity on its own typed key.
