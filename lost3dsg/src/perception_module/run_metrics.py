@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 HERE = Path(__file__).resolve().parent
+RUN_OUTPUT = HERE.parents[2] / "output"
 # Keep metric artifacts next to this script.  In the standard container this
 # is /root/exchange/lost3dsg/src/perception_module, which is bind-mounted and
 # therefore visible on the host as well.
@@ -31,7 +32,7 @@ def main() -> int:
     parser.add_argument("--ground-truth", type=Path,
                         default=HERE / "manifest_gt_00824.json",
                         help="manifest ground truth")
-    parser.add_argument("--run-dir", type=Path, default=PROJECT_OUTPUT,
+    parser.add_argument("--run-dir", type=Path, default=RUN_OUTPUT,
                         help="directory con gli artefatti del run")
     parser.add_argument("--persistent-perception", type=Path,
                         help="JSON persistente da usare, eventualmente arricchito con CLIP")
@@ -69,6 +70,14 @@ def main() -> int:
     if args.visualization_output is None:
         args.visualization_output = PROJECT_OUTPUT / f"boxes_{scene_name}.html"
 
+    args.manifest_output = args.manifest_output.resolve()
+    args.metrics_output = args.metrics_output.resolve()
+    args.visualization_output = args.visualization_output.resolve()
+    persistent_perception = (args.persistent_perception.resolve()
+                             if args.persistent_perception else None)
+    if persistent_perception is not None and not persistent_perception.is_file():
+        parser.error(f"JSON persistente inesistente: {persistent_perception}")
+
     for output in (args.manifest_output, args.metrics_output,
                    args.visualization_output):
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -80,8 +89,8 @@ def main() -> int:
     _run([sys.executable, str(evaluation_script),
           "--ground-truth", str(ground_truth),
           "--run-dir", str(run_dir),
-          *(["--persistent-perception", str(args.persistent_perception.resolve())]
-            if args.persistent_perception else []),
+          *(["--persistent-perception", str(persistent_perception)]
+            if persistent_perception else []),
           "--output", str(args.manifest_output)])
     _run([sys.executable, str(metrics_script),
           str(args.manifest_output),

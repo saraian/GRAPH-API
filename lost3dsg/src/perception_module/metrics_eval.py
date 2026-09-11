@@ -143,7 +143,19 @@ def load(path):
     out = []
     for filename in files:
         value = json.loads(filename.read_text(encoding="utf-8"))
-        out.extend(value if isinstance(value, list) else [value])
+        rows = value if isinstance(value, list) else [value]
+        if path.is_file():
+            out.extend(rows)
+            continue
+        # A run directory also contains room.json, persistent objects and old
+        # metric reports.  Only ingest documents that actually use the scene
+        # manifest schema; otherwise those files become bogus extra scenes.
+        manifest_keys = {
+            "predicted_floors_m", "ground_truth_floors_m", "predicted_regions",
+            "ground_truth_regions", "predicted_objects", "ground_truth_objects",
+        }
+        out.extend(row for row in rows
+                   if isinstance(row, dict) and manifest_keys.intersection(row))
     return out
 
 def mask(value):
@@ -155,8 +167,15 @@ def iou(a, b):
     return len(a & b) / len(a | b) if a or b else 0.0
 
 def _aabb_iou(a, b):
-    alo, ahi = np.asarray(a["aabb_min_m"],float), np.asarray(a["aabb_max_m"],float)
-    blo, bhi = np.asarray(b["aabb_min_m"],float), np.asarray(b["aabb_max_m"],float)
+    try:
+        alo, ahi = np.asarray(a["aabb_min_m"],float), np.asarray(a["aabb_max_m"],float)
+        blo, bhi = np.asarray(b["aabb_min_m"],float), np.asarray(b["aabb_max_m"],float)
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    if (any(value.shape != (3,) for value in (alo, ahi, blo, bhi))
+            or not all(np.all(np.isfinite(value)) for value in (alo, ahi, blo, bhi))
+            or np.any(ahi < alo) or np.any(bhi < blo)):
+        return 0.0
     intersection = np.maximum(0.0, np.minimum(ahi,bhi)-np.maximum(alo,blo))
     iv=float(np.prod(intersection)); av=float(np.prod(np.maximum(0,ahi-alo))); bv=float(np.prod(np.maximum(0,bhi-blo)))
     return iv/(av+bv-iv) if av+bv-iv>0 else 0.0
@@ -187,8 +206,8 @@ def geometry_iou(a,b):
     return 0.0
 
 def assignment(pred, gt, threshold):
-    scores = np.asarray([[geometry_iou(p, g) for g in gt] for p in pred])
     if not pred or not gt: return []
+    scores = np.asarray([[geometry_iou(p, g) for g in gt] for p in pred])
     try:
         from scipy.optimize import linear_sum_assignment
         ii, jj = linear_sum_assignment(-scores)
@@ -257,7 +276,9 @@ def floor_regions(scenes, threshold):
         for d, pi, gi in sorted((abs(float(p)-float(g)), pi, gi) for pi,p in enumerate(ps) for gi,g in enumerate(gs)):
             if d <= .5 and pi not in used_p and gi not in used_g: used_p.add(pi); used_g.add(gi)
         fh += len(used_g); ft += len(gs)
-        pr, gr = s.get("predicted_regions", []), s.get("ground_truth_regions", [])
+        region_scene = filtered_scene(s, include_regions=True)
+        pr = region_scene.get("predicted_regions", [])
+        gr = region_scene.get("ground_truth_regions", [])
         rh += len(assignment(pr, gr, threshold)); pt += len(pr); gt += len(gr)
     return {"acc_f_pct": round(100*fh/ft,4) if ft else None,
             "region_precision_pct": round(100*rh/pt,4) if pt else None,
@@ -409,13 +430,18 @@ def objects(scenes, threshold=.5):
         classified_matches += classified
     top_k_accuracy = {k: (value / semantic_match_total if semantic_match_total else None)
                       for k, value in top_k_totals.items()}
+    # No usable prediction embedding means classification was not measured.
+    # Reporting 0% in that case confuses missing input with failed recognition.
+    if classified_matches == 0:
+        top_k_accuracy = {k: None for k in TOP_K}
     out = {f"top{k}_pct": round(100 * value, 4) if value is not None else None
            for k, value in top_k_accuracy.items()}
     # Keep the existing percent fields, and expose the unscaled values/names
     # returned by the evaluator in top_k.py for direct comparison.
     out["tp_top_k_acc"] = {str(k): round(value, 6) if value is not None else None
                            for k, value in top_k_accuracy.items()}
-    out["top_k_auc"] = round(auc_total / semantic_match_total, 6) if semantic_match_total else None
+    out["top_k_auc"] = (round(auc_total / semantic_match_total, 6)
+                        if semantic_match_total and classified_matches else None)
     out["auc_top_k"] = out["top_k_auc"]
     out["object_precision_pct"] = round(100*len(geometric_matches)/predicted_total,4) if predicted_total else None
     out["object_recall_pct"] = round(100*len(geometric_matches)/ground_truth_total,4) if ground_truth_total else None
@@ -424,7 +450,7 @@ def objects(scenes, threshold=.5):
     out["classified_matched_objects"] = classified_matches
     return out
 
-def room_objects(scenes, threshold=.5):
+def room_objects(scenes, threshold=.5, region_threshold=.5):
     """Compare object occupancy per geometrically matched room.
 
     A global object match is counted for a room only when both the predicted object
@@ -444,6 +470,9 @@ def room_objects(scenes, threshold=.5):
             predicted_id = trial.get("predicted_region_id")
             ground_truth_id = trial.get("ground_truth_region_id")
             if predicted_id is None or ground_truth_id is None:
+                continue
+            if (region_threshold is not None
+                    and float(trial.get("region_iou", 0.0)) <= region_threshold):
                 continue
             room_map[str(predicted_id)] = str(ground_truth_id)
             room_iou[str(ground_truth_id)] = float(trial.get("region_iou", 0.0))
@@ -547,7 +576,7 @@ def evaluate(scenes, base=Path.cwd(), region_iou=.5, object_iou=.5,
     report = {"scenes":[str(s.get("scene","unknown")) for s in scenes],
               "table_ii_floor_regions":floor_regions(scenes,region_iou),
               "table_iii_rooms":rooms(scenes), "table_iv_objects":objects(scenes, object_iou),
-              "table_vi_room_objects":room_objects(scenes, object_iou),
+              "table_vi_room_objects":room_objects(scenes, object_iou, region_iou),
               "table_v_retrieval":retrieval(scenes), "table_vii_representation":sizes(scenes,base)}
     if include_match_details:
         report["match_details"] = match_details(
