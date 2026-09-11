@@ -279,6 +279,10 @@ GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL") or (
 GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
 GRAPH_API_AUTOSTART = os.environ.get("GRAPH_API_AUTOSTART", "1").lower() not in {"0", "false", "no"}
 SYNC_BUFFER_LIMIT = 20
+# Discards tolerated before the stuck-latch alarm fires, and only while NOT ONE
+# pair has been processed. A healthy driving run refuses plenty of moving
+# observations; it also processes the stationary ones, which is what clears this.
+MOTION_LATCH_ALARM_PAIRS = 25
 # Config first, environment override second -- the same precedence every other knob uses.
 # These were environment-ONLY, and neither name is on the launcher's -e list, so setting
 # either host-side reached nothing and the settle was fixed at its literal for every run.
@@ -676,6 +680,8 @@ class ObjectManagerService(Node):
         # the robot is doing when it arrives -- see _try_process.
         self._moving_since = None
         self._dropped_moving_pairs = 0
+        self._processed_pairs = 0
+        self._motion_starvation_warned = False
         # Arrival counters. The two callbacks used to buffer unconditionally with a single
         # silent `stamp is None` exit, so "every message arrived unusable" and "no message
         # arrived" produced identical evidence -- which is the pair of possibilities three
@@ -1765,8 +1771,13 @@ class ObjectManagerService(Node):
                 _ann = dict(decision.annotation or {})
                 _ann.setdefault("decision_id", uuid.uuid4().hex[:16])   # opaque, and unique ACROSS
                 #   runs, so two bundles can be read together without their ids colliding
+                # room_id ON THE ROW, not only in the proposal. The proposal above carries it
+                # and the row did not, so every admission in every bundle read room_id: None
+                # -- 232 of 232 on 20260911_173938. Table VI scores objects INSIDE a room, so
+                # with no room on the decision it cannot score above zero however good the
+                # segmentation gets. Recorded here, where the room was actually decided.
                 self.decision_log.write("admission", label, filter=self.filter_hook.name, outcome=decision.outcome,
-                                        reason=decision.reason, annotation=_ann)
+                                        reason=decision.reason, room_id=room_id, annotation=_ann)
                 if not decision.admitted:
                     self.object_services.log_both('warn', f"[{self.filter_hook.name}] refused {label}: {decision.reason}")
                     continue
@@ -2442,6 +2453,29 @@ class ObjectManagerService(Node):
                         'warn',
                         f"[SYNC] pair {_stamp_key_str(bboxes_msg.header.stamp)} observed during "
                         f"motion -- discarded (total {self._dropped_moving_pairs})")
+                    # SAY IT ONCE, LOUDLY, WHEN THE LATCH IS CLEARLY STUCK.
+                    #
+                    # `_moving_since` is set by the "moving" edge of /robot_movement_detected
+                    # and cleared only by its "stopped" edge. If that stop is never published
+                    # the latch never opens, every later pair lands here, and the object store
+                    # stops growing -- with nothing in the log saying so, because each discard
+                    # reads as one ordinary refusal. That is what happened twice on 2026-09-11:
+                    # 426 discards and 0 pairs processed in one 18-minute run, ending with 5
+                    # objects from 455 detections.
+                    #
+                    # The condition is DISCARDS WITH NO PROCESSED PAIR AT ALL. A run that is
+                    # pairing normally and refuses some moving observations never trips it, at
+                    # any discard count.
+                    if (self._dropped_moving_pairs >= MOTION_LATCH_ALARM_PAIRS
+                            and self._processed_pairs == 0
+                            and not self._motion_starvation_warned):
+                        self._motion_starvation_warned = True
+                        self.object_services.log_both(
+                            'error',
+                            f"[SYNC] {self._dropped_moving_pairs} pairs discarded as 'observed "
+                            f"during motion' and NOT ONE has ever been processed. The stop edge "
+                            f"of /robot_movement_detected is not arriving, so no observation "
+                            f"can reach the object store for the rest of this run.")
                     continue
 
             descriptions = self._pending_descriptions.pop(stamp_key, None)
@@ -2449,6 +2483,10 @@ class ObjectManagerService(Node):
             if descriptions is None or bboxes is None:
                 continue
 
+            self._processed_pairs += 1
+            # DEBUG, and that matters: this line does not reach the bundle's launch log, so
+            # "it never appears" is not evidence that no pair was processed. The counter above
+            # is what answers that question.
             self.object_services.log_both(
                 'debug',
                 f"[SYNC] Processing matched perception stamp {_stamp_key_str(descriptions.header.stamp)}"

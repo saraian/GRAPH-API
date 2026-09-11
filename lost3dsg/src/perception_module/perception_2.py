@@ -233,6 +233,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         super().__init__("detection_node")
         self.sensor_cb_group = ReentrantCallbackGroup()
         self.perception_cb_group = MutuallyExclusiveCallbackGroup()
+        # THE MOTION WATCH GETS ITS OWN GROUP, and this is not tidiness.
+        #
+        # `joint_callback` is the ONLY publisher of /robot_movement_detected, and
+        # object_manager_6 latches on its "moving" edge and unlatches on its "stopped" edge.
+        # On the perception group the watch is serialised behind `_perception_timer_callback`,
+        # which blocks for the whole detect + VLM round trip. MEASURED on
+        # 20260911_181716_hm3d_00861: the 1 Hz timer evaluated FOUR times in 18 minutes. It
+        # caught one moving edge at +29 s and never saw a stationary sample again, so the stop
+        # was never published, the latch never opened, and object_manager_6 discarded 426 of
+        # 426 matched pairs as "observed during motion". The run ended with 5 objects from 455
+        # detections. The 17:39 run is the control: same single latch, but it closed at +535 s,
+        # and that run reached 184 objects.
+        #
+        # Its own mutually-exclusive group, not the reentrant sensor one: the watch reads and
+        # writes `last_joint_positions`, and two concurrent runs of it would difference a
+        # position against one this same callback had just replaced.
+        self.motion_cb_group = MutuallyExclusiveCallbackGroup()
         self._perception_lock = Lock()
 
         self.file_logger = module_logger
@@ -525,7 +542,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                               callback_group=self.sensor_cb_group)
             self._queue_depth_pub = self.create_publisher(
                 Int32, "/perception/frame_queue_depth", 10)
-        self.create_timer(1.0, self.joint_callback, callback_group=self.perception_cb_group)
+        self.create_timer(1.0, self.joint_callback, callback_group=self.motion_cb_group)
         self.get_logger().info("Perception timers created")
 
 

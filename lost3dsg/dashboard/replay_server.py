@@ -3740,7 +3740,14 @@ def build_app(bundle: Path):
     # the panel showed "Connection refused" where the run's own output was sitting on disk the
     # whole time. Serve the archived logs instead, newest last, tagged by the node that wrote
     # each line so a merged view stays attributable.
-    _LOG_ORDER = ("perception.log", "om6.log", "rtabmap.log", "bridge.log",
+    # `launch.log` CARRIES THE NODES NOW. Since the launcher became one script the per-node
+    # files are created and left EMPTY -- measured on 20260911_181716_hm3d_00861: perception.log,
+    # om6.log, rtabmap.log and bridge.log are all 0 bytes while launch.log holds 2.3 MB of their
+    # output, tagged `[object_manager_6.py-4]` and so on. The panel merged four empty files with
+    # feed_node and system_health, which is exactly the owner's "we're receiving log only from
+    # the feed node". The per-node names stay: they cost nothing when empty, and a deployment
+    # that still writes them must not lose them.
+    _LOG_ORDER = ("launch.log", "perception.log", "om6.log", "rtabmap.log", "bridge.log",
                   "feed_host.log", "feed_node.log", "system_health.log")
 
     m.app.router.routes = [r for r in m.app.router.routes

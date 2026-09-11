@@ -33,6 +33,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
@@ -359,17 +360,42 @@ class RoomManager:
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
+        # A REENTRANT GROUP FOR EVERYTHING THIS CLASS SUBSCRIBES TO.
+        #
+        # These used to land in the node's DEFAULT callback group, which is MUTUALLY EXCLUSIVE:
+        # however many threads the executor has, one callback in that group runs at a time. The
+        # group already holds the perception cycle (median 4.4 s, max 12.1 s on 20260911_181716)
+        # and the GVD segmentation at about 1 Hz, so a cloud arriving every 0.9-5.1 s queued
+        # behind them and was dropped by its depth-1 BEST_EFFORT queue before it was ever
+        # scheduled.
+        #
+        # MEASURED end to end before changing anything: /rtabmap/cloud_map publishes every
+        # 0.9-5.1 s; a subscriber with THIS class's exact QoS receives ~296,000 points per
+        # message and parses all of them; the subscription is created ("3D structural filter
+        # enabled" is in the log). And `_latest_cloud_points` stayed None for the whole run, so
+        # room.json recorded `cloud_3d: {"source": "none", "reason": "no_fresh_cloud"}` and the
+        # 3D structural filter never contributed to a single segmentation. Neither "Failed to
+        # parse" nor "Ignoring stale 3D cloud" was ever logged -- nothing arrived to judge.
+        #
+        # The consequence was not subtle: with no 3D structure the medial-axis skeleton had 91
+        # to 163 pixels for a 62 m2 storey, every doorway candidate was rejected on geometry,
+        # no cut was proposed, and a storey that ground truth divides into 12 rooms stayed ONE.
+        #
+        # Reentrant, not a second mutually-exclusive group: the callbacks here write disjoint
+        # state under `self._lock`, and a group that serialises them would reintroduce the same
+        # head-of-line blocking between the grid and the cloud.
+        self._cb_group = ReentrantCallbackGroup()
         self._grid_sub = node.create_subscription(
-            OccupancyGrid, self.map_topic, self._slow_map_callback, qos)
+            OccupancyGrid, self.map_topic, self._slow_map_callback, qos, callback_group=self._cb_group)
         from config import CFG
         if self._params.get('doorway_vlm_enabled', True):
             image_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
             self._rgb_sub = node.create_subscription(
                 Image, self._params['doorway_vlm_camera_topic'],
-                self._rgb_callback, image_qos)
+                self._rgb_callback, image_qos, callback_group=self._cb_group)
             self._camera_info_sub = node.create_subscription(
                 CameraInfo, self._params['doorway_vlm_camera_info_topic'],
-                self._camera_info_callback, image_qos)
+                self._camera_info_callback, image_qos, callback_group=self._cb_group)
             self._doorway_vlm_executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix='doorway-vlm')
             self._log('info',
@@ -387,19 +413,19 @@ class RoomManager:
         self._room_areas_pub = node.create_publisher(String, '/room_areas', 10)
         if self.cloud_map_topic:
             self._cloud_sub = node.create_subscription(
-                PointCloud2, self.cloud_map_topic, self._cloud_map_callback, cloud_qos)
+                PointCloud2, self.cloud_map_topic, self._cloud_map_callback, cloud_qos, callback_group=self._cb_group)
             self._log(
                 'info',
                 f'RoomManager: 3D structural filter enabled from {self.cloud_map_topic}')
         self._cloud_ground_sub = None
         if self.cloud_ground_topic:
             self._cloud_ground_sub = node.create_subscription(
-                PointCloud2, self.cloud_ground_topic, self._cloud_ground_callback, cloud_qos)
+                PointCloud2, self.cloud_ground_topic, self._cloud_ground_callback, cloud_qos, callback_group=self._cb_group)
         self._cloud_obstacles_sub = None
         if self.cloud_obstacles_topic:
             self._cloud_obstacles_sub = node.create_subscription(
                 PointCloud2, self.cloud_obstacles_topic,
-                self._cloud_obstacles_callback, cloud_qos)
+                self._cloud_obstacles_callback, cloud_qos, callback_group=self._cb_group)
         if self.cloud_ground_topic or self.cloud_obstacles_topic:
             self._log(
                 'info',
@@ -2650,7 +2676,13 @@ class RoomManager:
                 pre_raw, pre_dist = self._compute_gvd(pre_free, pre_wall_structural_occ)
             pre_points = self._critical_points(
                 self._prune_skeleton(pre_raw, resolution), pre_dist, resolution)
-            if self._params.get('doorway_require_wall_support', True):
+            # Same abstain-vs-reject distinction as the main pass below. This copy tested
+            # only the flag, so it dropped every pre-pass proposal whenever no wall was
+            # confirmed -- and the pre-pass is what keeps a real doorway visible long enough
+            # for the VLM to confirm it.
+            if (self._params.get('doorway_require_wall_support', True) and
+                    self._active_detected_wall_support is not None and
+                    np.any(self._active_detected_wall_support)):
                 minimum = float(self._params.get('detected_wall_door_min_support', 0.16))
                 pre_points = [point for point in pre_points
                               if len(point) >= 5 and point[4] >= minimum]
@@ -2715,8 +2747,18 @@ class RoomManager:
         # A narrow branch in the middle of a room is not a doorway hypothesis.  When
         # depth walls are available, require the GVD bottleneck to terminate against
         # both sides of that wall network before spending a VLM call on it.
+        # `np.any`, NOT `is not None`. The guard means "do we have wall evidence to judge
+        # against"; `_detected_wall_support` returns None only when the feature is switched off
+        # or the grid is missing, and otherwise returns an ALL-ZERO raster when no wall has been
+        # confirmed. A zeros array is not None, so this filter always ran, every score was 0.0,
+        # and 0.0 < 0.16 deleted every doorway. MEASURED on 20260911_173938_hm3d_00861: 63
+        # skeleton branches, 12 bottlenecks accepted by geometry, all 12 dropped, door_cuts=0,
+        # one room for the whole house. `_door_wall_support_score` already draws this
+        # distinction (it returns 0.0 when the raster is empty); it died here, at the point of
+        # use, where 0.0 was read as "rejected" rather than as "cannot say".
         if (self._params.get('doorway_require_wall_support', True) and
-                self._active_detected_wall_support is not None):
+                self._active_detected_wall_support is not None and
+                np.any(self._active_detected_wall_support)):
             min_support = float(self._params.get('detected_wall_door_min_support', 0.16))
             critical_points = [point for point in critical_points
                                if len(point) >= 5 and point[4] >= min_support]
