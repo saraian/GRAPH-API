@@ -241,14 +241,17 @@ mean unknown — it means the container never reached its own end. A watched nod
 
 ## The layers under `run.sh`
 
-Internals. Nobody is asked to call them, and a step that names one is wrong.
+There is one layer fewer than there used to be. `run.sh` now holds the whole launch: it works out
+which storeys the house has, then performs one run per storey. It does that by calling itself once
+per storey, so each storey still gets a clean process of its own.
 
 | | |
 |---|---|
 | `install.sh`, `run.sh`, `run_headless.sh`, `eval.sh` | what a person runs |
-| `lost3dsg/test/run_house.sh` | one launch per storey |
-| `lost3dsg/test/live_run.sh` | one launch |
-| `lost3dsg/test/live_stack_container.sh` | inside the container |
+| `lost3dsg/test/live_stack_container.sh` | inside the container. Nobody calls it by hand |
+
+`lost3dsg/test/live_run.sh` and `lost3dsg/test/run_house.sh` were deleted on 2026-09-11. If a step
+anywhere names either of them, that step is out of date.
 
 ## Other things you can run
 
@@ -269,10 +272,10 @@ cd lost3dsg/test && UPDATE_BASELINE=1 ./nonregression.sh && ./nonregression.sh
 4. Create the local settings file and name every value to fill in.
 5. Verify each of the above — including that an X display exists — and refuse with a cause.
 
-**One thing to know if you run the inner scripts yourself:** git records `live_run.sh`,
-`run_house.sh` and `live_stack_container.sh` as non-executable, so `./live_run.sh` fails with
-"Permission denied" on a fresh clone. Call them as `bash lost3dsg/test/live_run.sh`, or use
-`./run.sh`, which does that for you.
+**One thing to know about a fresh clone:** git records every script in this repository as
+non-executable, so `./run.sh` fails with "Permission denied" until you either mark it executable
+(`chmod +x run.sh`) or call it as `bash run.sh`. `run_headless.sh` calls `run.sh` through `bash`
+for exactly this reason, so `bash run_headless.sh` always works.
 
 ## Extension seam (`hooks.py`)
 
@@ -299,7 +302,8 @@ hooks.py`, `python3 box_view.py`.
 | path | holds |
 |---|---|
 | `lost3dsg/src/perception_module/` | the nodes (`perception_2.py`, `object_manager_6.py`, `object_services.py`, `room_manager.py`, `graph_api_bridge.py`), `config.py` / `config.yaml`, `hooks.py`, `cloud/` (Modal client + service), `viewer/` |
-| `lost3dsg/test/` | `live_run.sh`, `live_stack_container.sh`, `habitat_feed_host.py`, `preflight_gate.py`, `smoke_test.sh`, `nonregression.sh`, the two configs, `resource_monitor.py` |
+| `run.sh` | the whole launch: the storeys, the gate, the host feed, the container, the archive |
+| `lost3dsg/test/` | `live_stack_container.sh`, `habitat_feed_host.py`, `preflight_gate.py`, `smoke_test.sh`, `nonregression.sh`, the configs, `resource_monitor.py` |
 | `lost3dsg/msg`, `lost3dsg/srv` | the ROS 2 interfaces; `ObjectDescription.msg` carries `crop_path` |
 | `Dockerfile` | the `graphapi-run:humble` image |
 

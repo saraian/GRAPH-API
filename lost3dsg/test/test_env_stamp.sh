@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Runnable check for the environment stamping added to live_run.sh.
+# Runnable check for the environment stamping added to run.sh.
 #   ./test_env_stamp.sh
 #
-# Reads the REAL live_run.sh rather than a copy — a test that restates the logic drifts
+# Reads the REAL run.sh rather than a copy — a test that restates the logic drifts
 # from it silently, which is how the CFG_NAME bug survived. Everything here is extracted
 # from the live file at run time.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-SRC="$HERE/live_run.sh"
+SRC="$HERE/../../run.sh"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # 1. The whole script still parses.
-bash -n "$SRC" || fail "live_run.sh does not parse"
+bash -n "$SRC" || fail "run.sh does not parse"
 
 # 2. _enc_rev resolves BOTH cache layouts. A host cache can hold MiniLM flat AND
 #    under hub/ at the same revision today; which one loads depends on the env var the
@@ -23,12 +23,12 @@ mkdir -p "$HF_CACHE/hub/models--org--hubmodel/refs" "$HF_CACHE/models--org--flat
 echo -n "aaaa1111" > "$HF_CACHE/hub/models--org--hubmodel/refs/main"
 echo -n "bbbb2222" > "$HF_CACHE/models--org--flatmodel/refs/main"
 
-# Extract between explicit markers in live_run.sh. Two earlier versions guessed the boundary
+# Extract between explicit markers in run.sh. Two earlier versions guessed the boundary
 # with a sed pattern and both were wrong — the second ran to end-of-file because the range's
 # start line also matched its own terminator. A test that infers where its subject ends drifts
 # from it silently, which is the reason this file reads the real script instead of a copy.
 eval "$(sed -n '/# >>> TEST-EXTRACT _enc_rev/,/# <<< TEST-EXTRACT _enc_rev/p' "$SRC" | grep -v TEST-EXTRACT)"
-[ -n "$(type -t _enc_rev)" ] || fail "_enc_rev not extracted from live_run.sh"
+[ -n "$(type -t _enc_rev)" ] || fail "_enc_rev not extracted from run.sh"
 
 [ "$(_enc_rev org--hubmodel)"  = "aaaa1111" ] || fail "hub/ layout not resolved"
 [ "$(_enc_rev org--flatmodel)" = "bbbb2222" ] || fail "flat layout not resolved"

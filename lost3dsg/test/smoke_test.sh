@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Containerized smoke test for lost3dsg: colcon build, msg check, import every
 # node module from the INSTALLED tree, then a short live-startup check of
-# object_manager_6. Run INSIDE the ROS 2 Humble container (see live_run.sh for
+# object_manager_6. Run INSIDE the ROS 2 Humble container (see run.sh for
 # the docker invocation). Exits non-zero on the first failure.
 set -e
 source /opt/ros/humble/setup.bash

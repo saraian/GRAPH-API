@@ -8,7 +8,7 @@ them would make the upstream copy poorer for no reason; hard-coding them is what
 forbids.
 
 So the dashboard declares WHAT KINDS of thing an extension may add, and an extension declares the
-things. This is the same arrangement `live_run.sh` has with `EXT_ENV_FILE` and `preflight_gate.py`
+things. This is the same arrangement `run.sh` has with `EXT_ENV_FILE` and `preflight_gate.py`
 has with `load_external_probes`: the repository ships the seam, the deployment ships the wiring.
 
 WHAT AN EXTENSION MAY ADD

@@ -35,8 +35,13 @@ def _fake_frame():
     This is NOT the fallback a4 refuses to build for itself: that refusal is about the PROBE
     substituting a synthetic frame in a container, and it stays intact above.
     """
+    # 480x640 BECAUSE A TEST IN THIS FILE ASSERTS THAT SHAPE: `check(d["frame_shape"] ==
+    # [480, 640, 3])`. The helper said "the smallest real array serves" and returned 4x4, which
+    # made that assertion fail by construction -- the helper and the assertion were written
+    # against different intentions and never run together. A frame the size of a real one also
+    # keeps the fixture honest if a4 ever grows a minimum-size check.
     import numpy as np
-    return np.zeros((4, 4, 3), dtype=np.uint8)
+    return np.zeros((480, 640, 3), dtype=np.uint8)
 
 try:
     import pytest
@@ -430,7 +435,7 @@ def test_a4_catches_the_missing_stage_timings_before_the_run_does():
                 return [], t
 
         fake_cfg = types.ModuleType("config")
-        fake_cfg.CFG = {}
+        fake_cfg.CFG = _a4_local_cfg()
         fake_client = types.ModuleType("cloud.client")
         fake_client.get_perception_backend = lambda cfg: B()
         fake_cloud = types.ModuleType("cloud")
@@ -501,6 +506,44 @@ def test_a4_reads_the_pipelines_required_keys_rather_than_copying_them():
     check(isinstance(g._PIPELINE_TIMING_FALLBACK, tuple), "a fallback must exist")
 
 
+# THE a4 FIXTURES NEED SEGMENTER FILES, and they did not when they were written. a4 gained a
+# segmenter assertion on 2026-09-10 (it refuses a local-backend run whose vitsam paths do not
+# resolve), and that guard fires BEFORE the backend is ever called -- so three tests whose subject
+# is the backend's answering behaviour stopped reaching their subject and failed on a config of
+# `{}`. The probe is right and the fixtures were stale: a `{}` config is not a local deployment,
+# it is a deployment with nothing configured.
+#
+# Real files on disk, because a4 checks `os.path.isfile` and a size above zero -- a stub path
+# would make the fixture pass for a reason the real run does not have.
+_A4_TMP = None
+
+
+def _a4_local_cfg():
+    """A config that gets past a4's segmenter guard, so the test can reach what it is about."""
+    global _A4_TMP
+    import tempfile
+    if _A4_TMP is None:
+        _A4_TMP = tempfile.mkdtemp(prefix="a4_vitsam_")
+    enc = os.path.join(_A4_TMP, "l2_encoder.onnx")
+    dec = os.path.join(_A4_TMP, "l2_decoder.onnx")
+    for f in (enc, dec):
+        if not os.path.exists(f):
+            with open(f, "wb") as fh:
+                fh.write(b"not a real model; a4 asserts presence and size, never loads it")
+    # NOT backend "local". a4's local branch ASSERTS THE SEGMENTER FILES AND RETURNS -- it never
+    # calls the backend -- so a local config sends these three tests down a path that cannot
+    # observe what they are about, which is how a backend answers. They probe the contract, and
+    # the contract is probed on the non-local path. The segmenter paths stay because they cost
+    # nothing and keep the fixture valid if a4's branching changes again.
+    #
+    # WORTH KNOWING RATHER THAN HIDING: this means a4 does NOT probe a LOCAL backend's answers at
+    # all. A local backend that answers instantly and always -- GA-81's defect, `return [], {}` --
+    # is caught on the modal path and not on the local one, and every run we have made this week
+    # is local.
+    return {"perception": {"backend": "modal", "modal_endpoint": "http://probe.invalid/v1"},
+            "paths": {"vitsam_encoder": enc, "vitsam_decoder": dec}}
+
+
 def test_a4_refuses_a_backend_that_cannot_answer():
     """GA-81. `LocalPerceptionBackend.segment_scene` is `return [], {}` — it does not
     raise, so three calls record three passes having computed nothing. a4 was built to catch a
@@ -513,7 +556,7 @@ def test_a4_refuses_a_backend_that_cannot_answer():
             return [], {}
 
     fake_cfg = types.ModuleType("config")
-    fake_cfg.CFG = {}
+    fake_cfg.CFG = _a4_local_cfg()
     fake_client = types.ModuleType("cloud.client")
     fake_client.get_perception_backend = lambda cfg: LocalPerceptionBackend()
     fake_cloud = types.ModuleType("cloud")
@@ -557,9 +600,9 @@ def test_run_output_lives_outside_every_hashed_root():
               f"run output at {out} is inside hashed root {r} — the frozen root cannot hold still")
 
     # and the launcher must actually default there
-    body = open(os.path.join(HERE, "live_run.sh")).read()
+    body = open(os.path.join(HERE, "..", "..", "run.sh")).read()
     check("RESULTS_DIR=${RESULTS_DIR:-$REPO/results}" in body,
-          "live_run.sh must default the results directory to $REPO/results, never /tmp")
+          "run.sh must default the results directory to $REPO/results, never /tmp")
     check('export OUT_DIR="$RUN_DIR"' in body,
           "the live output and the bundle must be ONE directory: a scratch directory that is copied "
           "into the bundle at the end is lost whenever the container dies")
@@ -681,7 +724,7 @@ def test_a4_tells_a_cold_start_apart_from_the_serve_once_fault():
     """Runs the real probe with the two container-only imports stubbed, so the branch logic
     is exercised rather than described."""
     fake_cfg = types.ModuleType("config")
-    fake_cfg.CFG = {}
+    fake_cfg.CFG = _a4_local_cfg()
     fake_client = types.ModuleType("cloud.client")
     fake_cloud = types.ModuleType("cloud")
     fake_cloud.client = fake_client

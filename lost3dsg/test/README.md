@@ -11,7 +11,7 @@ simulator renders on the host. All commands below from `lost3dsg/test/`.
   with `hm3d_annotated_basis.scene_dataset_config.json`. `habitat_sim` needs the FULL
   `.basis.glb` path as the scene id.
 - EfficientViT-SAM ONNX models and a HuggingFace cache directory (mounted by the
-  scripts; adjust the paths at the top of `live_run.sh` for your machine).
+  scripts; adjust the paths at the top of `run.sh` for your machine).
 
 ## Configuration
 
@@ -44,7 +44,7 @@ installed tree, then briefly starts `object_manager_6`. Non-zero exit on first f
 ## Live run on Matterport (full stack)
 
 ```bash
-./live_run.sh
+./run.sh
 ```
 
 Starts the host-side Habitat feed (`habitat_feed_host.py` — coverage tour with a

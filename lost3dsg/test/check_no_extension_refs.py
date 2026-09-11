@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """This repository must not name any package that extends it. Enforced, not merely written.
 
-WHY MECHANICAL. On 2026-08-28 the owner ruled that `live_run.sh` contains ZERO references to the
+WHY MECHANICAL. On 2026-08-28 the owner ruled that `run.sh` contains ZERO references to the
 extension, with the extension owning its own mounts and variables. Nothing checked it. By
 2026-09-09 that one file held 112, the launcher REFUSED to start without the extension's package,
 and every one of those references had reached the upstream repository through an ordinary merge.
@@ -170,7 +170,7 @@ def main() -> int:
     for rel, n, line in bad:
         print(f"  {rel}:{n}: {line}")
     print("\nMove it to the extension. The seam is EXT_ENV_FILE / EXT_ENV_PASS / EXT_MOUNTS /"
-          "\nEXT_TREES / EXT_MOUNT_POINT / EXT_POLICY_JSON / EXT_STORE_REPAIR in live_run.sh.")
+          "\nEXT_TREES / EXT_MOUNT_POINT / EXT_POLICY_JSON / EXT_STORE_REPAIR in run.sh.")
     return 1
 
 

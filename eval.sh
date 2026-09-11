@@ -50,7 +50,7 @@ echo "output: $OUT"
 # afterwards, so it is a file with tests rather than a line in this script.
 #
 # NOTE THAT A BUNDLE RECORDS A SCENE *NAME*, NOT A FILE. run_metadata.json says
-# `scene: hm3d_00861`, and live_run.sh:469-476 turns it into a path with HM3D_ROOT on whichever
+# `scene: hm3d_00861`, and run.sh-476 turns it into a path with HM3D_ROOT on whichever
 # machine ran it. So an evaluation is NOT reproducible from a bundle alone. Filed as GA-464. The
 # resolver prints WHICH source answered, so a reader can see when a name was resolved rather than
 # read, and this script prints that line.

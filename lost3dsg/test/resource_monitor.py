@@ -2,7 +2,7 @@
 """Per-process resource usage + per-model location inventory for live runs.
 
 One JSON snapshot per invocation (--once) or a sampling loop (--interval S).
-Writes to stdout; live_run.sh redirects it to $OUT_DIR/model_resources.json.
+Writes to stdout; run.sh redirects it to $OUT_DIR/model_resources.json.
 
 Uses only what already exists on this machine (no new deps):
   - nvidia-smi --query-compute-apps / --query-gpu   (per-PID VRAM, device totals)

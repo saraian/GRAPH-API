@@ -84,6 +84,19 @@ frames:
   # Physical camera axes (x forward, y left, z up) for the saved agent pose.
   agent_pose: "habitat_camera"
 
+  # The motion gate: perception runs only while the camera is still. A score is metres of
+  # translation PLUS radians of rotation since the previous 1 Hz sample, and the camera counts
+  # as moving at or above this value; it must then stay below it for the settle below before a
+  # cycle may run.
+  # MEASURED 2026-09-11 on two COMPLETE tours (20260911_133641, _140421): 4344 frames each and
+  # ONE and TWO perception cycles between them. The tour drives through its waypoints instead
+  # of dwelling -- about 195 waypoint visits, 14 still windows -- and its longest pause is 1
+  # second, the same length as the sampling period.
+  # Raising the threshold is NOT a fix: metres and radians are summed, so a turn on the spot
+  # scores 6.28 without moving, and a threshold that admits it admits six metres of driving.
+  motion_position_threshold: 0.05
+  motion_min_stationary_s: 0.5
+
 paths:
   operations_log: "/root/exchange/output/operations.txt"
   # The segmenter weights, as seen INSIDE the container. live_run.sh always mounts the host
@@ -297,6 +310,30 @@ hooks:
   decisions_log: ""       # JSONL of decisions/revisions; empty -> output/hook_decisions.jsonl
 
 perception:
+  # THE FRAME QUEUE. 0 is OFF and is what every run before 2026-09-11 did: perception waited
+  # for the motion gate and processed whatever the camera held at that instant.
+  # WHY IT EXISTS, measured on two COMPLETE tours (20260911_133641 and _140421): 4344 frames
+  # each and ONE and TWO perception cycles between them, with no detections file in either
+  # bundle. The tour's longest pause is 1 second, the same length as the gate's sampling
+  # period, so the gate almost never observes a pause; and its score adds metres to radians,
+  # so no threshold can admit a turn on the spot without also admitting six metres of driving.
+  # Above 0, frames are captured regardless of motion and each is processed on its own
+  # captured transform.
+  # CORRECTED 2026-09-11 by the first armed run (20260911_150406). Depth is NOT bounded by the
+  # TF buffer: the queue discards the oldest when full, so a processed frame's age is depth
+  # times the CAPTURE interval (measured 0.53 s) -- about 4.2 s at depth 8, not 30 -- and that
+  # run logged no TF failure at all, sitting full on 261 of 262 cycles.
+  # What depth really costs is STALENESS. While the queue is saturated it processes the oldest
+  # of the most recent frames and drops the rest, so depth buys lag rather than coverage.
+  # queue_age_s on each row of perception_latencies.jsonl is the measurement.
+  # ARMED at 8 by the owner, 2026-09-11, to be tested by a run. 8 sits under the ~9 the TF
+  # buffer allows (30 s of buffer, ~3.2 s a cycle). The code fallback stays 0, so a
+  # deployment whose yaml lacks this key does NOT silently arm.
+  frame_queue_max: 8
+  # How far the viewpoint must move before a frame is worth queueing. Translation and
+  # rotation are separate on purpose; 0.26 rad is about 15 degrees.
+  frame_queue_min_translation_m: 0.25
+  frame_queue_min_rotation_rad: 0.26
   backend: "local"        # "modal" | "managed" | "local"
   # DECLARED so probe a10 can compare it. The code has read this key since GA-281
   # (config.py:468) and the file never named it, so a10 SKIPPED -- and a skipped probe

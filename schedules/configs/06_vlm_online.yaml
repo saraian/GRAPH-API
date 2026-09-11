@@ -1,16 +1,25 @@
 # 06_vlm_online.yaml — a complete run configuration. Use it directly:
 #     ./run_headless.sh --config schedules/configs/06_vlm_online.yaml
+# or name it from a schedule arm with `config_file:`.
 #
 # THE LABELLING VLM IS THE ONLINE MODEL. Owner 2026-09-10: gemma4-31b on regolo.
-# Everything else is the tracked default: local detector, rtabmap SLAM with exact sync, no
-# mapping phase, the scheduled exploration, and the camera tilted 30 degrees down.
+# Everything else is the tracked default.
 # THE KEY IS NOT HERE. It lives in lost3dsg/test/env.local.sh as REGOLO_API_KEY, gitignored,
 # because a key in a tracked config is GA-319 and was committed once already.
 #
 # WHAT DIFFERS FROM THE TRACKED config.yaml:
 #   vlm.base_url: 'https://api.regolo.ai/v1'
 #   vlm.model: 'gemma4-31b'
-# Generated 2026-09-11T09:32:49.
+#
+# GENERATED, DO NOT HAND-EDIT. Rewrite it with:
+#     python3 lost3dsg/test/regen_arm_configs.py
+# generated_at:   2026-09-11T15:01:59
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 db9c737547b39927
+#
+# A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
+# code then takes its module fallback instead. If a bundle's config is missing a key
+# you expected, compare the sha above against the tracked config before concluding
+# the arm set it deliberately: `regen_arm_configs.py --check` answers that.
 
 vlm:
   base_url: https://api.regolo.ai/v1
@@ -37,10 +46,12 @@ association:
   max_volume_threshold: 0.5
   bbox_reduction_ratio: 0.3
   reevaluation_radius_m: 2.0
+  association_margin_m: 0.3
   merge_engine: legacy
   merge_cost_ratio: 20.0
   merge_min_consecutive: 2
   merge_max_distance_m: 0.8
+  merge_aabb_margin_m: 0.8
   merge_min_similarity: 0.925
   merge_knn_k: null
   update_in_place_distance_m: 0.5
@@ -51,17 +62,22 @@ association:
   max_observations_per_object: 64
   suspicious_max_extent_m: 3.0
   suspicious_max_volume_m3: 1.5
+  scan_complete_topic: /habitat/scan_complete
+  scan_merge_settle_s: 1.0
 frames:
   camera: habitat_camera_optical
   agent_pose: habitat_camera
+  motion_position_threshold: 0.05
+  motion_min_stationary_s: 0.5
 paths:
   operations_log: /root/exchange/output/operations.txt
-  vitsam_encoder: "/models/vitsam/l2_encoder.onnx"   # the container mount of SAM_MODEL_DIR
-  vitsam_decoder: "/models/vitsam/l2_decoder.onnx"
+  vitsam_encoder: /models/vitsam/l2_encoder.onnx
+  vitsam_decoder: /models/vitsam/l2_decoder.onnx
   identification_prompt: ''
   scene_analysis_prompt: ''
   visual_prompt: ''
 tf:
+  world_frame: map
   lookup_timeout: 0.1
 walls:
   min_interval_s: 0.5
@@ -169,6 +185,9 @@ hooks:
   store: ''
   decisions_log: ''
 perception:
+  frame_queue_max: 8
+  frame_queue_min_translation_m: 0.25
+  frame_queue_min_rotation_rad: 0.26
   backend: local
   max_frame_age_s: 1.0
   modal_endpoint: ''

@@ -111,7 +111,7 @@ def describe(name, use_cache=True):
     frame_files = sorted((d / "frames").glob("*.jpg")) if (d / "frames").is_dir() else []
     n_frames = len(frame_files)
     # MEASURED resolution, from a frame the run actually wrote. `habitat.width` in the
-    # effective config is NOT trustworthy for this: live_run.sh records an incident where it
+    # effective config is NOT trustworthy for this: run.sh records an incident where it
     # "read 1280 from my own code default while the merged config supplied 640 and the sensor
     # stayed at 640x480", and bundle 20260901_055513 still stamps 1280x960 beside 640x480
     # JPEGs. A page that printed the config value would republish a number the project has
