@@ -3113,6 +3113,35 @@
 
     // ponytail: hiding edges does not move nodes, so no re-layout here — the toggle is
     // instant and the reader keeps their bearings. Re-run FIT if you want it re-framed.
+    // Fade a node that has stopped being perceived (owner, 2026-09-11). The age comes from
+    // `last_seen`, which the bridge publishes per object; an object with no stamp is left
+    // alone rather than painted stale, because "never recorded" is not "not seen lately".
+    //
+    // RE-APPLIED ON A TIMER, not only on sync. The age is measured against NOW, so a node goes
+    // stale while the page sits still and nothing arrives to trigger a redraw -- which is
+    // exactly the case a reader is watching for.
+    const STALE_AGING_S = 30, STALE_GONE_S = 180;
+    // WHAT "NOW" MEANS, in ONE place. A replay page is positioned at the frame on screen, not
+    // at today's clock, so measuring against `Date.now()` makes every object on a recorded run
+    // read as hours stale. The graph and the objects table both need this and had a copy each;
+    // two copies of a rule about time is how they end up disagreeing.
+    function graphNowSec() {
+      return (typeof window.REPLAY_NOW === 'number' && window.REPLAY_NOW > 0)
+        ? window.REPLAY_NOW : (Date.now() / 1000);
+    }
+    function applyNodeStaleness() {
+      if (typeof cy === 'undefined' || !cy || !cy.nodes) return;
+      const now = graphNowSec();
+      cy.nodes().forEach(n => {
+        const t = n.data('last_seen');
+        if (typeof t !== 'number' || !isFinite(t)) { n.removeClass('aging stale'); return; }
+        const age = Math.max(0, now - t);
+        n.toggleClass('aging', age >= STALE_AGING_S && age < STALE_GONE_S);
+        n.toggleClass('stale', age >= STALE_GONE_S);
+      });
+    }
+    setInterval(applyNodeStaleness, 5000);
+
     function applyEdgeTypeFilters() {
       if (cy) {
         cy.batch(() => {
@@ -4378,6 +4407,14 @@
           { selector: 'edge[label="isUnder"]', style: { 'line-color': '#94a3b8', 'target-arrow-color': '#94a3b8', 'color': '#94a3b8' } },
           // GA-254. The label cull is a CLASS now, resolved once by the stylesheet, instead
           // of a per-node `text-opacity` bypass written 270 times per pass.
+          // STALENESS (owner, 2026-09-11). An object the robot has stopped seeing still sits in
+          // the graph looking exactly like one it is seeing right now. These fade it instead of
+          // hiding it: it is still in the store, and that is the point being shown.
+          // Classes rather than a style mapper, because the age depends on NOW and a cytoscape
+          // mapper is only re-evaluated when the element's data changes.
+          { selector: 'node.aging', style: { 'opacity': 0.72, 'border-color': '#eab308' } },
+          { selector: 'node.stale', style: { 'opacity': 0.42, 'border-color': '#ef4444',
+                                             'border-style': 'dashed' } },
           { selector: 'node.nolabel', style: { 'text-opacity': 0 } },
           // And the renderer's own per-frame cull, which costs nothing because it happens in
           // native code during the draw rather than in a JS pass before it.
@@ -4637,7 +4674,12 @@
         rows.push({
           id: n.id || '', label: n.label || 'object', room: n.room || null, node: n,
           grade: gradeOfRecord(d), reason: d.reason || '',
-          conf: typeof n.confidence === 'number' ? n.confidence : null
+          conf: typeof n.confidence === 'number' ? n.confidence : null,
+          // Epoch seconds, straight off the node. `admitted_at` is the stamp of the
+          // admission row itself and is absent for an object nothing ever ruled on.
+          lastSeen: typeof n.last_seen === 'number' ? n.last_seen : null,
+          createdAt: typeof n.created_at === 'number' ? n.created_at : null,
+          admittedAt: typeof n.admitted_at === 'number' ? n.admitted_at : null
         });
       });
       const s = lastAdmissionSummary || {};
@@ -4648,7 +4690,9 @@
         seenLabels.add(label);
         rows.push({
           id: '', label: label, room: null, node: null,
-          grade: grade, reason: it.reason || '', conf: null, logOnly: true
+          grade: grade, reason: it.reason || '', conf: null, logOnly: true,
+          // A log-only row is a proposal the gate stopped; it has no node and so no stamps.
+          lastSeen: null, createdAt: null, admittedAt: typeof it.t === 'number' ? it.t : null
         });
       });
       addLog(s.on_hold, 'hold');
@@ -5076,6 +5120,7 @@
               // so 269 image requests and 269 un-batched style writes happened whether or
               // not anyone wanted the thumbnails.
               if (cropsShown) applyCropBackgrounds();
+              applyNodeStaleness();
               applyRoomColours();
 
               // Item 3: the panel was rendered once on tap and never again, so it
@@ -5184,7 +5229,35 @@
       // the reader check both. Computed from `bbox` rather than from any stored `size` field,
       // because bbox is what every consumer already agrees on -- an absent or partial bbox
       // renders an em dash, never a zero, which would read as a measured flat object.
-      let html = '<table><thead><tr><th>Label</th><th>Verdict</th><th>Room</th><th>Size (m)</th><th>Concept</th><th>Score</th></tr></thead><tbody>';
+      // AGE, NOT A CLOCK TIME. The question the column answers is "is this object still being
+      // seen", and a wall-clock stamp makes the reader do the subtraction. The absolute times
+      // are in the tooltip for when that is the question instead.
+      //
+      // NOW IS THE REPLAY'S NOW -- see graphNowSec above, which the graph also uses.
+      const nowSec = graphNowSec;
+      const ageText = (t) => {
+        if (typeof t !== 'number' || !isFinite(t)) return '—';
+        const d = Math.max(0, nowSec() - t);
+        if (d < 90) return Math.round(d) + 's';
+        if (d < 5400) return Math.round(d / 60) + 'm';
+        return (d / 3600).toFixed(1) + 'h';
+      };
+      // Fades as an object goes unseen. The thresholds are read as "this cycle", "a little
+      // while ago" and "not lately"; nothing is hidden, because an object the robot has
+      // stopped seeing is exactly what a reader is looking for here.
+      const staleColour = (t) => {
+        if (typeof t !== 'number' || !isFinite(t)) return 'var(--muted)';
+        const d = Math.max(0, nowSec() - t);
+        return d < 30 ? '#10b981' : (d < 180 ? '#eab308' : '#ef4444');
+      };
+      const stampTitle = (r) => {
+        const fmt = (t) => (typeof t === 'number' && isFinite(t))
+          ? new Date(t * 1000).toLocaleTimeString() : 'not recorded';
+        return 'created ' + fmt(r.createdAt) +
+               '  ·  admitted ' + fmt(r.admittedAt) +
+               '  ·  last seen ' + fmt(r.lastSeen);
+      };
+      let html = '<table><thead><tr><th>Label</th><th>Verdict</th><th>Room</th><th>Size (m)</th><th>Concept</th><th>Score</th><th title="How long ago this object was last perceived. The tooltip carries the creation and admission times.">Last seen</th></tr></thead><tbody>';
       let shown = 0;
       graded.forEach(r => {
         const onto = r.node ? getAlignment(r.node) : null;
@@ -5219,6 +5292,8 @@
           <td style="font-size:0.66rem; color:var(--muted); white-space:nowrap;">${sizeTxt}</td>
           <td style="color:#a78bfa; font-size:0.68rem;">${conceptName}</td>
           <td>${conf === null || conf === undefined ? '—' : (conf * 100).toFixed(0) + '%'}</td>
+          <td style="font-size:0.66rem; white-space:nowrap; color:${staleColour(r.lastSeen)};"
+              title="${escHtml(stampTitle(r))}">${ageText(r.lastSeen)}</td>
         </tr>`;
       });
       html += '</tbody></table>';

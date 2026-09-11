@@ -752,6 +752,13 @@ def graph_data(request: Request = None):
             # so a replay can show the graph AS IT WAS at a frame. Absent stays absent.
             "created_at": o.get("creation_time"),
             "last_seen": o.get("last_perception_timestamp"),
+            # WHEN THE ADMISSION DECISION WAS TAKEN (owner, 2026-09-11). Every row in
+            # hook_decisions.jsonl is stamped `t`, and `decision` below already carries the
+            # whole row, so this is a rename rather than new data -- lifted to the top level so
+            # the page does not have to know the shape of a decision row to show its age.
+            # Absent when the object was never put to a verdict, which is a real state and not
+            # a zero: that object is in the store because nothing ever ruled on it.
+            "admitted_at": (decision or {}).get("t"),
             # No default: a missing confidence rendered as 1.0 showed every object
             # at a confident 100%. Absent stays absent; the viewer renders "—".
             #
