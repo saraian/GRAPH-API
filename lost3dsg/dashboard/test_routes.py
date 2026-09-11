@@ -845,6 +845,74 @@ def test_only_directories_named_like_a_run_are_served():
             _rs.RUNS_ROOT = old_root
 
 
+def test_the_ros_stub_covers_every_ros_import_the_bridge_makes():
+    """The in-process bridge must not be able to grow an import the stub has never heard of.
+
+    WHY THIS EXISTS. replay_server loads graph_api_bridge IN THIS PROCESS to reuse its routes,
+    with `_install_ros_stubs()` standing in for ROS. The bridge is another lane's file, so it
+    grows imports on its own schedule, and the stub only learns about them when the dashboard
+    STOPS STARTING. That happened on 2026-09-11: a `from rclpy.qos import DurabilityPolicy,
+    HistoryPolicy, QoSProfile, ReliabilityPolicy` landed upstream and the dashboard died with
+    "No module named 'rclpy.qos'; 'rclpy' is not a package" -- which reads like a broken ROS
+    install, not like a stub that is one module behind.
+
+    ASSERTED AGAINST THE BRIDGE'S OWN SOURCE, so the next such import fails here, in a test
+    that names the missing module, instead of at start-up in a message that misdirects. The
+    NAMES are checked too, not just the module: `from X import a, b` fails on a stub module
+    that lacks the attributes, which is a different failure from a missing module.
+    """
+    import ast
+    import importlib.util as _ilv
+
+    # Loaded the same way the viewer check loads it, and for the same reason: this file must
+    # read the module it is testing, not a second copy that could differ.
+    _spec = _ilv.spec_from_file_location("rs_stub_probe", HERE / "replay_server.py")
+    _rs = _ilv.module_from_spec(_spec)
+    _spec.loader.exec_module(_rs)
+
+    src = _rs.BRIDGE.read_text()
+    tree = ast.parse(src)
+    # Only the ROS-side imports: those are what the stub exists to replace. cv2 and cv_bridge
+    # are in the same family and already stubbed, so they are checked with them.
+    ROSY = ("rclpy", "sensor_msgs", "geometry_msgs", "std_msgs", "nav_msgs",
+            "visualization_msgs", "cv_bridge", "cv2", "lost3dsg", "tf2_ros", "builtin_interfaces")
+    # MODULE LEVEL ONLY -- `tree.body`, not `ast.walk`. An import at the top of the file must
+    # resolve for the module to import at all, which is what the stub has to satisfy. An import
+    # inside a function is a different promise: the bridge guards `tf2_ros` and `rclpy.time`
+    # behind try/except precisely so the overlay degrades when TF is absent (graph_api_bridge.py
+    # :243, "Optional on purpose"). Requiring those would make this check demand stubs for the
+    # things the bridge already handles being without -- a stricter test that is wrong.
+    need = {}
+    for n in tree.body:
+        if isinstance(n, ast.ImportFrom) and n.module:
+            root = n.module.split(".")[0]
+            if root in ROSY:
+                need.setdefault(n.module, set()).update(a.name for a in n.names)
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name.split(".")[0] in ROSY:
+                    need.setdefault(a.name, set())
+    assert need, "no ROS imports found in the bridge; this check is reading the wrong file"
+
+    _rs._install_ros_stubs()
+    missing_mod, missing_name = [], []
+    for mod_name, names in sorted(need.items()):
+        m = sys.modules.get(mod_name)
+        if m is None:
+            missing_mod.append(mod_name)
+            continue
+        for nm in sorted(names):
+            if not hasattr(m, nm):
+                missing_name.append(f"{mod_name}.{nm}")
+    assert not missing_mod, (
+        "the bridge imports ROS modules the dashboard's stub does not provide, so the "
+        f"dashboard will not start: {missing_mod}")
+    assert not missing_name, (
+        "the stub provides these modules but not the names imported from them, so "
+        f"`from X import ...` will fail: {missing_name}")
+    print(f"  ros stub: covers {len(need)} ROS modules the bridge imports")
+
+
 def test_an_empty_timeline_names_this_runs_reason_not_a_generic_one():
     """A bundle with no frames must say WHY THIS bundle has none, from its own record.
 
@@ -969,6 +1037,10 @@ if __name__ == "__main__":
     # REBUILT 2026-09-10 after a bad slice removed it. A suite whose runner is gone still EXITS 0
     # and prints nothing, which is the most dangerous green there is -- so the names are derived
     # from the file below rather than retyped, and the count is asserted against what ran.
+    # FIRST, because every check below it loads the bridge in-process and a stub gap kills
+    # that import. Run later, this one never gets to speak: the suite dies on the raw
+    # "No module named 'rclpy.qos'" instead of on a line naming the missing stub entry.
+    test_the_ros_stub_covers_every_ros_import_the_bridge_makes()
     fetched = test_every_endpoint_the_viewer_fetches_is_defined()
     test_the_tools_menu_never_links_to_a_route_that_is_not_served()
     test_no_duplicate_routes()
@@ -988,6 +1060,6 @@ if __name__ == "__main__":
     test_the_bundle_tag_says_which_machine_recorded_it()
     test_an_empty_timeline_names_this_runs_reason_not_a_generic_one()
     test_only_directories_named_like_a_run_are_served()
-    _ran = 19
+    _ran = 20
     print(f"all {_ran} checks passed (viewer fetches {len(fetched)} endpoints: "
           f"{', '.join(fetched)})")
