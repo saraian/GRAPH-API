@@ -286,6 +286,14 @@ SCAN_COMPLETE_TOPIC = os.environ.get(
     "SCAN_COMPLETE_TOPIC", _ASSOC.get("scan_complete_topic", "/habitat/scan_complete"))
 SCAN_MERGE_SETTLE_S = float(os.environ.get(
     "SCAN_MERGE_SETTLE_S", _ASSOC.get("scan_merge_settle_s", 1.0)))
+# Physical TIAGo has no waypoint/360 completion event.  Its external robot
+# configuration therefore enables the same graph-wide merge criterion on a
+# periodic timer.  Keep the default disabled so Habitat still relies only on
+# its scan-complete hook; the Tiago YAML sets this to 5 seconds and the
+# environment remains an explicit per-run override.
+_MERGE_CONFIG = (CFG.get("merge", {}) or {})
+TIAGO_MERGE_INTERVAL_S = float(os.environ.get(
+    "TIAGO_MERGE_INTERVAL_S", _MERGE_CONFIG.get("periodic_interval_s", 0.0)))
 
 def _launch_graph_api_bridge():
     bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph_api_bridge.py")
@@ -716,6 +724,8 @@ class ObjectManagerService(Node):
         self._scan_merge_pending = None
         self._scan_merge_timer = None
         self._last_scan_id = None
+        self._periodic_merge_timer = None
+        self._merge_call_lock = threading.Lock()
         
         # --- INIT ROOM MANAGER ---
         self.room_manager = RoomManager(
@@ -815,6 +825,13 @@ class ObjectManagerService(Node):
         self.get_logger().info("Subscribing to /object_descriptions, /bbox_3d and /agent_camera_pose")
         self.create_subscription(String, SCAN_COMPLETE_TOPIC, self._scan_complete_callback, qos_standard)
         self.get_logger().info(f"Scan-complete merge hook: {SCAN_COMPLETE_TOPIC}")
+        if TIAGO_MERGE_INTERVAL_S > 0.0:
+            self._periodic_merge_timer = self.create_timer(
+                TIAGO_MERGE_INTERVAL_S, self._periodic_merge_callback)
+            self.get_logger().info(
+                f"Periodic merge enabled: every {TIAGO_MERGE_INTERVAL_S:.1f}s")
+        else:
+            self.get_logger().info("Periodic merge disabled")
         self.get_logger().info(f"Node name={self.get_name()} ns={self.get_namespace()}")
 
         self._bbox_timer = self.create_timer(2.0, self.periodic_bbox_publisher)
@@ -1062,18 +1079,47 @@ class ObjectManagerService(Node):
             except Exception:
                 pass
 
+        self._merge_call_lock.acquire()
         try:
-            merged_count = self.merge_duplicate_objects(scan_id=scan_id)
-        except Exception as exc:
-            self.object_services.log_both(
-                'error', f"[SCAN MERGE] reconciliation failed for {scan_id!r}: {exc}"
-            )
-            return
+            try:
+                merged_count = self.merge_duplicate_objects(scan_id=scan_id)
+            except Exception as exc:
+                self.object_services.log_both(
+                    'error', f"[SCAN MERGE] reconciliation failed for {scan_id!r}: {exc}"
+                )
+                return
+        finally:
+            self._merge_call_lock.release()
 
         self.object_services.log_both(
             'info',
             f"[SCAN MERGE] scan {scan_id!r}: {merged_count} merge(s) applied",
         )
+
+    def _periodic_merge_callback(self):
+        """Run the existing merge criterion periodically on physical TIAGo.
+
+        TIAGo has no navigation scan-complete event.  The lock prevents a slow
+        HTTP merge from overlapping either another periodic invocation or a
+        delayed Habitat scan-complete merge.
+        """
+        if not self._merge_call_lock.acquire(blocking=False):
+            self.object_services.log_both(
+                'warn', "[PERIODIC MERGE] previous merge is still running; skipped")
+            return
+        try:
+            scan_id = f"tiago-periodic-{int(time.time())}"
+            self.object_services.log_both(
+                'info',
+                f"[PERIODIC MERGE] starting ({TIAGO_MERGE_INTERVAL_S:.1f}s interval)",
+            )
+            merged_count = self.merge_duplicate_objects(scan_id=scan_id)
+            self.object_services.log_both(
+                'info',
+                f"[PERIODIC MERGE] completed: {merged_count} merge(s) applied",
+            )
+        finally:
+            self._merge_call_lock.release()
 
     @synchronized_world_model
     def check_tracking_transition(self, label_base, color, material, description_embedding, bbox):
