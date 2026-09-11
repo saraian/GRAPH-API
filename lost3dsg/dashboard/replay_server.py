@@ -1963,10 +1963,9 @@ def _tools_menu_html(bundles=None) -> str:
     internal = "" if (dash_env.flag("DASH_PUBLIC") or not _infra) else (
         f'      <a href="{_h.escape(_infra, quote=True)}" target="_blank" rel="noopener"\n'
         '         title="Infra orchestration dashboard (private network only)"\n'
-        '         style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">INFRA &nearr;</a>\n')
-    opts = "".join(f'<option value="{_h.escape(b)}" title="{_h.escape(_bundle_tag(b)[2])}">'
-                   f'{_h.escape(b)} \u2014 {_h.escape(_bundle_tag(b)[1])}</option>'
-                   for b in (bundles or []))
+        '         style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">INFRA &nearr;</a>\n')
+    # (the bundle <select> was built here. It went with the picker: the Load page lists the same
+    #  runs with room to show what each one holds, which an <option> could not.)
     # An extension's menu rows, built from the SAME Page objects that install the routes, so a link
     # and its page cannot drift apart -- the failure that used to leave the menu offering a 404.
     _style = ("background:#1e293b;color:#e2e8f0;border:1px solid #334155;"
@@ -1975,7 +1974,7 @@ def _tools_menu_html(bundles=None) -> str:
         f'      <a href="{_h.escape(pg.route.lstrip("/"))}" style="{_style}">'
         f'{_h.escape(pg.menu_label)} &rarr;</a>\n'
         for pg in dash_ext.pages() if pg.menu_label)
-    menu = (TOOLS_MENU_TEMPLATE.replace("__OPTS__", opts)
+    menu = (TOOLS_MENU_TEMPLATE
             .replace("__INTERNAL_LINKS__", internal)
             .replace("__EXT_LINKS__", ext_links))
     if dash_env.flag("DASH_PUBLIC"):
@@ -1988,46 +1987,43 @@ def _tools_menu_html(bundles=None) -> str:
         # These match the RELATIVE hrefs above. If a link's spelling changes this list must change
         # in the SAME edit: a stale entry silently re-exposes a link the owner ordered removed and
         # nothing errors. test_routes asserts both halves.
-        dead = ('href="./"', 'href="dash"', 'href="replay"')
+        dead = ('href="./"', 'href="dash"')
         menu = "\n".join(ln for ln in menu.splitlines()
                           if not any(d in ln for d in dead))
     return menu
 
 
 TOOLS_MENU_TEMPLATE = """
-<div id="toolsMenu" style="position:fixed;right:12px;bottom:12px;z-index:99999;
-     font:600 11px ui-monospace,monospace;text-align:right;">
-  <div id="toolsPanel" hidden style="margin-bottom:6px;background:#0b1220;border:1px solid #334155;
-       border-radius:8px;padding:8px;min-width:250px;box-shadow:0 6px 24px rgba(0,0,0,.5);">
-    <div style="color:#64748b;margin-bottom:6px;letter-spacing:.05em;">LOAD BUNDLE &mdash; switches to replay</div>
-    <div style="display:flex;gap:5px;margin-bottom:9px;">
-      <select id="bundlePick" style="flex:1;min-width:0;background:#0f172a;color:#e2e8f0;
-              border:1px solid #334155;border-radius:5px;padding:4px;font:inherit;">__OPTS__</select>
-      <button onclick="loadPickedBundle()" style="background:#0e2537;color:#38bdf8;
-              border:1px solid #38bdf8;border-radius:5px;padding:4px 9px;cursor:pointer;font:inherit;">LOAD</button>
-    </div>
-    <div id="bundleMsg" style="color:#94a3b8;margin-bottom:9px;white-space:normal;"></div>
-    <div style="display:flex;flex-direction:column;gap:5px;">
-      <a href="./"        style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">START &rarr;</a>
-      <a href="dash"     style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">DASHBOARD &rarr;</a>
-__EXT_LINKS__      <a href="replay"   style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">REPLAY &rarr;</a>
-      <a href="bundles"  style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">BUNDLES &rarr;</a>
-__INTERNAL_LINKS__      <!-- A BUTTON AMONG ANCHORS, which is why it looked wrong. The four links above are <a>
-           elements in a flex column: they fill the row and their text sits where the text
-           starts. A <button> centres its label by default and sizes to its content, so this
-           one came out narrower and centred while the rest were full-width and aligned.
-           width:100% with border-box makes it the same box; text-align matches the others,
-           and the arrow gives it the same terminator so the column reads as one list. -->
-      <button id="rvizLaunchBtn" onclick="startRviz()" hidden
-              style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;
-                     padding:6px 10px;cursor:pointer;font:inherit;
-                     width:100%;box-sizing:border-box;text-align:right;">OPEN RVIZ &rarr;</button>
-      <div id="rvizLaunchMsg" style="color:#94a3b8;white-space:normal;"></div>
-    </div>
+<!-- A LEFT SIDEBAR, not a corner popover (owner 2026-09-11). The hamburger alone opens it: the
+     word TOOLS beside the icon was a label for a thing the icon already says.
+     WHAT WENT, and why the menu is shorter than it was:
+       REPLAY  -- the dashboard IS the replay view; two links to one page is two names for it.
+       the bundle picker and its LOAD button -- the Load page does this with room to show what
+                  each bundle holds, where a <select> could only show one line of it.
+     WHAT WAS RENAMED: START -> NEW, BUNDLES -> LOAD, DASHBOARD -> LIVE.
+     LIVE IS DISABLED WITHOUT A LIVE RUN. It used to be a link that led to a page reporting no
+     camera and no bridge; a control that cannot do its job should say so before it is pressed,
+     not after. The recorded runs are reached through LOAD instead. -->
+<div id="toolsMenu" style="position:fixed;left:0;top:0;bottom:0;z-index:99999;
+     font:600 11px ui-monospace,monospace;display:flex;align-items:flex-start;">
+  <button id="toolsToggle" onclick="toggleTools()" title="Menu"
+          style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-left:0;
+                 border-radius:0 6px 6px 0;padding:9px 10px;cursor:pointer;font:inherit;
+                 margin-top:10px;line-height:1;">&#9776;</button>
+  <div id="toolsPanel" hidden
+       style="height:100%;background:#0b1220;border-right:1px solid #334155;padding:12px 10px;
+              min-width:210px;box-shadow:6px 0 24px rgba(0,0,0,.5);overflow:auto;
+              display:flex;flex-direction:column;gap:6px;">
+    <div style="color:#64748b;margin-bottom:2px;letter-spacing:.05em;">MENU</div>
+    <a href="./"      style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">NEW &rarr;</a>
+    <a id="liveLink" href="dash" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LIVE &rarr;</a>
+    <a href="bundles" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LOAD &rarr;</a>
+__EXT_LINKS____INTERNAL_LINKS__    <button id="rvizLaunchBtn" onclick="startRviz()" hidden
+            style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;
+                   padding:6px 10px;cursor:pointer;font:inherit;
+                   width:100%;box-sizing:border-box;text-align:left;">OPEN RVIZ &rarr;</button>
+    <div id="rvizLaunchMsg" style="color:#94a3b8;white-space:normal;"></div>
   </div>
-  <button id="toolsToggle" onclick="toggleTools()"
-          style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;
-                 padding:7px 12px;cursor:pointer;font:inherit;">&#9776; TOOLS</button>
 </div>
 <script>
   function toggleTools() {
@@ -2036,24 +2032,40 @@ __INTERNAL_LINKS__      <!-- A BUTTON AMONG ANCHORS, which is why it looked wron
     try { localStorage.setItem('toolsOpen', p.hidden ? '0' : '1'); } catch (e) {}
   }
   (function () {
-    try { if (localStorage.getItem('toolsOpen') === '1') document.getElementById('toolsPanel').hidden = false; } catch (e) {}
+    // COLLAPSED ON EVERY LOAD (owner 2026-09-11). It used to reopen itself from localStorage,
+    // so a reader who had opened it once got a sidebar over the interface on every page
+    // thereafter. The state is still written -- nothing else reads it now, and removing the
+    // write would be a second change -- but the panel starts shut.
     var local = ['localhost', '127.0.0.1', '::1', ''];
     if (local.indexOf(location.hostname) !== -1) document.getElementById('rvizLaunchBtn').hidden = false;
+    // LIVE ANSWERS FOR ITSELF. /mode_info is the server's own verdict on whether a bridge is
+    // answering, which is the same source the banner uses -- so the link and the banner cannot
+    // disagree. Disabled rather than hidden: a reader who knows the link should be there is
+    // told why it is not available, instead of wondering where it went.
+    // POLLED, because a run can start after this page was opened. `mode_info` reports the
+    // mode decided at START-UP and never revisited, so gating on it left LIVE dead for the
+    // lifetime of the tab -- the owner's "Live does not detect the current run". `bridge_live`
+    // asks the bridge each time.
+    function refreshLive() {
+      var a = document.getElementById('liveLink');
+      if (!a) return;
+      fetch('bridge_live').then(function (r) { return r.json(); }).then(function (d) {
+        if (d && d.live) {
+          a.href = 'dash';
+          a.style.opacity = '';
+          a.style.cursor = '';
+          a.title = 'the run that is going now';
+        } else {
+          a.removeAttribute('href');
+          a.style.opacity = '.45';
+          a.style.cursor = 'not-allowed';
+          a.title = 'no live run: start one from NEW, or open a recorded run from LOAD';
+        }
+      }).catch(function () {});
+    }
+    refreshLive();
+    setInterval(refreshLive, 5000);
   })();
-  async function loadPickedBundle() {
-    var sel = document.getElementById('bundlePick'), msg = document.getElementById('bundleMsg');
-    if (!sel || !sel.value) { msg.textContent = 'no bundle selected'; return; }
-    msg.style.color = '#94a3b8'; msg.textContent = 'loading ' + sel.value + '...';
-    try {
-      var r = await fetch('/load_bundle?name=' + encodeURIComponent(sel.value), { method: 'POST' });
-      var d = await r.json();
-      if (d.ok) { msg.style.color = '#10b981'; msg.textContent = 'now serving ' + d.bundle + ' -- reloading';
-        // GA-380: the twin of the start page's navigation, one function away, and missed the first
-        // time -- which is the copy warning this file already carries. Relative, so it needs no helper.
-        setTimeout(function () { location.href = 'dash'; }, 700); }
-      else { msg.style.color = '#f87171'; msg.textContent = 'failed: ' + (d.why || ('HTTP ' + r.status)); }
-    } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'failed: ' + e.message; }
-  }
   async function startRviz() {
     var btn = document.getElementById('rvizLaunchBtn'), msg = document.getElementById('rvizLaunchMsg');
     btn.disabled = true; msg.style.color = '#94a3b8'; msg.textContent = 'starting RViz...';
@@ -3407,12 +3419,14 @@ def build_app(bundle: Path):
             import replay_view
         return replay_view
 
-    @m.app.get("/replay", response_class=HTMLResponse)
-    def _replay(bundle: str = None):
-        """Frame-by-frame replay of an ARCHIVED run. Not the live view -- the bridge serves
-        that on :8081 while a run is up, and the two are easy to confuse precisely when
-        nothing is appearing."""
-        return HTMLResponse(with_tools_menu(_load_replay_view().page(bundle)))
+    # THE /replay PAGE IS GONE (owner 2026-09-11): it was a second rendering of the run the
+    # dashboard already shows. `/dash` carries the transport bar, the overlays and the graph in
+    # both modes -- GA-345 made the bar serve live and replay alike -- so the separate page was
+    # a second name for the same view, and two names invite the reader to wonder which is
+    # authoritative. A recorded run is opened from the LOAD page, which points at `/dash`.
+    #
+    # The /replay/* DATA routes below are untouched: they are what the dashboard fetches, and
+    # they are not a page.
 
     @m.app.get("/replay/index/{bundle}")
     def _replay_index(bundle: str):
@@ -3766,6 +3780,22 @@ def build_app(bundle: Path):
               f"mode {was} -> replay)", flush=True)
         return {"ok": True, "bundle": str(target), "pinned": BUNDLE_PIN["pinned"],
                 "mode": "replay", "was": was}
+
+    @m.app.get("/bridge_live")
+    def _bridge_live():
+        """Is a bridge answering RIGHT NOW -- asked fresh, not read from the startup verdict.
+
+        MODE is decided once, by a probe at start-up (`by="probe"`), and never revisited. That
+        is right for the mode the page renders in, but wrong for a CONTROL that offers to go to
+        the live view: a dashboard opened before the run began reported "no live run" for as
+        long as it stayed open, and the owner saw a LIVE link that never woke up. This asks the
+        bridge each time it is called, so the sidebar can enable itself the moment a run starts.
+
+        Cheap on purpose: a 0.6 s connect to /health and nothing else. It is polled by every
+        open page, so it must not do real work.
+        """
+        ok, why = _probe_bridge(timeout=0.6)
+        return JSONResponse({"live": bool(ok), "why": why})
 
     @m.app.get("/mode_info")
     def _mode_info():
