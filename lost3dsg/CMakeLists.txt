@@ -78,6 +78,7 @@ install(PROGRAMS
   src/perception_module/object_info.py
   src/perception_module/map_database.py
   src/perception_module/models.py
+  src/perception_module/image_transport.py
   src/perception_module/query_map.py
   # Imported by habitat_metrics_collector.py / openai_habitat_assistant.py / run_habitat_script.py
   # but never declared, so an installed copy dies with ModuleNotFoundError at startup. Found by

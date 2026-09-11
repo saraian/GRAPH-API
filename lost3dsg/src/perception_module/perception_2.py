@@ -753,7 +753,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.get_logger().error("Processing interrupted: robot moving during detection")
             return
         if not detections:
-            self._publish_image_with_bb(image_raw, [], [], camera_info, camera_data["transform"], cycle_stamp, depth)
+            self._publish_image_with_bb(
+                image_raw, [], [], camera_info, camera_data["transform"], cycle_stamp, depth,
+                camera_frame=camera_data.get("camera_frame"))
             # LAT-2: hand over the FOV computed at the top of this cycle instead of
             # letting the empty-state path project the whole depth image a second time.
             self.publish_empty_state(depth, camera_info, cycle_stamp, fov_volume=fov_volume)
@@ -787,7 +789,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         _mark("geometry")
         self._add_pca_orientation(detections, bboxes_3d, depth, camera_info, camera_data["transform"])
         _mark("pca")
-        self._publish_image_with_bb(image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth)
+        self._publish_image_with_bb(
+            image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth,
+            camera_frame=camera_data.get("camera_frame"))
         _mark("image_with_bb")
         # H12: prepare_crops resolves the bundle root itself; PROJECT_ROOT is no longer
         # threaded through. W2: the frame key is mandatory provenance.
@@ -952,7 +956,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # A debugging view must never take the cycle down with it.
             self.get_logger().warn(f"[DEBUG] stage '{stage}' overlay failed: {exc}")
 
-    def _publish_image_with_bb(self, image_raw, detections, bboxes_3d, camera_info, transform, stamp, depth=None):
+    def _publish_image_with_bb(self, image_raw, detections, bboxes_3d, camera_info, transform, stamp,
+                               depth=None, camera_frame=None):
         """/image_with_bb shows the 3D boxes projected back into the frame they were
         measured from, under the same visibility rule as the simulator overlay; the
         flat 2D rectangle is kept only for detections that got no 3D box. Published
@@ -960,6 +965,19 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         sees the latest frame instead of "No image"."""
         drawn = image_raw.copy()
         if detections:
+            # Geometry is positional: one result slot belongs to each VLM/SAM
+            # detection, including a ``None`` slot when that mask could not be
+            # lifted. Keep the overlay on that same positional contract even if
+            # a backend/plugin returns a short or overlong list. The old zip()
+            # silently dropped the tail, which made a valid 2D detection
+            # disappear from /image_with_bb and could pair a label with the wrong
+            # 3D box.
+            boxes = list(bboxes_3d or [])
+            if len(boxes) < len(detections):
+                boxes.extend([None] * (len(detections) - len(boxes)))
+            elif len(boxes) > len(detections):
+                boxes = boxes[:len(detections)]
+
             # GA-214: MASKS FIRST, so boxes and labels stay legible on top of the fill.
             # Gated on the `seg` flag the viewer already sends through /set_config, and ON by
             # default: the segmenter's output is the hardest stage to judge from numbers, and
@@ -968,18 +986,22 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             _seg = str(_viz.get("seg", "1")).lower() not in ("0", "false", "off", "no")
             if _seg:
                 draw_masks(drawn, detections)
-            flat = [det for det, box in zip(detections, bboxes_3d) if not box]
+            flat = [det for det, box in zip(detections, boxes) if not box]
             if flat:
                 draw_detections(drawn, flat)
             # The overlay gate, resolved from the yaml and from whatever the dashboard
             # last pushed to the host -- so /image_with_bb obeys the same rule as the
             # simulator's own overlay, which is what this method's docstring claims.
             min_vis, tol_abs, tol_rel = visibility_cfg(self._live_visibility())
-            draw_boxes_3d(drawn, bboxes_3d, [det.instance_label for det in detections], camera_info, transform, depth,
+            draw_boxes_3d(drawn, boxes, [det.instance_label for det in detections], camera_info, transform, depth,
                           min_visible_points=min_vis, tol_abs=tol_abs, tol_rel=tol_rel)
         img_msg = self.bridge.cv2_to_imgmsg(drawn, "bgr8")
         img_msg.header.stamp = stamp
-        img_msg.header.frame_id = camera_info.header.frame_id
+        img_msg.header.frame_id = (
+            camera_frame
+            or getattr(camera_info.header, "frame_id", "")
+            or CFG["frames"]["camera"]
+        )
         self.pub_image.publish(img_msg)
 
     def _assign_instance_labels(self, detections):
