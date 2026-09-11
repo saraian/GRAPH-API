@@ -25,9 +25,6 @@ frames:
 habitat:
   single_floor: true      # HM3D 00861 is two-storey; evaluation runs on the start floor
   floor_tolerance_m: 0.5
-  mapping_seconds: 150.0  # continuous mapping tour (seconds)
-  walk_frames: 6         # frames moving per burst
-  dwell_frames: 0       # 0 = agent never stops (owner, 2026-08-31). FEED_DWELL in live_run.sh overrides this.
   fps: 3.0
   # OWNER RULING 25, 2026-09-01: 1280x960. SET HERE AND NOT ONLY IN CODE, because
   # perception_module/config.py supplies habitat.width 640 as a module default and the merged

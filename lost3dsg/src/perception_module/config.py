@@ -361,8 +361,6 @@ _DEFAULTS = {
         # storeys, and HM3D navmeshes join them through the stairs
         "single_floor": True,
         "floor_tolerance_m": 0.5,
-        "mapping_seconds": 150.0,
-        "walk_frames": 6,
         # GA-258. DWELL MODE, dynamic by default. A fixed dwell is wrong in both
         # directions: it wastes frames when no merge is waiting to be confirmed, and leaves
         # before confirmation when one is. Dynamic dwell asks the object manager what is
@@ -370,11 +368,6 @@ _DEFAULTS = {
         # Set dwell_dynamic false for a fixed-length dwell -- which is what a clean
         # one-variable ablation of merge_min_consecutive needs, since dynamic dwell makes
         # duration co-vary with the parameter under test.
-        "dwell_dynamic": True,
-        "dwell_min_frames": 8,
-        "dwell_max_frames": 90,
-        "tour_waypoints": 0,
-        "tour_scan_frames": 12,
 
         # --- the camera the simulator renders ----------------------------------------------
         "hfov": 90.0,              # horizontal field of view, degrees; changes the intrinsics
@@ -384,13 +377,17 @@ _DEFAULTS = {
         # `teleport` moves the agent to the next storey when one is done; the alternative keeps
         # it on the storey it spawned on, which is what `single_floor` above enforces.
         "floor_confinement": "teleport",
-        "tour_all_floors": False,   # a base run sets this; a single-storey launch does not
+        # THE MOTION POLICY. A schedule is the only one (owner 2026-09-11): the agent drives the
+        # storey's precomputed Voronoi roadmap and turns a full circle at each stop. live_run.sh
+        # builds and caches the schedule per scene, so no path is named here.
+        "exploration_laps": 3,      # identical laps; a difference between two is a difference in
+        #                             the WORLD, not in the route
+        "navigation_mode": "navigate",   # or "teleport": no travel frames, only the scans
         "tour_end_settle_s": 90.0,  # stand still at the end so the last merges can commit
         "min_floor_share": 0.10,    # a storey holding less than this share of the navmesh is
         #                             not a storey; it is a landing or a stairwell
         "dataset_root": "/root/exchange/lost3dsg/habitat",
 
-        "dwell_frames": 60,
         "fps": 3.0,
     },
     # extension seam (see hooks.py): empty = the pass-through blueprints

@@ -16,9 +16,10 @@
 #     rtabmap.db IS that storey's map, and live_run.sh already archives it with its integrity mark,
 #     its floor stamp and its params-sha.
 #   - FEED_SPAWN_FLOOR already spawns on a named storey and REFUSES rather than landing on another.
-# The alternative -- one continuous feed process teleporting between storeys -- is built and tested
-# in habitat_feed_host.py behind FEED_TOUR_ALL_FLOORS, and is the build if the perception world
-# model ever has to persist across storeys. It is OFF by default because it is not this shape.
+# The alternative -- one continuous feed process teleporting between storeys -- is REMOVED (owner
+# 2026-09-11). It lived in the sampling tour, which chose the next storey and walked to it; a
+# schedule is one storey by construction. FEED_TOUR_ALL_FLOORS now refuses rather than doing
+# nothing, so this script is the only way to tour a house.
 #
 # WHAT ENDS EACH LAUNCH, now that rule 73 forbids a cap: the feed host writes feed_ended.json when
 # the storey's waypoints are exhausted and its settle period has passed, and live_stack_container.sh
@@ -42,11 +43,12 @@ if [ -n "${CAP_MIN:-}" ]; then
   echo "   tour is complete (feed_ended.json). Clear CAP_MIN, or run one storey with live_run.sh."
   exit 1
 fi
-# The teleporting tour is the OTHER shape. Both at once would tour every storey inside every
-# storey's launch, which is neither shape and would take N times as long to say so.
+# FEED_TOUR_ALL_FLOORS asked for the teleporting tour, which is removed with the sampling policy
+# (owner 2026-09-11). The feed host refuses it too; this one catches it before N launches start.
 if [ "${FEED_TOUR_ALL_FLOORS:-0}" != "0" ]; then
-  echo "!! FEED_TOUR_ALL_FLOORS=$FEED_TOUR_ALL_FLOORS with run_house.sh: each launch would tour"
-  echo "   the whole house, and each map would straddle every storey (owner ruling 25 refuses it)."
+  echo "!! FEED_TOUR_ALL_FLOORS=$FEED_TOUR_ALL_FLOORS: the continuous teleporting tour is removed"
+  echo "   with the sampling policy (owner 2026-09-11). This script IS how a house is toured now:"
+  echo "   one launch per storey, one map per storey (ruling 25). Clear the variable."
   exit 1
 fi
 

@@ -198,9 +198,10 @@ _close_map_and_check() {
 # was good. Measured on 20260831_224508_mp3d_17DRP: no rtabmap.db.params-sha, no INTEGRITY_OK,
 # and rtabmap still logging node 400 at its normal cadence at the cut.
 #
-# And a MAPPING_ONLY run can ONLY end by the cap. With no detector the post-mapping phase
-# produces nothing forever, so the sole ending is the one that skipped the close. Two correct
-# pieces deadlocked; more cap time cannot fix it.
+# And a map-only run could ONLY end by the cap. With no detector the post-mapping phase produced
+# nothing forever, so the sole ending was the one that skipped the close. Two correct pieces
+# deadlocked; more cap time could not fix it. (That run shape is removed, 2026-09-11; the deadlock
+# it exposed in the close path is not, which is why this note stays.)
 #
 # Found by the testing lane, which tested its own root cause before sending it and discarded
 # the wrong one: a trap on EXIT alone DOES fire under SIGTERM, and `trap ... EXIT TERM` fires it
@@ -299,7 +300,7 @@ container_exit_cleanup() {
   # failing one. Same expectations and the same found-exercised rule as the startup gate.
   python3 /graph_api/lost3dsg/test/preflight_gate.py --only a7 --teardown --out /ws/output/a7_teardown.json \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
-      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo auto)" \
+      --found-exercised auto \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg > /tmp/a7_teardown.log 2>&1 \
     && echo ">>> a7 at teardown: PASS — $(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));a=[p for p in d['probes'] if p['id']=='a7'][0]['detail'];m=a.get('live_mismatches') or {};print('live roots unchanged since the launch stamp' if not m else 'live root(s) MOVED during the run, recorded non-blocking: '+', '.join(f'{k} {v[\"launcher\"]}->{v[\"container\"]}' for k,v in m.items()))" /ws/output/a7_teardown.json 2>/dev/null || echo 'a7_teardown.json unreadable')" \
     || echo "!! a7 at teardown FAILED — a source root moved during the run; see a7_teardown.json (latest will not move)"
@@ -339,9 +340,11 @@ else
   # their authority to block is withdrawn, and preflight.json says so on every affected row.
   # Every other probe blocks as usual: a mapping run that mapped the wrong scene with the wrong
   # camera is worse than no map, and a2/a5/a6/a7 are what catch that.
+  # MAPPING_ONLY relaxed a4/a8 to OBSERVE because a map-only run loaded no detector. That shape
+  # went with the sampling policy (owner 2026-09-11) and live_run.sh refuses the name, so every
+  # run now loads a detector and every probe blocks as usual.
   PREFLIGHT_OBSERVE=""
-  [ "${MAPPING_ONLY:-0}" = "1" ] && PREFLIGHT_OBSERVE="--observe a4,a8"
-  echo ">>> pre-flight gate (Class A)${PREFLIGHT_OBSERVE:+ — OBSERVING a4,a8 for a mapping run}"
+  echo ">>> pre-flight gate (Class A)"
   python3 /graph_api/lost3dsg/test/preflight_gate.py \
       --out /ws/output/preflight.json \
       --run-dir /ws/output \
@@ -351,7 +354,7 @@ else
       --expect-config-sha "${PREFLIGHT_EXPECT_CFG_SHA:-}" \
       --expect-merged-sha "${PREFLIGHT_EXPECT_MERGED_SHA:-}" \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
-      --found-exercised "$([ "${MAPPING_ONLY:-0}" = "1" ] && echo 0 || echo auto)" \
+      --found-exercised auto \
       --expect-policy "${PREFLIGHT_EXPECT_POLICY:-}" \
       --expect-cycle-s "${PREFLIGHT_EXPECT_CYCLE_S:-}" \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg \
@@ -560,13 +563,11 @@ TAIL_PID=$!
 # in a SUBSHELL, and a subshell cannot `wait` on the parent's children — it returned rc=-1 for a
 # node that had exited 7, so the status this run reports would have been meaningless. Measured on
 # a standalone harness before landing; the loop below returns 7 for an exit 7 and 0 for a clean 0.
-if [ "${MAPPING_ONLY:-0}" = "1" ]; then
-  _WATCH_NODES="RTABMAP OM6"
-  _MAP_DEADLINE=$(( $(date +%s) + ${FEED_MAPPING_SECONDS%.*} + 60 ))
-else
-  _WATCH_NODES="PERCEPTION RTABMAP OM6 WALLS"
-  _MAP_DEADLINE=0
-fi
+# MAPPING_ONLY and its deadline went with the sampling policy (owner 2026-09-11): live_run.sh
+# refuses the name, so there is no map-only shape left to watch a shorter node list for. Every run
+# watches every node, and the feed's own end is what stops it.
+_WATCH_NODES="PERCEPTION RTABMAP OM6 WALLS"
+_MAP_DEADLINE=0
 _dead_node=""; _dead_rc=0
 while [ -z "$_dead_node" ]; do
   if [ "$_MAP_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$_MAP_DEADLINE" ]; then

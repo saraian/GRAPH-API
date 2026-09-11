@@ -174,22 +174,16 @@ habitat:
   # storeys and HM3D navmeshes join them through the stairs (goal filter on height)
   single_floor: true
   floor_tolerance_m: 0.5
-  mapping_seconds: 150.0   # initial continuous mapping coverage duration (seconds)
-  walk_frames: 6          # frames moving per burst
-  dwell_frames: 60        # frames stationary / dwelling for 3D perception
   fps: 3.0                # simulator framerate
 
   # --- the camera the simulator renders ------------------------------------------------
   hfov: 90.0               # horizontal field of view in degrees; this sets the intrinsics,
                            # so changing it changes every projected box in the run
-  camera_pitch_deg: 0.0    # negative looks down. A downward tilt sees more floor clutter and
+  camera_pitch_deg: -30.0  # owner 2026-09-10: a 30 degree DOWNWARD tilt. Negative looks down. A downward tilt sees more floor clutter and
                            # loses the top of tall furniture, so it changes WHAT is detected,
                            # not just how it looks. Override per run with FEED_CAMERA_PITCH_DEG.
   # --- how the agent tours a house -----------------------------------------------------
   floor_confinement: teleport  # teleport to the next storey when one is done. `single_floor`
-                               # above still decides whether a single launch may leave its own
-                               # storey; this decides what a full-house tour does between them.
-  tour_all_floors: false   # a full-house base run sets this; a single-storey launch does not
   tour_end_settle_s: 90.0  # stand still this long at the end of a tour, so merges that need
                            # one more sighting can commit before the launch closes
   min_floor_share: 0.10    # a storey holding less than this share of the navmesh is a landing
@@ -287,6 +281,12 @@ hooks:
 
 perception:
   backend: "local"        # "modal" | "managed" | "local"
+  # DECLARED so probe a10 can compare it. The code has read this key since GA-281
+  # (config.py:468) and the file never named it, so a10 SKIPPED -- and a skipped probe
+  # fails the gate, which is what stopped the first baseline run on Gin, 2026-09-10,
+  # with every other probe passing. Same fault as camera_pitch_deg and room_frame_*:
+  # an undeclared key silently takes the module fallback and nothing can check it.
+  max_frame_age_s: 1.0   # seconds; a frame older than this is not perceived
   # The deployed endpoint URL is a CREDENTIAL: the Modal app exposes fastapi_endpoint
   # with no proxy auth, so anyone holding this URL can spend the account's GPU budget.
   # It is read from MODAL_PERCEPTION_URL in the launcher's environment and must never be

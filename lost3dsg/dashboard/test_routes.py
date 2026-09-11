@@ -343,8 +343,9 @@ def test_feed_host_grade_toggles_filter_and_count():
         cfg = types.ModuleType("config")
         cfg.CFG, cfg.CFG_PATH = {"habitat": {}}, None
         sys.modules["config"] = cfg
-        # habitat_feed_host imports its sibling `adaptive_hold` (vendor a6a928b); loading by
-        # file path does not put its directory on sys.path, so this check failed on import.
+        # habitat_feed_host imports siblings from its own directory; loading by file path does
+        # not put that directory on sys.path, so this check failed on import. (It used to name
+        # adaptive_hold, removed with the sampling policy on 2026-09-11.)
         sys.path.insert(0, str(VENDOR / "test"))
         try:
             h = _load_module(VENDOR / "test/habitat_feed_host.py", "feed_host_under_test")

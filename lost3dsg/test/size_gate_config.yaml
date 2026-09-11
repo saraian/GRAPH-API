@@ -31,9 +31,6 @@ frames:
 habitat:
   single_floor: true      # HM3D 00861 is two-storey; evaluation runs on the start floor
   floor_tolerance_m: 0.5
-  mapping_seconds: 150.0  # continuous mapping tour (seconds)
-  walk_frames: 6         # frames moving per burst
-  dwell_frames: 0       # 0 = agent never stops (owner, 2026-08-31). FEED_DWELL in live_run.sh overrides this.
   fps: 3.0
   # OWNER RULING 25, 2026-09-01: 1280x960. SET HERE AND NOT ONLY IN CODE, because
   # perception_module/config.py supplies habitat.width 640 as a module default and the merged
@@ -76,6 +73,11 @@ size_check:
   enforce: false
 
 perception:
+  # DECLARED so probe a10 can read it. It was absent here, a10 skipped for want of it, and a
+  # skipped probe fails the gate: "verdict = pass if not failed and not skipped". The value is
+  # the code default (config.py "max_frame_age_s": 1.0), so writing it changes nothing about the
+  # run and only makes what the run used answerable from the run's own config file.
+  max_frame_age_s: 1.0
   backend: "modal"
   # The deployed endpoint URL is a CREDENTIAL: the Modal app exposes fastapi_endpoint
   # with no proxy auth, so anyone holding this URL can spend the account's GPU budget.

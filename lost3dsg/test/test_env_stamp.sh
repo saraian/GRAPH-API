@@ -52,7 +52,15 @@ for line in lines[start:end]:
         name, has_default = m.group(1), m.group(2)
         if has_default:
             continue
-        assigned = any(re.match(rf'\s*(export\s+)?{name}=', l) or re.search(rf'read -r [\w ]*\b{name}\b', l)
+        # GUARDED ON THE SAME LINE. `$([ -n "${X:-}" ] && echo "\"$X\"" || echo null)` reaches the
+        # bare $X only when the guard already found it set, so an unassigned X yields null and not
+        # a torn JSON value. Without this the check flagged house_id and localize_db, which have
+        # been written that way since they were added, and it has been RED at HEAD because of it.
+        if ("${%s:-" % name) in line:
+            continue
+        # re.search, not re.match: `SEED_SOURCE=pinned; SCENE_SOURCE=pinned` assigns two names on
+        # one line and the anchored pattern saw only the first. That is the third false positive.
+        assigned = any(re.search(rf'(^|[;&|])\s*(export\s+)?{name}=', l) or re.search(rf'read -r [\w ]*\b{name}\b', l)
                        for l in lines[:start])
         if not assigned:
             bad.append(name)
@@ -70,11 +78,10 @@ SRC_SHA=aaaa1111 SRC_N=122 EXT_SRC_SHAS=ext=bbbb2222 \
 IMAGE_TAG=img IMAGE_DIGEST=sha256:dead ENC_E5=e5 ENC_MINILM=mini \
 GT_PATH=/gt/hm3d_00861.json GT_SHA=beef1234 GT_N=870 \
 EXT_POLICY_JSON='"enforce": 1, "hold_band": 0.05,' \
-
-FEED_WALK=6 FEED_DWELL=0 FEED_FPS=3 FEED_MAPPING_SECONDS=150 FEED_OVERLAY=1 FEED_SHOW=1 \
-FEED_DWELL_MODE=adaptive FEED_DWELL_MIN=18 FEED_DWELL_MAX=90 FEED_DWELL_SIGNAL_MAX_AGE_S=10 \
+FEED_FPS=3 FEED_OVERLAY=1 FEED_SHOW=1 \
+FEED_SCHEDULE=/sched/hm3d_00861.schedule.json FEED_EXPLORATION_LAPS=3 FEED_MOVE_FN=navigate \
 ROOM_FRAME_MAX=5 ROOM_FRAME_STRIDE_M=1.5 FEED_POSE_SOURCE=simulator \
-MAPPING_ONLY=0 \
+FEED_CAMERA_PITCH_DEG=-30 SEED_SOURCE=pinned SCENE_SOURCE=pinned \
   bash -c "$(sed -n '/^cat <<EOF > "\$RUN_DIR\/run_metadata.json"/,/^EOF$/p' "$SRC" \
              | sed 's|> "\$RUN_DIR/run_metadata.json"||')" > "$TMP/meta.json"
 python3 -m json.tool "$TMP/meta.json" > /dev/null || { cat "$TMP/meta.json"; fail "run_metadata.json is not valid JSON"; }
@@ -116,24 +123,27 @@ grep -q '"config_resolved"'   "$TMP/meta.json" || fail "the feed host's resolved
 grep -q '"provenance_intent"' "$TMP/meta.json" || fail "the pre-run stamp must be labelled as intent, not as confirmation"
 grep -q '"live_roots"'        "$TMP/meta.json" || fail "found and kb are live mounts and must be marked sampled, not frozen"
 
-# 8. How the agent moved is IN the bundle. Before 2026-08-31 only the seed was recorded, so a
-#    dwell=0 run and a dwell=60 run produced byte-identical metadata and the difference between
-#    two bundle FAMILIES lived only in whichever message announced it. 0 is a legal value and
-#    must survive as 0 — a `${VAR:-60}` anywhere on this path turns the new default back into
-#    the old one and stamps the lie in the artefact.
-grep -q '"dwell_frames": 0' "$TMP/meta.json" || fail "dwell_frames not stamped, or a :- default rewrote the 0"
-grep -q '"walk_frames": 6'  "$TMP/meta.json" || fail "walk_frames not stamped"
-grep -q '"mapping_seconds": 150' "$TMP/meta.json" || fail "mapping_seconds not stamped; the first 150s of every run ignore walk/dwell entirely"
-# A mapping run's bundle must say so. Without this a MAPPING_ONLY bundle with zero detections and
-# a detection run that found nothing are the same artefact -- the indistinguishability that cost
-# run 19 its merge question.
-grep -q '"mapping_only": false' "$TMP/meta.json" || fail "mapping_only not stamped for a normal run"
-# GA-33 residual: the extension declares its aligner thresholds; the bundle must say what they were.
+# 8. How the agent moved is IN the bundle. Before 2026-08-31 only the seed was recorded, so two
+#    runs with different motion produced byte-identical metadata and the difference between two
+#    bundle FAMILIES lived only in whichever message announced it.
+#
+#    THE SAMPLING POLICY IS REMOVED (owner 2026-09-11), so what has to be stamped is the schedule:
+#    which file, how many laps, and how the agent travelled between two stops. walk_frames,
+#    dwell_frames, dwell_mode, mapping_seconds and mapping_only are gone from the artefact with
+#    the policy they described.
+grep -q '"motion_policy": "schedule"' "$TMP/meta.json" || fail "motion_policy not stamped; a bundle must say which policy drove it, because the archive holds both"
+grep -q '"schedule": "/sched/hm3d_00861.schedule.json"' "$TMP/meta.json" || fail "the schedule file is not stamped, so nothing says which roadmap this run drove"
+grep -q '"exploration_laps": 3' "$TMP/meta.json" || fail "exploration_laps not stamped"
+grep -q '"navigation_mode": "navigate"' "$TMP/meta.json" || fail "navigation_mode not stamped; teleport and navigate produce different frame counts for the same route"
+for k in walk_frames dwell_frames dwell_mode mapping_seconds mapping_only; do
+  grep -q "\"$k\":" "$TMP/meta.json" \
+    && fail "$k is still stamped; it belongs to the sampling policy, which was removed on 2026-09-11"
+done
 grep -q 'export OUT_DIR=' "$SRC" || fail "GA-99: OUT_DIR must be EXPORTED or the feed host never sees it and writes its stats outside the bundle"
-grep -q 'export FEED_DWELL="\${FEED_DWELL:-0}"' "$SRC" \
-  || fail "FEED_DWELL must default to 0 (owner ruling 2026-08-31). A 60 here silently re-bases the family."
-grep -q 'FEED_DWELL=\${FEED_DWELL:-60}' "$SRC" \
-  && fail "a second FEED_DWELL default survives on the launch line; one name, one default"
+# ASSIGNMENTS ONLY, not the word. The launcher keeps a comment naming these variables to say why
+# they are gone; a grep for the bare name would fail on the explanation itself.
+grep -qE '^[[:space:]]*(export[[:space:]]+)?(FEED_WALK|FEED_DWELL[A-Z_]*|FEED_TEST_TOUR[A-Z_]*|FEED_MAPPING_SECONDS)=' "$SRC" \
+  && fail "the launcher still assigns a walk/dwell/mapping name; the feed host refuses those names now"
 
 # 9. No comment sits between two continued lines. `A=1 \` followed by `# ...` does NOT comment
 #    the line — the # swallows the continuation and A is SILENTLY DROPPED, with `bash -n` clean.
@@ -167,15 +177,21 @@ python3 "$HERE/check_env_passthrough.py" "$HERE/.." >/dev/null \
   || fail "check_env_passthrough.py: a container-side python os.environ read is not on the docker run -e list"
 
 # Stamped: a test result is true at a time, not simply true.
-# 8. The run's live output path. RESULTS/, never /tmp — owner ruling, relayed. The path needs
-#    RUN_TIMESTAMP and SCENE_ARG, both defined 99 lines below where OUT_DIR used to sit, so the
-#    assignment moved rather than the value changing. Evaluated here rather than eyeballed.
-#    WORKSPACE_ROOT is now DERIVED from the script's location so a clone anywhere can run, so this
-#    supplies one rather than expecting the machine this was written on.
-_out=$(RUN_TIMESTAMP=20260831_140000 SCENE_ARG=hm3d_00861 WORKSPACE_ROOT=/tmp/fake_ws bash -c \
-       'eval "$(sed -n "/^export OUT_DIR=\${OUT_DIR:-\$WORKSPACE_ROOT\/results/p" '"$SRC"')"; echo "$OUT_DIR"')
-[ "$_out" = "/tmp/fake_found/results/20260831_140000_hm3d_00861" ] \
-  || fail "OUT_DIR default is '$_out', expected \$WORKSPACE_ROOT/results/<timestamp>_<scene>"
+# 8. The run's live output path. results/, never /tmp — owner ruling, relayed.
+#
+#    THIS CHECK HAS BEEN VACUOUS. Its sed looked for `export OUT_DIR=${OUT_DIR:-$WORKSPACE_ROOT/
+#    results...}`, a form the launcher has not used since OUT_DIR became `"$RUN_DIR"`; the sed
+#    matched nothing, `_out` was empty, and the comparison was against `/tmp/fake_found/...` while
+#    the run supplied `WORKSPACE_ROOT=/tmp/fake_ws` — a literal left over from the workspace layout
+#    this repository used before the consolidation. It could not pass for any launcher, correct or not.
+#
+#    It now evaluates the three lines that actually build the path, which is what the check was
+#    always about: RUN_ID from the timestamp and the scene, RESULTS_DIR under the repo, RUN_DIR
+#    under that, OUT_DIR equal to it.
+_out=$(RUN_TIMESTAMP=20260831_140000 SCENE_ARG=hm3d_00861 REPO=/tmp/fake_ws bash -c \
+       'eval "$(sed -n -e "/^RUN_ID=/p" -e "/^RESULTS_DIR=/p" -e "/^RUN_DIR=/p" -e "/^export OUT_DIR=/p" '"$SRC"')"; echo "$OUT_DIR"')
+[ "$_out" = "/tmp/fake_ws/results/20260831_140000_hm3d_00861" ] \
+  || fail "OUT_DIR default is '$_out', expected <repo>/results/<timestamp>_<scene>"
 
 #    and an explicit OUT_DIR must still win, because the scratch-rename guard exists for the
 #    operator who reuses one. The default got safer; the hazard did not go away.
