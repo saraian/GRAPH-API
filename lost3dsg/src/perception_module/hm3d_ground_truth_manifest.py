@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Esporta la geometria GT HM3D caricata nativamente da Habitat-Sim.
+"""Esporta la geometria ground truth HM3D senza envelope artificiali.
 
-Le regioni sono i polyloop XZ di ``SemanticRegion`` e gli oggetti sono gli
-AABB XYZ di ``SemanticObject``. Non vengono inferite istanze dai colori della
-texture e non vengono costruite stanze unendo bounding box di oggetti.
+Quando disponibili, usa polyloop XZ e AABB XYZ nativi di Habitat-Sim. Le build
+con dati nativi incompleti vengono integrate dalla mesh semantica: le stanze
+derivano dai triangoli di pavimento/soffitto (muri come ultima risorsa) e gli
+oggetti mancanti sono associati tramite il loro ID semantico. Non costruisce
+stanze unendo bounding box di oggetti.
 """
 from __future__ import annotations
 
@@ -17,6 +19,11 @@ import struct
 from pathlib import Path
 
 import numpy as np
+
+
+WALL_CATEGORY_NAMES = frozenset({
+    "wall", "wall panel", "fireplace wall", "shower wall", "partition", "column",
+})
 
 
 def _xyz(value):
@@ -34,6 +41,12 @@ def _category(entity):
     except (AttributeError, TypeError, ValueError):
         index = None
     return name, index
+
+
+def _region_key(value):
+    """Canonicalize Habitat-Sim IDs (``_0``) and semantic.txt IDs (``0``)."""
+    text = str(value).strip()
+    return text[1:] if text.startswith("_") and text[1:].isdigit() else text
 
 
 def _scene_number(scene: Path):
@@ -178,7 +191,7 @@ def _semantic_mesh_aabbs(mesh_path, text_path):
         raise RuntimeError("Pillow è necessario per leggere le texture semantic.glb") from exc
     records = _semantic_records(text_path)
     gltf, binary = _read_glb(mesh_path)
-    transforms, images, boxes = _mesh_transforms(gltf), {}, {}
+    transforms, images, boxes, triangles_by_color = _mesh_transforms(gltf), {}, {}, {}
     for mesh_index, mesh in enumerate(gltf.get("meshes", [])):
         for primitive in mesh.get("primitives", []):
             attrs = primitive.get("attributes", {})
@@ -245,8 +258,243 @@ def _semantic_mesh_aabbs(mesh_path, text_path):
                     low, high = np.min(points, axis=0), np.max(points, axis=0)
                     old = boxes.get(color)
                     boxes[color] = (low, high) if old is None else (np.minimum(old[0], low), np.maximum(old[1], high))
-    return [{**records[color], "color_rgb": list(color), "aabb": box}
+                    triangles_by_color.setdefault(color, []).append(
+                        np.asarray(points, dtype=float).tolist())
+    return [{**records[color], "color_rgb": list(color), "aabb": box,
+             "triangles": triangles_by_color.get(color, [])}
             for color, box in boxes.items()]
+
+
+def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
+    """Recover a room polygon from its semantic structural triangles.
+
+    The HM3D semantic scene loaded by some Habitat-Sim builds exposes region
+    IDs but no region polyloops or object AABBs.  Prefer the actual floor (or
+    ceiling) triangles, whose union is the room footprint.  If neither is
+    available, rasterize the walls and recover their enclosed component.
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError(
+            "OpenCV è necessario per ricostruire le regioni HM3D dai triangoli"
+        ) from exc
+    region_objects = [obj for obj in objects
+                      if _region_key(obj.get("region_id") or "") == _region_key(region_id)]
+    walls = [obj for obj in region_objects
+             if str(obj.get("category_name", "")).strip().lower()
+             in WALL_CATEGORY_NAMES]
+    triangles = [np.asarray(triangle, dtype=float) for obj in walls
+                 for triangle in obj.get("triangles", [])
+                 if np.asarray(triangle).shape == (3, 3)]
+    structural_triangles = [np.asarray(triangle, dtype=float)
+                            for obj in region_objects
+                            if str(obj.get("category_name", "")).strip().lower()
+                            in WALL_CATEGORY_NAMES | {"floor", "ceiling"}
+                            for triangle in obj.get("triangles", [])
+                            if np.asarray(triangle).shape == (3, 3)]
+    if not structural_triangles:
+        return None
+    vertical_low = float(min(triangle[:, 1].min()
+                             for triangle in structural_triangles))
+    vertical_high = float(max(triangle[:, 1].max()
+                              for triangle in structural_triangles))
+
+    def surface_footprint(category):
+        surface = [np.asarray(triangle, dtype=float)
+                   for obj in region_objects
+                   if str(obj.get("category_name", "")).strip().lower() == category
+                   for triangle in obj.get("triangles", [])
+                   if np.asarray(triangle).shape == (3, 3)]
+        if not surface:
+            return None
+        projected_surface = [triangle[:, [0, 2]] for triangle in surface]
+        projected_walls = [triangle[:, [0, 2]] for triangle in triangles]
+        footprint_triangles = projected_surface + projected_walls
+        # Symmetric padding keeps morphology away from the image border.  A
+        # mask starting at pixel zero used to enlarge max bounds by one voxel.
+        padding = max(0.40, 2.0 * resolution)
+        surface_low = (np.min([points.min(axis=0) for points in footprint_triangles],
+                              axis=0) - padding)
+        surface_high = (np.max([points.max(axis=0) for points in footprint_triangles],
+                               axis=0) + padding)
+        surface_shape = np.maximum(
+            3, np.ceil((surface_high - surface_low) / resolution).astype(int) + 3)
+        if int(np.prod(surface_shape)) > 4_000_000:
+            return None
+        surface_mask = np.zeros((int(surface_shape[1]), int(surface_shape[0])),
+                                dtype=np.uint8)
+        for triangle in projected_surface:
+            points = np.rint((triangle - surface_low) / resolution).astype(np.int32)
+            if abs(float(cv2.contourArea(points.reshape(-1, 1, 2)))) >= 1.0:
+                cv2.fillPoly(surface_mask, [points], 1)
+        # Include the complete wall geometry assigned to this region.  Most
+        # wall faces are vertical and collapse to line segments in X-Z, so
+        # rasterize those with a small physical thickness instead of dropping
+        # them as zero-area triangles.
+        wall_thickness = max(1, int(round(0.10 / resolution)))
+        for triangle in projected_walls:
+            points = np.rint((triangle - surface_low) / resolution).astype(np.int32)
+            area = abs(float(cv2.contourArea(points.reshape(-1, 1, 2))))
+            if area >= 1.0:
+                cv2.fillPoly(surface_mask, [points], 1)
+            else:
+                cv2.polylines(surface_mask, [points], False, 1,
+                              thickness=wall_thickness)
+        if not np.any(surface_mask):
+            return None
+        # Join wall/floor annotation seams.  Doors do not create a false
+        # connection here because the filled room surface is already on one
+        # side; this only prevents a separately meshed wall strip from being
+        # discarded as a smaller external contour.
+        close_size = max(3, int(round(0.40 / resolution)) | 1)
+        surface_mask = cv2.morphologyEx(
+            surface_mask, cv2.MORPH_CLOSE,
+            np.ones((close_size, close_size), dtype=np.uint8))
+        contours, _ = cv2.findContours(surface_mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+        contour = cv2.approxPolyDP(max(contours, key=cv2.contourArea),
+                                   max(1.0, 0.03 / resolution), True).reshape(-1, 2)
+        if len(contour) < 3:
+            return None
+        polygon = [[float(surface_low[0] + point[0] * resolution),
+                    float(surface_low[1] + point[1] * resolution)]
+                   for point in contour]
+        points = np.asarray(polygon, dtype=float)
+        box_low = np.asarray([points[:, 0].min(), vertical_low,
+                              points[:, 1].min()], dtype=float)
+        box_high = np.asarray([points[:, 0].max(), vertical_high,
+                               points[:, 1].max()], dtype=float)
+        source = (f"semantic_{category}_and_wall_triangles" if projected_walls
+                  else f"semantic_{category}_triangles")
+        return polygon, (box_low, box_high), source
+
+    # Floor annotations are normally the most direct footprint.  Ceiling is
+    # a reliable substitute for regions where carpet replaces the floor label.
+    surface_result = surface_footprint("floor") or surface_footprint("ceiling")
+    if surface_result is not None:
+        return surface_result
+    if not triangles:
+        return None
+
+    # ``_semantic_mesh_aabbs`` has already converted vertices to Habitat's
+    # Y-up frame [x, y, z].  A room therefore lives in the X-Z plane.  Using
+    # columns [0, 1] here creates an elevation silhouette and used to produce
+    # plausible-looking, but geometrically false, room polygons.
+    projected = [triangle[:, [0, 2]] for triangle in triangles]
+    lows = np.asarray([points.min(axis=0) for points in projected], dtype=float)
+    highs = np.asarray([points.max(axis=0) for points in projected], dtype=float)
+    low = lows.min(axis=0) - 0.5
+    high = highs.max(axis=0) + 0.5
+    shape = np.maximum(3, np.ceil((high - low) / resolution).astype(int) + 1)
+    if int(np.prod(shape)) > 4_000_000:
+        resolution *= np.sqrt(float(np.prod(shape)) / 4_000_000)
+        shape = np.maximum(3, np.ceil((high - low) / resolution).astype(int) + 1)
+    mask = np.zeros((int(shape[1]), int(shape[0])), dtype=np.uint8)
+    for triangle in projected:
+        points = np.rint((triangle - low) / resolution).astype(np.int32)
+        area = abs(float(cv2.contourArea(points.reshape(-1, 1, 2))))
+        if area >= 1.0:
+            cv2.fillPoly(mask, [points], 1)
+        else:
+            # Vertical wall surfaces collapse to line segments in X-Z.
+            cv2.polylines(mask, [points], False, 1,
+                          thickness=max(1, int(round(0.10 / resolution))))
+    # Close door-sized gaps in the wall segments.  This operates on the
+    # region-specific triangle raster only; it cannot merge two rooms.
+    close_size = max(3, int(round(0.75 / resolution)) | 1)
+    kernel = np.ones((close_size, close_size), dtype=np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    def result_from_contour(contour):
+        contour = contour.reshape(-1, 2)
+        if len(contour) < 3:
+            return None
+        polygon = [[float(low[0] + point[0] * resolution),
+                    float(low[1] + point[1] * resolution)] for point in contour]
+        points = np.asarray(polygon, dtype=float)
+        box_low = np.asarray([points[:, 0].min(), vertical_low,
+                              points[:, 1].min()], dtype=float)
+        box_high = np.asarray([points[:, 0].max(), vertical_high,
+                               points[:, 1].max()], dtype=float)
+        return polygon, (box_low, box_high), "semantic_wall_triangles"
+
+    def wall_mask_contour(source):
+        # Wall instances can be split at corners and around doors.  A small
+        # dilation joins those pieces while keeping the contour derived from
+        # the projected wall triangles.
+        join_size = max(3, int(round(0.35 / resolution)) | 1)
+        joined = cv2.dilate(source, np.ones((join_size, join_size), dtype=np.uint8))
+        contours, _ = cv2.findContours(joined, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+        contour = max(contours, key=cv2.contourArea)
+        contour = cv2.approxPolyDP(contour, max(1.5, 0.04 / resolution), True)
+        return result_from_contour(contour)
+
+    def wall_points_hull():
+        # Last geometric reconstruction step: use only the projected points
+        # of this region's semantic wall triangles.  This is intentionally a
+        # wall-derived contour, not an object-AABB fallback.
+        points = np.concatenate(projected, axis=0)
+        points = np.unique(np.rint((points - low) / resolution).astype(np.int32), axis=0)
+        if len(points) < 3:
+            return None
+        hull = cv2.convexHull(points.reshape(-1, 1, 2))
+        hull = cv2.approxPolyDP(hull, max(1.5, 0.04 / resolution), True)
+        hull = hull.reshape(-1, 2)
+        if len(hull) < 3 or cv2.contourArea(hull.reshape(-1, 1, 2)) < 4.0:
+            return None
+        return result_from_contour(hull)
+
+    free = (mask == 0).astype(np.uint8)
+    count, labels = cv2.connectedComponents(free, connectivity=4)
+    if count <= 1:
+        return wall_mask_contour(mask) or wall_points_hull()
+    boundary = np.unique(np.concatenate((labels[0, :], labels[-1, :],
+                                         labels[:, 0], labels[:, -1])))
+    candidates = [(int(np.count_nonzero(labels == idx)), idx)
+                  for idx in range(1, count) if idx not in set(boundary)]
+    if not candidates:
+        # A region may have doors/openings, so its free-space component can
+        # leak to the raster boundary.  Extract the outer contour of the
+        # wall-triangle mask itself; this remains based on the semantic wall
+        # triangles and is not an object-AABB/envelope fallback.
+        return wall_mask_contour(mask) or wall_points_hull()
+    _, chosen = max(candidates)
+    component = (labels == chosen).astype(np.uint8)
+    contours, _ = cv2.findContours(component, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    epsilon = max(1.5, 0.04 / resolution)
+    contour = cv2.approxPolyDP(contour, epsilon, True)
+    return result_from_contour(contour)
+
+
+def _wall_triangle_coverage(polygon, objects, region_id, tolerance):
+    """Count wall triangles represented by a region polygon within tolerance."""
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("OpenCV è necessario per validare i muri HM3D") from exc
+    contour = np.asarray(polygon, dtype=np.float32).reshape(-1, 1, 2)
+    centroids = [np.asarray(triangle, dtype=float)[:, [0, 2]].mean(axis=0)
+                 for obj in objects
+                 if _region_key(obj.get("region_id") or "") == _region_key(region_id)
+                 and str(obj.get("category_name", "")).strip().lower()
+                 in WALL_CATEGORY_NAMES
+                 for triangle in obj.get("triangles", [])
+                 if np.asarray(triangle).shape == (3, 3)]
+    covered = sum(
+        cv2.pointPolygonTest(contour, tuple(map(float, point)), True) >= -tolerance
+        for point in centroids
+    )
+    return covered, len(centroids)
 
 
 def _grid_spec(low, high, resolution):
@@ -290,30 +538,45 @@ def _region_mask(low, high, origin_xz, shape_xz, resolution, floor_index):
 
 
 def _extract_texture_geometry(scene, semantic_mesh, semantic_text,
-                              floor_tolerance, selected_floor):
+                              floor_tolerance, selected_floor,
+                              region_resolution=0.10):
     """Fallback HM3D v0.2: geometria dalla texture semantica del GLB."""
     objects = _semantic_mesh_aabbs(semantic_mesh, semantic_text)
     if not objects:
         raise RuntimeError(f"nessuna istanza decodificata da {semantic_mesh}")
 
-    region_boxes = {}
-    for obj in objects:
-        rid = str(obj.get("region_id") or "unknown")
-        low, high = obj["aabb"]
-        old = region_boxes.get(rid)
-        region_boxes[rid] = ((low, high) if old is None else
-                             (np.minimum(old[0], low), np.maximum(old[1], high)))
-    floors = _cluster_heights([box[0][1] for box in region_boxes.values()],
+    region_ids = sorted({_region_key(obj.get("region_id")) for obj in objects
+                         if obj.get("region_id") not in (None, "")},
+                        key=lambda value: (not value.isdigit(),
+                                           int(value) if value.isdigit() else value))
+    region_geometry = {}
+    missing_regions = []
+    for rid in region_ids:
+        reconstructed = _reconstruct_region_from_walls(
+            objects, rid, resolution=region_resolution)
+        if reconstructed is None:
+            missing_regions.append(rid)
+        else:
+            region_geometry[rid] = reconstructed
+    if missing_regions:
+        raise RuntimeError(
+            "GT rifiutata: nessuna impronta strutturale affidabile per le "
+            f"regioni {missing_regions}"
+        )
+    floors = _cluster_heights([box[0][1] for _, box, _ in region_geometry.values()],
                               floor_tolerance)
-    region_floor = {rid: int(np.argmin(np.abs(np.asarray(floors) - box[0][1])))
-                    for rid, box in region_boxes.items()}
+    region_floor = {
+        rid: int(np.argmin(np.abs(np.asarray(floors) - box[0][1])))
+        for rid, (_, box, _) in region_geometry.items()
+    }
     all_floors = list(floors)
     if selected_floor is not None:
         if selected_floor < 0 or selected_floor >= len(floors):
             raise ValueError(f"--floor-index={selected_floor} fuori intervallo 0..{len(floors)-1}")
         keep = {rid for rid, fi in region_floor.items() if fi == selected_floor}
-        objects = [o for o in objects if str(o.get("region_id") or "unknown") in keep]
-        region_boxes = {rid: box for rid, box in region_boxes.items() if rid in keep}
+        objects = [o for o in objects if _region_key(o.get("region_id") or "unknown") in keep]
+        region_geometry = {rid: geometry for rid, geometry in region_geometry.items()
+                           if rid in keep}
         floors = [floors[selected_floor]]
         region_floor = {rid: 0 for rid in keep}
 
@@ -338,15 +601,24 @@ def _extract_texture_geometry(scene, semantic_mesh, semantic_text,
                                "size_m": size.tolist()})
 
     gt_regions = []
-    for rid, (low, high) in region_boxes.items():
+    for rid, (polygon, (low, high), geometry_source) in region_geometry.items():
+        covered_walls, wall_count = _wall_triangle_coverage(
+            polygon, objects, rid, max(0.10, 2.0 * region_resolution))
+        coverage = covered_walls / wall_count if wall_count else 1.0
+        if coverage < 0.999:
+            raise RuntimeError(
+                f"GT rifiutata: regione {rid} copre {covered_walls}/{wall_count} "
+                "triangoli di muro"
+            )
         gt_regions.append({"region_id": rid, "floor_index": region_floor[rid],
                            "category_id": None, "category_name": "",
-                           "polygon_xz_m": [[float(low[0]), float(low[2])],
-                                            [float(high[0]), float(low[2])],
-                                            [float(high[0]), float(high[2])],
-                                            [float(low[0]), float(high[2])]],
+                           "polygon_xz_m": polygon,
                            "aabb_min_m": low.tolist(), "aabb_max_m": high.tolist(),
-                           "geometry_source": "semantic_object_aabb_envelope",
+                           "geometry_source": geometry_source,
+                           "wall_triangle_count": wall_count,
+                           "wall_triangle_outlier_count": wall_count - covered_walls,
+                           "wall_triangle_coverage_pct": (
+                               round(100.0 * coverage, 4) if wall_count else None),
                            "geometry_is_exact": False})
     return {
         "scene": _scene_number(scene), "construction_time_s": None,
@@ -366,7 +638,7 @@ def _extract_texture_geometry(scene, semantic_mesh, semantic_text,
         "ground_truth_source": {
             "scene": str(scene.resolve()), "semantic_mesh": str(semantic_mesh.resolve()),
             "semantic_descriptor": str(semantic_text.resolve()),
-            "method": "semantic_glb_texture_parser",
+            "method": "semantic_glb_structural_triangle_parser",
             "uv_origin": "upper-left (glTF 2.0; no vertical flip)",
             "selected_floor_index": selected_floor,
             "all_floor_heights_m": all_floors,
@@ -376,7 +648,7 @@ def _extract_texture_geometry(scene, semantic_mesh, semantic_text,
 
 
 def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
-            floor_tolerance=0.50, selected_floor=None):
+            floor_tolerance=0.50, selected_floor=None, require_native=False):
     semantic = sim.semantic_scene
     habitat_regions = [r for r in (getattr(semantic, "regions", None) or []) if r is not None]
     habitat_objects = [o for o in (getattr(semantic, "objects", None) or []) if o is not None]
@@ -387,66 +659,92 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
     # otherwise a missing/partial SemanticScene would fail much later with a
     # misleading "no valid AABB" error.
     native_object_count = sum(_aabb(obj) is not None for obj in habitat_objects)
-    if not habitat_regions or native_object_count == 0:
+    if not habitat_regions:
+        if require_native:
+            raise RuntimeError("SemanticScene senza regioni native")
         semantic_mesh, semantic_text = _semantic_paths(scene)
-        return _extract_texture_geometry(scene, semantic_mesh, semantic_text,
-                                         floor_tolerance, selected_floor)
+        return _extract_texture_geometry(
+            scene, semantic_mesh, semantic_text, floor_tolerance,
+            selected_floor, region_resolution)
+    if require_native and native_object_count != len(habitat_objects):
+        raise RuntimeError(
+            "SemanticScene nativa con copertura AABB incompleta: "
+            f"regions={len(habitat_regions)}, objects={len(habitat_objects)}, "
+            f"objects_with_valid_aabb={native_object_count}."
+        )
 
-    semantic_mesh = semantic_text = None
-    try:
-        semantic_mesh, semantic_text = _semantic_paths(scene)
-    except FileNotFoundError:
-        # Native extraction does not require the files once Habitat-Sim has
-        # loaded the semantic scene; retain a useful source record below.
-        pass
+    semantic_mesh, semantic_text = _semantic_paths(scene)
+    texture_objects = _semantic_mesh_aabbs(semantic_mesh, semantic_text)
+    annotated_region_ids = {
+        _region_key(obj.get("region_id")) for obj in texture_objects
+        if obj.get("region_id") not in (None, "")
+    }
+    if annotated_region_ids:
+        native_region_ids = {_region_key(region.id) for region in habitat_regions}
+        missing_native_regions = annotated_region_ids - native_region_ids
+        if missing_native_regions:
+            if require_native:
+                raise RuntimeError(
+                    "SemanticScene nativa con regioni mancanti: "
+                    f"{sorted(missing_native_regions)}"
+                )
+            return _extract_texture_geometry(
+                scene, semantic_mesh, semantic_text, floor_tolerance,
+                selected_floor, region_resolution)
+        habitat_regions = [region for region in habitat_regions
+                           if _region_key(region.id) in annotated_region_ids]
 
     regions = []
     for region in habitat_regions:
         # Habitat-Sim uses Y-up coordinates; room polygons live in the
         # horizontal X-Z plane, not X-Y.
-        polygon = [[float(p[0]), float(p[2])]
-                   for p in (getattr(region, "poly_loop_points", None) or [])]
+        # Habitat-Sim exposes Vector2 points for region polyloops in some
+        # versions and Vector3-like points in others.
+        polygon = []
+        for p in (getattr(region, "poly_loop_points", None) or []):
+            try:
+                polygon.append([float(p[0]), float(p[2]) if len(p) >= 3
+                                else float(p[1])])
+            except (TypeError, IndexError):
+                polygon = []
+                break
         box = _aabb(region)
         geometry_source = "semantic_region_poly_loop"
-        if box is None:
-            # Some Habitat-Sim builds load HM3D region membership but leave
-            # SemanticRegion geometry empty.  Preserve that membership and
-            # derive only a clearly-labelled envelope from native object AABBs.
-            member_boxes = []
-            for obj in habitat_objects:
-                obj_region = getattr(obj, "region", None)
-                obj_box = _aabb(obj)
-                if (obj_region is not None and str(obj_region.id) == str(region.id)
-                        and obj_box is not None):
-                    member_boxes.append(obj_box)
-            if member_boxes:
-                box = (np.min([item[0] for item in member_boxes], axis=0),
-                       np.max([item[1] for item in member_boxes], axis=0))
-                geometry_source = "semantic_object_aabb_envelope"
-        if box is None:
+        if box is None or len(polygon) < 3:
+            reconstructed = _reconstruct_region_from_walls(
+                texture_objects, _region_key(region.id),
+                resolution=region_resolution)
+            if reconstructed is not None:
+                reconstructed_polygon, reconstructed_box, reconstruction_source = reconstructed
+                if len(polygon) < 3:
+                    polygon = reconstructed_polygon
+                if box is None:
+                    box = reconstructed_box
+                geometry_source = reconstruction_source
+        if box is None or len(polygon) < 3:
             continue
-        if len(polygon) < 3:
-            low, high = box
-            polygon = [[float(low[0]), float(low[2])],
-                       [float(high[0]), float(low[2])],
-                       [float(high[0]), float(high[2])],
-                       [float(low[0]), float(high[2])]]
-            if geometry_source == "semantic_region_poly_loop":
-                geometry_source = "semantic_region_aabb_fallback"
         floor_height = float(getattr(region, "floor_height", box[0][1]))
         if geometry_source == "semantic_object_aabb_envelope":
             floor_height = float(box[0][1])
         if not math.isfinite(floor_height):
             floor_height = float(box[0][1])
-        regions.append((str(region.id), polygon, box, floor_height, region,
+        regions.append((_region_key(region.id), polygon, box, floor_height, region,
                         geometry_source))
-    if not regions:
-        valid_object_boxes = sum(_aabb(obj) is not None for obj in habitat_objects)
+    if len(regions) != len(habitat_regions):
+        missing_geometry = sorted(
+            {_region_key(region.id) for region in habitat_regions} -
+            {item[0] for item in regions}
+        )
+        wall_objects = [obj for obj in texture_objects
+                        if _region_key(obj.get("region_id") or "") in annotated_region_ids
+                        and "wall" in str(obj.get("category_name", "")).lower()]
+        wall_triangles = sum(len(obj.get("triangles", [])) for obj in wall_objects)
         raise RuntimeError(
-            "impossibile costruire regioni HM3D: "
-            f"regions={len(habitat_regions)}, objects={len(habitat_objects)}, "
-            f"objects_with_valid_aabb={valid_object_boxes}. "
-            "La build Habitat-Sim non espone geometria semantica utilizzabile."
+            "impossibile ricostruire tutte le regioni dai triangoli "
+            "strutturali associati ai rispettivi region_id; GT rifiutata. "
+            f"regioni_senza_geometria={missing_geometry}, "
+            f"region_ids={sorted(annotated_region_ids)}, "
+            f"wall_objects={len(wall_objects)}, wall_triangles={wall_triangles}."
         )
 
     floors = _cluster_heights([item[3] for item in regions], floor_tolerance)
@@ -465,7 +763,7 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
         regions = [item for item in regions if item[0] in selected_region_ids]
         habitat_objects = [obj for obj in habitat_objects
                            if getattr(obj, "region", None) is not None
-                           and str(obj.region.id) in selected_region_ids]
+                           and _region_key(obj.region.id) in selected_region_ids]
         floors = [floors[selected_floor]]
         region_floor = {region_id: 0 for region_id in selected_region_ids}
         if not regions:
@@ -475,6 +773,15 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
     for region_id, polygon, (low, high), floor_height, region, geometry_source in regions:
         floor_index = region_floor[region_id]
         name, category_id = _category(region)
+        covered_walls, wall_count = _wall_triangle_coverage(
+            polygon, texture_objects, region_id,
+            max(0.10, 2.0 * region_resolution))
+        coverage = covered_walls / wall_count if wall_count else 1.0
+        if geometry_source != "semantic_region_poly_loop" and coverage < 0.999:
+            raise RuntimeError(
+                f"GT rifiutata: regione {region_id} copre "
+                f"{covered_walls}/{wall_count} triangoli di muro"
+            )
         gt_regions.append({
             "region_id": region_id,
             "polygon_xz_m": polygon,
@@ -484,6 +791,11 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
             "category_name": name,
             "geometry_source": geometry_source,
             "geometry_is_exact": geometry_source == "semantic_region_poly_loop",
+            "wall_triangle_count": wall_count,
+            "wall_triangle_outlier_count": wall_count - covered_walls,
+            "wall_triangle_coverage_pct": (
+                round(100.0 * coverage, 4)
+                if wall_count else None),
             "aabb_min_m": low.tolist(),
             "aabb_max_m": high.tolist(),
         })
@@ -494,7 +806,6 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
             "approximately_correct": None,
         })
 
-    gt_objects = []
     native_objects = []
     for obj in habitat_objects:
         box = _aabb(obj)
@@ -502,22 +813,60 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
             continue
         name, native_category_id = _category(obj)
         native_objects.append((obj, box, name, native_category_id))
-    if not native_objects:
-        raise RuntimeError("nessun SemanticObject HM3D possiede un AABB valido")
-    category_ids = {name: index for index, name in enumerate(
-        sorted({item[2] for item in native_objects}))}
+    if selected_floor is not None:
+        allowed_regions = {_region_key(region_id) for region_id, *_ in regions}
+        texture_objects = [obj for obj in texture_objects
+                           if _region_key(obj.get("region_id") or "unknown")
+                           in allowed_regions]
+
+    # Keep every valid native AABB and fill only missing semantic IDs from the
+    # texture mesh.  Previously, one valid native object selected this branch
+    # and silently discarded every native object whose AABB was unavailable.
+    object_rows = []
+    native_semantic_ids = set()
     for obj, (low, high), name, native_category_id in native_objects:
         region = getattr(obj, "region", None)
-        gt_objects.append({
+        semantic_id = int(obj.semantic_id)
+        native_semantic_ids.add(semantic_id)
+        object_rows.append({
             "object_id": str(obj.id),
-            "semantic_id": int(obj.semantic_id),
-            "category_id": category_ids[name],
+            "semantic_id": semantic_id,
             "native_category_id": native_category_id,
             "category_name": name,
-            "region_id": str(region.id) if region is not None else None,
+            "region_id": _region_key(region.id) if region is not None else None,
             "aabb_min_m": low.tolist(),
             "aabb_max_m": high.tolist(),
+            "geometry_source": "semantic_object_aabb",
         })
+    for obj in texture_objects:
+        semantic_id = int(obj["object_id"])
+        if semantic_id in native_semantic_ids:
+            continue
+        low, high = obj["aabb"]
+        object_rows.append({
+            "object_id": str(obj["object_id"]),
+            "semantic_id": semantic_id,
+            "native_category_id": None,
+            "category_name": obj["category_name"],
+            "region_id": (_region_key(obj.get("region_id"))
+                          if obj.get("region_id") is not None else None),
+            "aabb_min_m": low.tolist(),
+            "aabb_max_m": high.tolist(),
+            "geometry_source": "semantic_glb_texture",
+        })
+    if not object_rows:
+        raise RuntimeError("nessun AABB nativo o texture semantica decodificabile")
+    category_ids = {name: index for index, name in enumerate(
+        sorted({row["category_name"] for row in object_rows}))}
+    gt_objects = [{**row, "category_id": category_ids[row["category_name"]]}
+                  for row in sorted(object_rows, key=lambda item: item["semantic_id"])]
+    fallback_count = sum(row["geometry_source"] == "semantic_glb_texture"
+                         for row in gt_objects)
+    object_geometry_source = (
+        "semantic_object_aabb" if fallback_count == 0 else
+        "semantic_glb_texture_fallback" if fallback_count == len(gt_objects) else
+        "semantic_object_aabb_with_texture_completion"
+    )
 
     return {
         "scene": _scene_number(scene),
@@ -544,7 +893,10 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
             "semantic_mesh": str(semantic_mesh.resolve()) if semantic_mesh else None,
             "semantic_descriptor": str(semantic_text.resolve()) if semantic_text else None,
             "api": "Habitat-Sim SemanticScene/SemanticRegion/SemanticObject",
-            "note": "Polyloop, altezze e AABB letti dall'API nativa; nessuna inferenza da texture.",
+            "note": "Polyloop e altezze native; AABB oggetti nativi oppure fallback texture se la build non li espone.",
+            "object_geometry_source": object_geometry_source,
+            "native_object_count": len(gt_objects) - fallback_count,
+            "texture_fallback_object_count": fallback_count,
             "region_geometry_exact": all(
                 row["geometry_is_exact"] for row in gt_regions
             ),
@@ -568,6 +920,8 @@ def main():
     parser.add_argument("--floor-tolerance", type=float, default=0.50)
     parser.add_argument("--floor-index", type=int, default=None,
                         help="considera un solo piano (indice 0-based dal basso)")
+    parser.add_argument("--require-native", action="store_true",
+                        help="fallisce invece di usare il fallback texture")
     args = parser.parse_args()
     if args.region_resolution <= 0 or args.object_voxel <= 0 or args.floor_tolerance <= 0:
         parser.error("risoluzioni e tolleranza devono essere positive")
@@ -579,26 +933,34 @@ def main():
     try:
         import habitat_sim
     except ImportError as exc:
-        parser.error(f"habitat_sim non disponibile nell'ambiente Python: {exc}")
-    backend = habitat_sim.SimulatorConfiguration()
-    backend.scene_id = str(args.scene.resolve())
-    backend.scene_dataset_config_file = str(args.dataset_config.resolve())
-    backend.load_semantic_mesh = True
-    # HM3D-Semantics v0.2 can store instance IDs in semantic textures.  Older
-    # bindings expose the explicit switch below; newer/refactored bindings
-    # select the semantic asset through the annotated dataset configuration.
-    backend.requires_textures = True
-    if hasattr(backend, "use_semantic_textures_if_found"):
-        backend.use_semantic_textures_if_found = True
-    semantic_sensor = habitat_sim.CameraSensorSpec()
-    semantic_sensor.uuid = "semantic"
-    semantic_sensor.sensor_type = habitat_sim.SensorType.SEMANTIC
-    agent = habitat_sim.agent.AgentConfiguration()
-    agent.sensor_specifications = [semantic_sensor]
-    with habitat_sim.Simulator(habitat_sim.Configuration(backend, [agent])) as sim:
-        result = extract(sim, args.scene, args.region_resolution,
-                         args.object_voxel, args.floor_tolerance,
-                         args.floor_index)
+        if args.require_native:
+            parser.error(f"habitat_sim non disponibile nell'ambiente Python: {exc}")
+        semantic_mesh, semantic_text = _semantic_paths(args.scene)
+        result = _extract_texture_geometry(
+            args.scene, semantic_mesh, semantic_text, args.floor_tolerance,
+            args.floor_index, args.region_resolution)
+        print("habitat_sim non disponibile: uso i triangoli strutturali "
+              "della mesh semantica")
+    else:
+        backend = habitat_sim.SimulatorConfiguration()
+        backend.scene_id = str(args.scene.resolve())
+        backend.scene_dataset_config_file = str(args.dataset_config.resolve())
+        backend.load_semantic_mesh = True
+        # HM3D-Semantics v0.2 can store instance IDs in semantic textures.  Older
+        # bindings expose the explicit switch below; newer/refactored bindings
+        # select the semantic asset through the annotated dataset configuration.
+        backend.requires_textures = True
+        if hasattr(backend, "use_semantic_textures_if_found"):
+            backend.use_semantic_textures_if_found = True
+        semantic_sensor = habitat_sim.CameraSensorSpec()
+        semantic_sensor.uuid = "semantic"
+        semantic_sensor.sensor_type = habitat_sim.SensorType.SEMANTIC
+        agent = habitat_sim.agent.AgentConfiguration()
+        agent.sensor_specifications = [semantic_sensor]
+        with habitat_sim.Simulator(habitat_sim.Configuration(backend, [agent])) as sim:
+            result = extract(sim, args.scene, args.region_resolution,
+                             args.object_voxel, args.floor_tolerance,
+                             args.floor_index, args.require_native)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False,
                                       allow_nan=False) + "\n", encoding="utf-8")
