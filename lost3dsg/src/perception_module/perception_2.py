@@ -35,7 +35,7 @@ import numpy as np  # noqa: E402
 import rclpy  # noqa: E402
 import tf2_ros  # noqa: E402
 import torch  # noqa: E402
-from config import CFG  # noqa: E402
+from config import CFG, world_frame  # noqa: E402
 from detection_archive import (  # noqa: E402
     DetectionArchive, frame_id_from_stamp, resolve_archive_dir)
 from config import visibility as visibility_cfg  # noqa: E402
@@ -87,8 +87,12 @@ from lost3dsg.msg import Bbox3d, Bbox3dArray, ObjectDescription, ObjectDescripti
 # device when it is instantiated.
 
 PROJECT_ROOT = get_project_root(__file__)
-LOG_DIR = os.path.join(PROJECT_ROOT, "output")
-os.makedirs(LOG_DIR, exist_ok=True)
+LOG_DIR = os.environ.get("GRAPH_API_OUTPUT_DIR") or os.path.join(PROJECT_ROOT, "output")
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except OSError:
+    LOG_DIR = "/tmp"
+    os.makedirs(LOG_DIR, exist_ok=True)
 
 module_logger = logging.getLogger("perception_module")
 module_logger.setLevel(logging.DEBUG)
@@ -291,6 +295,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.tf_buffer = tf2_ros.Buffer(
             cache_time=Duration(seconds=float(CFG["tf"].get("buffer_cache_s", 30.0))))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.log_both("info", f"TF world frame: {world_frame()}")
 
         self._init_publishers()
         self._init_subscribers()
@@ -439,9 +444,15 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.individual_pcl_publishers = {}
         # Save/publish the physical camera pose. This is deliberately distinct
         # from frames.camera, the optical frame used for RGB-D projection.
-        self.agent_pose_frame = (CFG.get("frames", {}) or {}).get(
-            "agent_pose", "habitat_camera"
-        )
+        frames_cfg = CFG.get("frames", {}) or {}
+        configured_agent_pose = frames_cfg.get("agent_pose")
+        if not bool(CFG.get("simulation", True)) and configured_agent_pose in (
+                None, "", "habitat_camera"):
+            # The shared YAML historically names the simulated camera as the agent pose.
+            # A physical run must publish the mobile base pose so the dashboard/BEV and
+            # the recorded trajectory agree on the robot position.
+            configured_agent_pose = "base_footprint"
+        self.agent_pose_frame = configured_agent_pose or "habitat_camera"
 
     def _create_timers(self):
         self.create_timer(0.5, self._perception_timer_callback, callback_group=self.perception_cb_group)
@@ -622,7 +633,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             camera_info,
             node=self,
             labels=labels,
-            frame_id="map",
+            frame_id=world_frame(),
             topic_prefix="/pcl_id",
             publishers_dict=self.individual_pcl_publishers,
             id_counter_start=self.pcl_object_id_counter,
@@ -732,7 +743,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         )
 
         # TF-dependent: calcolata subito, finché lo stamp è ancora nel buffer TF
-        fov_volume = compute_fov_volume_from_depth(depth, camera_info, self)
+        fov_volume = compute_fov_volume_from_depth(depth, camera_info, self, stamp=cycle_stamp)
 
         self.log_both("info", "publish_objects: before run_detection")
         detections = self.run_detection(camera_data)
@@ -1245,7 +1256,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         if pub is None:
             self.pub_object_descriptions_late = pub = self.create_publisher(
                 ObjectDescriptionArray, "/object_descriptions_late", 10)
-        arr = self.make_header_msg(ObjectDescriptionArray, stamp=cycle_stamp, frame_id="map")
+        arr = self.make_header_msg(
+            ObjectDescriptionArray, stamp=cycle_stamp, frame_id=world_frame())
         for label, origin, res in late:
             m = ObjectDescription()
             m.label = label
@@ -1350,7 +1362,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 semantic_frame=semantic)
 
     def _publish_bbox_array(self, detections, bboxes_3d, fov_volume, cycle_stamp):
-        msg = self.make_header_msg(Bbox3dArray, stamp=cycle_stamp, frame_id="map")
+        msg = self.make_header_msg(Bbox3dArray, stamp=cycle_stamp, frame_id=world_frame())
         if fov_volume:
             for key, value in fov_volume.items():
                 setattr(msg, f"fov_{key}", value)
@@ -1407,7 +1419,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.bbox_pub.publish(msg)
 
     def _publish_description_array(self, detections, descriptions, cycle_stamp):
-        desc_array = self.make_header_msg(ObjectDescriptionArray, stamp=cycle_stamp, frame_id="map")
+        desc_array = self.make_header_msg(ObjectDescriptionArray, stamp=cycle_stamp, frame_id=world_frame())
         for det, desc in zip(detections, descriptions):
             obj_msg = ObjectDescription()
             obj_msg.label = det.instance_label
@@ -1461,20 +1473,20 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         try:
             lookup_time = rclpy.time.Time.from_msg(cycle_stamp)
             t = self.tf_buffer.lookup_transform(
-                "map",
+                world_frame(),
                 self.agent_pose_frame,
                 lookup_time,
             )
         except TransformException as ex:
             self.log_both(
                 "warn",
-                f"Could not get camera pose (map -> {self.agent_pose_frame}): {ex}",
+                f"Could not get agent pose ({world_frame()} -> {self.agent_pose_frame}): {ex}",
             )
             return
 
         pose_msg = PoseStamped()
         pose_msg.header.stamp = cycle_stamp
-        pose_msg.header.frame_id = "map"
+        pose_msg.header.frame_id = world_frame()
         pose_msg.pose.position.x = t.transform.translation.x
         pose_msg.pose.position.y = t.transform.translation.y
         pose_msg.pose.position.z = t.transform.translation.z
@@ -1506,7 +1518,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
         for joint_name in tracked_joints:
             try:
-                from_frame_rel = "map"
+                from_frame_rel = world_frame()
                 t = self.tf_buffer.lookup_transform(
                     joint_name,
                     from_frame_rel,

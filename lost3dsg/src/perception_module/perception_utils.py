@@ -45,14 +45,19 @@ def compute_fov_volume_from_depth(
     node,
     depth_threshold=4.0,
     stride=4,
-    output_frame="map",
+    output_frame=None,
+    stamp=None,
 ):
     from cv_utils import ROS2Duration, _apply_transform, _pixels_to_points_habitat_camera
-    from config import CFG
+    from rclpy.time import Time
+    from config import CFG, world_frame
+
+    output_frame = output_frame or world_frame()
+    camera_frame = camera_info.header.frame_id or CFG["frames"]["camera"]
 
     try:
         k = camera_info.k
-        stamp = camera_info.header.stamp
+        stamp = stamp if stamp is not None else camera_info.header.stamp
         fx, fy, cx, cy = k[0], k[4], k[2], k[5]
 
         if fx <= 0 or fy <= 0:
@@ -75,7 +80,7 @@ def compute_fov_volume_from_depth(
 
         points_habitat = _pixels_to_points_habitat_camera(xs, ys, zs, fx, fy, cx, cy)
 
-        if output_frame == "habitat_camera_optical":
+        if output_frame == camera_frame:
             points_out = points_habitat
         else:
             # LAT-1. ONE lookup for the whole cloud, then the transform applied to the
@@ -96,7 +101,7 @@ def compute_fov_volume_from_depth(
             # still warns and returns None exactly as before, and it now fails once rather
             # than on the first of N points.
             trans = node.tf_buffer.lookup_transform(
-                output_frame, "habitat_camera_optical", stamp,
+                output_frame, camera_frame, Time.from_msg(stamp) if hasattr(stamp, "sec") else stamp,
                 timeout=ROS2Duration(seconds=CFG["tf"]["lookup_timeout"]))
             points_out = _apply_transform(points_habitat, trans)
 

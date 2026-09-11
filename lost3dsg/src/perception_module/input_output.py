@@ -7,7 +7,7 @@ import cv2
 from std_msgs.msg import Header
 from lost3dsg.msg import Bbox3dArray, ObjectDescriptionArray
 
-from config import CFG
+from config import CFG, world_frame
 from crop_context import build_context_crop
 from perception_utils import compute_fov_volume_from_depth
 from utils import draw_detections
@@ -35,11 +35,11 @@ def resolve_output_root():
 
 
 class PerceptionIOMixin:
-    def make_header_msg(self, msg_type, stamp=None, frame_id="map"):
+    def make_header_msg(self, msg_type, stamp=None, frame_id=None):
         msg = msg_type()
         msg.header = Header(
             stamp=stamp if stamp is not None else self.get_clock().now().to_msg(),
-            frame_id=frame_id,
+            frame_id=world_frame() if frame_id is None else frame_id,
         )
         return msg
 
@@ -64,9 +64,10 @@ class PerceptionIOMixin:
         # The object cloud (/pcl_objects, latched) is deliberately NOT wiped here: an
         # empty cycle used to overwrite the last detection's cloud with a zero-point
         # message, so rviz showed object clouds only for the instant between two cycles.
-        self.pub_object_descriptions.publish(self.make_header_msg(ObjectDescriptionArray, stamp=stamp, frame_id="map"))
+        self.pub_object_descriptions.publish(self.make_header_msg(
+            ObjectDescriptionArray, stamp=stamp, frame_id=world_frame()))
 
-        empty_bboxes = self.make_header_msg(Bbox3dArray, stamp=stamp, frame_id="map")
+        empty_bboxes = self.make_header_msg(Bbox3dArray, stamp=stamp, frame_id=world_frame())
         # LAT-2. The caller has already computed this for THIS cycle, deliberately early
         # while the stamp is still inside the TF buffer. Recomputing it here repeated the
         # whole depth-to-map projection on every empty cycle for a value already in hand.
