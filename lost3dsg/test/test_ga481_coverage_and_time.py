@@ -149,13 +149,18 @@ def test_a_full_scan_clears_the_merge_threshold():
     A merge commits only after merge_min_consecutive consecutive sweeps see the same pair, and a
     detection cycle takes about 3.2 s. A full 360 scan is 360/step frames at 3 f/s:
 
-        10 deg -> 36 frames = 12.0 s = 3.75 cycles
-        20 deg -> 18 frames =  6.0 s = 1.87 cycles, below a threshold of 2 at EVERY stop
+        10 deg -> 36 frames = 12.0 s = 2.79 cycles
+        20 deg -> 18 frames =  6.0 s = 1.40 cycles, below a threshold of 2 at EVERY stop
+
+    THE MARGIN IS THIN AND SHRINKING. Those figures use the cycle MEASURED on 2026-09-11, 4.3 s,
+    not the 3.2 s first assumed; at 3.2 the same full scan read 3.75 cycles. A cycle of 6.0 s would
+    put a full 360 at exactly 2.00 and anything slower under it, so this test is the place that
+    finds out -- re-measure the cycle and it says whether the turn step still works.
 
     20 was shipped on 2026-09-11 for the 36% of run time scans cost, and reverted the same day
     because the saving came out of the one thing the scan exists to produce.
     """
-    fps, cycle_s, need = 3.0, 3.2, 2
+    fps, cycle_s, need = 3.0, 4.3, 2      # cycle MEASURED on 20260911_133641 / _140421
     frames = 360.0 / V.SCAN_STEP_DEG
     cycles = frames / fps / cycle_s
     assert cycles >= need, (
@@ -166,7 +171,7 @@ def test_a_full_scan_clears_the_merge_threshold():
 def _args(**over):
     """The generator's defaults, as a namespace, so the floor can be exercised without a navmesh."""
     import types
-    d = dict(min_scan_cycles=2.0, cycle_seconds=3.2, fps_budget=3.0, turn_step_deg=V.SCAN_STEP_DEG,
+    d = dict(min_scan_cycles=2.0, cycle_seconds=4.3, fps_budget=3.0, turn_step_deg=V.SCAN_STEP_DEG,
              stepped_scan=False, scan_hold_frames=0, scan_tilts="0")
     d.update(over)
     return types.SimpleNamespace(**d)
@@ -177,7 +182,7 @@ def test_no_stop_may_scan_for_fewer_frames_than_a_merge_needs():
     import schedule_batch as SB
     a = _args()
     floor = SB.scan_floor_frames(a)
-    assert floor >= 2 * 3.2 * 3.0 - 1, f"the floor is {floor} frames, under two detection cycles"
+    assert floor >= 2 * 4.3 * 3.0 - 1, f"the floor is {floor} frames, under two detection cycles"
     for tiny in (0.0, 1.0, 10.0, 45.0):
         assert SB.scan_cost_frames(tiny, a) >= floor, \
             f"a {tiny} degree scan was priced at fewer frames than the floor"

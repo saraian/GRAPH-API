@@ -705,9 +705,13 @@ def main():
     ap.add_argument("--min-scan-cycles", type=float, default=2.0,
                     help="no stop turns through fewer frames than this many detection cycles. "
                          "Matches merge_min_consecutive: a merge cannot commit on fewer sweeps")
-    ap.add_argument("--cycle-seconds", type=float, default=3.2,
-                    help="a detection cycle, MEASURED by the perception lane on 2026-09-11. Re-measure "
-                         "it and this whole floor moves")
+    ap.add_argument("--cycle-seconds", type=float, default=4.3,
+                    help="a detection cycle in seconds. MEASURED with time_metrics.py on the two "
+                         "complete-tour bundles 20260911_133641 and _140421: total_ms median "
+                         "4097-4306, cycle_ms median 4295-4398, of which vlm_ms 3871-4222 -- the "
+                         "labelling call IS the cycle. 3.2 was an estimate and 28% optimistic; a "
+                         "floor derived from it fell short of merge_min_consecutive. Re-measure "
+                         "and pass the new number rather than editing any other value")
     ap.add_argument("--fps-for-budget", dest="fps_budget", type=float, default=3.0,
                     help="frames per second the run publishes, used only to turn the frame floor "
                          "into seconds. It does not change what the agent does")
