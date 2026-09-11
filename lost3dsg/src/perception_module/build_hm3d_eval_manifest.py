@@ -13,10 +13,12 @@ import numpy as np
 from metrics_eval import assignment
 
 
-def _load(path, default):
+def _load(path, default, required=False):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        if required:
+            raise RuntimeError(f"impossibile leggere il JSON richiesto {path}: {exc}") from exc
         return default
 
 
@@ -56,9 +58,17 @@ def _predicted_aabb(bbox):
     required = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
     if not isinstance(bbox, dict) or not all(k in bbox for k in required):
         return None
-    low = np.asarray([-bbox["y_max"], bbox["z_min"], -bbox["x_max"]], dtype=float)
-    high = np.asarray([-bbox["y_min"], bbox["z_max"], -bbox["x_min"]], dtype=float)
-    return (low, high) if np.all(np.isfinite(low)) and np.all(np.isfinite(high)) else None
+    try:
+        values = {key: float(bbox[key]) for key in required}
+    except (TypeError, ValueError):
+        return None
+    if (not all(math.isfinite(value) for value in values.values())
+            or any(values[f"{axis}_min"] > values[f"{axis}_max"]
+                   for axis in "xyz")):
+        return None
+    low = np.asarray([-values["y_max"], values["z_min"], -values["x_max"]])
+    high = np.asarray([-values["y_min"], values["z_max"], -values["x_min"]])
+    return low, high
 
 
 def _base_label(label):
@@ -66,10 +76,17 @@ def _base_label(label):
 
 
 def build(gt, run_dir, persistent_path=None):
-    room_doc = _load(run_dir / "room.json", {})
-    bev = _load(run_dir / "bev_data.json", {})
-    objects = _load(persistent_path or run_dir / "persistent_perception.json", [])
+    room_doc = _load(run_dir / "room.json", {}, required=True)
+    bev = _load(run_dir / "bev_data.json", {}, required=True)
+    objects = _load(persistent_path or run_dir / "persistent_perception.json", [],
+                    required=True)
     embeddings = _load(run_dir / "clip_embeddings.json", {})
+    if not isinstance(room_doc, dict):
+        raise RuntimeError("room.json deve contenere un oggetto JSON")
+    if not isinstance(bev, dict):
+        raise RuntimeError("bev_data.json deve contenere un oggetto JSON")
+    if not isinstance(objects, list):
+        raise RuntimeError("persistent_perception deve contenere una lista JSON")
     result = dict(gt)
 
     gt_floors = [float(v) for v in gt.get("ground_truth_floors_m", [])]
@@ -107,7 +124,17 @@ def build(gt, run_dir, persistent_path=None):
     # Le etichette stanza vengono confrontate dopo l'associazione geometrica.
     room_trials = []
     gt_regions = gt.get("ground_truth_regions", [])
-    for pi, gi, score in assignment(predicted_regions, gt_regions, 0.0):
+    # A top-down polygon alone cannot distinguish vertically stacked rooms.
+    # Restrict candidates to the active floor before the Hungarian matching.
+    gt_region_candidates = [
+        (index, region) for index, region in enumerate(gt_regions)
+        if region.get("floor_index") is None
+        or int(region["floor_index"]) == floor_for_rooms
+    ]
+    candidate_rows = [region for _, region in gt_region_candidates]
+    for pi, candidate_index, score in assignment(
+            predicted_regions, candidate_rows, 0.0):
+        gi, _ = gt_region_candidates[candidate_index]
         predicted_label = str(predicted_room_by_index[pi].get("semantic_label", ""))
         ground_truth_label = str(gt_regions[gi].get("category_name", ""))
         room_trials.append({
@@ -121,9 +148,14 @@ def build(gt, run_dir, persistent_path=None):
     result["rooms"] = room_trials
 
     predicted_objects = []
+    invalid_predicted_aabb_count = 0
     for obj in objects if isinstance(objects, list) else []:
+        if not isinstance(obj, dict):
+            invalid_predicted_aabb_count += 1
+            continue
         box = _predicted_aabb(obj.get("bbox"))
         if box is None:
+            invalid_predicted_aabb_count += 1
             continue
         row = {"object_id": obj.get("object_id"), "label": obj.get("label"),
                "room_id": obj.get("room_id"),
@@ -158,15 +190,19 @@ def build(gt, run_dir, persistent_path=None):
         category_dimension = int(vector_array.size)
     result["category_embeddings"] = category_vectors
     result["construction_time_s"] = bev.get("stats", {}).get("elapsed_sec")
-    result["representation_files"] = [
-        str((run_dir / name).resolve()) for name in
-        ("persistent_perception.json", "room.json", "bev_data.json", "clip_embeddings.json")
-        if (run_dir / name).is_file()
+    representation_candidates = [
+        Path(persistent_path or run_dir / "persistent_perception.json"),
+        run_dir / "room.json", run_dir / "bev_data.json", run_dir / "clip_embeddings.json",
     ]
+    result["representation_files"] = list(dict.fromkeys(
+        str(path.resolve()) for path in representation_candidates if path.is_file()
+    ))
     result["adapter_notes"] = {
         "coordinates": "habitat->ROS=(-hab_z,-hab_x,hab_y); ROS->habitat=(-ros_y,ros_z,-ros_x)",
         "active_floor_index": floor_for_rooms,
         "category_embeddings_complete": bool(category_vectors),
+        "source_object_count": len(objects),
+        "invalid_predicted_aabb_count": invalid_predicted_aabb_count,
     }
     return result
 
@@ -188,7 +224,10 @@ def main():
     persistent_path = args.persistent_perception or args.run_dir / "persistent_perception.json"
     if not persistent_path.is_file():
         parser.error(f"artefatto mancante: {persistent_path}")
-    result = build(gt, args.run_dir, persistent_path)
+    try:
+        result = build(gt, args.run_dir, persistent_path)
+    except RuntimeError as exc:
+        parser.error(str(exc))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False,
                                       allow_nan=False) + "\n", encoding="utf-8")

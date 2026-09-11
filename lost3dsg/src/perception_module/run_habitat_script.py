@@ -5,6 +5,9 @@
 Esempi:
     python3 run_habitat_script.py --list
     python3 run_habitat_script.py organize_objects_v1
+
+Le azioni con ``at_waypoint`` attendono /habitat/scan_complete. Avviare il
+runner prima che il tour oltrepassi il waypoint richiesto; lap è zero-based.
 """
 
 import argparse
@@ -40,6 +43,8 @@ class HabitatScriptNode(Node):
         self._frame_condition = threading.Condition()
         self._latest_rgb = None
         self._frame_sequence = 0
+        self._waypoint_condition = threading.Condition()
+        self._latest_waypoint = None
         self.spawn_pub = self.create_publisher(String, "/habitat/spawn_object", qos)
         self.move_pub = self.create_publisher(String, "/habitat/set_object_position", qos)
         self.remove_pub = self.create_publisher(String, "/habitat/remove_object", qos)
@@ -53,6 +58,12 @@ class HabitatScriptNode(Node):
         self.create_subscription(
             Image, "/habitat/object_capture/rgb", self._on_object_capture, qos
         )
+        self.create_subscription(
+            String,
+            os.environ.get("SCAN_COMPLETE_TOPIC", "/habitat/scan_complete"),
+            self._on_waypoint,
+            qos,
+        )
         self.runner = HabitatScriptRunner(
             scripts_dir=scripts_dir,
             state_path=state_path,
@@ -62,7 +73,58 @@ class HabitatScriptNode(Node):
             move_publisher=self.move_pub,
             remove_publisher=self.remove_pub,
             capture_frame=self.capture_frame,
+            wait_waypoint=self.wait_waypoint,
         )
+
+    def _on_waypoint(self, msg: String):
+        try:
+            event = json.loads(msg.data)
+            event["stop"] = int(event["stop"])
+            event["lap"] = int(event.get("lap", 0))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            self.get_logger().warning(f"Evento waypoint non valido: {msg.data}")
+            return
+        with self._waypoint_condition:
+            self._latest_waypoint = event
+            self._waypoint_condition.notify_all()
+
+    def wait_waypoint(self, trigger):
+        """Block until the scheduled scan at stop/lap completes.
+
+        The scan-complete event is used deliberately: the robot is stationary at
+        the requested waypoint and the complete pre-change view has been emitted.
+        """
+        try:
+            timeout = float(os.environ.get("HABITAT_WAYPOINT_TIMEOUT", "1800"))
+        except ValueError:
+            timeout = 1800.0
+        deadline = None if timeout <= 0 else time.monotonic() + timeout
+        wanted_stop = int(trigger["stop"])
+        wanted_lap = trigger.get("lap")
+        self.get_logger().info(
+            f"Attendo waypoint stop={wanted_stop} "
+            + (f"lap={wanted_lap}" if wanted_lap is not None else "su qualsiasi lap")
+        )
+        with self._waypoint_condition:
+            while True:
+                event = self._latest_waypoint
+                if event is not None and int(event.get("stop", -1)) == wanted_stop and (
+                    wanted_lap is None or int(event.get("lap", -1)) == int(wanted_lap)
+                ):
+                    return {"success": True, "requested": dict(trigger), "event": dict(event)}
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return {
+                            "success": False,
+                            "action": "wait_waypoint",
+                            "requested": dict(trigger),
+                            "last_event": dict(event) if event is not None else None,
+                            "message": "timeout in attesa del waypoint",
+                        }
+                else:
+                    remaining = None
+                self._waypoint_condition.wait(timeout=remaining)
 
     def _on_result(self, msg: String):
         try:

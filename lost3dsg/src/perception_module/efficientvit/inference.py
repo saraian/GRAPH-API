@@ -1,4 +1,5 @@
 import argparse
+import os
 from copy import deepcopy
 from typing import Any, Tuple, Union
 
@@ -11,6 +12,19 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 import yaml
 from efficientvit.export_encoder import SamResize
+
+
+def _cuda_provider():
+    """Return the CUDA provider without exhaustive first-run cuDNN tuning."""
+    search = os.environ.get("VITSAM_CUDNN_CONV_ALGO_SEARCH", "HEURISTIC").strip().upper()
+    if search not in {"DEFAULT", "HEURISTIC", "EXHAUSTIVE"}:
+        raise ValueError(
+            "VITSAM_CUDNN_CONV_ALGO_SEARCH must be DEFAULT, HEURISTIC, or EXHAUSTIVE"
+        )
+    return [
+        ("CUDAExecutionProvider", {"cudnn_conv_algo_search": search}),
+        "CPUExecutionProvider",
+    ]
 
 
 def show_mask(mask, ax, random_color=False):
@@ -45,7 +59,7 @@ class SamEncoder:
         opt = ort.SessionOptions()
 
         if device == "cuda":
-            provider = ["CUDAExecutionProvider"]
+            provider = _cuda_provider()
         elif device == "cpu":
             provider = ["CPUExecutionProvider"]
         else:
@@ -70,7 +84,7 @@ class SamDecoder:
         opt = ort.SessionOptions()
 
         if device == "cuda":
-            provider = ["CUDAExecutionProvider"]
+            provider = _cuda_provider()
         elif device == "cpu":
             provider = ["CPUExecutionProvider"]
         else:

@@ -70,7 +70,7 @@ from cv_utils import (  # noqa: E402
 )
 from detection_pipeline import DetectionPipelineMixin  # noqa: E402
 from input_output import PerceptionIOMixin  # noqa: E402
-from models import VitSam, write_vitsam_status  # noqa: E402
+from models import VitSam  # noqa: E402
 from object_info import Object  # noqa: E402
 from perception_utils import compute_fov_volume_from_depth, get_project_root  # noqa: E402
 from tf_transformations import euler_from_quaternion, quaternion_inverse, quaternion_multiply  # noqa: E402
@@ -244,13 +244,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # The unified VLM response supplies the 2D boxes, so this path does
             # not need to load a separate OWLv2 detector.
             self.detector = None
-            try:
-                self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
-            except Exception:
-                # Do not leave the host-side feed waiting for its timeout when model startup
-                # fails before VitSam can publish the final status itself.
-                write_vitsam_status("failed")
-                raise
+            self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
             self.file_logger.info("Using unified whole-scene VLM boxes with local VitSAM")
         else:
             self.detector = None
@@ -340,12 +334,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.log_both("info", f"[GT] semantic frame cache: {GT_SEMANTIC_CACHE_FRAMES} frames "
                                   f"(compressed, decoded at lookup)")
 
-        # The launcher opens the feed socket before ROS so habitat_feed_node can connect, but
-        # it must not release the first simulator frame until the actual perception process has
-        # finished VitSAM warmup AND completed its own subscriptions/timers setup.  The marker is
-        # atomically written into the shared run directory by models.write_vitsam_status().
-        write_vitsam_status("ready")
-        self.get_logger().info("Perception startup ready; releasing the Habitat feed gate")
+        self.get_logger().info("Perception startup ready")
 
     def _on_cloud_map(self, msg):
         """Keep the newest cloud as an (N,3) array. GA-218.
@@ -1668,9 +1657,6 @@ def main(args=None):
     try:
         node = DetectObjectsNode()
     except Exception:
-        # Wake the host-side startup gate immediately if node construction fails anywhere
-        # before the final ready marker, rather than making it wait for its full timeout.
-        write_vitsam_status("failed")
         rclpy.shutdown()
         raise
     executor = MultiThreadedExecutor(num_threads=4)
