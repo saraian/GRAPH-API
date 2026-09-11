@@ -2010,32 +2010,41 @@ TOOLS_MENU_TEMPLATE = """
           style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-left:0;
                  border-radius:0 6px 6px 0;padding:9px 10px;cursor:pointer;font:inherit;
                  margin-top:10px;line-height:1;">&#9776;</button>
-  <div id="toolsPanel" hidden
-       style="height:100%;background:#0b1220;border-right:1px solid #334155;padding:12px 10px;
+  <div id="toolsPanel"
+       style="display:none;height:100%;background:#0b1220;border-right:1px solid #334155;padding:12px 10px;
               min-width:210px;box-shadow:6px 0 24px rgba(0,0,0,.5);overflow:auto;
               display:flex;flex-direction:column;gap:6px;">
     <div style="color:#64748b;margin-bottom:2px;letter-spacing:.05em;">MENU</div>
     <a href="./"      style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">NEW &rarr;</a>
     <a id="liveLink" href="dash" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LIVE &rarr;</a>
     <a href="bundles" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LOAD &rarr;</a>
-__EXT_LINKS____INTERNAL_LINKS__    <button id="rvizLaunchBtn" onclick="startRviz()" hidden
-            style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;
-                   padding:6px 10px;cursor:pointer;font:inherit;
-                   width:100%;box-sizing:border-box;text-align:left;">OPEN RVIZ &rarr;</button>
-    <div id="rvizLaunchMsg" style="color:#94a3b8;white-space:normal;"></div>
-  </div>
+__EXT_LINKS____INTERNAL_LINKS__  </div>
 </div>
 <script>
   function toggleTools() {
     var p = document.getElementById('toolsPanel');
-    p.hidden = !p.hidden;
-    try { localStorage.setItem('toolsOpen', p.hidden ? '0' : '1'); } catch (e) {}
+    // DISPLAY, NOT `hidden`. The panel is a flex column, so it carries an inline
+    // `display:flex`; the `[hidden]` rule is a UA stylesheet rule and an inline style outranks
+    // it. Setting `hidden` therefore toggled an attribute that changed nothing and the sidebar
+    // could never be closed. Nothing about the attribute said so -- it is only visible if you
+    // ask which rule wins.
+    var open = p.style.display !== 'none';
+    p.style.display = open ? 'none' : 'flex';
   }
+  // ANY CHOICE CLOSES IT. A sidebar that stays open over the page after you have picked where
+  // to go is in the way of the thing you asked for -- and on a same-page link (LIVE while
+  // already on the dashboard) nothing reloads, so it would simply sit there. Delegated to the
+  // panel so a link added later is covered without being registered here.
   (function () {
-    // COLLAPSED ON EVERY LOAD (owner 2026-09-11). It used to reopen itself from localStorage,
-    // so a reader who had opened it once got a sidebar over the interface on every page
-    // thereafter. The state is still written -- nothing else reads it now, and removing the
-    // write would be a second change -- but the panel starts shut.
+    var p = document.getElementById('toolsPanel');
+    if (!p) return;
+    p.addEventListener('click', function (e) {
+      if (e.target.closest('a,button')) p.style.display = 'none';
+    });
+  })();
+  (function () {
+    // COLLAPSED ON EVERY LOAD (owner 2026-09-11): the panel's own inline display:none is what
+    // does it, so there is no restore step to get wrong.
     var local = ['localhost', '127.0.0.1', '::1', ''];
     if (local.indexOf(location.hostname) !== -1) document.getElementById('rvizLaunchBtn').hidden = false;
     // LIVE ANSWERS FOR ITSELF. /mode_info is the server's own verdict on whether a bridge is
@@ -2072,10 +2081,12 @@ __EXT_LINKS____INTERNAL_LINKS__    <button id="rvizLaunchBtn" onclick="startRviz
     try {
       var r = await fetch('/start_rviz', { method: 'POST' });
       var d = await r.json();
-      if (d.started) { msg.style.color = '#10b981'; msg.textContent = 'RViz starting (pid ' + d.pid + ') on the SERVER display. Log: ' + d.log; }
-      else if (d.already_running) { msg.style.color = '#eab308'; msg.textContent = d.reason; }
-      else { msg.style.color = '#f87171'; msg.textContent = 'failed: ' + (d.reason || ('HTTP ' + r.status)); }
-    } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'failed: ' + e.message; }
+      // NOTHING IS SAID ON SUCCESS. The old line reported a pid and a log path on the SERVER,
+      // which is not the reader's machine and not a question they asked; it then stayed on
+      // screen. A failure still speaks, because that is the case the reader must act on.
+      if (d.started || d.already_running) { msg.textContent = ''; }
+      else { msg.style.color = '#f87171'; msg.textContent = 'RViz did not start: ' + (d.reason || ('HTTP ' + r.status)); }
+    } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'RViz did not start: ' + e.message; }
     btn.disabled = false;
   }
 </script>
@@ -2551,9 +2562,9 @@ def _start_page_html(bundles, current, mode, why):
             f'<header><h1>{_h.escape(_brand)}</h1>{badge}<span class="sub">{_h.escape(why or "")}</span>'
             f'<span style="flex:1"></span>{resume}</header>'
             '<main>'
-            '<section><h2>Open a recorded run</h2>'
-            f'<div class="runs">{"".join(rows) or "<div class=sub>no runs in " + str(RUNS_ROOT) + "</div>"}</div>'
-            '<div id="openMsg" class="sub" style="margin-top:10px"></div></section>'
+            # (the recorded-run list stood here. It is the LOAD page's job since the
+            #  owner's 2026-09-11 restructure: NEW opens the configure-and-launch form
+            #  and nothing else, so it goes where its name says it goes.)
             # Owner 2026-09-08 (applied first to the droplet snapshot by ARIA, carried here): a
             # PUBLIC deployment cannot launch anything, so the launch section is not offered there.
             # Gated on DASH_PUBLIC, not on the mode: a dashboard started BEFORE a run is in

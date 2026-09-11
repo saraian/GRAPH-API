@@ -627,7 +627,16 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
                 start = c.get("/").text
             finally:
                 os.environ.pop("DASH_PUBLIC", None)
-            assert "Start a new run" not in start and "Open a recorded run" in start
+            # THE RECORDED-RUN LIST IS NOT ON THIS PAGE ANY MORE (owner 2026-09-11): NEW opens
+            # the configure-and-launch form and nothing else, and the runs are on LOAD. So the
+            # PUBLIC start page, which also has no launch section, is left with neither -- and
+            # that is only acceptable because LOAD is still reachable from the menu for a public
+            # deployment. Asserted here, or a later edit could drop that link and leave a public
+            # reader with no way to reach any run at all.
+            assert "Start a new run" not in start, "a public deployment must not offer a launch"
+            assert "Open a recorded run" not in start, "the run list moved to the LOAD page"
+            assert 'href="bundles"' in pub, \
+                "a public deployment has no start-page run list, so LOAD is its only way to a run"
             # the crop ticker is NAMED (so it is greppable and its guard is assertable) but must NOT
             # be blocked in replay: that is the one mode where it is needed, because the graph
             # version never changes there and a crop that failed once would stay missing
@@ -795,7 +804,14 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
             assert 'href="dash"' in live, "a lab instance keeps every link"
             # and every menu href is relative, or the app breaks under a path prefix
             assert 'href="/' not in live, "an absolute menu href is back; it will navigate to the site root"
-            assert "location.href = 'dash'" in live, "the post-pick navigation is absolute again"
+            # THE POST-PICK NAVIGATION MOVED WITH THE PICKER. It was in the tools menu's
+            # LOAD button; the menu has no picker since the 2026-09-11 restructure, so the
+            # check follows it to the LOAD page, where a bundle is chosen now. Still asserted
+            # RELATIVE ('dash', not '/dash') -- that is the property, and it is what lets the
+            # app work under a path prefix.
+            _bi = (HERE / "bundle_index.py").read_text()
+            assert "location.href = 'dash'" in _bi, "the post-pick navigation is absolute again"
+            assert "location.href = '/dash'" not in _bi, "the post-pick navigation is absolute again"
             rs.MODE.update(mode="replay", why="test")
             url = "/replay/frame/20260101_000000_test/1700000000_000000000.jpg"
             r = c.get(url)

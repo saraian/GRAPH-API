@@ -705,9 +705,40 @@
           <div class="hud-stat-badge" id="badgeBridge"><i data-lucide="network" style="width:12px;height:12px;"></i> BRIDGE: <b style="color:#eab308;">CHECKING</b></div>
           <div class="hud-stat-badge" id="badgePerception"><i data-lucide="eye" style="width:12px;height:12px;"></i> PERCEPTION: <b style="color:#eab308;">CHECKING</b></div>
           <div class="hud-stat-badge" id="badgeObjManager"><i data-lucide="database" style="width:12px;height:12px;"></i> OBJ MGR: <b style="color:#eab308;">CHECKING</b></div>
+          <!-- RVIZ LIVES WITH THE LIVE STACK (owner 2026-09-11), not in the menu. It starts a
+               viewer on the SERVER's display against the running bridge, so it means nothing
+               on a page that is not showing a run -- which is where the menu put it. Hidden
+               unless this page is served over loopback, the same test the menu used, because
+               a remote reader cannot see that display. -->
+          <button id="rvizLaunchBtn" onclick="startRviz()" hidden class="hud-stat-badge"
+                  style="cursor:pointer;font:inherit;border:1px solid #334155;background:#1e293b;
+                         color:#e2e8f0;border-radius:6px;padding:4px 9px;">OPEN RVIZ</button>
+          <span id="rvizLaunchMsg" style="color:#f87171;font-size:0.66rem;"></span>
         </div>
       </div>
     </header>
+    <script>
+      // The same two functions the menu carried, moved with the button. A failure speaks; a
+      // success says nothing, because a pid and a server-side log path are not the reader's
+      // business and used to sit on screen afterwards.
+      (function () {
+        var local = ['localhost', '127.0.0.1', '::1', ''];
+        if (local.indexOf(location.hostname) !== -1) {
+          var b = document.getElementById('rvizLaunchBtn');
+          if (b) b.hidden = false;
+        }
+      })();
+      async function startRviz() {
+        var btn = document.getElementById('rvizLaunchBtn'), msg = document.getElementById('rvizLaunchMsg');
+        btn.disabled = true; msg.textContent = '';
+        try {
+          var r = await fetch('start_rviz', { method: 'POST' });
+          var d = await r.json();
+          if (!(d.started || d.already_running)) msg.textContent = 'RViz did not start: ' + (d.reason || ('HTTP ' + r.status));
+        } catch (e) { msg.textContent = 'RViz did not start: ' + e.message; }
+        btn.disabled = false;
+      }
+    </script>
 
     <div class="hud-body">
       <!-- Left Column: Feed + Graph & Details -->
