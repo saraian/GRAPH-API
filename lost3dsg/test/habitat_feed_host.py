@@ -59,7 +59,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  (ROS-free)
 from config import CFG, CFG_PATH  # noqa: E402
 import gt_codec as _gt_codec  # noqa: E402
-from scan_hook import FullTurnDetector  # noqa: E402
+# FullTurnDetector (scan_hook.py) counted a full turn for the SAMPLING tour, which turned in
+# 10-degree steps and had no idea when a circle closed. A schedule states its scan angle per
+# stop, so ScheduledTour fires the same hook from its own scan counter at :1597 and the
+# detector has nothing left to detect here. scan_hook.py itself stays: habitat_nav.py uses it.
 
 _print = functools.partial(print, flush=True)  # nohup/file logs must not buffer
 _log_ring = collections.deque(maxlen=400)      # served by the control server's /logs
