@@ -1963,9 +1963,9 @@ def _tools_menu_html(bundles=None) -> str:
     internal = "" if (dash_env.flag("DASH_PUBLIC") or not _infra) else (
         f'      <a href="{_h.escape(_infra, quote=True)}" target="_blank" rel="noopener"\n'
         '         title="Infra orchestration dashboard (private network only)"\n'
-        '         style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">INFRA &nearr;</a>\n')
-    opts = "".join(f'<option value="{_h.escape(b)}" title="{_h.escape(_bundle_tag(b)[1])}">'
-                   f'{_h.escape(b)} \u2014 {_h.escape(_bundle_tag(b)[0])}</option>'
+        '         style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">INFRA &nearr;</a>\n')
+    opts = "".join(f'<option value="{_h.escape(b)}" title="{_h.escape(_bundle_tag(b)[2])}">'
+                   f'{_h.escape(b)} \u2014 {_h.escape(_bundle_tag(b)[1])}</option>'
                    for b in (bundles or []))
     # An extension's menu rows, built from the SAME Page objects that install the routes, so a link
     # and its page cannot drift apart -- the failure that used to leave the menu offering a 404.
@@ -2008,13 +2008,20 @@ TOOLS_MENU_TEMPLATE = """
     </div>
     <div id="bundleMsg" style="color:#94a3b8;margin-bottom:9px;white-space:normal;"></div>
     <div style="display:flex;flex-direction:column;gap:5px;">
-      <a href="./"        style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">START &rarr;</a>
-      <a href="dash"     style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">DASHBOARD &rarr;</a>
-__EXT_LINKS__      <a href="replay"   style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">REPLAY &rarr;</a>
-      <a href="bundles"  style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">BUNDLES &rarr;</a>
-__INTERNAL_LINKS__      <button id="rvizLaunchBtn" onclick="startRviz()" hidden
+      <a href="./"        style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">START &rarr;</a>
+      <a href="dash"     style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">DASHBOARD &rarr;</a>
+__EXT_LINKS__      <a href="replay"   style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">REPLAY &rarr;</a>
+      <a href="bundles"  style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;text-align:right;">BUNDLES &rarr;</a>
+__INTERNAL_LINKS__      <!-- A BUTTON AMONG ANCHORS, which is why it looked wrong. The four links above are <a>
+           elements in a flex column: they fill the row and their text sits where the text
+           starts. A <button> centres its label by default and sizes to its content, so this
+           one came out narrower and centred while the rest were full-width and aligned.
+           width:100% with border-box makes it the same box; text-align matches the others,
+           and the arrow gives it the same terminator so the column reads as one list. -->
+      <button id="rvizLaunchBtn" onclick="startRviz()" hidden
               style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;
-                     padding:6px 10px;cursor:pointer;font:inherit;">OPEN RVIZ</button>
+                     padding:6px 10px;cursor:pointer;font:inherit;
+                     width:100%;box-sizing:border-box;text-align:right;">OPEN RVIZ &rarr;</button>
       <div id="rvizLaunchMsg" style="color:#94a3b8;white-space:normal;"></div>
     </div>
   </div>
@@ -2351,6 +2358,11 @@ START_PAGE_CSS = """
   .run:hover { background:#132038; border-color:var(--rule); }
   .run .n { color:var(--ink); }
   .run .m { color:var(--faint); font-size:11px; white-space:nowrap; }
+  .run .mach { color:var(--faint); font-size:11px; white-space:nowrap; opacity:.75;
+               min-width:5.5em; text-align:right; }
+  .run .del { background:transparent; border:1px solid transparent; color:var(--faint);
+              border-radius:4px; padding:1px 6px; cursor:pointer; font:inherit; line-height:1; }
+  .run .del:hover { border-color:#ef4444; color:#ef4444; }
   /* GA-398: a run that cannot be replayed is marked on the row rather than discovered by
      clicking it and finding a player that does nothing. AMBER, not red: an empty bundle is not
      an error, and one with no frames may still hold the evidence a figure is quoted from. */
@@ -2404,17 +2416,21 @@ def _bundle_tag(name):
     try:
         c = _load_bundle_index().describe(name)
     except Exception as exc:                       # noqa: BLE001 - a listing must not die on one bad row
-        return "unreadable", f"{type(exc).__name__}: {exc}"
+        return "?", "unreadable", f"{type(exc).__name__}: {exc}"
     # WHOSE RUN IS THIS. Bundles from two machines can sit in one picker only if each says which
-    # machine made it; before 2026-09-10 none did, so an older bundle reads "machine not recorded"
-    # rather than being assumed local. Prefixed, so it is the first thing in the row rather than a
-    # detail at the end of a title nobody hovers.
+    # machine made it; before 2026-09-10 none did, so an older bundle reads "?" rather than being
+    # assumed local.
+    # THE MACHINE IS ITS OWN COLUMN (owner 2026-09-11), not a prefix glued to the tag. It used
+    # to read "[gin] NO FRAMES - 223 decisions", which put two unrelated facts in one string and
+    # left a run recorded HERE with no marking at all -- so "no prefix" meant both "this machine"
+    # and "nobody recorded one". The column names the machine in every case.
     _m = c.get("machine")
     _host = _socket.gethostname()
+    _mach_short = _m or "?"
     if _m and _m != _host:
-        _mach_short, _mach_long = f"[{_m}] ", f"recorded on {_m}, not this machine ({_host}). "
+        _mach_long = f"recorded on {_m}, not this machine ({_host}). "
     elif _m:
-        _mach_short, _mach_long = "", f"recorded on this machine ({_m}). "
+        _mach_long = f"recorded on this machine ({_m}). "
     else:
         _mach_short, _mach_long = "", "machine not recorded (bundle predates the field). "
     frames, dets = c.get("frames") or 0, c.get("detections") or 0
@@ -2425,14 +2441,14 @@ def _bundle_tag(name):
         # a run with frames but no detections can be stepped through and shows no boxes, and saying
         # "replayable" of it would be this file disagreeing with the page that lists it.
         ok = c.get("replayable")
-        return (_mach_short + f"{frames} frames \u00b7 {dets} detections",
+        return (_mach_short, f"{frames} frames \u00b7 {dets} detections",
                 _mach_long + f"{frames} frames, {dets} detections, {decisions} decisions, {c.get('size')} -- "
                 + ("replayable" if ok else (c.get("why_not") or "not replayable")))
     if decisions:
-        return (_mach_short + "NO FRAMES \u00b7 %d decisions" % decisions,
+        return (_mach_short, "NO FRAMES \u00b7 %d decisions" % decisions,
                 _mach_long + f"no frames -- this run recorded none, but it holds {decisions} decisions and "
                 f"{c.get('objects', 0)} objects. The player cannot step through it; its evidence is intact.")
-    return (_mach_short + "EMPTY \u00b7 nothing recorded",
+    return (_mach_short, "EMPTY \u00b7 nothing recorded",
             _mach_long + "no frames, no detections and no decisions: an aborted launch or a mapping-only run, "
             "which writes no perception output by design. Nothing here can be replayed or quoted.")
 
@@ -2453,12 +2469,18 @@ def _start_page_html(bundles, current, mode, why):
     rows = []
     for b in bundles:
         cur = " cur" if current and b == current else ""
-        tag, title = _bundle_tag(b)
+        machine, tag, title = _bundle_tag(b)
         empty = " empty" if tag.startswith(("EMPTY", "NO FRAMES")) else ""
+        # The row is clickable to OPEN; the delete button stops the click reaching it, or every
+        # deletion would also load the bundle it just removed.
         rows.append(f'<div class="run{cur}{empty}" onclick="openBundle(this.dataset.b)" '
                     f'data-b="{_h.escape(b)}" title="{_h.escape(title)}">'
                     f'<span class="n">{_h.escape(b)}</span>'
-                    f'<span class="m">{_h.escape(tag)}</span></div>')
+                    f'<span class="mach" title="the machine that recorded this run">{_h.escape(machine)}</span>'
+                    f'<span class="m">{_h.escape(tag)}</span>'
+                    f'<button class="del" title="Delete this bundle from disk" '
+                    f'onclick="event.stopPropagation();deleteBundle(this.closest(\'.run\').dataset.b)">&#x2715;</button>'
+                    f'</div>')
 
     groups = []
     for name, blurb, fields in RUN_SETTINGS:
@@ -2522,6 +2544,22 @@ def _start_page_html(bundles, current, mode, why):
 
 START_PAGE_JS = """
 <script>
+async function deleteBundle(name) {
+  // TYPED, not clicked. A bundle is hours of machine time and the only copy; an "are you sure"
+  // dialog is dismissed by reflex, and 83 bundles were removed in one afternoon on 2026-09-11.
+  // Typing the word is the smallest thing that cannot happen by accident.
+  const a = prompt('Delete ' + name + ' permanently?\\n\\nThis removes the directory from disk and '
+                 + 'cannot be undone. Type DELETE to confirm.');
+  if (a !== 'DELETE') return;
+  try {
+    const r = await fetch('delete_bundle', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({bundle: name})});
+    const j = await r.json();
+    if (!r.ok || !j.deleted) { alert('Not deleted: ' + (j.error || r.status)); return; }
+    location.reload();
+  } catch (e) { alert('Not deleted: ' + e); }
+}
+
 async function openBundle(name) {
   var msg = document.getElementById('openMsg');
   msg.textContent = 'loading ' + name + '...';
@@ -2621,6 +2659,56 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
             current = None
         return HTMLResponse(with_tools_menu(
             _start_page_html(bundles_fn(), current, MODE["mode"], MODE["why"])))
+
+    @app.post("/delete_bundle")
+    async def _delete_bundle(request: Request):
+        """Remove one run bundle from disk. Owner 2026-09-11.
+
+        LOOPBACK ONLY. This deletes hours of machine time and there is no second copy; the RViz
+        launcher on this server is gated the same way and for a weaker reason.
+
+        THE NAME IS RESOLVED AGAINST RUNS_ROOT AND CHECKED AFTERWARDS, not merely inspected for
+        "..". A name is rejected unless the resolved path's PARENT is exactly RUNS_ROOT and the
+        directory looks like a run bundle -- so a symlink, an absolute path or any spelling that
+        escapes the runs directory fails the same test rather than each needing its own rule.
+
+        THE CURRENT BUNDLE IS REFUSED. Deleting the directory the server is serving leaves every
+        route reading a path that no longer exists, and the page says nothing about why.
+        """
+        if not _local(request):
+            return JSONResponse(status_code=403, content={
+                "deleted": False, "error": "deleting a bundle is loopback-only"})
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        name = str(body.get("bundle") or "").strip()
+        if not name:
+            return JSONResponse(status_code=400, content={"deleted": False, "error": "no bundle named"})
+        target = (RUNS_ROOT / name).resolve()
+        if target.parent != RUNS_ROOT.resolve() or not target.is_dir():
+            return JSONResponse(status_code=400, content={
+                "deleted": False, "error": f"{name!r} is not a directory directly inside {RUNS_ROOT}"})
+        if not is_run_dir(target):
+            return JSONResponse(status_code=400, content={
+                "deleted": False, "error": f"{name!r} does not look like a run bundle"})
+        try:
+            current = current_fn()
+        except OSError:
+            current = None
+        if current and Path(current).resolve() == target:
+            return JSONResponse(status_code=409, content={
+                "deleted": False,
+                "error": "this is the bundle being served; open another run first"})
+        import shutil as _sh
+        size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
+        try:
+            _sh.rmtree(target)
+        except OSError as exc:
+            return JSONResponse(status_code=500, content={"deleted": False, "error": str(exc)})
+        _load_bundle_index.cache_clear() if hasattr(_load_bundle_index, "cache_clear") else None
+        print(f"[dash] deleted bundle {name} ({size/1e6:.1f} MB)", flush=True)
+        return JSONResponse(content={"deleted": True, "bundle": name, "freed_bytes": size})
 
     @app.get("/dash", response_class=HTMLResponse)
     def _dash():
