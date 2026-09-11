@@ -136,9 +136,10 @@ def generate_launch_description():
 
     rtabmap_output_arg = DeclareLaunchArgument(
         'rtabmap_output',
-        default_value='log',
+        default_value='none',
         description="'screen' per vedere i log di rtabmap in terminale, "
-                    "'log' per mandarli solo su file (~/.ros/log/...)",
+                    "'log' per mandarli solo su file (~/.ros/log/...), "
+                    "'none' per non mostrarli e non salvarli nell'output del processo",
     )
 
     localization_mode_arg = DeclareLaunchArgument(

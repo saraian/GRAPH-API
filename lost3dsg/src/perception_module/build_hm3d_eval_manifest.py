@@ -123,7 +123,11 @@ def build(gt, run_dir):
         row = {"object_id": obj.get("object_id"), "label": obj.get("label"),
                "room_id": obj.get("room_id"),
                "aabb_min_m": box[0].tolist(), "aabb_max_m": box[1].tolist()}
-        embedding = embeddings.get(obj.get("label")) if isinstance(embeddings, dict) else None
+        # HOV-SG evaluates the appearance embedding belonging to this object.
+        # It is serialized in the persistent object's bbox, not in the
+        # bbox-free top-level object record.
+        bbox_data = obj.get("bbox") if isinstance(obj.get("bbox"), dict) else {}
+        embedding = bbox_data.get("clip_embedding")
         if isinstance(embedding, list):
             row["embedding"] = embedding
         predicted_objects.append(row)

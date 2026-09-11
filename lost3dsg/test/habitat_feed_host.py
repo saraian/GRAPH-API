@@ -2019,6 +2019,7 @@ class Tour:
 
 
 def main():
+    global SCHEDULE_OVERLAY
     global SHOW
     sim = make_sim()
     rng = np.random.default_rng(SEED)

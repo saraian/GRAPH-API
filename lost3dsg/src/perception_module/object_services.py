@@ -497,6 +497,17 @@ def save_persistent_perceptions(node):
         obj_id = obj.object_id
         current_ids.add(obj_id)
 
+        # Keep the HOV-SG appearance vector with the object's bbox.  The
+        # evaluator works per instance; a label-keyed sidecar can associate
+        # the wrong vector when two objects share a label.
+        bbox = dict(obj.bbox) if isinstance(obj.bbox, dict) else obj.bbox
+        clip_embedding = getattr(obj, "clip_embedding", None)
+        if isinstance(bbox, dict) and clip_embedding is not None:
+            try:
+                bbox["clip_embedding"] = [float(value) for value in clip_embedding]
+            except (TypeError, ValueError):
+                pass
+
         new_entry = {
             "object_id": obj_id,
             "label": obj.label,
@@ -504,7 +515,7 @@ def save_persistent_perceptions(node):
             "color": obj.color,
             "material": obj.material,
             "shape": obj.shape,
-            "bbox": obj.bbox,
+            "bbox": bbox,
             "room_id": getattr(obj, "room_id", "unknown"),
             "relations": {k: sorted(list(v)) for k, v in obj.relations.items()},
             # Added 2026-08-31. This was in-memory only, so GA-12's invariant -- every

@@ -1033,7 +1033,7 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # The docker run line at the bottom now uses "$IMAGE_TAG" — until this change it hardcoded
 # graphapi-run:humble, so IMAGE_TAG only ever stamped metadata and an override would have
 # launched the pristine image while recording itself as the patched one.
-IMAGE_TAG=${IMAGE_TAG:-graphapi-run:humble-ga290}
+IMAGE_TAG=${IMAGE_TAG:-hrai/sim:saved}
 IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
 # GA-437 (2026-09-10). THE STAMP MUST READ THE CACHE THE RUN USES. This was
 # $WORKSPACE_ROOT/.hf_cache, which made WORKSPACE_ROOT do double duty as the data root AND the model

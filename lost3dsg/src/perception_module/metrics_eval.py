@@ -324,7 +324,12 @@ def _scene_ground_truth_vocabulary(gt, category_embeddings, category_names):
 
 def _top_k_semantics(matches, pred, gt, category_embeddings, category_names,
                      representative=TOP_K):
-    """Port of ``top_k.py:object_semantics_eval_tp_auc`` for JSON manifests."""
+    """Match HOV-SG's ``object_semantics_eval_tp_auc`` for JSON manifests.
+
+    In particular, the denominator is every Hungarian association (not only
+    rows with a usable embedding), and the ranking is over the complete class
+    vocabulary supplied by the evaluator.
+    """
     categories = np.asarray(category_embeddings, dtype=float)
     if categories.ndim != 2 or not categories.size or len(category_names) != len(categories):
         return {}, None, 0
@@ -355,7 +360,9 @@ def _top_k_semantics(matches, pred, gt, category_embeddings, category_names,
         ranks.append(int(np.flatnonzero(ranked_classes == gt_label)[0]) + 1)
 
     def accuracy(k):
-        return sum(rank <= k for rank in ranks) / len(ranks) if ranks else None
+        # HOV-SG divides by len(col_ind), including associations whose
+        # prediction cannot be classified. Such rows therefore count as 0.
+        return sum(rank <= k for rank in ranks) / len(matches) if matches else None
 
     representative_accuracy = {k: accuracy(k) for k in representative}
     # Same sampling and normalization as top_k.py.  k=0 is deliberate: it is
@@ -370,6 +377,7 @@ def objects(scenes, threshold=.5):
     top_k_totals = {k: 0.0 for k in TOP_K}
     auc_total = 0.0
     classified_matches = 0
+    semantic_match_total = 0
     geometric_matches = []
     predicted_total = ground_truth_total = 0
     for s in scenes:
@@ -378,30 +386,28 @@ def objects(scenes, threshold=.5):
         predicted_total += len(pred); ground_truth_total += len(gt)
         matches = assignment(pred, gt, threshold)
         geometric_matches.extend(score for _, _, score in matches)
-        categories = s.get("category_embeddings", [])
-        # This is the native HOV-SG input: evaluate_graph.py obtains these
-        # features via get_label_feats(..., "HM3DSEM_LABELS", ...).  A matrix
-        # embedded in the manifest still takes precedence for custom models.
-        if not categories:
-            categories = hm3d_text_features()
+        # HOV-SG evaluates against the complete HM3DSEM label vocabulary, not
+        # a scene-local closed set. Prefer the same precomputed 1,624 text
+        # features used by HOV-SG; the manifest matrix is only a fallback for
+        # environments where that asset is unavailable.
+        has_named_gt = all(str(row.get("category_name", "")).strip() for row in gt)
+        categories = hm3d_text_features() if has_named_gt else None
+        if categories is None:
+            categories = s.get("category_embeddings", [])
         if categories is None:
             categories = []
         class_names = _semantic_classes(s, len(categories))
-        # Closed-set richiesto per questa valutazione: il ranking contiene
-        # esclusivamente le categorie realmente presenti nel GT della scena.
-        # Le righe restano quelle degli embedding testuali HOV-SG originali.
-        categories, class_names = _scene_ground_truth_vocabulary(
-            gt, categories, class_names)
         # top_k.py evaluates the Hungarian object associations themselves;
         # its semantic curve is not additionally filtered by the IoU threshold.
         semantic_matches = assignment(pred, gt, None)
+        semantic_match_total += len(semantic_matches)
         accuracy, auc, classified = _top_k_semantics(
             semantic_matches, pred, gt, categories, class_names)
-        if accuracy and classified:
-            for k, value in accuracy.items(): top_k_totals[k] += value * classified
-        if auc is not None: auc_total += auc * classified
+        if accuracy and semantic_matches:
+            for k, value in accuracy.items(): top_k_totals[k] += value * len(semantic_matches)
+        if auc is not None: auc_total += auc * len(semantic_matches)
         classified_matches += classified
-    top_k_accuracy = {k: (value / classified_matches if classified_matches else None)
+    top_k_accuracy = {k: (value / semantic_match_total if semantic_match_total else None)
                       for k, value in top_k_totals.items()}
     out = {f"top{k}_pct": round(100 * value, 4) if value is not None else None
            for k, value in top_k_accuracy.items()}
@@ -409,7 +415,7 @@ def objects(scenes, threshold=.5):
     # returned by the evaluator in top_k.py for direct comparison.
     out["tp_top_k_acc"] = {str(k): round(value, 6) if value is not None else None
                            for k, value in top_k_accuracy.items()}
-    out["top_k_auc"] = round(auc_total / classified_matches, 6) if classified_matches else None
+    out["top_k_auc"] = round(auc_total / semantic_match_total, 6) if semantic_match_total else None
     out["auc_top_k"] = out["top_k_auc"]
     out["object_precision_pct"] = round(100*len(geometric_matches)/predicted_total,4) if predicted_total else None
     out["object_recall_pct"] = round(100*len(geometric_matches)/ground_truth_total,4) if ground_truth_total else None
