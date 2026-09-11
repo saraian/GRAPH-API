@@ -9,6 +9,14 @@ template e invia a Habitat soltanto pose 3D già compilate.
 Esempi:
     python3 scene_script.py --list-points
     python3 scene_script.py scripts/organize_objects_v2.json
+
+Un'azione fisica può essere sincronizzata con la schedule senza usare attese
+temporali:
+    {"action": "move", ..., "at_waypoint": {"stop": 5, "lap": 0}}
+
+``stop`` è l'indice di visita scritto da schedule_batch.py; ``lap`` è
+opzionale e zero-based. Il runner esegue l'azione quando riceve il relativo
+evento /habitat/scan_complete.
 """
 
 import argparse
@@ -1560,6 +1568,31 @@ def compile_plan(
         if action not in VALID_ACTIONS:
             raise ValueError(f"step {index}: azione non supportata: {action or '<vuota>'}")
         out = {"action": action}
+        if step.get("at_waypoint") is not None:
+            if action == "wait":
+                raise ValueError(f"step {index}: un wait non può avere at_waypoint")
+            raw_trigger = step["at_waypoint"]
+            if isinstance(raw_trigger, bool):
+                raise ValueError(f"step {index}: at_waypoint non valido")
+            if isinstance(raw_trigger, int):
+                raw_trigger = {"stop": raw_trigger}
+            if not isinstance(raw_trigger, dict) or set(raw_trigger) - {"stop", "lap"}:
+                raise ValueError(
+                    f"step {index}: at_waypoint deve contenere stop e lap opzionale"
+                )
+            if "stop" not in raw_trigger or isinstance(raw_trigger["stop"], bool):
+                raise ValueError(f"step {index}: at_waypoint.stop mancante o non valido")
+            try:
+                trigger = {"stop": int(raw_trigger["stop"])}
+                if "lap" in raw_trigger:
+                    if isinstance(raw_trigger["lap"], bool):
+                        raise ValueError
+                    trigger["lap"] = int(raw_trigger["lap"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"step {index}: stop/lap del waypoint non validi") from exc
+            if trigger["stop"] < 0 or trigger.get("lap", 0) < 0:
+                raise ValueError(f"step {index}: stop/lap del waypoint devono essere >= 0")
+            out["at_waypoint"] = trigger
         template = step.get("template")
         if template is None and action == "spawn":
             # Recupero automatico per piani LLM che hanno usato solo un nome
@@ -1731,6 +1764,7 @@ def compile_plan(
             step["action"] in {"spawn", "move"}
             and index < len(compiled["steps"]) - 1
             and compiled["steps"][index + 1]["action"] != "wait"
+            and "at_waypoint" not in compiled["steps"][index + 1]
         ):
             with_settling.append({
                 "action": "wait", "seconds": settle_seconds,
@@ -1981,6 +2015,20 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
     }
     if expected_constraints is not None:
         constraints_schema["minItems"] = expected_constraints
+    waypoint_schema = {
+        "type": "object",
+        "description": (
+            "Run this physical action only after the scheduled 360-degree scan "
+            "at this waypoint. stop is the schedule visit-order index; lap is "
+            "optional and zero-based."
+        ),
+        "properties": {
+            "stop": {"type": "integer", "minimum": 0},
+            "lap": {"type": "integer", "minimum": 0},
+        },
+        "required": ["stop"],
+        "additionalProperties": False,
+    }
     schema = {
         "type": "object",
         "properties": {
@@ -2003,6 +2051,7 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
                                 "action": {"const": "spawn"},
                                 "name": {"type": "string", "minLength": 1},
                                 "template": {"type": "string", "enum": templates},
+                                "at_waypoint": waypoint_schema,
                             },
                             "required": ["action", "name", "template"],
                             "additionalProperties": False,
@@ -2015,6 +2064,7 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
                                     "type": "string", "minLength": 1,
                                     "description": "Nome esatto di un oggetto creato in uno spawn precedente; mai un placement_id",
                                 },
+                                "at_waypoint": waypoint_schema,
                             },
                             "required": ["action", "object"],
                             "additionalProperties": False,
@@ -2027,6 +2077,7 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
                                     "type": "string", "minLength": 1,
                                     "description": "Nome esatto dell'oggetto da rimuovere, uguale al campo name dello spawn",
                                 },
+                                "at_waypoint": waypoint_schema,
                             },
                             "required": ["action", "object"],
                             "additionalProperties": False,
@@ -2077,6 +2128,10 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
         "that support or room.\n"
         "Every spawn needs name and template. Every move needs object. Every remove "
         "needs object.\n"
+        "When the user asks for an action at a trajectory waypoint, attach "
+        "at_waypoint={stop:N,lap:L} to that spawn/move/remove. stop is the "
+        "zero-based schedule stop number and lap is optional and zero-based. "
+        "Do not add a timed wait as a substitute for a waypoint.\n"
         "Set distinct_destinations=true only when the user explicitly requires "
         "different destinations. Include move steps only for objects the user asks "
         "to move; do not infer or add extra actions.\n"

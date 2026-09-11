@@ -4,7 +4,8 @@
 
 Lo script contiene solo azioni JSON; nessun codice Python viene eseguito dal
 file. Gli object_id restituiti da Habitat vengono associati ai nomi logici
-definiti nello script.
+definiti nello script. Un'azione spawn/move/remove con ``at_waypoint`` viene
+pubblicata solo dopo la barriera di schedule fornita dal nodo chiamante.
 """
 
 import json
@@ -31,6 +32,7 @@ class HabitatScriptRunner:
         move_publisher: Any,
         remove_publisher: Any,
         capture_frame: Optional[Callable[[str, int, Dict[str, Any]], Optional[str]]] = None,
+        wait_waypoint: Optional[Callable[[Dict[str, int]], Dict[str, Any]]] = None,
     ) -> None:
         self.scripts_dir = Path(scripts_dir)
         self.state_path = Path(state_path)
@@ -40,6 +42,7 @@ class HabitatScriptRunner:
         self.move_publisher = move_publisher
         self.remove_publisher = remove_publisher
         self.capture_frame = capture_frame
+        self.wait_waypoint = wait_waypoint
         self.object_ids: Dict[str, int] = {}
         self.created_object_ids: Dict[str, int] = {}
 
@@ -134,6 +137,39 @@ class HabitatScriptRunner:
             return int(self.object_ids[reference])
         return int(reference)
 
+    @staticmethod
+    def _waypoint_trigger(step: Dict[str, Any], index: int) -> Optional[Dict[str, int]]:
+        """Validate the optional schedule barrier attached to a physical action.
+
+        ``stop`` is the stable visit-order number written by schedule_batch.py.
+        ``lap`` is optional and uses the feed event's zero-based numbering.
+        """
+        raw = step.get("at_waypoint")
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            raise ValueError(f"Step {index}: at_waypoint non valido")
+        if isinstance(raw, int):
+            raw = {"stop": raw}
+        if not isinstance(raw, dict) or set(raw) - {"stop", "lap"}:
+            raise ValueError(
+                f"Step {index}: at_waypoint deve essere un intero oppure "
+                "un oggetto con stop e lap opzionale"
+            )
+        if "stop" not in raw or isinstance(raw["stop"], bool):
+            raise ValueError(f"Step {index}: at_waypoint.stop mancante o non valido")
+        try:
+            trigger = {"stop": int(raw["stop"])}
+            if "lap" in raw:
+                if isinstance(raw["lap"], bool):
+                    raise ValueError
+                trigger["lap"] = int(raw["lap"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Step {index}: stop/lap del waypoint non validi") from exc
+        if trigger["stop"] < 0 or trigger.get("lap", 0) < 0:
+            raise ValueError(f"Step {index}: stop/lap del waypoint devono essere >= 0")
+        return trigger
+
     def run(self, script_id: str, timeout: float = 8.0) -> Dict[str, Any]:
         data = self.select(script_id)
         if not isinstance(data.get("steps"), list) or not data["steps"]:
@@ -161,6 +197,25 @@ class HabitatScriptRunner:
 
             if action not in {"spawn", "move", "remove", "wait"}:
                 raise ValueError(f"Azione non supportata nello step {index}: {action}")
+
+            trigger = self._waypoint_trigger(step, index)
+            trigger_result = None
+            if trigger is not None:
+                if action == "wait":
+                    raise ValueError(f"Step {index}: un wait non può avere at_waypoint")
+                if self.wait_waypoint is None:
+                    raise RuntimeError(
+                        f"Step {index}: lo script richiede il waypoint {trigger}, "
+                        "ma questo runner non riceve /habitat/scan_complete"
+                    )
+                trigger_result = self.wait_waypoint(trigger)
+                if not trigger_result.get("success"):
+                    return {
+                        "success": False,
+                        "failed_step": index,
+                        "results": results,
+                        "error": trigger_result,
+                    }
 
             if action == "wait":
                 seconds = float(step.get("seconds", 0))
@@ -223,6 +278,8 @@ class HabitatScriptRunner:
                 if step.get("capture_eye") is not None:
                     result["capture_eye"] = step["capture_eye"]
                 entry = {"step": index, "action": action, "result": result}
+                if trigger_result is not None:
+                    entry["waypoint_trigger"] = trigger_result
                 self._attach_capture(entry, self._capture(action, index, result))
                 results.append(entry)
                 continue
@@ -266,6 +323,8 @@ class HabitatScriptRunner:
                 if step.get("capture_eye") is not None:
                     result["capture_eye"] = step["capture_eye"]
                 entry = {"step": index, "action": action, "result": result}
+                if trigger_result is not None:
+                    entry["waypoint_trigger"] = trigger_result
                 self._attach_capture(entry, self._capture(action, index, result))
                 results.append(entry)
                 continue
@@ -281,6 +340,8 @@ class HabitatScriptRunner:
                 self.publish(self.remove_publisher, {"object_id": object_id, "request_id": request_id})
                 result = self.wait_result("remove", timeout, request_id)
                 entry = {"step": index, "action": action, "result": result}
+                if trigger_result is not None:
+                    entry["waypoint_trigger"] = trigger_result
                 if not result.get("success"):
                     results.append(entry)
                     return {"success": False, "failed_step": index, "results": results, "error": result}
