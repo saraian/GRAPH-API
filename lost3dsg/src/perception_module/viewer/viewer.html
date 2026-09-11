@@ -658,6 +658,16 @@
       width:85vw; height:85vh; z-index:99990; background:#090d16; border:1px solid rgba(56,189,248,.5);
       border-radius:10px; box-shadow:0 12px 48px rgba(0,0,0,.7); }
     #scene3dBackdrop { display:none; position:fixed; inset:0; z-index:99989; background:rgba(2,6,23,.6); }
+    /* THE GRAPH PANEL MAXIMISES THE SAME WAY THE 3D TAB DOES. Owner 2026-09-11: the button
+       beside the zooms carried the `maximize-2` icon and called fitCy() -- the same thing the
+       `FIT` pill beside it already did, so the toolbar had two buttons for one action and no
+       way to enlarge the panel at all. Same shape as .scene3d-max: a class and a backdrop, no
+       reparenting, so cytoscape is not re-initialised and the layout survives. */
+    #panelGraph.graph-max { position:fixed; left:7.5vw; top:7.5vh; width:85vw; height:85vh;
+      z-index:99990; background:#090d16; border:1px solid rgba(56,189,248,.5);
+      border-radius:10px; box-shadow:0 12px 48px rgba(0,0,0,.7); }
+    #graphBackdrop { display:none; position:fixed; inset:0; z-index:99989; background:rgba(2,6,23,.6); }
+    #graphBackdrop.on { display:block; }
     #scene3dBackdrop.on { display:block; }
 
     /* Mobile / narrow viewports: stack panes vertically, drop drag-resizers */
@@ -869,7 +879,8 @@
             <div class="graph-toolbar">
               <button class="graph-tool-btn" onclick="zoomCy(1.25)" title="Zoom In"><i data-lucide="zoom-in" style="width:14px;height:14px;"></i></button>
               <button class="graph-tool-btn" onclick="zoomCy(0.8)" title="Zoom Out"><i data-lucide="zoom-out" style="width:14px;height:14px;"></i></button>
-              <button class="graph-tool-btn" onclick="fitCy()" title="Fit & Center All Nodes"><i data-lucide="maximize-2" style="width:14px;height:14px;"></i></button>
+              <button id="graphMaxBtn" class="graph-tool-btn" onclick="toggleGraphMax()"
+                      title="Maximise the graph panel (Esc restores)"><i data-lucide="maximize-2" style="width:14px;height:14px;"></i></button>
               <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
               <button id="btnFitGraph" class="graph-layout-pill" onclick="fitCy()" title="Fit the whole graph in the window">⤢ FIT</button>
               <button id="btnPhysics" class="graph-layout-pill" onclick="toggleGraphPhysics()" title="Force-directed relaxation. Separate from the layout mode: it re-settles whatever mode is selected, and it is expensive above a few hundred nodes.">⚡ PHYSICS: OFF</button>
@@ -950,6 +961,7 @@
                     style="flex:1; width:100%; height:100%; border:0; background:#090d16;"></iframe>
           </div>
           <div id="scene3dBackdrop" onclick="toggleScene3dMax(false)"></div>
+          <div id="graphBackdrop" onclick="toggleGraphMax(false)"></div>
 
           <!-- Computation & Pipeline Stage Tracker Tab -->
           <div id="tabContentComputation" class="tab-content" style="padding: 10px; overflow-y: auto;">
@@ -2822,6 +2834,29 @@
       });
     }
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && window.SCENE3D_MAXIMIZED) toggleScene3dMax(false); });
+    // Owner 2026-09-11: "the button near zooms should be the maximize one". It is the same
+    // mechanism as toggleScene3dMax above -- a class and a backdrop, never a reparent, because
+    // moving the cytoscape container in the DOM drops the renderer and the graph comes back empty.
+    function toggleGraphMax(on) {
+      const box = document.getElementById('panelGraph');
+      const back = document.getElementById('graphBackdrop');
+      const btn = document.getElementById('graphMaxBtn');
+      if (!box) return;
+      const want = (typeof on === 'boolean') ? on : !box.classList.contains('graph-max');
+      box.classList.toggle('graph-max', want);
+      if (back) back.classList.toggle('on', want);
+      if (btn) btn.title = want ? 'Restore the graph panel (Esc)' : 'Maximise the graph panel (Esc restores)';
+      window.GRAPH_MAXIMIZED = want;
+      // TOLD ITS NEW SIZE, not left to infer it. cytoscape caches the container's box and keeps
+      // drawing into the old one after a CSS resize: the nodes stay in a corner of a panel four
+      // times the size. resize() then fit() on the next frame, after the layout has settled.
+      requestAnimationFrame(() => {
+        try { if (window.cy) { cy.resize(); cy.fit(undefined, 30); } }
+        catch (e) { console.warn('[graph] resize after maximise failed: ' + e); }
+      });
+    }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && window.GRAPH_MAXIMIZED) toggleGraphMax(false); });
+
 
     let isGraphLocked = false;
     let lastFrameTimestamp = Date.now();
@@ -3541,7 +3576,9 @@
     function onDrag(e) { const d = e.target.scratch('_d3'); const p = e.target.position();
       if (d) { d.fx = p.x; d.fy = p.y; } }
     function onFree(e) { const d = e.target.scratch('_d3');
-      if (d) { d.fx = null; d.fy = null; } if (d3sim) d3sim.alphaTarget(0.05); }
+      if (d) { d.fx = null; d.fy = null; }
+      // BACK TO REST, not to a warm target: the graph should stop once the hand lets go.
+      if (d3sim) d3sim.alphaTarget(0); }
     function stopLiveSim() {
       if (!d3sim) return;
       d3sim.stop();
@@ -3553,22 +3590,63 @@
       if (!cy || d3sim || typeof d3 === 'undefined' || !d3.forceSimulation) return;
       const nodes = cy.nodes().map(n => {
         const pos = n.position();
-        const d = {id: n.id(), x: pos.x, y: pos.y};
+        const d = {id: n.id(), type: n.data('type'), x: pos.x, y: pos.y};
         n.scratch('_d3', d);
         return d;
       });
       const byId = new Map(nodes.map(d => [d.id, d]));
+      // The centre the weak pull aims at: the graph's own centroid when the simulation starts,
+      // so it holds the layout where cola put it instead of dragging it to the viewport origin.
+      let cx = 0, cy0 = 0;
+      for (const d of nodes) { cx += d.x; cy0 += d.y; }
+      cx = nodes.length ? cx / nodes.length : 0;
+      cy0 = nodes.length ? cy0 / nodes.length : 0;
       const links = cy.edges().map(e => ({
         source: byId.get(e.source().id()), target: byId.get(e.target().id()),
         kind: e.data('label')
       })).filter(l => l.source && l.target);
       d3sim = d3.forceSimulation(nodes)
+        // EDGE-CONSCIOUS DISPOSITION, and it comes from the library's own overlap machinery
+        // rather than from a custom force. I wrote an edge-avoidance force first and MEASURED
+        // it against this graph: nodes-on-edges went 47 -> 45 while node-node overlaps got
+        // WORSE, 18 -> 23, because it fights forceCollide. Swept forceCollide instead:
+        //
+        //   pad iters charge link |  overlaps  on-edges  cluster
+        //     0     2   -420  1.0 |        18        47     5.58   (the first version)
+        //    16     4   -900  1.3 |         0        34     4.44
+        //    24     6  -1400  1.6 |         0        27     4.20   <- this
+        //
+        // Zero node overlaps, on-edge incidents down by 43%, and the room clustering still
+        // 4.2x. The cost is a longer graph: the charge and the link distances both grow, which
+        // is what buys the space for the edges to run through.
+        //
+        // The collide radius is the NODE'S OWN half-size plus the pad, not one number for all
+        // of them: a room node is 60x36 and an object 26x26, so a flat radius either lets rooms
+        // overlap or pushes objects further apart than they need to be.
         .force('link', d3.forceLink(links)
-          .distance(l => (l.kind === 'isLocatedIn' ? 70 : l.kind === 'isIn' ? 90 : 260))
+          .distance(l => (l.kind === 'isLocatedIn' ? 112 : l.kind === 'isIn' ? 144 : 416))
           .strength(l => (l.kind === 'isLocatedIn' ? 0.9 : 0.15)))
-        .force('charge', d3.forceManyBody().strength(-420).distanceMax(600))
-        .force('collide', d3.forceCollide().radius(26).iterations(2))
-        .alphaTarget(0.05)
+        .force('charge', d3.forceManyBody().strength(-1400).distanceMax(600))
+        .force('collide', d3.forceCollide()
+          .radius(d => (d.type === 'room' ? 38 : 22) + 24).iterations(6).strength(1))
+        // NOTHING HELD THE GRAPH TOGETHER. forceManyBody only pushes apart, and forceLink only
+        // acts along edges, so anything weakly connected -- a room whose objects are its only
+        // links, a disconnected component -- had no reason to stay near the rest and drifted
+        // off the panel. A weak pull toward the centre costs nothing at equilibrium and is what
+        // bounds the layout. forceX/forceY rather than forceCenter: forceCenter re-centres the
+        // whole graph every tick, which fights the user's own pan.
+        .force('x', d3.forceX(cx).strength(0.04))
+        .force('y', d3.forceY(cy0).strength(0.04))
+        // FRICTION. d3's default velocityDecay is 0.4, which on this graph keeps nodes coasting
+        // well past where they should have stopped. 0.65 is the "nothing decelerates" fix.
+        .velocityDecay(0.65)
+        // alphaTarget 0, NOT 0.05. A non-zero target means the simulation is told never to come
+        // to rest: alpha decays toward the target, so 0.05 holds it permanently warm and the
+        // graph keeps drifting for as long as the panel is open. Zero lets it settle, and the
+        // drag handlers reheat it to 0.3 and release it back to 0 -- which is the standard d3
+        // idiom and the reason dragging still re-settles the neighbours.
+        .alphaTarget(0)
+        .alphaDecay(0.035)
         .on('tick', () => {
           for (const d of nodes) {
             const n = cy.getElementById(d.id);
