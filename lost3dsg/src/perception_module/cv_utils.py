@@ -578,12 +578,14 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                     marker_scale=0.05
                 )
 
-            mins_map, maxs_map = _robust_bounds_from_points(pts_map)
-            if mins_map is None or maxs_map is None:
-                raise ValueError("empty bbox after robust filtering")
+            # The points have already passed the depth/MAD and SOR filters above. A box is an
+            # enclosure, so do not apply another 5/95 percentile trim here: that was the reason
+            # valid mask-supported points fell outside both the merge and visualisation boxes.
+            mins_map = np.min(pts_map, axis=0)
+            maxs_map = np.max(pts_map, axis=0)
 
             if np.any((maxs_map - mins_map) <= 1e-4):
-                raise ValueError("degenerate bbox after robust filtering")
+                raise ValueError("degenerate bbox after filtered-point enclosure")
 
             bbox_dict = {
                 "x_min": float(mins_map[0]), "x_max": float(maxs_map[0]),

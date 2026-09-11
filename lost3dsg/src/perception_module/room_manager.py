@@ -444,7 +444,7 @@ class RoomManager:
         try:
             frame = self._camera_info.header.frame_id or self._params['doorway_vlm_camera_frame']
             tf = self.tf_buffer.lookup_transform(
-                frame, 'map', rclpy.time.Time(), timeout=Duration(seconds=0.05))
+                frame, world_frame(), rclpy.time.Time(), timeout=Duration(seconds=0.05))
             t = tf.transform.translation
             p = self._rotate_point(tf.transform.rotation,
                                    (float(world_xy[0]), float(world_xy[1]), 0.0))
@@ -496,7 +496,7 @@ class RoomManager:
             return
         output = MarkerArray()
         clear = Marker()
-        clear.header.frame_id = 'map'
+        clear.header.frame_id = world_frame()
         clear.header.stamp = self.node.get_clock().now().to_msg()
         clear.action = Marker.DELETEALL
         output.markers.append(clear)
@@ -523,7 +523,7 @@ class RoomManager:
             if not world:
                 continue
             marker = Marker()
-            marker.header.frame_id = 'map'
+            marker.header.frame_id = world_frame()
             marker.header.stamp = self.node.get_clock().now().to_msg()
             marker.ns = 'doorway_vlm'
             marker.id = marker_id

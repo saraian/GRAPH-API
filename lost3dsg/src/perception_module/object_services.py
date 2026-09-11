@@ -14,6 +14,7 @@ import numpy as np
 import rclpy
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
+from box_view import box_corners_map, enclosing_box_from_points
 from cv_utils import publish_persistent_centroids, publish_pov_volume
 from detection_index import DetectionIndex
 from hooks import DecisionLog, load_store
@@ -222,7 +223,100 @@ def _is_oriented(bbox):
     return bool(bbox) and "yaw" in bbox and bool(bbox.get("oriented_extents"))
 
 
-def fuse_orientation(obj, bbox):
+def _bbox_points(bbox):
+    """Return a bounded point representation that preserves the whole stored box.
+
+    An oriented box is not guaranteed to contain every corner of the separate AABB when the
+    two were produced by different stages or by an older build. Keep both corner sets in the
+    accumulator. This makes the next exact enclosure a superset of both representations instead
+    of allowing the OBB path to shrink the merge geometry.
+    """
+    b = bbox or {}
+    points = []
+    if all(k in b for k in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")):
+        aabb_corners = [[x, y, z]
+                        for x in (b["x_min"], b["x_max"])
+                        for y in (b["y_min"], b["y_max"])
+                        for z in (b["z_min"], b["z_max"])]
+        points.extend(np.asarray(aabb_corners, dtype=np.float64))
+    corners, _ = box_corners_map(b)
+    if corners:
+        points.extend(np.asarray(corners, dtype=np.float64))
+    if not points:
+        return np.empty((0, 3), dtype=np.float64)
+    return np.asarray(points, dtype=np.float64)
+
+
+def _object_geometry_points(obj):
+    """Return bounded-size geometry retained for a persistent object.
+
+    New accumulators keep the corners of the current enclosing box, which represents all prior
+    points without growing with every frame. Older accumulators did not have ``points``; their
+    persisted box is the only geometry available after an upgrade.
+    """
+    acc = getattr(obj, "_yaw_acc", None) if obj is not None else None
+    if isinstance(acc, dict) and acc.get("points"):
+        try:
+            points = np.asarray(acc["points"], dtype=np.float64)
+            if points.ndim == 2 and points.shape[1] == 3 and len(points):
+                return points
+        except (TypeError, ValueError):
+            pass
+    return _bbox_points(getattr(obj, "bbox", None) if obj is not None else None)
+
+
+def _geometry_accumulator(box, oriented_views=0):
+    """Build a bounded accumulator for one already coherent box."""
+    points = _bbox_points(box)
+    oriented = _is_oriented(box)
+    yaw = float(box.get("yaw", 0.0)) if oriented else 0.0
+    view = ({"yaw": yaw,
+             "oriented_center": list(box["oriented_center"]),
+             "oriented_extents": list(box["oriented_extents"])}
+            if oriented else None)
+    return {
+        # Keep c/s/view so an older in-memory reader can still inspect the accumulator. They are
+        # now a summary of the coherent box, not an independent yaw average.
+        "n": int(oriented_views),
+        "c": float(oriented_views * math.cos(2.0 * yaw)),
+        "s": float(oriented_views * math.sin(2.0 * yaw)),
+        "view": view,
+        "points": points.tolist(),
+    }
+
+
+def _enclose_geometry(points, include_orientation):
+    """Fit one exact AABB and, when stable, one exact PCA OBB to a point/corner union."""
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or not len(points):
+        return None
+    return enclosing_box_from_points(points, include_orientation=include_orientation)
+
+
+def _combine_object_geometry(a, b):
+    """Return a box and accumulator that enclose both object geometries."""
+    pa = _object_geometry_points(a)
+    pb = _object_geometry_points(b)
+    points = (np.concatenate((pa, pb), axis=0) if len(pa) and len(pb)
+              else (pa if len(pa) else pb))
+    include_orientation = (_is_oriented(getattr(a, "bbox", None))
+                           or _is_oriented(getattr(b, "bbox", None))
+                           or int((getattr(a, "_yaw_acc", None) or {}).get("n", 0)) > 0
+                           or int((getattr(b, "_yaw_acc", None) or {}).get("n", 0)) > 0)
+    merged = _enclose_geometry(points, include_orientation=include_orientation)
+    if merged is None:
+        # Malformed geometry must not turn a valid identity merge into a service failure.
+        merged = dict(getattr(a, "bbox", None) or getattr(b, "bbox", None) or {})
+
+    def count(obj):
+        acc = getattr(obj, "_yaw_acc", None)
+        old = int(acc.get("n", 0)) if isinstance(acc, dict) else 0
+        return old if old else int(_is_oriented(getattr(obj, "bbox", None)))
+
+    return merged, _geometry_accumulator(merged, count(a) + count(b))
+
+
+def _legacy_fuse_orientation(obj, bbox):
     """GA-315 part 2. -> (the box to store, the accumulator to store beside it as `_yaw_acc`).
 
     Replaces last-write-wins on the yaw. Measured over 20260903_230232: of 40 objects with an
@@ -309,6 +403,42 @@ def _acc_add(acc, bbox):
                 "oriented_extents": [float(v) for v in bbox["oriented_extents"]]}
     return {"n": acc["n"] + 1, "c": acc["c"] + math.cos(th), "s": acc["s"] + math.sin(th),
             "view": view}
+
+
+def fuse_orientation(obj, bbox):
+    """Return one coherent enclosing box for the object's retained observations.
+
+    The former implementation averaged yaw independently from the dimensions of one
+    representative view. That produced a box whose extents were measured in one orientation
+    but rendered at another. We now union the previous and incoming box corners, fit PCA once to
+    that union, and use exact projections. The accumulator retains only the current eight
+    corners, so its memory use is bounded.
+    """
+    acc = getattr(obj, "_yaw_acc", None) if obj is not None else None
+    previous = getattr(obj, "bbox", None) if obj is not None else None
+    prior_points = _object_geometry_points(obj) if obj is not None else np.empty((0, 3))
+    incoming_points = _bbox_points(bbox)
+    points = (np.concatenate((prior_points, incoming_points), axis=0)
+              if len(prior_points) and len(incoming_points)
+              else (prior_points if len(prior_points) else incoming_points))
+    include_orientation = (_is_oriented(previous) or _is_oriented(bbox) or
+                           (isinstance(acc, dict) and int(acc.get("n", 0)) > 0))
+    out = _enclose_geometry(points, include_orientation=include_orientation)
+    if out is None:
+        out = dict(bbox or previous or {})
+
+    old_n = int(acc.get("n", 0)) if isinstance(acc, dict) else int(_is_oriented(previous))
+    n = old_n + int(_is_oriented(bbox))
+    new_acc = _geometry_accumulator(out, n)
+    if _is_oriented(out):
+        # Keep these fields for archive compatibility, but make the relationship explicit:
+        # yaw_view is now the same coherent yaw used for the extents, never a hidden mismatch.
+        out["yaw_view"] = float(out["yaw"])
+        out["yaw_views"] = n
+        out["has_orientation"] = True
+    else:
+        out["has_orientation"] = False
+    return out, new_acc
 
 
 # GA-314. Credibility order of the admission grades for the merge survivor rule. An ungraded
@@ -1747,20 +1877,11 @@ class ObjectServices(Node):
                     # order -- credibility first, then the rule `merge_rank` documents.
                     keeper, discard = (a, b) if merge_rank(a) <= merge_rank(b) else (b, a)
 
-                    # GA-20: the surviving box is the keeper's OWN OBSERVATION, not a
-                    # synthesised one. It used to be six independent face-wise means, so two
-                    # 0.20 m cubes 0.60 m apart merged into a 0.20 m cube in the empty air
-                    # between them -- extents that measure nothing, written into the room
-                    # boundary, the regression baseline and every published figure. Not a
-                    # union either: a union is also a box nobody observed, and D14 prefers
-                    # strict.
-                    #
-                    # It also silently dropped the oriented box. `yaw`, `oriented_center` and
-                    # `oriented_extents` live INSIDE the bbox dict as optional keys and were
-                    # simply absent from the synthesised one, so every merge reverted a
-                    # measured orientation to the axis-aligned box the design says
-                    # under-measures anything diagonal. Keeping an observed box keeps them.
-                    merged_bbox = keeper.bbox
+                    # The survivor's geometry must enclose both measurements. Keeping only the
+                    # keeper's box left a merged duplicate represented by whichever partial view
+                    # happened to win the identity tie-break. `_combine_object_geometry` fits one
+                    # coherent PCA box over the two measured boxes and keeps the AABB exact too.
+                    merged_bbox, merged_geometry_acc = _combine_object_geometry(keeper, discard)
 
                     vol_a = ((a.bbox['x_max']-a.bbox['x_min']) *
                             (a.bbox['y_max']-a.bbox['y_min']) *
@@ -1783,6 +1904,7 @@ class ObjectServices(Node):
                     to_remove.add(discard)
                     to_remove_pairs.append({
                         "keeper": keeper, "discard": discard, "bbox": merged_bbox,
+                        "geometry_acc": merged_geometry_acc,
                         "similarity": sim,
                         "distance": dist,
                         "decision_reason": decision_reason,
@@ -1883,14 +2005,18 @@ class ObjectServices(Node):
                 with wm.lock:
                     for pair in to_remove_pairs:
                         keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
-                        # GA-20: `keeper.bbox = merged_bbox` stood here. The kept box IS the
-                        # keeper's own, so the write-back is a self-assignment; removed rather
-                        # than left as a line that looks like it changes something.
 
                         if keeper not in wm.persistent_perceptions:
                             stale += 1
                             continue
                         if discard in wm.persistent_perceptions:
+                            # Recompute against the current keeper because several accepted
+                            # pairs in one sweep can share the same keeper. This makes a merge
+                            # chain enclose every member instead of letting the last pair shrink
+                            # the box back to its first two observations.
+                            merged_bbox, merged_geometry_acc = _combine_object_geometry(keeper, discard)
+                            keeper.bbox = merged_bbox
+                            keeper._yaw_acc = merged_geometry_acc
                             cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
                             cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
                             print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")

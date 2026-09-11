@@ -7,6 +7,7 @@ import time
 import numpy as np
 import torch
 from config import CFG
+from box_view import pca_oriented_box as _fit_pca_oriented_box
 from cv_utils import _apply_transform, _filter_object_points
 from detection_types import Detection
 
@@ -32,77 +33,16 @@ def mask_touches_border(mask, margin_px=2):
     return bool(m[:k].any() or m[-k:].any() or m[:, :k].any() or m[:, -k:].any())
 
 
-def _rectangle_support_yaw(xy, tol=0.04, step_deg=1.0):
-    """Choose the yaw with the most support on the fitted rectangle perimeter."""
-    xy = np.asarray(xy, dtype=np.float64)
-    if len(xy) < 10:
-        return None
-    best_n, best_th = -1, None
-    for deg in np.arange(-90.0, 90.0, step_deg):
-        th = np.radians(deg)
-        c, s = np.cos(th), np.sin(th)
-        u = xy[:, 0] * c + xy[:, 1] * s
-        v = -xy[:, 0] * s + xy[:, 1] * c
-        lu, hu = np.percentile(u, [1, 99])
-        lv, hv = np.percentile(v, [1, 99])
-        n = int(((np.abs(u - lu) <= tol) | (np.abs(u - hu) <= tol)
-                 | (np.abs(v - lv) <= tol) | (np.abs(v - hv) <= tol)).sum())
-        if n > best_n:
-            best_n, best_th = n, float(th)
-    return best_th
-
-
 def pca_oriented_box(pts_map, min_anisotropy=1.2, top_fraction=0.2, top_min_points=30):
-    """Yaw-about-z oriented box from object points in the map frame — the optional
-    PCA keys (yaw / oriented_center / oriented_extents) that box_corners_map and
-    the map store already consume. Returns None when the XY spread is too small or
-    too isotropic for a stable orientation (the AABB alone is then the honest box).
+    """Compatibility wrapper around the shared, exact PCA box fitter.
 
-    The top surface determines the perimeter-supported yaw; all points determine extents.
-    Near-square or poorly supported sets return None so the AABB remains authoritative."""
-    pts = np.asarray(pts_map, dtype=np.float64)
-    if pts.shape[0] < 10:
-        return None
-    xy = pts[:, :2]
-    z_all = pts[:, 2]
-    top = z_all >= z_all.max() - top_fraction * max(z_all.max() - z_all.min(), 1e-6)
-    fit_xy = xy[top] if int(top.sum()) >= top_min_points else xy
-    if not np.all(np.isfinite(fit_xy)):
-        return None
-    yaw = _rectangle_support_yaw(fit_xy)
-    if yaw is None:
-        return None
-    # a box is symmetric under 180°: keep yaw in [-pi/2, pi/2)
-    if yaw < -np.pi / 2:
-        yaw += np.pi
-    elif yaw >= np.pi / 2:
-        yaw -= np.pi
-
-    c, s = np.cos(yaw), np.sin(yaw)
-    u = xy[:, 0] * c + xy[:, 1] * s      # box frame
-    v = -xy[:, 0] * s + xy[:, 1] * c
-    z = pts[:, 2]
-    lo_u, hi_u = np.percentile(u, [5, 95])
-    lo_v, hi_v = np.percentile(v, [5, 95])
-    lo_z, hi_z = np.percentile(z, [5, 95])
-    if min(hi_u - lo_u, hi_v - lo_v, hi_z - lo_z) <= 1e-4:
-        return None
-    du, dv = hi_u - lo_u, hi_v - lo_v
-    if dv > du:
-        yaw = yaw + np.pi / 2 if yaw < 0 else yaw - np.pi / 2
-        c, s = np.cos(yaw), np.sin(yaw)
-        u, v = xy[:, 0] * c + xy[:, 1] * s, -xy[:, 0] * s + xy[:, 1] * c
-        lo_u, hi_u = np.percentile(u, [5, 95])
-        lo_v, hi_v = np.percentile(v, [5, 95])
-        du, dv = hi_u - lo_u, hi_v - lo_v
-    if du / max(dv, 1e-6) < min_anisotropy:
-        return None
-    uc, vc = (lo_u + hi_u) / 2.0, (lo_v + hi_v) / 2.0
-    return {
-        "yaw": float(yaw),
-        "oriented_center": [float(uc * c - vc * s), float(uc * s + vc * c), float((lo_z + hi_z) / 2.0)],
-        "oriented_extents": [float(du), float(dv), float(hi_z - lo_z)],
-    }
+    ``top_fraction`` and ``top_min_points`` remain in the signature for callers from older
+    builds, but are intentionally ignored. Fitting a top-surface rectangle and using trimmed
+    percentiles made the orientation and the extents describe different subsets of one mask.
+    The shared fitter uses the complete filtered point set and exact projections instead.
+    """
+    del top_fraction, top_min_points
+    return _fit_pca_oriented_box(pts_map, min_anisotropy=min_anisotropy)
 
 
 def _backend_health_no_roundtrip(backend, backend_type):
@@ -480,8 +420,8 @@ if __name__ == "__main__":
     pts += np.array([3.0, 4.0, 0.2])
     box = pca_oriented_box(pts)
     assert box is not None and abs(box["yaw"] - yaw_true) < 0.05, box
-    assert np.allclose(box["oriented_extents"], [1.755, 0.45, 0.40], atol=0.02), box
-    assert np.allclose(box["oriented_center"], [3.0, 4.0, 0.45], atol=0.1), box
+    assert np.allclose(box["oriented_extents"], [1.95, 0.45, 0.40], atol=0.02), box
+    assert np.allclose(box["oriented_center"], [2.975, 3.975, 0.40], atol=0.1), box
     theta = np.linspace(0, 2 * np.pi, 500)
     circle = np.stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)], axis=1)
     assert pca_oriented_box(circle) is None          # isotropic -> keep AABB
