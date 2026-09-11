@@ -30,6 +30,16 @@
     if (window.cola && !window.webcola) window.webcola = window.cola;
   </script>
   <script src="/viewer/cytoscape-cola.js"></script>
+  <!-- d3-force keeps the graph LIVE: cola places the graph in one shot and stops, and this
+       runs continuously afterwards so a dragged node's neighbours re-settle around it.
+       d3-force is a solver only -- it
+       computes positions and knows nothing about rendering -- so cytoscape keeps its styling,
+       its selection sync with the 3D scene and the objects table, and the stylesheet shared
+       with scene3d. Dependency order matters: dispatch, quadtree, timer, then force. -->
+  <script src="/viewer/d3-dispatch.min.js"></script>
+  <script src="/viewer/d3-quadtree.min.js"></script>
+  <script src="/viewer/d3-timer.min.js"></script>
+  <script src="/viewer/d3-force.min.js"></script>
   <script>
     // The adapter registers itself when both globals are present. Guarded and SAID OUT LOUD:
     // a missing extension must not look like a physics button that does nothing.
@@ -2944,6 +2954,7 @@
     // stopPhysics first, and switching PHYSICS off or changing LAYOUT MODE stops it too.
     let runningPhysics = null;
     function stopPhysics() {
+      stopLiveSim();
       if (!runningPhysics) return;
       try { runningPhysics.stop(); } catch (e) { /* already finished */ }
       runningPhysics = null;
@@ -3511,6 +3522,64 @@
       if (nodeTypeShown.concept && typeof ensureConceptNodes === 'function') ensureConceptNodes();
     }
 
+    // ---- LIVE SIMULATION, on d3-force ------------------------------------------------------
+    // `forceLink` carries the room clustering: a per-edge distance, short for the object-to-room
+    // membership edge and long for the relational ones, so rooms act as anchors. `forceCollide`
+    // is the overlap term, `forceManyBody` the repulsion, and `alphaTarget` held above zero is
+    // what makes this CONTINUOUS rather than a layout that settles once and stops.
+    //
+    // IT NEEDS A VISIBLE TAB. d3-force runs on d3-timer, which is requestAnimationFrame, and
+    // Chrome suspends rAF while `document.hidden` is true. That is not a fault to fix here --
+    // a background tab SHOULD stop simulating -- but it does mean this cannot be tested from
+    // an automated browser whose tab is never foregrounded: every reading there is 0 ticks.
+    //
+    // A DRAGGED NODE IS PINNED, not simulated: cytoscape's grab/drag/free events set and clear
+    // d3's fx/fy, so the node stays under the cursor while its neighbours re-settle around it.
+    let d3sim = null;
+    function onGrab(e) { const d = e.target.scratch('_d3');
+      if (d && d3sim) { d3sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; } }
+    function onDrag(e) { const d = e.target.scratch('_d3'); const p = e.target.position();
+      if (d) { d.fx = p.x; d.fy = p.y; } }
+    function onFree(e) { const d = e.target.scratch('_d3');
+      if (d) { d.fx = null; d.fy = null; } if (d3sim) d3sim.alphaTarget(0.05); }
+    function stopLiveSim() {
+      if (!d3sim) return;
+      d3sim.stop();
+      if (cy) { cy.off('grab', 'node', onGrab); cy.off('drag', 'node', onDrag);
+                cy.off('free', 'node', onFree); }
+      d3sim = null;
+    }
+    function startLiveSim() {
+      if (!cy || d3sim || typeof d3 === 'undefined' || !d3.forceSimulation) return;
+      const nodes = cy.nodes().map(n => {
+        const pos = n.position();
+        const d = {id: n.id(), x: pos.x, y: pos.y};
+        n.scratch('_d3', d);
+        return d;
+      });
+      const byId = new Map(nodes.map(d => [d.id, d]));
+      const links = cy.edges().map(e => ({
+        source: byId.get(e.source().id()), target: byId.get(e.target().id()),
+        kind: e.data('label')
+      })).filter(l => l.source && l.target);
+      d3sim = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links)
+          .distance(l => (l.kind === 'isLocatedIn' ? 70 : l.kind === 'isIn' ? 90 : 260))
+          .strength(l => (l.kind === 'isLocatedIn' ? 0.9 : 0.15)))
+        .force('charge', d3.forceManyBody().strength(-420).distanceMax(600))
+        .force('collide', d3.forceCollide().radius(26).iterations(2))
+        .alphaTarget(0.05)
+        .on('tick', () => {
+          for (const d of nodes) {
+            const n = cy.getElementById(d.id);
+            if (n && n.length && !n.grabbed()) n.position({x: d.x, y: d.y});
+          }
+        });
+      cy.on('grab', 'node', onGrab);
+      cy.on('drag', 'node', onDrag);
+      cy.on('free', 'node', onFree);
+    }
+
     function runSelectedLayout() {
       if (!cy) return;
       // STOPPED HERE, at the one place every layout change passes through, rather than in each
@@ -3535,16 +3604,20 @@
         const useCola = typeof window.cytoscapeCola !== 'undefined';
         const phys = cy.layout(useCola ? {
           name: 'cola',
-          // `animate: false`, AND NOT BY PREFERENCE. cola's animated path does not tick in
-          // this vendored pair (cytoscape-cola 2.5.1 + webcola 3.4.0): MEASURED on this graph,
-          // `animate: true` emits `layoutstart` and then nothing -- no `layoutready`, no
-          // `layoutstop`, 0 of 70 nodes moved, whatever `infinite` is set to. With
-          // `animate: false` the same options move all 70 and fire the full sequence. So
-          // `infinite` is off too: continuous simulation needs the animated path to tick.
+          // `animate: false` for the PLACEMENT pass, which is all this is: cola positions the
+          // graph in one shot and d3-force below keeps it live afterwards. Not animated
+          // because there is nothing to watch in a placement, and the two solvers must not
+          // run at once.
           //
-          // WHAT IS KEPT is the part that mattered: cola's constraint solver, avoidOverlap as
-          // a real constraint rather than a post-hoc rescale, and per-edge spring lengths.
-          // WHAT IS NOT delivered is live drag-and-resettle motion.
+          // A CORRECTION IS RECORDED HERE because the wrong reason was written down first. An
+          // earlier version of this comment said cola's animated path "does not tick in this
+          // vendored pair", on the evidence that `animate: true` produced 0 of 70 nodes moved.
+          // That measurement was real and the conclusion was wrong: the browser it was taken
+          // in had `document.hidden === true`, and Chrome suspends requestAnimationFrame in a
+          // hidden tab. Every rAF-driven path fails there -- cola's, d3's, any library's --
+          // so the reading said nothing about cola. Verified afterwards: a bare
+          // `requestAnimationFrame` loop got 0 frames in 1500 ms in that same tab while
+          // `setInterval` kept firing.
           infinite: false,
           // FITS WHEN IT FINISHES. cola moves every node, so leaving the viewport where it
           // was puts the new arrangement partly outside the panel -- the owner's report was
@@ -3584,7 +3657,13 @@
         // event would silently un-fix the bug above the moment cola is in use. cola emits
         // `layoutready` once the first solve has settled, which is the moment the sizes are
         // worth reading; cose keeps using layoutstop, which is the only event it has.
-        phys.one('layoutstop', () => { cy.scratch('_degRank', null); applyDensityScale(); });
+        phys.one('layoutstop', () => {
+          cy.scratch('_degRank', null);
+          applyDensityScale();
+          // cola places, then d3 keeps it live: the one-shot does the heavy rearranging, the
+          // simulation holds the graph responsive so dragging moves the neighbours.
+          startLiveSim();
+        });
         runningPhysics = phys;   // stopped at the top of this function on the next change
         phys.run();
         return;
