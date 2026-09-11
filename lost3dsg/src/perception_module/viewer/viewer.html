@@ -19,6 +19,16 @@
        O(n^2). Vendored, like cytoscape and elk beside it, because the machines that run this
        have no network. webcola first: the adapter requires it at load. -->
   <script src="/viewer/webcola.min.js"></script>
+  <script>
+    // THE UMD LOOKS FOR THE WRONG GLOBAL. cytoscape-cola's browser branch is
+    // `root["cytoscapeCola"] = factory(root["webcola"])`, but webcola's own UMD publishes
+    // `window.cola`, so the external resolves to undefined and the extension falls back to a
+    // partially-wired copy. The visible symptom was that `animate: true` emitted `layoutstart`
+    // and then nothing -- no tick reached `updateNodePositions`, so 0 of 70 nodes moved, while
+    // `animate: false` worked because that path does not depend on the tick events.
+    // Aliased BEFORE the extension script, which is the only moment it is read.
+    if (window.cola && !window.webcola) window.webcola = window.cola;
+  </script>
   <script src="/viewer/cytoscape-cola.js"></script>
   <script>
     // The adapter registers itself when both globals are present. Guarded and SAID OUT LOUD:
@@ -3209,7 +3219,14 @@
       });
       const lay = cy.layout({ name: 'preset', positions: positions, fit: false, animate: false });
       lay.one('layoutstop', () => {
-        cy.zoom(1); cy.center();
+        // FIT, NOT zoom(1)+center(). MAP is the layout the panel opens in, and zoom(1)
+        // pins the scale to 1 whatever the extent is: on an 838x311 panel with the nodes
+        // spread over a map-shaped extent, centring at zoom 1 leaves most of the graph
+        // outside it, which is why the panel did not appear to fit its graph at the
+        // start. `cy.fit(cy.nodes(), 60)` rather than bare `cy.fit()` for the reason
+        // recorded below: 7.1 ms against 1027 ms cold, because the no-argument form
+        // takes the bounding box of every element, edges included.
+        cy.fit(cy.nodes(), 60);
         cy.scratch('_degRank', null);
         if (typeof applyDensityScale === 'function') applyDensityScale();
       });
@@ -3365,7 +3382,14 @@
       const lay = cy.layout({ name: 'preset', positions: positions, fit: false,
                              animate: false });
       lay.one('layoutstop', () => {
-        cy.zoom(1); cy.center();
+        // FIT, NOT zoom(1)+center(). MAP is the layout the panel opens in, and zoom(1)
+        // pins the scale to 1 whatever the extent is: on an 838x311 panel with the nodes
+        // spread over a map-shaped extent, centring at zoom 1 leaves most of the graph
+        // outside it, which is why the panel did not appear to fit its graph at the
+        // start. `cy.fit(cy.nodes(), 60)` rather than bare `cy.fit()` for the reason
+        // recorded below: 7.1 ms against 1027 ms cold, because the no-argument form
+        // takes the bounding box of every element, edges included.
+        cy.fit(cy.nodes(), 60);
         cy.scratch('_degRank', null);
         if (typeof applyDensityScale === 'function') applyDensityScale();
       });
@@ -3522,7 +3546,12 @@
           // a real constraint rather than a post-hoc rescale, and per-edge spring lengths.
           // WHAT IS NOT delivered is live drag-and-resettle motion.
           infinite: false,
-          fit: false,              // refitting fights the user's own zoom
+          // FITS WHEN IT FINISHES. cola moves every node, so leaving the viewport where it
+          // was puts the new arrangement partly outside the panel -- the owner's report was
+          // "I can't see any difference", and the difference was off-screen. Pressing PHYSICS
+          // is an explicit request to rearrange, so bringing the result into view is what was
+          // asked for; the fit happens once per press, not per tick.
+          fit: true,
           animate: false,
           nodeDimensionsIncludeLabels: true,
           avoidOverlap: true,
@@ -4059,7 +4088,15 @@
               'text-valign': 'center',
               'text-margin-y': 0,
               'text-background-opacity': 0,
-              'text-border-width': 0
+              'text-border-width': 0,
+              // ROOM LABELS READ AS ROOMS. Every other node takes '#f8fafc' from the base
+              // `node` rule, so a room's name was the same near-white as the objects around
+              // it and the only thing separating them was the node shape -- which is exactly
+              // what a reader loses at low zoom, where the shape is a few pixels. Amber
+              // against the blue fill separates the two populations by colour instead, and it
+              // is the one hue not already spoken for: violet is the schedule, green/yellow/red
+              // are the admission grades, cyan is selection.
+              'color': '#fbbf24'
             }
           },
           {
