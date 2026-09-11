@@ -2146,19 +2146,22 @@ RUN_SETTINGS = [
         ("FEED_HEIGHT", "960", "text", "render height"),
         ("FEED_HFOV", "90", "text", "horizontal field of view, degrees"),
         ("FEED_FPS", "3", "text", "frames per second published to the stack"),
-        ("FEED_SEED", "7", "text", "walk seed -- same seed, same route"),
-        ("FEED_WALK", "6", "text", "walk speed"),
-        ("FEED_DWELL", "0", "text", "seconds to stand still at each waypoint"),
+        ("FEED_SEED", "7", "text", "spawn seed -- same seed, same starting point"),
+        # The sampling policy is removed (owner 2026-09-11), so FEED_WALK, FEED_DWELL,
+        # FEED_TEST_TOUR and FEED_TEST_TOUR_SCAN are gone from this form: live_run.sh refuses a run
+        # that sets any of them. A schedule states its own stops and its own scan at each.
+        ("FEED_EXPLORATION_LAPS", "3", "text", "complete passes of the storey's roadmap"),
+        ("FEED_MOVE_FN", "navigate", "choice:navigate|teleport",
+         "how the agent travels between two stops"),
         ("FEED_SHOW", "1", "bool", "open the habitat window on DISPLAY"),
         ("FEED_OVERLAY", "1", "bool", "draw the detection overlay in that window"),
         ("FEED_GT_SEMANTIC", "0", "bool", "publish ground-truth semantics instead of detections"),
-        ("FEED_TEST_TOUR", "0", "bool", "scripted tour instead of the random walk"),
-        ("FEED_TEST_TOUR_SCAN", "12", "text", "scan steps per tour stop"),
         ("DISPLAY", ":1", "text", "X display the habitat window opens on"),
     ]),
-    ("MAP", "rtabmap: whether this run maps, for how long, and from where", [
-        ("MAPPING_ONLY", "0", "bool", "map and publish, no perception"),
-        ("FEED_MAPPING_SECONDS", "150", "text", "how long to map (900 when MAPPING_ONLY=1)"),
+    ("MAP", "rtabmap: where this run spawns and what it maps against", [
+        # MAPPING_ONLY and FEED_MAPPING_SECONDS selected the mapping phase, which went with the
+        # sampling policy on 2026-09-11. A scheduled run maps while it drives the roadmap, so
+        # there is no separate phase to time; live_run.sh refuses both names.
         ("FEED_SPAWN_FLOOR", "", "text", "spawn height; blank lets the navmesh choose"),
         ("RTABMAP_LOCALIZE_DB", "", "text", "localise against this .db instead of mapping"),
     ]),

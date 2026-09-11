@@ -20,15 +20,16 @@ WHERE THINGS GO
   SCHEDULE_DIR     cached exploration schedules (default $WORKSPACE_ROOT/schedules)
 
 EXPLORATION
-  FEED_SCHEDULE          a schedule file; built and cached automatically when unset
+  FEED_SCHEDULE          a schedule file; built and cached automatically when unset.
+                         MANDATORY: it is the only motion policy, so a run refuses without one
   FEED_EXPLORATION_LAPS  complete passes of the storey (config habitat.exploration_laps, default 3)
   FEED_NAVIGATION_MODE   navigate (drive it) or teleport (set the pose)
   FEED_SPAWN_FLOOR       storey height; REQUIRED when the scene has per-floor maps
   FEED_TOUR_ALL_FLOORS   1 tours every storey in one launch; default 0, one launch per storey
 
 FEED (each also readable from config.yaml habitat.*)
-  FEED_FPS  FEED_WIDTH  FEED_HEIGHT  FEED_WALK  FEED_DWELL  FEED_DWELL_MODE
-  FEED_MAPPING_SECONDS  FEED_CAMERA_PITCH_DEG  FEED_GT_SEMANTIC  FEED_SHOW  FEED_OVERLAY
+  FEED_FPS  FEED_WIDTH  FEED_HEIGHT  FEED_EXPLORATION_LAPS  FEED_MOVE_FN
+  FEED_CAMERA_PITCH_DEG  FEED_GT_SEMANTIC  FEED_SHOW  FEED_OVERLAY
 
 STACK
   CFG_NAME        config file (regolo_config.yaml with an API key, else smoke_config.yaml)
@@ -57,6 +58,15 @@ esac
 # scene: hm3d_00861 (default) | hm3d_00337 | hm3d_00770 | mp3d_17DRP
 # HABITAT_SCENE/HABITAT_DATASET env vars still override everything.
 set -e
+
+# NUMBERS ARE FORMATTED IN THE C LOCALE, NOT THE MACHINE'S. Measured on Gin 2026-09-10, whose
+# LANG is it_IT.UTF-8: `printf "floor_%+.2f" 1.21` failed outright with "1.21: numero non valido",
+# and on a locale that ACCEPTS the comma it would have produced `floor_+1,21` -- a map directory
+# name that matches nothing, so the run would have looked for a published map, not found it, and
+# mapped from scratch while reporting the floor it was asked for. An error is the lucky outcome
+# here. Every float this script formats or compares goes through the same locale, so it is set
+# once, at the top, rather than guarded per call site.
+export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 
@@ -746,8 +756,16 @@ for _v in ${EXT_ENV_PASS:-}; do EXT_E_ARGS="$EXT_E_ARGS -e $_v"; done
 # envelope_size, whose module is present, and is allowed; regolo_config names found.filter, whose
 # module is not, and is refused exactly as before; smoke_config and graphapi_only_config name no
 # filter and are untouched.
-_filter_module=$(grep -E '^[[:space:]]*filter:[[:space:]]*"[^"]+"' "$HERE/$CFG_NAME" 2>/dev/null \
-                 | sed -E 's/.*"([^":]+):.*/\1/')
+# THE COMMENT IS STRIPPED FIRST, AND THE MATCH IS ANCHORED. The previous form was
+# `sed -E 's/.*"([^":]+):.*/\1/'`, and `.*"` is GREEDY: on the tracked config the line reads
+#     filter: "envelope_size:SizeFilter"   # "pkg.module:ClassName", subclass of hooks.Filter
+# so it matched the last quote before a colon -- the one in the COMMENT -- and extracted
+# `pkg.module`. The launcher then refused the DEFAULT config for wiring a filter that does not
+# exist. Measured on Gin 2026-09-10, on the first run with the default config. Anchoring at the
+# start of the line and dropping the comment reads the value rather than the nearest quoted text.
+_filter_module=$(sed -E 's/#.*//' "$HERE/$CFG_NAME" 2>/dev/null \
+                 | grep -E '^[[:space:]]*filter:[[:space:]]*"[^"]+"' \
+                 | sed -E 's/^[[:space:]]*filter:[[:space:]]*"([^":]+):.*/\1/')
 # A dotted name is a package path, so it becomes a directory path before the file test.
 _filter_path="$HERE/../src/perception_module/$(printf '%s' "${_filter_module:-}" | tr '.' '/').py"
 if [ -z "${EXT_ENV_FILE:-}" ] && [ -n "$_filter_module" ] && [ ! -f "$_filter_path" ]; then
@@ -758,10 +776,28 @@ if [ -z "${EXT_ENV_FILE:-}" ] && [ -n "$_filter_module" ] && [ ! -f "$_filter_pa
   exit 1
 fi
 
+# THE HABITAT KEYS THIS SCRIPT DEFAULTS, READ FROM THE CONFIG FILE ONCE. Owner instruction
+# 2026-09-10: "we need to read config.yaml ALWAYS". Three settings in this file were exported with
+# HARDCODED defaults, and because the feed reads the environment FIRST, the config's values were
+# dead: `camera_pitch_deg` could not leave the file at all, and `mapping_seconds` was overridden by
+# whichever branch below ran. Measured on Gin: a config saying `mapping_seconds: 0` and
+# `camera_pitch_deg: -30.0` produced a feed reporting `mapping_seconds=150.0 camera_pitch_deg=0.0`.
+# An exported default is not a default -- it is an override nobody asked for.
+_cfg_hab() {   # $1 = key, $2 = fallback when the file is silent
+  python3 -c "
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    v = (c.get('habitat') or {}).get(sys.argv[2])
+    print(sys.argv[3] if v is None else v)
+except Exception:
+    print(sys.argv[3])" "${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" "$1" "$2" 2>/dev/null || echo "$2"
+}
+
 # CAMERA PITCH, in degrees, negative looks DOWN. It reaches the feed host and the bundle: a
 # setting that changes what the camera SEES and is not recorded is the shape that made six days
 # of tour runs unreadable.
-export FEED_CAMERA_PITCH_DEG="${FEED_CAMERA_PITCH_DEG:-0}"
+export FEED_CAMERA_PITCH_DEG="${FEED_CAMERA_PITCH_DEG:-$(_cfg_hab camera_pitch_deg 0)}"
 export ROOM_FRAME_MAX="${ROOM_FRAME_MAX:-5}"
 export ROOM_FRAME_STRIDE_M="${ROOM_FRAME_STRIDE_M:-1.5}"
 # GA-359 (owner 2026-09-07 ~18:20 "switch to rtabmap localised poses"; design plan/14). The pose
@@ -770,72 +806,55 @@ export ROOM_FRAME_STRIDE_M="${ROOM_FRAME_STRIDE_M:-1.5}"
 # publishes map->odom and the feed node must not (perception's half, not landed yet: do NOT set
 # rtabmap before it lands, or two authorities publish again). Read by live_stack_container.sh and
 # by habitat_feed_node.py (once perception lands its half); stamped as pose_source.
-export FEED_POSE_SOURCE="${FEED_POSE_SOURCE:-simulator}"
+# THE DEFAULT COMES FROM THE CONFIG FILE, not from this line. Owner instruction 2026-09-10: "we
+# need to read config.yaml ALWAYS". `habitat.localization_mode` (rtabmap | ground_truth) is the
+# switch her launch file already uses, and NOTHING read it: this defaulted to `simulator`,
+# live_stack_container.sh:460 derived `localization_mode:=ground_truth` from that, and a run whose
+# config said `rtabmap` did ground-truth pose while the bundle recorded the value it was given.
+# Measured on Gin 2026-09-10 on the first baseline run. An explicit FEED_POSE_SOURCE still wins,
+# so a one-off arm needs no config edit.
+#
+# The warning that used to sit here -- "do NOT set rtabmap before perception lands its half, or two
+# authorities publish again" -- is DISCHARGED: habitat_feed_node.py:197-201 reads FEED_POSE_SOURCE
+# and publishes map->odom only under `simulator` (GA-359). One authority either way.
+_cfg_loc=$(python3 -c "
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    print(((c.get('habitat') or {}).get('localization_mode') or '').strip().lower())
+except Exception:
+    print('')" "${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" 2>/dev/null || echo "")
+case "$_cfg_loc" in
+  rtabmap)      _pose_default=rtabmap ;;
+  ground_truth) _pose_default=simulator ;;
+  "")           _pose_default=simulator ;;
+  *)            echo "!! habitat.localization_mode=$_cfg_loc is neither rtabmap nor ground_truth"; exit 1 ;;
+esac
+export FEED_POSE_SOURCE="${FEED_POSE_SOURCE:-$_pose_default}"
+[ -n "$_cfg_loc" ] && echo "    pose source: $FEED_POSE_SOURCE (config localization_mode: $_cfg_loc)"
 case "$FEED_POSE_SOURCE" in simulator|rtabmap) ;; *) echo "!! FEED_POSE_SOURCE=$FEED_POSE_SOURCE is neither simulator nor rtabmap"; exit 1 ;; esac
 
 # Feed geometry. These were interpolated ONLY into the launch line 160 lines below and appeared
 # NOWHERE in the bundle — a run recorded its seed and nothing else about how the agent moved.
 #
-# FEED_DWELL DEFAULT IS 0 AS OF 2026-08-31, by the owner, relayed by the orchestrator in the
-# owner's words: "I think we should try removing dwell completely and try making it work from
-# there." The ruling stands on its own; the two numbers that were quoted alongside it here do
-# not, and both were struck the same afternoon by the lanes that checked them.
+# THE WALK/DWELL FAMILY IS GONE (owner 2026-09-11, "completely remove the old sampling policy").
+# FEED_WALK, FEED_DWELL, FEED_DWELL_MODE, FEED_DWELL_MIN, FEED_DWELL_MAX and
+# FEED_DWELL_SIGNAL_MAX_AGE_S set a burst cycle that no longer exists: the schedule states its own
+# stops and its own scan at each, so there is nothing left for a dwell to hold. habitat_feed_host.py
+# REFUSES any of these names rather than ignoring it, and this launcher no longer exports them.
 #
-# STRUCK, and NOT to be restored to this comment:
-#
-#   "dwell held the agent still 20 s of every 22 s in run 19" — NOT MEASURED FOR RUN 19. That
-#   bundle has no feed block, no feed_stats.json, and a feed_host.log that prints phase NAMES
-#   and never the numbers. It is an estimate from the then-default of 60, and its own config.yaml
-#   cannot confirm it (see below). Experiment lane, from the artefacts.
-#
-#   "0/5 merges under 0.925 versus 87% under the old gate" — the COUNT is right and the
-#   INFERENCE is not. Run 19 compared 20 pairs, refused 19 on similarity, and the highest
-#   similarity observed across all of them was 0.797. The 0.85-0.925 band is EMPTY, so the old
-#   threshold would have refused every one of these pairs too. That run measures the scene and
-#   the detections, not the knob. Testing lane, recovered from logs/om6.log — object_manager_6's
-#   stdout, symlinked into the bundle at live_stack_container.sh:57. NOT perception.log, which I
-#   cited first and which holds zero of those lines: om6.log 20, perception.log 0.
-#
-#   CONFIRMED AGAIN on run A (20260831_174209) with a second, larger sample: 137 pairs reaching a
-#   decision, similarity-refused ceiling 0.827. The 0.85-0.925 gap is empty there too, so the
-#   0.85 -> 0.925 change would have refused ZERO additional pairs on either run. Two independent
-#   samples now say the knob is inert on this scene.
-#
-# A BUNDLE'S config.yaml IS NOT EVIDENCE OF ITS FEED SETTINGS. Every bundle carries a copy, so
-# it looks like dwell was always recorded. The environment wins over it at habitat_feed_host.py
-# :505, and the copy is of the file, not of what took effect. Measured: bundle 20260831_033330
-# has config.yaml mapping_seconds 0.0 while its feed_stats.json says 150.0 and its log announces
-# a 150 s mapping phase. Where a pre-stamp bundle has feed_stats.json, phase_dwell_frames is
-# written AFTER the override and is the recoverable value (20260826_112549 and run 13: both 60).
-# Where it does not, the setting is simply absent and must not be inferred from the run date.
-#
-# dwell=0 STARTS A NEW BUNDLE FAMILY: runs before this line are not comparable to runs after it.
-# That is why these values are now IN run_metadata.json — the family boundary belongs in the
-# artefact, not in the message that announced it, and not in a file that records the intent
-# rather than the effect.
-#
-# EXPECTED COST, to be measured and not assumed: the agent never stops, so every frame carries
-# motion blur that a dwell frame did not. If association degrades, that is a finding to record,
-# not a reason to quietly restore 60.
+# WHY THE NOTES BELOW MATTERED, kept in one sentence because the bundles still exist: dwell 60,
+# dwell 0 (from 2026-08-31) and adaptive (from 2026-09-07) are three different bundle families and
+# none of them is comparable with a scheduled run. The full record is in git history at commit
+# eae203e and in the run_metadata.json of every bundle made before today.
 export FEED_SEED="${FEED_SEED:-7}"
 export FEED_FPS="${FEED_FPS:-3}"
-export FEED_WALK="${FEED_WALK:-6}"
-export FEED_DWELL="${FEED_DWELL:-0}"
-# GA-339 (owner ruling 2026-09-07 ~13:50). ADAPTIVE dwell by default: after each walk burst the
-# feed HOLDS a still camera until the object manager's merge_pending.json says nothing is pending,
-# bounded by FEED_DWELL_MAX. FEED_DWELL (fixed frames) is IGNORED in adaptive mode and only read
-# under FEED_DWELL_MODE=fixed. 18 = gate 0.5 s + one ~5 s cycle at 3 f/s; 90 = 30 s, the owner's cap
-# (raised from 45 on 2026-09-07 ~16:55: run 152446 capped 27 of 39 holds with pending work still owed).
-# Bundles at 90 are a new family against 152446 (45).
-# Adaptive bundles are a NEW FAMILY, stamped below as dwell_family.
-# MAPPING_ONLY runs no object manager, so merge_pending.json never exists and every adaptive hold
-# caps at FEED_DWELL_MAX with the signal absent by construction: 360/450/360 stationary frames on the
-# three 8 Sep mapping runs, ~14 % of the tour (PLAN_1.3 §56.2, orchestrator follow-up 3). Fixed dwell
-# with FEED_DWELL 0 is the mapping default; an explicit FEED_DWELL_MODE still wins.
-export FEED_DWELL_MODE="${FEED_DWELL_MODE:-$([ "${MAPPING_ONLY:-0}" = "1" ] && echo fixed || echo adaptive)}"
-export FEED_DWELL_MIN="${FEED_DWELL_MIN:-18}"
-export FEED_DWELL_MAX="${FEED_DWELL_MAX:-90}"
-export FEED_DWELL_SIGNAL_MAX_AGE_S="${FEED_DWELL_SIGNAL_MAX_AGE_S:-10}"
+# THE SCHEDULE'S OWN SETTINGS, exported here so run_metadata.json can record them and so the
+# `:?` guards below have something to check. Config first, environment second, the same precedence
+# every other feed setting uses. Three laps is the owner's default (2026-09-10): one lap cannot
+# tell a change in the world from a change in the route, and the laps are identical by design.
+export FEED_EXPLORATION_LAPS="${FEED_EXPLORATION_LAPS:-$(_cfg_hab exploration_laps 3)}"
+export FEED_MOVE_FN="${FEED_MOVE_FN:-$(_cfg_hab navigation_mode navigate)}"
 # GA-330. Ground truth ON by default. The scene ships its semantic mesh, the feed host renders
 # it, the feed node publishes /gt/semantic_instance and the archive joins it per detection --
 # and the switch below was 0 in every one of the first 12 bundles, so not one row was ever
@@ -908,7 +927,6 @@ if [ -f "$_mapdir/rtabmap.db" ]; then
     # (GA-380). It is left standing, unused, pending the owner's ruling on the localization regime.
     LOCALIZE_DB_SOURCE=""
     LOCALIZE_DB_SHA=""
-    export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-0}"
     echo "    a published map exists at $_mapdir/rtabmap.db and THIS RUN WILL NOT USE IT."
     echo "    habitat_launch.py maps fresh every launch (--delete_db_on_start); see PLAN_1.3 §67."
   elif ls -d "$WORKSPACE_ROOT/maps/$SCENE_ARG"/floor_* >/dev/null 2>&1; then
@@ -928,24 +946,21 @@ if [ -f "$_mapdir/rtabmap.db" ]; then
     echo "    Publishing a map will NOT change that: habitat_launch.py passes --delete_db_on_start."
   fi
 fi
-if [ "$MAPPING_ONLY" = "1" ]; then
-  export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-900}"
-  # THE CAP MUST COVER THE GATE AS WELL AS THE TOUR (rule 55: two settings that must agree get a
-  # probe). run_capped.sh counts CAP_MIN from the container appearing; the container's mapping
-  # deadline counts FEED_MAPPING_SECONDS + 60 from after build + gate, which took 1:21 / 2:52 / 4:32
-  # on the three 8 Sep launches; the close needs up to 150 s. Run 150019 was capped 1 s before its
-  # own timer and labelled capped=true with a finished tour. CAP_MIN is run_capped.sh's; it reaches
-  # here through the environment when the recipe sets it, and an unset CAP_MIN means no cap.
-  if [ -n "${CAP_MIN:-}" ]; then
-    case "$CAP_MIN" in (*[!0-9]*|"") echo "!! CAP_MIN='$CAP_MIN' is not a whole number of minutes. Refusing."; exit 1;; esac
-    _cap_need=$(( (${FEED_MAPPING_SECONDS%.*} + 60 + 300 + 150 + 59) / 60 ))
-    if [ "$CAP_MIN" -lt "$_cap_need" ]; then
-      echo "!! MAPPING_ONLY with CAP_MIN=$CAP_MIN: the cap must cover build+gate (<=5 min) + ${FEED_MAPPING_SECONDS%.*}+60 s tour deadline + 150 s close = CAP_MIN >= $_cap_need. Refusing to start a run whose finished tour would be labelled capped."
-      exit 1
-    fi
-  fi
-else
-  export FEED_MAPPING_SECONDS="${FEED_MAPPING_SECONDS:-150}"
+# MAPPING_ONLY selected a run that was nothing but the mapping phase, and the mapping phase went
+# with the sampling policy (owner 2026-09-11). A scheduled run maps while it drives the roadmap, so
+# "map first, detect later" is not a shape this launcher can produce any more. It REFUSES rather
+# than starting an ordinary run under a name that promises something else.
+if [ "${MAPPING_ONLY:-0}" = "1" ]; then
+  echo "!! MAPPING_ONLY=1: the mapping phase is removed with the sampling policy (owner 2026-09-11)."
+  echo "   A scheduled run builds the map while it drives the roadmap; there is no separate phase"
+  echo "   to run on its own. Drop MAPPING_ONLY, or check out a commit before eae203e."
+  exit 1
+fi
+if [ -n "${FEED_MAPPING_SECONDS:-}" ]; then
+  echo "!! FEED_MAPPING_SECONDS=$FEED_MAPPING_SECONDS: retired with the sampling policy it selected."
+  echo "   It was never a duration — it chose between the coverage tour and the walk/dwell bursts,"
+  echo "   and both are gone. Clear it."
+  exit 1
 fi
 export FEED_OVERLAY="${FEED_OVERLAY:-1}"
 export FEED_SHOW="${FEED_SHOW:-1}"
@@ -1085,22 +1100,90 @@ echo "    image: ${IMAGE_DIGEST:0:19}  encoders: ${ENC_E5:0:8} ${ENC_MINILM:0:8}
 # under is the artefact nobody can detect later, and stamping the policy at all exists for the
 # ablation case — where a default would silently record neither arm. Same standard as
 # live_stack_container.sh refusing a guessed config: name what is missing and stop.
-# Six NUMERIC positions in the feed block below. An empty expansion yields `"dwell_frames": ,`
-# and the validator kills the run — which is the correct outcome, but these refuse first and say
-# which name is missing.
+# ORDER IS LOAD-BEARING TWICE OVER. It must run before the feed host starts -- it sat 120 lines
+# below the launch once, and that run exported FEED_SCHEDULE into a process that had already
+# started, so the feed used no schedule while the launcher printed a cache hit. It must ALSO run
+# before run_metadata.json is written, or the bundle records an empty schedule for a run that had
+# one. And because it now REFUSES instead of falling back, running it early means a run that
+# cannot move is stopped before the bundle directory is populated.
+# GA-465 (owner 2026-09-10). THE EXPLORATION SCHEDULE IS CACHED PER SCENE AND BUILT WHEN ABSENT.
+# A schedule is one scene's roadmap and the order to walk it: waypoints on the generalized Voronoi
+# diagram of the navmesh -- the line equidistant from two or more walls, so it runs down the middle
+# of corridors -- visited depth-first from the busiest junction, with a 360 degree scan at each.
+#
+#   A) CACHED when $SCHEDULE_DIR holds a file for this scene whose recorded settings match this run.
+#   B) BUILT when it is missing, when the settings differ, or when habitat.regenerate_schedule is
+#      true in config.yaml. THE DIGEST DECIDES, NOT THE FILE NAME: a schedule built at
+#      merge_radius 0.75 is not the schedule for 1.5, and reusing it because a file happens to exist
+#      would run one geometry while the config describes another.
+#
+# EXTERNAL, per the owner's storage instruction: $WORKSPACE_ROOT/schedules, beside maps and runs.
+# The navmesh sits next to the scene mesh. A scene shipped without one cannot get a schedule, and
+# since 2026-09-11 that is a REFUSAL rather than a fallback: there is no second policy to fall to.
+SCHEDULE_DIR=${SCHEDULE_DIR:-$WORKSPACE_ROOT/schedules}
+# THE SCHEDULE IS MANDATORY (owner 2026-09-11). The sampling policy that used to stand behind
+# every "NONE" branch here is removed, so a run without a schedule has NO MOTION AT ALL -- it would
+# publish frames from a robot standing still, spend the whole cap, and produce a bundle that looks
+# complete. Every branch below therefore either produces a schedule or exits non-zero.
+#
+# GA-476's three-state FEED_SCHEDULE is gone with the policy it selected. Set-and-empty meant "use
+# the sampling policy" and there is no such policy to ask for; it now refuses rather than being
+# read as "unset", because a lane that deliberately typed `FEED_SCHEDULE=` asked for something
+# specific and must be told it no longer exists.
+if [ -n "${FEED_SCHEDULE+x}" ] && [ -z "$FEED_SCHEDULE" ]; then
+  echo "!! FEED_SCHEDULE is set and empty. That used to mean \"use the sampling policy\", which is"
+  echo "   removed (owner 2026-09-11). Unset FEED_SCHEDULE to build or reuse this scene's schedule,"
+  echo "   or point it at a schedule file."
+  exit 1
+elif [ -z "${FEED_SCHEDULE:-}" ]; then
+  _scene_glb="${HABITAT_SCENE:-$DEF_SCENE}"
+  _navmesh="${_scene_glb%.glb}.navmesh"
+  _regen=$(python3 -c "
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    print('1' if (c.get('habitat') or {}).get('regenerate_schedule') else '0')
+except Exception:
+    print('0')" "$HERE/$CFG_NAME" 2>/dev/null || echo 0)
+  if [ ! -f "$_navmesh" ]; then
+    echo "!! no navmesh at $_navmesh, so this scene's schedule cannot be built."
+    echo "   A schedule is the only motion policy, so the run would not move at all. Refusing."
+    echo "   Generate the navmesh beside the scene mesh, or name another scene."
+    exit 1
+  fi
+  _sched_out=$("${SCHEDULE_PY:-$HOME/miniconda3/envs/habitat_env/bin/python}" \
+    "$HERE/schedule_batch.py" --navmesh "$_navmesh" --scene-id "$SCENE_ARG" \
+    --ensure --out-dir "$SCHEDULE_DIR" \
+    $([ "$_regen" = "1" ] && echo --regenerate) 2>&1) || {
+      echo "!! schedule generation FAILED for $SCENE_ARG:"; echo "$_sched_out" | tail -15
+      echo "   A schedule is the only motion policy, so there is nothing to fall back to."
+      exit 1; }
+  echo "$_sched_out" | grep -E "^\[schedule\]|^  y=" | sed 's/^/    /'
+  FEED_SCHEDULE=$(echo "$_sched_out" | sed -n 's/^SCHEDULE_FILE=//p' | tail -1)
+  export FEED_SCHEDULE
+  if [ -z "$FEED_SCHEDULE" ] || [ ! -f "$FEED_SCHEDULE" ]; then
+    echo "!! schedule_batch.py reported success but named no readable file for $SCENE_ARG."
+    echo "   Printed SCHEDULE_FILE=${FEED_SCHEDULE:-<nothing>}. Refusing to start a run with no motion."
+    exit 1
+  fi
+  echo "    schedule: $FEED_SCHEDULE"
+else
+  if [ ! -f "$FEED_SCHEDULE" ]; then
+    echo "!! FEED_SCHEDULE=$FEED_SCHEDULE does not exist. Refusing to start a run with no motion."
+    exit 1
+  fi
+  echo "    schedule: $FEED_SCHEDULE (given, not generated)"
+fi
+
+# NUMERIC positions in the feed block below. An empty expansion yields `"fps": ,` and the
+# validator kills the run — which is the correct outcome, but these refuse first and say which
+# name is missing.
 : "${FEED_SEED:?not set at run_metadata.json — the feed exports must precede this heredoc}"
 : "${FEED_FPS:?not set at run_metadata.json}"
-: "${FEED_WALK:?not set at run_metadata.json}"
-: "${FEED_DWELL?not set at run_metadata.json}"   # no colon: 0 is the point of this variable
-: "${FEED_DWELL_MODE:?not set at run_metadata.json}"   # GA-339
-: "${FEED_DWELL_MIN:?not set at run_metadata.json}"
-: "${FEED_DWELL_MAX:?not set at run_metadata.json}"
-: "${FEED_DWELL_SIGNAL_MAX_AGE_S:?not set at run_metadata.json}"
+: "${FEED_EXPLORATION_LAPS:?not set at run_metadata.json}"
 : "${ROOM_FRAME_MAX:?not set at run_metadata.json}"   # GA-350
 : "${ROOM_FRAME_STRIDE_M:?not set at run_metadata.json}"
 : "${FEED_POSE_SOURCE:?not set at run_metadata.json}"   # GA-359
-: "${FEED_MAPPING_SECONDS:?not set at run_metadata.json}"
-: "${MAPPING_ONLY?not set at run_metadata.json}"
 : "${FEED_SPAWN_FLOOR?not set at run_metadata.json}"   # no colon: empty means "no floor requested"   # no colon: 0 is a legal value
 : "${SRC_SHA:?not set at run_metadata.json — the provenance block must precede this heredoc}"
 : "${SRC_N:?not set at run_metadata.json}"
@@ -1157,20 +1240,12 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
   },
   "seed": ${FEED_SEED:-7},
   "feed": {
-    "walk_frames": $FEED_WALK,
-    "tour_waypoints": ${FEED_TEST_TOUR:-0},
-    "tour_scan_frames": ${FEED_TEST_TOUR_SCAN:-12},
-    "tour_note": "GA-256. 0 means NO TOUR: the agent turns in place (walk radius 0) or wanders a disc around its spawn, and never leaves the room it started in. Run 20260901_174810 recorded total_distance_m 0.0 over 1,566 steps for exactly that reason, which is why coverage, room segmentation and the held-pool resolution rate could not be measured from it. A positive value is the number of farthest-point-sampled waypoints toured on the traversed storey.",
-    "dwell_frames": $FEED_DWELL,
-    "dwell_mode": "$FEED_DWELL_MODE",
-    "dwell_min_frames": $FEED_DWELL_MIN,
-    "dwell_max_frames": $FEED_DWELL_MAX,
-    "dwell_signal_path": "$RUN_DIR/merge_pending.json",
-    "dwell_signal_max_age_s": $FEED_DWELL_SIGNAL_MAX_AGE_S,
-    "dwell_family": "GA-339, 2026-09-07: dwell_mode adaptive holds a STILL camera after each walk burst until merge_pending.json reads pending 0 (fresh), bounded by dwell_max_frames (45 in 20260907_152446, 90 from 2026-09-07 ~17:00). dwell_frames is IGNORED when dwell_mode is adaptive. Adaptive bundles are a NEW family: not comparable with dwell_frames 0 (2026-08-31 to 2026-09-07) or 60 (before). Per-run counters are in feed_stats.json (dwell_episodes, dwell_capped, dwell_released_on_zero, dwell_unknown_frames).",
+    "motion_policy": "schedule",
+    "schedule": "$FEED_SCHEDULE",
+    "exploration_laps": $FEED_EXPLORATION_LAPS,
+    "navigation_mode": "$FEED_MOVE_FN",
+    "policy_note": "THE SAMPLING POLICY IS REMOVED (owner 2026-09-11). Every bundle from today on drives a precomputed Voronoi roadmap for exploration_laps identical laps. Bundles before this date carry walk_frames / dwell_frames / dwell_mode / mapping_seconds instead and measure a DIFFERENT experiment: the sampled agent moved on 1.0-1.8% of its frames with mapping_seconds 0. Never pool the two, and never difference them.",
     "fps": $FEED_FPS,
-    "mapping_seconds": $FEED_MAPPING_SECONDS,
-    "mapping_only": $([ "$MAPPING_ONLY" = "1" ] && echo true || echo false),
     "spawn_floor_requested": $([ -n "$FEED_SPAWN_FLOOR" ] && echo "$FEED_SPAWN_FLOOR" || echo null),
     "camera_pitch_deg": $FEED_CAMERA_PITCH_DEG,
     "camera_pitch_note": "negative looks DOWN, applied to rgb, depth and semantic together. 0 is the level camera every run before 2026-09-09 used.",
@@ -1178,11 +1253,9 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "scene_source": "$SCENE_SOURCE",
     "draw_note": "drawn = this run chose it among the published per-floor maps (MAP_DRAW=1); pinned = the recipe named it. An A/B arm pins both.",
     "spawn_floor_note": "what was ASKED for. What the run actually mapped is measured from the map's own node poses into rtabmap.db.floor.json. If these two disagree the STAMP is right and this field records the intent that was not met.",
-    "mapping_only_note": "true means NO DETECTOR RAN. A mapping bundle with zero detections is a mapping run, not a detection run that found nothing -- the two are otherwise indistinguishable from the artefacts, which is the failure that cost run 19 its merge question.",
     "overlay": $FEED_OVERLAY,
     "show": $FEED_SHOW,
-    "note": "how the agent moved. ABSENT from every bundle before 2026-08-31, so a run's dwell setting cannot be recovered from an older bundle and must not be guessed from its date.",
-    "dwell_note": "dwell_frames 0 means the agent never stops. Bundles with dwell_frames 0 are a DIFFERENT FAMILY from bundles with 60 and must not be pooled with them or differenced against them."
+    "note": "how the agent moved. ABSENT from every bundle before 2026-08-31, so an older bundle's motion cannot be recovered from the bundle and must not be guessed from its date."
   },
   `# The extension's own policy keys are interpolated HERE, inside this object, so the bundle's
    # shape is unchanged and every reader of policy.<key> keeps working. This launcher does not
@@ -1217,7 +1290,8 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
     "localization_regime": "fresh_map_per_launch",
     "tour_shape_note": "GA-434 / rule 73. WHICH SHAPE OF HOUSE RUN THIS BUNDLE BELONGS TO. Two exist and they are not comparable: relaunch_per_storey is one launch, one map and one bundle per storey, which is the owner's 2026-09-10 ruling; continuous_teleport is one launch touring every storey, whose map would straddle them and which owner ruling 25 refuses. A bundle set read as the wrong one would double-count objects across storeys or look like it lost them.",
-    "tour_shape": "$([ "${FEED_TOUR_ALL_FLOORS:-0}" != "0" ] && echo continuous_teleport || echo relaunch_per_storey)",
+    "tour_shape": "relaunch_per_storey",
+    "tour_shape_note": "the only shape now. FEED_TOUR_ALL_FLOORS toured every storey in one continuous session; that machinery lived in the sampling tour and is removed (owner 2026-09-11). The feed host refuses the switch rather than ignoring it.",
     "house_id": $([ -n "${HOUSE_ID:-}" ] && echo "\"$HOUSE_ID\"" || echo null),
     "spawn_floor": $([ -n "${FEED_SPAWN_FLOOR:-}" ] && echo "$FEED_SPAWN_FLOOR" || echo null),
     "localize_db_note": "GA-336: localize_db points at a SCRATCH COPY deleted at exit, so the path alone identifies nothing. localize_db_source + localize_db_sha256_16 name the canonical file this run actually opened.",
@@ -1225,7 +1299,6 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "localize_db_sha256_16": $([ -n "${LOCALIZE_DB_SHA:-}" ] && echo "\"$LOCALIZE_DB_SHA\"" || echo null),
     "bridge_port": ${BRIDGE_PORT:-null},
     "bridge_port_note": "the port the bridge bound (BRIDGE_PORT); null means BRIDGE_PORT was unset and the bridge used its own default. Asked for by agent2-dashboard 2026-09-06 (their 00015): the dashboard used to have to grep logs/bridge.log for it.",
-    "mapping_seconds_effective": $FEED_MAPPING_SECONDS,
     "effective_config": $(GRAPH_API_CONFIG="$HERE/$CFG_NAME" python3 -c "
 import json, sys
 sys.path.insert(0, sys.argv[1])
@@ -1298,67 +1371,23 @@ echo "    (latest is repointed at the end, and only if the gate passes)"
 # comment the line: the `#` swallows the continuation and A IS SILENTLY DROPPED. Measured, not
 # reasoned about. `bash -n` passes it. I wrote exactly that bug into this spot on 31 Aug and it
 # would have thrown away HABITAT_SCENE and HABITAT_DATASET, running the default scene under a
-# ORDER IS LOAD-BEARING: this runs BEFORE the feed host starts. It sat 120 lines below the
-# launch and the first run with it exported FEED_SCHEDULE into a process that had already
-# started, so the feed took the sampling policy while the launcher printed a cache hit.
-# GA-465 (owner 2026-09-10). THE EXPLORATION SCHEDULE IS CACHED PER SCENE AND BUILT WHEN ABSENT.
-# A schedule is one scene's roadmap and the order to walk it: waypoints on the generalized Voronoi
-# diagram of the navmesh -- the line equidistant from two or more walls, so it runs down the middle
-# of corridors -- visited depth-first from the busiest junction, with a 360 degree scan at each.
-#
-#   A) CACHED when $SCHEDULE_DIR holds a file for this scene whose recorded settings match this run.
-#   B) BUILT when it is missing, when the settings differ, or when habitat.regenerate_schedule is
-#      true in config.yaml. THE DIGEST DECIDES, NOT THE FILE NAME: a schedule built at
-#      merge_radius 0.75 is not the schedule for 1.5, and reusing it because a file happens to exist
-#      would run one geometry while the config describes another.
-#
-# EXTERNAL, per the owner's storage instruction: $WORKSPACE_ROOT/schedules, beside maps and runs.
-# The navmesh sits next to the scene mesh; a scene shipped without one gets no schedule and the run
-# falls back to the sampling policy, which is SAID rather than left for a reader to infer.
-SCHEDULE_DIR=${SCHEDULE_DIR:-$WORKSPACE_ROOT/schedules}
-# GA-476. SET-BUT-EMPTY IS AN ANSWER, and `-z "${FEED_SCHEDULE:-}"` could not hear it: empty and
-# unset looked the same, so `FEED_SCHEDULE=` built and exported the cached schedule anyway and there
-# was NO way to ask for the old sampling motion. Measured by the ontology lane, who set it empty on
-# purpose to keep their readings comparable and got 34 scheduled stops instead. `${FEED_SCHEDULE+x}`
-# tests whether the name is set at all, so empty now means "no schedule" and unset still means
-# "build or reuse one".
-if [ -n "${FEED_SCHEDULE+x}" ] && [ -z "$FEED_SCHEDULE" ]; then
-  echo "    schedule: NONE — FEED_SCHEDULE is set and empty, so this run uses the sampling policy"
-  echo "    (that policy moves on 6 of every 96 frames; the two are not comparable on coverage)"
-elif [ -z "${FEED_SCHEDULE:-}" ]; then
-  _scene_glb="${HABITAT_SCENE:-$DEF_SCENE}"
-  _navmesh="${_scene_glb%.glb}.navmesh"
-  _regen=$(python3 -c "
-import sys, yaml
-try:
-    c = yaml.safe_load(open(sys.argv[1])) or {}
-    print('1' if (c.get('habitat') or {}).get('regenerate_schedule') else '0')
-except Exception:
-    print('0')" "$HERE/$CFG_NAME" 2>/dev/null || echo 0)
-  if [ ! -f "$_navmesh" ]; then
-    echo "    schedule: NONE — no navmesh at $_navmesh; the run uses the sampling policy"
-  else
-    _sched_out=$("${SCHEDULE_PY:-$HOME/miniconda3/envs/habitat_env/bin/python}" \
-      "$HERE/schedule_batch.py" --navmesh "$_navmesh" --scene-id "$SCENE_ARG" \
-      --ensure --out-dir "$SCHEDULE_DIR" \
-      $([ "$_regen" = "1" ] && echo --regenerate) 2>&1) || {
-        echo "!! schedule generation FAILED for $SCENE_ARG:"; echo "$_sched_out" | tail -15
-        echo "   Refusing to fall back to the sampling policy silently: it covers a different"
-        echo "   amount of the storey, so its bundles are not comparable with a scheduled run."
-        exit 1; }
-    echo "$_sched_out" | grep -E "^\[schedule\]|^  y=" | sed 's/^/    /'
-    FEED_SCHEDULE=$(echo "$_sched_out" | sed -n 's/^SCHEDULE_FILE=//p' | tail -1)
-    export FEED_SCHEDULE
-  fi
-else
-  echo "    schedule: $FEED_SCHEDULE (given, not generated)"
-fi
+
+# VitSAM is warmed by the perception process that will serve the run.  The feed host may open
+# its socket first so the ROS node can connect, but it must not release a frame until this marker
+# says that the real encoder/decoder sessions and perception subscriptions are ready.  The path is
+# expressed once in the container and maps to this run directory through /ws/output.
+VITSAM_WARMUP="${VITSAM_WARMUP:-1}"
+VITSAM_REQUIRE_WARMUP="${VITSAM_REQUIRE_WARMUP:-1}"
+VITSAM_READY_FILE="${VITSAM_READY_FILE:-/ws/output/vitsam_ready}"
+export VITSAM_WARMUP VITSAM_REQUIRE_WARMUP VITSAM_READY_FILE
 
 # bundle stamped with the requested one.
 HABITAT_SCENE=${HABITAT_SCENE:-$DEF_SCENE} \
 HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
 DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
 GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
+FEED_START_GATE_FILE="$RUN_DIR/vitsam_ready" \
+FEED_START_GATE_TIMEOUT_S="${FEED_START_GATE_TIMEOUT_S:-900}" \
   nohup "$HOME/miniconda3/envs/habitat_env/bin/python" "$HERE/habitat_feed_host.py" \
   > "$RUN_DIR/logs/feed_host.log" 2>&1 &
 FEED_PID=$!
@@ -1428,8 +1457,9 @@ rm -f "$RUN_DIR/NOT_STARTED"   # GA-381: past every check; from here the directo
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
   -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
   -e MERGE_MIN_CONSECUTIVE \
+  -e VITSAM_WARMUP -e VITSAM_REQUIRE_WARMUP -e VITSAM_READY_FILE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
-  -e MAPPING_ONLY -e FEED_MAPPING_SECONDS -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
+  -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
   -e FEED_HF_OFFLINE -e PREFLIGHT_HF_CACHE \
   -e FEED_SCHEDULE -e FEED_EXPLORATION_LAPS -e FEED_MOVE_FN -e FEED_POST_SCAN_HOOK \
   -e FEED_SPAWN_FLOOR -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \

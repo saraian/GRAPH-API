@@ -259,6 +259,22 @@ Visualization Manager:
       Reliability Policy: Reliable
       Value: /rtabmap/labels
     Namespaces: {}
+  # GA-479. The exploration schedule the feed follows: the polyline, the 360-scan stops, their
+  # visit order and the DFS root. ENABLED by default -- it is the plan the run is executing, and
+  # a reader comparing the robot against its plan should not have to find a checkbox first.
+  # TRANSIENT_LOCAL, because the publisher sends it once when the feed connects, which is before
+  # rviz has finished starting: a Volatile subscriber would see an empty display forever.
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: exploration schedule
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /schedule_markers
+    Namespaces: {}
   Global Options:
     Background Color: 30; 30; 36
     Fixed Frame: map

@@ -4,19 +4,24 @@
 Runs in a plain habitat_sim environment (no ROS). The container-side
 habitat_feed_node.py connects, converts, and publishes to ROS topics + TF.
 Protocol: length-prefixed pickle dicts {rgb, depth, cam_pos, cam_quat,
-base_pos, base_quat, t, w, h, hfov}.
+base_pos, base_quat, t, w, h, hfov}; a frame may also carry a
+`scan_complete` event after one uninterrupted 360-degree turn.
 
 The HTTP control port also accepts runtime rigid-object commands from
 habitat_feed_node.py, so run_habitat_script.py works with this headless feed
 just as it does with habitat_camera_objects_node.py.
 
-Motion has two phases:
-  MAPPING   (first FEED_MAPPING_SECONDS): continuous coverage tour over the
-            navmesh — greedy nearest-unvisited waypoints with a full
-            look-around at each — so the SLAM map and room segmentation are
-            built before any detection is attempted.
-  DETECTION walk/dwell bursts (FEED_WALK / FEED_DWELL frames): perception
-            only runs while the robot is still.
+Motion comes from ONE policy: the precomputed exploration schedule named by
+FEED_SCHEDULE. The agent drives the storey's Voronoi roadmap, turns a full
+circle at each stop, and repeats the same lap FEED_LAPS times. There is no
+fallback. A run with no schedule has no motion at all, so live_run.sh builds or
+finds the schedule before it starts anything and refuses the run if it cannot.
+
+The sampling policy this replaced — a mapping phase of greedy nearest-unvisited
+navmesh samples, then walk/dwell bursts with an adaptive hold — is REMOVED
+(owner, 2026-09-11). It moved on 1.0-1.8% of frames and its coverage is not
+comparable with a schedule's. Bundles from before that date record
+motion_policy "sampled" and must be read as a different experiment.
 
 FEED_SHOW=1 opens a window with the agent camera; FEED_OVERLAY=1 additionally
 draws the belief's 3D boxes (PCA-oriented when available) projected into it,
@@ -53,8 +58,11 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "perception_module"))
 from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  (ROS-free)
 from config import CFG, CFG_PATH  # noqa: E402
-from adaptive_hold import AdaptiveHold  # noqa: E402  (pure Python, GA-339)
 import gt_codec as _gt_codec  # noqa: E402
+# FullTurnDetector (scan_hook.py) counted a full turn for the SAMPLING tour, which turned in
+# 10-degree steps and had no idea when a circle closed. A schedule states its scan angle per
+# stop, so ScheduledTour fires the same hook from its own scan counter at :1597 and the
+# detector has nothing left to detect here. scan_hook.py itself stays: habitat_nav.py uses it.
 
 _print = functools.partial(print, flush=True)  # nohup/file logs must not buffer
 _log_ring = collections.deque(maxlen=400)      # served by the control server's /logs
@@ -77,6 +85,11 @@ SEED = int(os.environ.get("FEED_SEED", "7"))
 # environment variable flips ONE run without editing a file everyone shares.
 SHOW = os.environ.get("FEED_SHOW", "1" if hab_cfg.get("show", False) else "0") == "1"
 OVERLAY = os.environ.get("FEED_OVERLAY", "1" if hab_cfg.get("overlay", False) else "0") == "1"
+# The host process starts before ROS so that the feed node has a socket to connect to.  The
+# socket is deliberately allowed to open, but the simulator must not step or publish a frame
+# until the real perception process has constructed and warmed its own VitSAM sessions.
+START_GATE_FILE = os.environ.get("FEED_START_GATE_FILE", "").strip()
+START_GATE_TIMEOUT_S = float(os.environ.get("FEED_START_GATE_TIMEOUT_S", "900"))
 
 # GA-265. WHAT THE HABITAT WINDOW DRAWS, toggleable from the window itself AND from the
 # dashboard, with one shared state so the two can never disagree.
@@ -127,7 +140,17 @@ _SVC = (CFG.get("services", {}) or {}) if isinstance(CFG, dict) else {}
 BRIDGE = os.environ.get("FEED_BRIDGE") or (
     f"http://{_SVC.get('bridge_host', '127.0.0.1')}:"
     f"{os.environ.get('BRIDGE_PORT') or _SVC.get('bridge_port', 8081)}")
-MAPPING_SECONDS = float(os.environ.get("FEED_MAPPING_SECONDS", hab_cfg.get("mapping_seconds", 0.0)))
+# FEED_MAPPING_SECONDS / habitat.mapping_seconds is RETIRED with the sampling policy it selected.
+# It was never a duration: it chose between the coverage tour and the walk/dwell bursts, and both
+# are gone. It REFUSES rather than being ignored -- a retired knob that is silently accepted is a
+# knob somebody sets, and then a run does something other than what its config says. Zero and unset
+# are the inert values every current config already carries, so only a real request fails here.
+_mapping_seconds = os.environ.get("FEED_MAPPING_SECONDS", hab_cfg.get("mapping_seconds", 0.0))
+if float(_mapping_seconds or 0.0) > 0:
+    raise SystemExit(
+        f"[feed] mapping_seconds={_mapping_seconds} but the mapping phase is removed with the "
+        "sampling policy (owner 2026-09-11). The schedule drives the whole run. Remove the key "
+        "from the config, or clear FEED_MAPPING_SECONDS.")
 SEND_TIMEOUT = float(os.environ.get("FEED_SEND_TIMEOUT", "10"))
 # GA-120. WHICH FLOOR THIS RUN MAPS. Unset = whatever habitat drops the agent on, which is what
 # every run before 2026-08-31 did — one uncontrolled random sample chose the storey of every map
@@ -482,6 +505,11 @@ class Ctrl:
         # allowed to mutate Habitat's scene graph.
         self.object_commands = collections.deque()
         self.object_catalog = {"templates": []}
+        # Scan completion is produced by the host-side simulator thread and consumed by the
+        # TCP relay when it builds the next ROS message. A queue keeps the producer independent
+        # of frame construction and also prevents an event from being lost if serialization
+        # briefly fails.
+        self.scan_events = collections.deque()
         # Published by the sim thread each frame, read by /revisit_status. Swapped whole.
         self.revisit = None
 
@@ -621,6 +649,48 @@ def start_ctrl_server():
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     print(f"[feed] control server on :{CTRL_PORT} "
           "(frame.jpg feed.mjpg bev_data logs auto_mode action set_config object_command)")
+
+
+def wait_for_start_gate():
+    """Wait until the in-process perception warmup has completed.
+
+    The feed socket is already connected while this waits. That is intentional: it avoids a
+    connection race, while the absence of a frame guarantees that the robot has not started its
+    mapping/tour schedule and that RTAB-Map has not received live camera data yet.
+    """
+    if not START_GATE_FILE:
+        return
+
+    deadline = None
+    if START_GATE_TIMEOUT_S > 0:
+        deadline = time.monotonic() + START_GATE_TIMEOUT_S
+    print(f"[feed] waiting for perception startup gate: {START_GATE_FILE} "
+          f"(timeout={START_GATE_TIMEOUT_S:.0f}s)", flush=True)
+    while True:
+        status = ""
+        try:
+            with open(START_GATE_FILE, "r", encoding="utf-8") as marker:
+                status = marker.read().strip().lower()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"[feed] startup gate read failed: {type(exc).__name__}: {exc}", flush=True)
+
+        if status.startswith("ready"):
+            print(f"[feed] perception startup gate open ({status}); starting Habitat feed",
+                  flush=True)
+            return
+        if status.startswith("failed"):
+            raise SystemExit(
+                "[feed] perception startup gate reported failed VitSAM warmup; "
+                "refusing to start the run"
+            )
+        if deadline is not None and time.monotonic() >= deadline:
+            raise SystemExit(
+                f"[feed] perception startup gate did not open within "
+                f"{START_GATE_TIMEOUT_S:.0f}s ({START_GATE_FILE})"
+            )
+        time.sleep(0.25)
 
 
 class DynamicObjectController:
@@ -915,43 +985,17 @@ TEST_RADIUS_M = float(os.environ.get("FEED_TEST_RADIUS", "4.0"))
 # The value for hm3d_00861's ground floor is recorded in the run config; the search PRINTS
 # the point it chose in this same format, so a good spot found once can be pinned.
 TEST_SPAWN = os.environ.get("FEED_TEST_SPAWN", "").strip()
-
-# GA-219. A BOUNDED LOCAL WALK, in metres from the spawn. 0 = turn in place.
+# THE RETIRED SAMPLING-POLICY SETTINGS, named so a stale config can be refused by name.
 #
-# Turning in place and walking freely BOTH fail to produce a publishable map, for opposite
-# reasons, and both were measured today:
-#   free walk   -> the agent climbed the stairs; node z spread 3.071 m over 368 nodes, and
-#                  the map was REJECTED for straddling three storeys (owner ruling 25).
-#   turn only   -> node z spread 0.000 m, single_floor True -- and 37 nodes at ONE distinct
-#                  pose, footprint [0.0, 0.0] m, REJECTED against a 30-distinct-pose floor.
-# A map needs DISTINCT POSITIONS for a footprint and a SINGLE STOREY to be usable, and those
-# two demands pull opposite ways the moment the confinement is only a tolerance.
-#
-# This makes the confinement GEOMETRIC instead: goals are sampled inside a radius of the
-# spawn, so the stairs are not merely discouraged but out of reach. It does not fix the
-# floor_confinement defect -- teleport mode failed to hold on the free walk and that is still
-# open -- it sidesteps it for a mapping run whose only job is one room.
-TEST_WALK_RADIUS = float(os.environ.get("FEED_TEST_WALK_RADIUS", "0"))
-
-# GA-256. A ROOM TOUR: visit N well-separated places on the traversed storey.
-#
-# WHY. Run 20260901_174810_hm3d_00861 recorded total_distance_m = 0.0 over 1,566 steps. Test
-# mode turns in place (radius 0) or wanders a disc around the spawn (radius > 0), and neither
-# leaves the room it started in. Three things the paper needs die on that: coverage, room
-# segmentation (the ridge pass finds no critical points because there is only one room to
-# segment), and the held-pool resolution rate -- a proposal set aside for a better view can
-# only be resolved BY a better view, and 53 holds resolved none because the agent never moved.
-#
-# The waypoints are chosen by FARTHEST-POINT SAMPLING over navigable points on the storey, so
-# they spread across the floor plan instead of clustering wherever the sampler happened to
-# land. Seeded, so two runs of the same scene tour the same places and are comparable.
-# Config first, environment second: the yaml states the intended setting and travels with
-# the bundle, while the env var flips ONE run without editing a file everyone shares. Same
-# precedence the rest of this host already uses.
-TEST_TOUR = int(os.environ.get("FEED_TEST_TOUR", hab_cfg.get("tour_waypoints", 0)))
-# Frames spent turning on arrival. A waypoint the agent walks through teaches the detector
-# almost nothing: the objects that matter are the ones it stops and looks at.
-TEST_TOUR_SCAN = int(os.environ.get("FEED_TEST_TOUR_SCAN", hab_cfg.get("tour_scan_frames", 12)))
+# FEED_TEST_WALK_RADIUS confined a free walk to a disc around the spawn; FEED_TEST_TOUR and
+# FEED_TEST_TOUR_SCAN chose and scanned farthest-point waypoints; the dwell_* family drove the
+# walk/dwell burst cycle. All of them belonged to the coverage tour, which is removed (owner
+# 2026-09-11). A schedule states its own stops and its own scan angle per stop, so none of these
+# has anything left to control. They are listed rather than deleted so that a config still
+# carrying them fails with the key name instead of running with it silently ignored.
+_TOUR_RETIRED = ("tour_waypoints", "tour_scan_frames", "dwell_dynamic",
+                 "dwell_min_frames", "dwell_max_frames", "walk_frames", "dwell_frames",
+                 "dwell_mode", "mapping_seconds")
 
 # GA-434 / RULE 73. THE BASE RUN TOURS THE WHOLE HOUSE: every storey, teleporting to the next one
 # when a storey is finished. Owner, 2026-09-10: "no caps this time, we need to perform a full house
@@ -964,12 +1008,20 @@ TEST_TOUR_SCAN = int(os.environ.get("FEED_TEST_TOUR_SCAN", hab_cfg.get("tour_sca
 # its storey through FEED_SPAWN_FLOOR, so a mid-run teleport is not how a base run moves between
 # floors and a default of ON would be a setting every base run has to remember to switch off.
 #
-# THE MACHINERY BELOW STAYS. It is the build for one continuous session, which is what the owner
-# would need if the perception world model ever had to persist across storeys. run_metadata.json
-# records which shape actually ran, so no bundle set can be read as the other one.
+# THE MACHINERY IS GONE WITH THE SAMPLING TOUR (2026-09-11). It lived in Tour, which chose the next
+# storey and teleported to it; a schedule is one storey by construction, and a multi-storey schedule
+# would need its own stair-crossing legs that no roadmap in schedules/ contains. So the switch now
+# REFUSES instead of doing nothing: the base-run shape is unchanged (one launch per storey through
+# run_house.sh), and a config asking for the other shape must be told the shape no longer exists.
 TOUR_ALL_FLOORS = os.environ.get(
     "FEED_TOUR_ALL_FLOORS",
     "1" if hab_cfg.get("tour_all_floors", False) else "0").lower() in ("1", "true", "yes", "on")
+if TOUR_ALL_FLOORS:
+    raise SystemExit(
+        "[feed] FEED_TOUR_ALL_FLOORS / habitat.tour_all_floors asks for one continuous session "
+        "across every storey. That shape belonged to the sampling tour, which is removed "
+        "(owner 2026-09-11); a schedule drives one storey. Tour the house with run_house.sh, "
+        "which relaunches the stack once per storey and is the base-run policy (rule 73).")
 
 # GA-434 / RULE 73. A NO-CAP RUN NEEDS ITS OWN ENDING, and until now it had none.
 #
@@ -998,7 +1050,8 @@ TOUR_END_SETTLE_S = float(os.environ.get("FEED_TOUR_END_SETTLE_S",
 # makes two runs of one scene visit the SAME places in the SAME order, which is what makes them
 # comparable at all.
 #
-# WITH NO SCHEDULE CONFIGURED NOTHING CHANGES: the run takes the walk/dwell path it always took.
+# IT IS MANDATORY since 2026-09-11: the walk/dwell path it used to be optional against is removed,
+# so main() refuses a run that has no schedule rather than publishing a stationary robot.
 SCHEDULE_PATH = os.environ.get("FEED_SCHEDULE", hab_cfg.get("schedule", "") or "").strip()
 EXPLORATION_LAPS = int(os.environ.get("FEED_EXPLORATION_LAPS",
                                       hab_cfg.get("exploration_laps", 3)))
@@ -1047,11 +1100,6 @@ REVISIT_MAX_FRAMES = int(os.environ.get("FEED_REVISIT_MAX_FRAMES",
 # leaves too early when something is. So the object manager publishes what is pending and the
 # agent stays while that number is above zero -- bounded, because a pair that never resolves
 # must not hold the run forever.
-TOUR_DWELL_DYNAMIC = os.environ.get(
-    "FEED_TEST_DWELL_DYNAMIC",
-    "1" if hab_cfg.get("dwell_dynamic", True) else "0").lower() in ("1", "true", "yes", "on")
-TOUR_DWELL_MIN = int(os.environ.get("FEED_TEST_DWELL_MIN", hab_cfg.get("dwell_min_frames", 8)))
-TOUR_DWELL_MAX = int(os.environ.get("FEED_TEST_DWELL_MAX", hab_cfg.get("dwell_max_frames", 90)))
 # RUN_DIR first: that is the bundle, and the container's /ws/output is bind-mounted onto it.
 # GRAPH_API_OUTPUT_DIR is exported INSIDE the container only, so on the host it is empty and
 # os.path.join("", "merge_pending.json") yields a bare relative name that never opens --
@@ -1061,11 +1109,10 @@ _MERGE_PENDING_DIR = (os.environ.get("RUN_DIR")
                       or "")
 _MERGE_PENDING_PATH = os.path.join(_MERGE_PENDING_DIR, "merge_pending.json")
 if not _MERGE_PENDING_DIR:
-    print("[feed] WARNING: neither RUN_DIR nor GRAPH_API_OUTPUT_DIR is set; the dynamic dwell "
-          "cannot read pending merges and will run to FEED_TEST_DWELL_MAX at every waypoint",
-          flush=True)
+    print("[feed] WARNING: neither RUN_DIR nor GRAPH_API_OUTPUT_DIR is set; the end-of-run settle "
+          "cannot read pending merges and will report them as unknown", flush=True)
 else:
-    print(f"[feed] dynamic dwell reads {_MERGE_PENDING_PATH}", flush=True)
+    print(f"[feed] pending merges read from {_MERGE_PENDING_PATH}", flush=True)
 
 
 def _read_signal():
@@ -1073,7 +1120,7 @@ def _read_signal():
 
     None means UNKNOWN, and the caller must not read it as zero: "nothing is pending" and
     "the file is not there yet" are different states, and treating the second as the first
-    would cut every dwell short in exactly the runs where the manager is slow to start.
+    would call a settle finished in exactly the runs where the manager is slow to start.
     """
     try:
         with open(_MERGE_PENDING_PATH) as fh:
@@ -1084,7 +1131,7 @@ def _read_signal():
 
 
 def _pending_merges():
-    """-> (pending, sweep) for the tour's dwell (GA-258), or (None, None)."""
+    """-> (pending, sweep) for the end-of-run settle (GA-258), or (None, None)."""
     d = _read_signal()
     try:
         return (int(d.get("pending", 0)), int(d.get("sweep", -1))) if d else (None, None)
@@ -1092,19 +1139,36 @@ def _pending_merges():
         return None, None
 
 
-# GA-339. ADAPTIVE HOLD in the walk/dwell burst loop (owner ruling 2026-09-07 ~13:50, design in
-# .handoff/plan/13-adaptive-dwell/topic.md). After every walk burst the agent HOLDS -- no action,
-# frames still published -- until a fresh signal says nothing is pending, bounded by FEED_DWELL_MAX.
-# Still, not turning: the tour's turn_left is 10 deg = 0.175 rad per tick, above the perception
-# gate's position_threshold 0.05, which is why the tour's dynamic dwell never produced a still
-# camera (run I, GA-337). Env only, no config keys, so there is exactly one reader per name.
-DWELL_MODE = os.environ.get("FEED_DWELL_MODE",
-                            hab_cfg.get("dwell_mode", "adaptive")).strip().lower()
-if DWELL_MODE not in ("adaptive", "fixed"):
-    raise SystemExit(f"[feed] FEED_DWELL_MODE={DWELL_MODE!r}; expected adaptive or fixed")
-DWELL_MIN = int(os.environ.get("FEED_DWELL_MIN", 18))
-DWELL_MAX = int(os.environ.get("FEED_DWELL_MAX", 90))
-DWELL_SIGNAL_MAX_AGE_S = float(os.environ.get("FEED_DWELL_SIGNAL_MAX_AGE_S", 10.0))
+# EVERY KNOB OF THE SAMPLING POLICY REFUSES, and it refuses HERE, before the scene loads and
+# before the socket opens. The adaptive hold (GA-339), the walk/dwell burst cycle and the greedy
+# coverage tour are removed (owner 2026-09-11); a config still carrying their keys was written for
+# a run this file can no longer perform, and accepting it silently would produce a bundle whose
+# config.yaml describes motion that never happened. Named one by one, with the file that holds
+# them, so the message says what to delete rather than that something is wrong.
+_stale = [k for k in _TOUR_RETIRED if hab_cfg.get(k) is not None]
+_stale_env = [e for e in ("FEED_WALK", "FEED_DWELL", "FEED_DWELL_MODE", "FEED_DWELL_MIN",
+                          "FEED_DWELL_MAX", "FEED_DWELL_SIGNAL_MAX_AGE_S", "FEED_TEST_TOUR",
+                          "FEED_TEST_TOUR_SCAN", "FEED_TEST_DWELL_DYNAMIC", "FEED_TEST_DWELL_MIN",
+                          "FEED_TEST_DWELL_MAX", "FEED_TEST_WALK_RADIUS")
+              if os.environ.get(e)]
+if _stale or _stale_env:
+    raise SystemExit(
+        "[feed] the sampling policy is removed (owner 2026-09-11); the schedule drives every run.\n"
+        + (f"       habitat keys in {CFG_PATH}: {', '.join(_stale)}\n" if _stale else "")
+        + (f"       environment: {', '.join(_stale_env)}\n" if _stale_env else "")
+        + "       Delete them. FEED_SCHEDULE and FEED_LAPS are what set the motion now.")
+
+
+def _aabb_center(aabb):
+    """Return an AABB center across Habitat API variants.
+
+    Habitat-Sim has exposed ``center`` both as a property and as a method
+    across versions.  Keep the feed compatible with either representation.
+    """
+    center = aabb.center
+    if callable(center):
+        center = center()
+    return np.asarray(center, dtype=np.float32)
 
 
 def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
@@ -1133,7 +1197,7 @@ def _dense_spawn_point(sim, spawn_floor, radius_m=4.0, candidates=400):
         print("[feed] test mode: scene carries no annotated objects; ordinary spawn")
         return _spawn_point(sim, spawn_floor), None
 
-    centres = np.array([[o.aabb.center[0], o.aabb.center[1], o.aabb.center[2]] for o in objs])
+    centres = np.asarray([_aabb_center(o.aabb) for o in objs], dtype=np.float32)
 
     # THE SAME-STOREY FILTER IS GONE, AND IT HAS TO BE. Measured on hm3d_00861: EVERY
     # annotated object and region reports `aabb.center[1] == 0.00`, so the height channel
@@ -1451,6 +1515,10 @@ def _fire_post_scan(ctx):
                                  "hook_result": out, "t": time.time()}) + "\n")
     except (OSError, TypeError) as exc:
         print(f"[feed] scan event not recorded: {exc}", flush=True)
+    # The Docker runner uses habitat_feed_host.py, not habitat_nav.py. Queue the same event
+    # for habitat_feed_node.py to publish on /habitat/scan_complete so object_manager_6 sees
+    # exactly one trigger on this execution path too.
+    CTRL.scan_events.append(dict(ctx))
     return out
 
 
@@ -1529,7 +1597,9 @@ class ScheduledTour:
             if self.scan_left == 0:
                 self.scans_done += 1
                 pt = self.points[self.i]
-                _fire_post_scan({"event": "scan_complete", "lap": self.lap,
+                _fire_post_scan({"event": "scan_complete",
+                                 "scan_id": f"schedule-{self.lap}-{self.scans_done}",
+                                 "lap": self.lap,
                                  "stop": pt.get("stop"), "point_index": self.i,
                                  "xyz": pt["xyz"], "scan_deg": pt["scan_deg"],
                                  "scans_done": self.scans_done,
@@ -1660,369 +1730,19 @@ class RevisitState:
                 "resume": self.resume, "snap_distance_m": round(self.snap_distance_m, 3)}
 
 
-class Tour:
-    """Greedy nearest-unvisited coverage over navmesh samples, 360° scan at each.
-
-    With config habitat.single_floor, goals are confined to the floor the agent starts
-    on (|y - y0| < habitat.floor_tolerance_m). HM3D navmeshes join storeys through the
-    stairs into one island, so an unfiltered sample sends the robot upstairs and the 2D
-    grid flattens both floors into one plan.
-    """
-    def __init__(self, sim, rng, n_points=40):
-        self.sim = sim
-        self.follower = sim.make_greedy_follower(0, goal_radius=0.4)
-        self.floor_y = float(sim.get_agent(0).get_state().position[1])
-        self.todo = self._sample(n_points)
-        self.goal = None
-        self.scan_left = 0
-        self.origin = None      # GA-219: set on the first step, the centre of the walk disc
-        self.floor_guard = None
-        self.floors_todo = []       # storeys still to visit, set by bind_floors
-        self.floor_order = []       # storeys toured, in order, for the bundle
-        self.house_done = False     # set when the last storey's waypoints are exhausted
-        self._tour_planned_total = 0
-        self.revisit = None                 # RevisitState while a goto is in flight
-        self.last_revisit = None            # the outcome of the last one, for /revisit_status
-        self.revisits_requested = 0
-        self.revisits_reached = 0
-        self.revisits_failed = 0
-
-    def bind_floors(self, scene_floors, tol, guard):
-        """Plan the remaining storeys. Called from main once the floors are clustered.
-
-        Ascending z, plainly: the agent teleports between storeys, so travel cost does not order
-        them and a rule anyone can predict is worth more than a shorter path.
-        """
-        self.floor_guard = guard
-        here = float(guard.floor_y if guard is not None else self.floor_y)
-        self.floor_order = [round(here, 2)]
-        if not TOUR_ALL_FLOORS:
-            print("[feed] FULL-HOUSE TOUR OFF: this run tours the start storey only "
-                  f"({here:+.2f}). Rule 73 says that is not a base run.", flush=True)
-            return
-        self.floors_todo = sorted(f for f in (scene_floors or []) if abs(f - here) > float(tol))
-        print(f"[feed] FULL-HOUSE TOUR: start storey {here:+.2f}, then "
-              + (", ".join(f"{f:+.2f}" for f in self.floors_todo) or "no other storey"), flush=True)
-
-    def _advance_floor(self, agent):
-        """Teleport to the next storey and re-plan. -> True if the tour moved.
-
-        A storey with no navigable point within tolerance is SKIPPED WITH A LINE, not treated as
-        the end of the house: _spawn_point refuses rather than landing elsewhere, and one
-        unreachable storey must not end a tour that still has storeys after it.
-        """
-        while self.floors_todo:
-            z = self.floors_todo.pop(0)
-            try:
-                target = _spawn_point(self.sim, z)
-            except SystemExit as exc:
-                print(f"[feed] storey {z:+.2f} SKIPPED: {exc}", flush=True)
-                continue
-            st = agent.get_state()
-            st.position = np.asarray(target, dtype=np.float32)
-            agent.set_state(st)
-            self.floor_y = float(target[1])
-            self.origin = np.array(target)
-            self.goal = None
-            if self.floor_guard is not None:
-                self.floor_guard.reanchor(self.floor_y)
-            self._tour = self._tour_waypoints(TEST_TOUR)
-            self._tour_i = 0
-            self._tour_scan = 0
-            self._dwelling = False
-            self._dwell_frames = 0
-            self._tour_planned_total += len(self._tour)
-            self.floor_order.append(round(self.floor_y, 2))
-            print(f"[feed] STOREY DONE. Teleported to {self.floor_y:+.2f}: "
-                  f"{len(self._tour)} waypoints, {len(self.floors_todo)} storeys left", flush=True)
-            for k, w in enumerate(self._tour):
-                print(f"[feed]   waypoint {k}: ({w[0]:.2f}, {w[1]:.2f}, {w[2]:.2f})", flush=True)
-            return True
-        return False
-
-    def _sample(self, n, max_tries=50):
-        pts = []
-        for _ in range(n * max_tries):
-            p = np.array(self.sim.pathfinder.get_random_navigable_point())
-            if not SINGLE_FLOOR or abs(p[1] - self.floor_y) < FLOOR_TOL:
-                pts.append(p)
-                if len(pts) == n:
-                    break
-        return pts
-
-    def _tour_waypoints(self, n):
-        """-> n navigable points spread over the storey, farthest-point sampled.
-
-        Deterministic given the pathfinder seed. Starts from the agent's own position so the
-        first leg is a real journey rather than a step to somewhere it already stands.
-        """
-        pool = []
-        for _ in range(3000):
-            p = np.array(self.sim.pathfinder.get_random_navigable_point())
-            if SINGLE_FLOOR and abs(p[1] - self.floor_y) >= FLOOR_TOL:
-                continue
-            pool.append(p)
-            if len(pool) >= 600:
-                break
-        if not pool:
-            return []
-        chosen = []
-        # Farthest-point sampling: each new waypoint is the pool point furthest from every
-        # point already chosen. Uniform random sampling clusters, and a tour of five points
-        # that all sit in one corner is the failure this exists to avoid.
-        ref = [np.array(self.origin if self.origin is not None else pool[0])]
-        while len(chosen) < n and pool:
-            best, bestd = None, -1.0
-            for q in pool:
-                d = min(float(np.linalg.norm(q[[0, 2]] - r[[0, 2]])) for r in ref)
-                if d > bestd:
-                    bestd, best = d, q
-            if best is None:
-                break
-            chosen.append(best)
-            ref.append(best)
-            pool = [q for q in pool if not np.allclose(q, best)]
-        return chosen
-
-    def start_revisit(self, target_hab, target_ros, scan_frames, resume, snap_distance_m):
-        """Install a goto. Returns the accepted state; the caller has already validated.
-
-        saved_tour_i is captured HERE rather than in the revisit branch, because the branch runs
-        after the tour has already been asked for its next action and the index would be read
-        one step late.
-        """
-        saved = getattr(self, "_tour_i", None) if resume else None
-        self.revisit = RevisitState(target_hab, target_ros, scan_frames, resume,
-                                    saved_tour_i=saved, snap_distance_m=snap_distance_m)
-        self.revisits_requested += 1
-        print(f"[feed] revisit: going to ROS ({target_ros[0]:.2f}, {target_ros[1]:.2f}, "
-              f"{target_ros[2]:.2f}), scan {scan_frames} frames, "
-              f"resume={'yes' if resume else 'no'}", flush=True)
-        return self.revisit
-
-    def _end_revisit(self, outcome, detail=""):
-        rv = self.revisit
-        self.revisit = None
-        if rv is None:
-            return
-        if outcome == "reached":
-            self.revisits_reached += 1
-        else:
-            self.revisits_failed += 1
-        # The tour index is restored, not left where the revisit found it: the revisit never
-        # advanced it, but _advance_floor may have replanned underneath a long one, and a stale
-        # index into a shorter plan is an IndexError at the next walk step.
-        if rv.resume and rv.saved_tour_i is not None and hasattr(self, "_tour"):
-            self._tour_i = min(int(rv.saved_tour_i), max(len(self._tour) - 1, 0))
-            self._tour_scan = 0
-            self._dwelling = False
-            self._dwell_frames = 0
-        self.last_revisit = {"outcome": outcome, "detail": detail,
-                             "target_ros": list(rv.target_ros),
-                             "frames_travelled": rv.frames_travelled,
-                             "resumed": bool(rv.resume and rv.saved_tour_i is not None)}
-        print(f"[feed] revisit: {outcome}{(' — ' + detail) if detail else ''} "
-              f"after {rv.frames_travelled} frames", flush=True)
-
-    def _step_revisit(self, agent):
-        rv = self.revisit
-        if rv.phase == RevisitState.SCAN:
-            if rv.scan_left <= 0:
-                self._end_revisit("reached")
-                return
-            rv.scan_left -= 1
-            agent.act("turn_left")
-            return
-
-        if rv.frames_travelled >= REVISIT_MAX_FRAMES:
-            self._end_revisit("timeout", f"cap is {REVISIT_MAX_FRAMES}")
-            return
-        try:
-            action = self.follower.next_action_along(rv.target_hab)
-        except Exception as exc:
-            self._end_revisit("unreachable", f"follower raised {type(exc).__name__}")
-            return
-        if action is not None:
-            self.sim.step(action)
-            rv.frames_travelled += 1
-            return
-
-        # `action is None` means EITHER arrived OR no path exists — the follower does not
-        # distinguish them, and the tour branch above treats both as a reach. Infrastructure
-        # other people call blind cannot report a false success, so measure the distance.
-        # Horizontal only: the target sits on the navmesh, the agent's origin is its base, and
-        # a vertical offset between the two is not a navigation failure.
-        here = np.asarray(agent.get_state().position, dtype=np.float64)
-        dist = float(np.hypot(here[0] - rv.target_hab[0], here[2] - rv.target_hab[2]))
-        if dist > REVISIT_ARRIVAL_TOL_M:
-            self._end_revisit("unreachable", f"stopped {dist:.2f} m short "
-                                             f"(tolerance {REVISIT_ARRIVAL_TOL_M:.2f} m)")
-            return
-        if rv.scan_left <= 0:
-            self._end_revisit("reached", f"{dist:.2f} m from target, no scan requested")
-            return
-        rv.phase = RevisitState.SCAN
-        print(f"[feed] revisit: arrived {dist:.2f} m from target, scanning "
-              f"{rv.scan_left} frames", flush=True)
-
-    def step(self, agent):
-        # BEFORE every tour mode, so a goto works in auto mode and in all four branches below.
-        # nav_goal, the existing point-to-point action, is reachable only with auto_mode off,
-        # which stops the tour outright and never resumes it.
-        if self.revisit is not None:
-            self._step_revisit(agent)
-            return
-        if TEST_MODE and TEST_TOUR > 0:
-            # GA-256. Tour mode takes precedence over the radius disc: a bounded walk and a
-            # tour are different intentions, and silently blending them would produce a run
-            # that is neither.
-            if self.origin is None:
-                self.origin = np.array(agent.get_state().position)
-            if not hasattr(self, "_tour") or self._tour is None:
-                self._tour = self._tour_waypoints(TEST_TOUR)
-                self._tour_planned_total += len(self._tour)
-                self._tour_i = 0
-                # GA-431. Reaches are COUNTED, not inferred from the index. The index also advances
-                # when a dwell ends, and a tour still walking toward waypoint 3 has the same index as
-                # one that has just arrived at it -- so an index alone cannot answer "did the tour
-                # finish", which is the question a baseline turns on.
-                self._tour_reached = 0
-                self._tour_scan = 0
-                self._dwelling = False
-                self._dwell_frames = 0
-                print(f"[feed] TEST TOUR: {len(self._tour)} waypoints, "
-                      f"scan {TEST_TOUR_SCAN} frames on arrival", flush=True)
-                for k, w in enumerate(self._tour):
-                    print(f"[feed]   waypoint {k}: "
-                          f"({w[0]:.2f}, {w[1]:.2f}, {w[2]:.2f})", flush=True)
-            if self._tour_scan > 0:
-                self._tour_scan -= 1
-                agent.act("turn_left")
-                # GA-434. THE INDEX ADVANCES HERE WHEN NO DWELL FOLLOWS, and before today nothing
-                # advanced it on that path: `self._tour_i += 1` lived only in the dwell branch, so
-                # with FEED_TEST_DWELL_DYNAMIC=0 the scan ended, the follower was asked for the same
-                # goal, answered "arrived" again, and the tour scanned waypoint 0 forever while
-                # tour_waypoints_reached counted up once per pass. It never showed because the
-                # dynamic dwell is on by default. Under rule 73 it would be a run that never ends:
-                # a no-cap run is ended BY the tour completing.
-                if self._tour_scan == 0 and not self._dwelling:
-                    self._tour_i += 1
-                return
-            if self._dwelling:
-                # GA-258. Past the minimum, keep turning while merges are pending.
-                self._dwell_frames += 1
-                pend, sweep = _pending_merges()
-                if self._dwell_frames >= TOUR_DWELL_MAX:
-                    print(f"[feed] waypoint {self._tour_i}: dwell capped at "
-                          f"{self._dwell_frames} frames with {pend} still pending", flush=True)
-                elif pend is None or pend > 0:
-                    # Unknown counts as "keep looking": the cap bounds it either way, and
-                    # leaving early on a missing file is the failure that costs the merge.
-                    if self._dwell_frames % 10 == 0:
-                        print(f"[feed] waypoint {self._tour_i}: dwelling, "
-                              f"{pend if pend is not None else '?'} merges pending "
-                              f"(sweep {sweep}, frame {self._dwell_frames})", flush=True)
-                    agent.act("turn_left")
-                    return
-                else:
-                    print(f"[feed] waypoint {self._tour_i}: nothing pending after "
-                          f"{self._dwell_frames} frames — moving on", flush=True)
-                self._dwelling = False
-                self._dwell_frames = 0
-                self._tour_i += 1
-                return
-            if self._tour_i >= len(self._tour):
-                # RULE 73: a finished storey is not a finished tour while the house has more.
-                if self._advance_floor(agent):
-                    return
-                # House complete. Keep turning while the run settles: a still camera is
-                # indistinguishable from a crashed feed downstream, and the merge sweeps are
-                # still running. main() ends the feed after TOUR_END_SETTLE_S.
-                if not self.house_done:
-                    self.house_done = True
-                    print("[feed] HOUSE TOUR COMPLETE: storeys "
-                          + ", ".join(f"{z:+.2f}" for z in self.floor_order), flush=True)
-                agent.act("turn_left")
-                return
-            goal = self._tour[self._tour_i]
-            try:
-                action = self.follower.next_action_along(goal)
-            except Exception:
-                action = None
-            if action is None:
-                self._tour_reached += 1                                    # GA-431
-                print(f"[feed] TEST TOUR: reached waypoint {self._tour_i}", flush=True)
-                self._tour_scan = max(TEST_TOUR_SCAN, TOUR_DWELL_MIN) if TOUR_DWELL_DYNAMIC \
-                    else TEST_TOUR_SCAN
-                # The minimum runs first as a plain countdown; the dynamic part takes over
-                # after it, so there is always at least one full look before asking whether
-                # anything is pending -- the answer is meaningless before the sweep that
-                # follows the first look.
-                self._dwelling = bool(TOUR_DWELL_DYNAMIC)
-                self._dwell_frames = 0
-                return
-            self.sim.step(action)
-            return
-        if TEST_MODE and TEST_WALK_RADIUS <= 0:
-            # GA-212: turn, and only turn. No goal, no follower, no path that can fail --
-            # the point of test mode is that a stalled run cannot be blamed on navigation.
-            agent.act("turn_left")
-            return
-        if TEST_MODE:
-            # GA-219: walk, but never further than TEST_WALK_RADIUS from where we started.
-            # Goals are re-sampled until one lands inside the disc, so the agent explores a
-            # room without the tour's freedom to find a staircase.
-            if self.origin is None:
-                self.origin = np.array(agent.get_state().position)
-            if self.goal is None:
-                for _ in range(200):
-                    p = np.array(self.sim.pathfinder.get_random_navigable_point())
-                    if SINGLE_FLOOR and abs(p[1] - self.floor_y) >= FLOOR_TOL:
-                        continue
-                    if np.linalg.norm(p[[0, 2]] - self.origin[[0, 2]]) <= TEST_WALK_RADIUS:
-                        self.goal = p
-                        break
-                else:
-                    # No reachable goal inside the disc: turn rather than widen it. Widening
-                    # silently would defeat the guarantee this mode exists to give.
-                    agent.act("turn_left")
-                    return
-            try:
-                action = self.follower.next_action_along(self.goal)
-            except Exception:
-                action = None
-            if action is None:
-                self.goal = None
-                agent.act("turn_left")   # look around from the new spot, then pick another
-                return
-            self.sim.step(action)
-            return
-        if self.scan_left > 0:
-            agent.act("turn_left")
-            self.scan_left -= 1
-            return
-        if self.goal is None:
-            if not self.todo:
-                self.todo = self._sample(20)
-            here = np.array(agent.get_state().position)
-            i = int(np.argmin([np.linalg.norm(p - here) for p in self.todo]))
-            self.goal = self.todo.pop(i)
-        try:
-            action = self.follower.next_action_along(self.goal)
-        except Exception:
-            action = None
-        if action is None:          # arrived (or unreachable): look around, next goal
-            self.goal = None
-            self.scan_left = 36     # 36 x 10° = full turn
-            return
-        self.sim.step(action)
+# class Tour lived here: greedy nearest-unvisited coverage over navmesh samples, a 360 scan at
+# each waypoint, the multi-storey house tour and the dynamic dwell. REMOVED 2026-09-11 on the
+# owner's instruction, with adaptive_hold.py and the walk/dwell burst cycle. It moved on 1.0-1.8%
+# of frames with mapping_seconds 0 and its coverage is not comparable with a schedule's, so a
+# bundle recording motion_policy "sampled" answers a different question from one recording
+# "schedule". ScheduledTour above is the only motion policy now. Recover it from git history if
+# a random-sampling baseline is ever wanted: it is at habitat_feed_host.py in commit eae203e.
 
 
 def main():
     global SCHEDULE_OVERLAY
     global SHOW
     sim = make_sim()
-    rng = np.random.default_rng(SEED)
     agent = sim.initialize_agent(0)
 
     have_nav = ensure_navmesh(sim)
@@ -2072,23 +1792,26 @@ def main():
             rp, _ = habitat_pose_to_ros(p, [0, 0, 0, 1])
             cached_navmesh_pts.append([float(rp[0]), float(rp[1]), float(rp[2])])
 
-    # GA-441. A CONFIGURED SCHEDULE REPLACES THE SAMPLING TOUR. Same interface -- step(agent) and
-    # house_done -- so the mapping branch, the walk step, the floor guard and the end-of-run settle
-    # all keep working without knowing which one they hold.
-    # BOUND BEFORE THE BRANCH, not inside it. Assigning this name only in the schedule branch made
-    # it a LOCAL of main(), which shadowed the module-level default and left it unbound on every run
-    # WITHOUT a schedule -- the payload then raised UnboundLocalError at the first frame. Reported
-    # from a run of the feed host on its own, which is the path that has no schedule.
-    schedule_payload = None
-    if have_nav and SCHEDULE_PATH:
-        if MOVE_FN not in MOVERS:
-            raise SystemExit(f"[feed] FEED_MOVE_FN={MOVE_FN!r} is not one of {sorted(MOVERS)}")
-        _floor_now = float(agent.get_state().position[1])
-        _sched_doc = load_schedule(SCHEDULE_PATH, _floor_now)
-        schedule_payload = schedule_overlay(_sched_doc, EXPLORATION_LAPS)
-        tour = ScheduledTour(sim, _sched_doc, EXPLORATION_LAPS, MOVE_FN)
-    else:
-        tour = Tour(sim, rng) if have_nav else None
+    # THE SCHEDULE IS THE ONLY MOTION POLICY (owner 2026-09-11). The sampling tour that used to
+    # stand here as the fallback is removed, so there is nothing to fall back TO: a run without a
+    # schedule would publish frames from a robot that never moves, which is worse than no run.
+    # live_run.sh builds or finds the schedule and refuses the launch before this file starts, and
+    # this refusal is the same statement for anyone starting the feed host on its own.
+    if not SCHEDULE_PATH:
+        raise SystemExit(
+            "[feed] FEED_SCHEDULE is not set and the sampling policy is removed, so this run "
+            "would have no motion at all. Build the scene's schedule with schedule_batch.py, or "
+            "start the run through live_run.sh, which does it for you.")
+    if not have_nav:
+        raise SystemExit(
+            f"[feed] scene {SCENE} has no loaded navmesh, so a schedule cannot be driven. "
+            "The sampling policy that used to run without one is removed.")
+    if MOVE_FN not in MOVERS:
+        raise SystemExit(f"[feed] FEED_MOVE_FN={MOVE_FN!r} is not one of {sorted(MOVERS)}")
+    _floor_now = float(agent.get_state().position[1])
+    _sched_doc = load_schedule(SCHEDULE_PATH, _floor_now)
+    schedule_payload = schedule_overlay(_sched_doc, EXPLORATION_LAPS)
+    tour = ScheduledTour(sim, _sched_doc, EXPLORATION_LAPS, MOVE_FN)
     poller = None
     if SHOW and OVERLAY:
         poller = BeliefPoller()
@@ -2313,24 +2036,9 @@ def main():
     conn, addr = srv.accept()
     conn.settimeout(SEND_TIMEOUT)  # a hard-killed container must not hang sendall forever
     print(f"[feed] connected: {addr}")
+    wait_for_start_gate()
 
     period = 1.0 / FPS
-    walk_frames = int(os.environ.get("FEED_WALK", hab_cfg.get("walk_frames", 6)))
-    dwell_frames = int(os.environ.get("FEED_DWELL", hab_cfg.get("dwell_frames", 0)))
-    # dwell_frames 0 is the DEFAULT as of 2026-08-31: the agent never stops. `phase % (walk +
-    # dwell)` then becomes `% walk_frames`, `moving` is always true, and frames publish on every
-    # tick. That is intended.
-    #
-    # What is NOT survivable is walk_frames + dwell_frames == 0 — a modulo by zero that raises
-    # 150+ seconds into the run, after the scene has loaded and the ROS side has connected.
-    # dwell used to be 60 and hid this; with dwell at 0 a single FEED_WALK=0 reaches it. Fail
-    # here, before the socket, and say which name to change.
-    if walk_frames + dwell_frames <= 0:
-        raise SystemExit(
-            f"[feed] FEED_WALK={walk_frames} and FEED_DWELL={dwell_frames} sum to "
-            f"{walk_frames + dwell_frames}; the phase cycle divides by that sum. "
-            "Set FEED_WALK to a positive number of frames."
-        )
 
     # RESOLVED values, printed AFTER the environment has beaten the config file. Asked for by the
     # experiment lane, 2026-08-31, and the reason is measured: run 19 (20260831_151134) finished
@@ -2340,28 +2048,11 @@ def main():
     # and a log that both say 150). live_run.sh now stamps these into the bundle, but live_run.sh
     # is not the only way this file is started, and a run started any other way was exactly how
     # run 19 became unrecoverable. This line costs nothing and fails closed.
-    print(f"[feed] resolved: walk={walk_frames} dwell={dwell_frames} fps={FPS} "
-          f"mapping_seconds={MAPPING_SECONDS} seed={SEED} scene={SCENE} "
-          f"camera_pitch_deg={CAMERA_PITCH_DEG}", flush=True)
-    print(f"[feed] dwell_mode={DWELL_MODE} hold_min={DWELL_MIN} hold_max={DWELL_MAX} "
-          f"signal_max_age_s={DWELL_SIGNAL_MAX_AGE_S} signal={_MERGE_PENDING_PATH}"
-          + (" (FEED_DWELL is IGNORED in adaptive mode)" if DWELL_MODE == "adaptive" else ""),
-          flush=True)
-    hold = AdaptiveHold(DWELL_MIN, DWELL_MAX, DWELL_SIGNAL_MAX_AGE_S)
-    walk_count = 0
-
-    def _walk_step():
-        if tour is not None:
-            tour.step(agent)
-        else:
-            collided = agent.act("move_forward")
-            if collided:
-                turn = "turn_left" if rng.random() < 0.5 else "turn_right"
-                for _ in range(int(rng.integers(9, 18))):
-                    agent.act(turn)
-    phase = 0
+    print(f"[feed] resolved: fps={FPS} laps={EXPLORATION_LAPS} seed={SEED} scene={SCENE} "
+          f"camera_pitch_deg={CAMERA_PITCH_DEG} navigation_mode={MOVE_FN}", flush=True)
+    print(f"[feed] schedule={SCHEDULE_PATH} storey={tour.floor_y:+.2f} "
+          f"points={len(tour.points)} signal={_MERGE_PENDING_PATH}", flush=True)
     t_start = time.time()
-    mapping_announced = False
 
     ag_state = agent.get_state()
     t_start_sim = t_start
@@ -2404,14 +2095,6 @@ def main():
                 settle_pending_end, _sw = _pending_merges()
                 end_reason = "house_tour_complete"
                 break
-        mapping = MAPPING_SECONDS > 0 and (t0 - t_start_sim) < MAPPING_SECONDS
-        if mapping and not mapping_announced:
-            print(f"[feed] MAPPING phase for {MAPPING_SECONDS:.0f}s (continuous coverage tour)")
-            mapping_announced = True
-        if not mapping and mapping_announced:
-            print("[feed] DETECTION phase (walk/dwell)")
-            mapping_announced = False
-
         while CTRL.actions:
             queued_act, queued_params = CTRL.actions.popleft()
             exec_manual(queued_act, queued_params)
@@ -2446,41 +2129,11 @@ def main():
                     nav_target = None
                 else:
                     sim.step(action)
-        elif mapping:
-            label = "MAPPING"
-            if tour is not None:
-                tour.step(agent)
-            else:
-                agent.act("move_forward")
-        elif SCHEDULE_PATH and tour is not None:
-            # THE SCHEDULE OWNS THE MOTION, so the walk/dwell cycle does not apply to it. Under the
-            # adaptive cycle the agent moves for FEED_WALK frames then holds for up to
-            # FEED_DWELL_MAX with no action -- 6 frames in 96 -- and the schedule's own stops and
-            # scans already say when to stand still. Running both would spend 30 s frozen between
-            # every pair of trajectory points.
+        else:
+            # THE SCHEDULE OWNS THE MOTION, and it is the only thing that does. Its own stops and
+            # scans say when the agent stands still, so there is no separate dwell to run beside it.
             label = "SCHEDULE"
             tour.step(agent)
-        elif DWELL_MODE == "adaptive":
-            # GA-339. Walk `walk_frames`, then HOLD (no action) until the signal releases or the cap.
-            if hold.active:
-                label = "HOLD"
-                verdict = hold.step(_read_signal(), time.time())
-                if verdict != hold.HOLD:
-                    print(f"[feed] hold {hold.episodes}: {verdict} after {hold.frames} frames, "
-                          f"need {hold.last_need if hold.last_need is not None else '?'}", flush=True)
-                    walk_count = 0
-            else:
-                label = "WALK"
-                _walk_step()
-                walk_count += 1
-                if walk_count >= walk_frames:
-                    hold.start(_read_signal(), time.time())
-        else:
-            phase = (phase + 1) % (walk_frames + dwell_frames)
-            moving = phase < walk_frames
-            label = "WALK" if moving else "DWELL"
-            if moving:
-                _walk_step()
 
         if tour is not None:
             CTRL.revisit = {"active": tour.revisit.status() if tour.revisit else None,
@@ -2510,12 +2163,9 @@ def main():
             ros_agent_pos, ros_agent_quat = habitat_pose_to_ros(ag_state.position, [ag_state.rotation.x, ag_state.rotation.y, ag_state.rotation.z, ag_state.rotation.w])
             yaw = math.atan2(2.0 * (ros_agent_quat[3]*ros_agent_quat[2] + ros_agent_quat[0]*ros_agent_quat[1]), 1.0 - 2.0 * (ros_agent_quat[1]**2 + ros_agent_quat[2]**2))
 
-            if label == "HOLD":
-                phase_rem = -1   # GA-339: unknown by construction during an adaptive hold (rule 5: never 0)
-            elif label == "WALK" and DWELL_MODE == "adaptive":
-                phase_rem = walk_frames - walk_count
-            else:
-                phase_rem = (walk_frames - (phase % (walk_frames + dwell_frames))) if label == "WALK" else (dwell_frames - (phase % (walk_frames + dwell_frames) - walk_frames)) if label == "DWELL" else 0
+            # Frames left in the current leg or scan. -1 is UNKNOWN, never 0 (rule 5): a leg's
+            # length depends on the path the mover finds, which is not known until it arrives.
+            phase_rem = tour.scan_left if tour.scan_left > 0 else -1
             feed_stats = {
                 "elapsed_sec": round(time.time() - t_start_sim, 1),
                 "total_steps": total_steps,
@@ -2524,15 +2174,7 @@ def main():
                 "frames_send_failed": frames_send_failed,
                 "total_distance_m": round(total_distance_m, 2),
                 "phase": label,
-                "phase_walk_frames": walk_frames,
-                # GA-339: in adaptive mode this is the length of the CURRENT hold, so readers that
-                # plot it keep working; the fixed arm keeps the configured value.
-                "phase_dwell_frames": hold.frames if label == "HOLD" else dwell_frames,
                 "phase_remaining_frames": phase_rem if phase_rem < 0 else max(0, phase_rem),
-                "dwell_mode": DWELL_MODE,
-                "dwell_min_frames": DWELL_MIN,
-                "dwell_max_frames": DWELL_MAX,
-                "dwell_signal_max_age_s": DWELL_SIGNAL_MAX_AGE_S,
                 # GA-431. The tour existed only as log text, so no bundle could say whether its own
                 # tour FINISHED. Four keys, and the first two are settings while the last two are
                 # outcomes -- the distinction that let a configured tour be read as a completed one
@@ -2540,31 +2182,26 @@ def main():
                 # farthest-point sampling could actually place on the storey, which can be fewer;
                 # `reached` is the count of arrivals; `ended_on_index` is where the run stopped.
                 # A tour finished when reached == planned and planned > 0.
-                "tour_waypoints_requested": TEST_TOUR,
-                "tour_waypoints_planned": len(getattr(tour, "_tour", None) or []) if tour else 0,
-                "tour_waypoints_reached": getattr(tour, "_tour_reached", 0) if tour else 0,
+                "tour_waypoints_planned": tour._tour_planned_total,
+                "tour_waypoints_reached": tour._tour_reached,
                 # RULE 73. planned counts EVERY storey's waypoints; the per-storey key above is
                 # the last storey only, and a full-house run must not be read as a short one.
-                "tour_waypoints_planned_all_floors": getattr(tour, "_tour_planned_total", 0) if tour else 0,
+                "tour_waypoints_planned_all_floors": tour._tour_planned_total,
                 "tour_all_floors": TOUR_ALL_FLOORS,
-                # GA-441. WHICH POLICY DROVE THIS RUN. Two exist and their coverage is not
-                # comparable: "schedule" walks a precomputed Voronoi roadmap, "sampled" draws random
-                # navigable goals. A bundle read as the wrong one misreports coverage by 20x.
-                "motion_policy": "schedule" if SCHEDULE_PATH else "sampled",
-                "schedule_path": SCHEDULE_PATH or None,
-                "schedule": tour.report() if (SCHEDULE_PATH and tour is not None) else None,
+                # WHICH POLICY DROVE THIS RUN. Constant now that the sampling policy is removed,
+                # and KEPT for exactly that reason: bundles made before 2026-09-11 record "sampled"
+                # and measure a different experiment, so a reader needs the key to tell them apart.
+                "motion_policy": "schedule",
+                "schedule_path": SCHEDULE_PATH,
+                "schedule": tour.report(),
                 "post_scan_hook": POST_SCAN_HOOK or None,
-                "tour_floors_planned": (1 + len(getattr(tour, "floors_todo", []))
-                                        + max(0, len(getattr(tour, "floor_order", [])) - 1)) if tour else 0,
-                "tour_floors_toured": len(getattr(tour, "floor_order", [])) if tour else 0,
-                "tour_floor_order": list(getattr(tour, "floor_order", [])) if tour else [],
-                "tour_ended_on_index": getattr(tour, "_tour_i", None) if tour else None,
-                **hold.stats(),
-                "mapping_seconds": MAPPING_SECONDS,
-                # GA-219: the walk radius was a measurement nobody could reproduce because no
-                # artefact recorded it. 0 in test mode means turn-in-place.
+                # A schedule is one storey by construction (rule 73 is satisfied by one launch per
+                # storey, not by one feed touring them all), so these are 1 and the storey it drove.
+                "tour_floors_planned": 1,
+                "tour_floors_toured": len(tour.floor_order),
+                "tour_floor_order": list(tour.floor_order),
+                "tour_ended_on_index": tour.i,
                 "test_mode": TEST_MODE,
-                "test_walk_radius_m": TEST_WALK_RADIUS,
                 # What the guard did. A run whose map is one storey because nothing drifted and
                 # a run whose map is one storey because it was teleported back forty times are
                 # different runs, and the map alone cannot tell them apart.
@@ -2655,6 +2292,7 @@ def main():
 
         cam = ag_state.sensor_states["color_sensor"]
         cam_quat = np.array([cam.rotation.x, cam.rotation.y, cam.rotation.z, cam.rotation.w], dtype=np.float64)
+        scan_complete = CTRL.scan_events.popleft() if CTRL.scan_events else None
         frame = {
             "rgb": np.ascontiguousarray(obs["color_sensor"][..., :3], dtype=np.uint8),
             "depth": np.ascontiguousarray(obs["depth_sensor"], dtype=np.float32),
@@ -2692,6 +2330,7 @@ def main():
             # ABSENT key must not be read as "draw everything": that is indistinguishable from a
             # working toggle, and it is the defect class this whole review has been removing.
             "viz_config": dict(CTRL.config),
+            **({"scan_complete": scan_complete} if scan_complete is not None else {}),
             # NAMED SO IT CANNOT BE MISTAKEN FOR A PERCEPTION OUTPUT. This is habitat's own
             # instance id per pixel — the answer, not an estimate of it. Nothing on the runtime
             # path may read it: a detector that can see the ground truth is not being measured,
@@ -2702,6 +2341,12 @@ def main():
             # 20260906_234050; a PNG was exact but cost 245 ms a frame (run 20260907_001120).
             **({"gt_semantic_rle": _gt_codec.encode(obs["semantic_sensor"])}
                if GT_SEMANTIC and "semantic_sensor" in obs else {}),
+            # GA-479. The exploration schedule, so the ROS side can draw it in rviz. The SAME
+            # payload the dashboard reads out of bev_data.json -- one conversion to ROS ground
+            # coords in one place, so the minimap, the mesh view and rviz cannot disagree about
+            # where a stop is. About 180 points on hm3d_00861, next to a 921 kB RGB frame, so it
+            # rides on every frame rather than on the first one: a reconnect then needs no state.
+            "schedule": schedule_payload,
             "w": W, "h": H, "hfov": HFOV,
         }
         frame_seq += 1

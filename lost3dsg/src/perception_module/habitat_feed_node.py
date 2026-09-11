@@ -25,8 +25,9 @@ import zlib
 import numpy as np
 import rclpy
 from PIL import Image as PILImage
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import Point, TransformStamped
 from nav_msgs.msg import Odometry
+from visualization_msgs.msg import Marker, MarkerArray
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
@@ -38,6 +39,7 @@ FRAME_ODOM = "odom"
 FRAME_BASE = "base_link"
 FRAME_CAMERA = "habitat_camera"
 FRAME_OPTICAL = "habitat_camera_optical"
+SCAN_COMPLETE_TOPIC = os.environ.get("SCAN_COMPLETE_TOPIC", "/habitat/scan_complete")
 
 
 # --- habitat (y-up) -> ROS (z-up) pose conversion, copied verbatim from
@@ -145,6 +147,7 @@ class HabitatFeedNode(Node):
         self.pub_depth = self.create_publisher(Image, "/camera/depth", qos)
         self.pub_info = self.create_publisher(CameraInfo, "/camera/camera_info", qos)
         self.pub_odom = self.create_publisher(Odometry, "/odom", qos)
+        self.pub_scan_complete = self.create_publisher(String, SCAN_COMPLETE_TOPIC, qos)
         self.pub_object_capture = self.create_publisher(
             Image, "/habitat/object_capture/rgb", qos)
         self.pub_object_result = self.create_publisher(
@@ -171,6 +174,17 @@ class HabitatFeedNode(Node):
         # in run 20260906_234050. The payload is gt_codec's lossless run-length form (~3% of
         # raw, milliseconds each way); the perception node decodes it with the same module.
         self.pub_gt_semantic = self.create_publisher(CompressedImage, "/gt/semantic_instance", qos)
+        # GA-479 (owner 2026-09-10). THE EXPLORATION SCHEDULE IN RVIZ. The feed host sends it once,
+        # on the first frame of a connection; this publishes it as markers in the map frame.
+        #
+        # TRANSIENT_LOCAL, because rviz is started by the launch file and may subscribe AFTER the
+        # first frame has gone by. A volatile publisher would send the schedule to nobody and the
+        # display would stay empty for the whole run with nothing to explain it.
+        self.pub_schedule = self.create_publisher(
+            MarkerArray, "/schedule_markers",
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self._schedule_published = False
         self.tf = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
 
@@ -326,6 +340,79 @@ class HabitatFeedNode(Node):
                        "reconnects": self._reconnects, "last_updated": time.time()}, f)
         os.replace(tmp, path)
 
+
+    def _publish_schedule(self, sched, stamp):
+        """Draw the exploration schedule in rviz: the path, the stops, their order, the root.
+
+        GA-479. THE POINTS ARRIVE IN ROS GROUND COORDS ALREADY -- the feed host converts once, so
+        every consumer sees the same numbers and no two of them can disagree about the frame. They
+        are (x, y, storey height); rviz wants (x, y, z) with z up, so the storey height becomes z
+        and the ground coordinates stay as they are.
+
+        ONE MARKER PER ROLE, not one per point: a LINE_STRIP for the whole path, a SPHERE_LIST for
+        every stop, and one small text marker per stop for the visit order. A marker per point would
+        put 83 entities in the array and make the display unusable at a glance, which is the only
+        thing this is for.
+        """
+        try:
+            arr = MarkerArray()
+
+            def base(mid, mtype, scale, rgba):
+                m = Marker()
+                m.header.frame_id = "map"
+                m.header.stamp = stamp
+                m.ns = "schedule"
+                m.id = mid
+                m.type = mtype
+                m.action = Marker.ADD
+                m.pose.orientation.w = 1.0
+                m.scale.x, m.scale.y, m.scale.z = scale
+                m.color.r, m.color.g, m.color.b, m.color.a = rgba
+                return m
+
+            def pt(p):
+                q = Point()
+                q.x, q.y, q.z = float(p[0]), float(p[1]), float(p[2])
+                return q
+
+            path = sched.get("path") or []
+            if path:
+                line = base(0, Marker.LINE_STRIP, (0.05, 0.0, 0.0), (0.65, 0.35, 0.95, 0.9))
+                line.points = [pt(p) for p in path]
+                arr.markers.append(line)
+
+            stops = sched.get("stops") or []
+            if stops:
+                dots = base(1, Marker.SPHERE_LIST, (0.22, 0.22, 0.22), (0.84, 0.15, 0.16, 0.95))
+                dots.points = [pt(s["xyz"]) for s in stops]
+                arr.markers.append(dots)
+                for i, st in enumerate(stops):
+                    t = base(100 + i, Marker.TEXT_VIEW_FACING, (0.0, 0.0, 0.22),
+                             (1.0, 1.0, 1.0, 0.95))
+                    t.text = str(st.get("order", i))
+                    t.pose.position = pt(st["xyz"])
+                    t.pose.position.z += 0.25
+                    arr.markers.append(t)
+
+            root = sched.get("root")
+            if root:
+                r = base(2, Marker.SPHERE, (0.45, 0.45, 0.45), (0.17, 0.63, 0.17, 0.85))
+                r.pose.position = pt(root)
+                arr.markers.append(r)
+
+            self.pub_schedule.publish(arr)
+            self._schedule_published = True
+            self.get_logger().info(
+                f"schedule markers: {len(path)} path points, {len(stops)} stops, "
+                f"{len(arr.markers)} markers on /schedule_markers")
+        except Exception as exc:
+            # A drawing failure must not cost the run its frames. Said once, loudly, and the feed
+            # carries on -- but NOT retried silently, or a broken payload would log every frame.
+            self._schedule_published = True
+            self.get_logger().error(
+                f"schedule markers NOT published ({type(exc).__name__}: {exc}); "
+                "the run is unaffected, the rviz display stays empty")
+
     def _reconnect(self, why):
         """Drop the dead socket and try again. NEVER spin silently.
 
@@ -390,7 +477,22 @@ class HabitatFeedNode(Node):
             return
 
         stamp = self.get_clock().now().to_msg()
+        if not self._schedule_published and frame.get("schedule"):
+            self._publish_schedule(frame["schedule"], stamp)
         w, h = frame["w"], frame["h"]
+
+        # The host-side runner owns Habitat motion, so it carries the completion hook in the
+        # first frame after a full turn. Relay it onto the same topic used by habitat_nav.py;
+        # object_manager_6 can therefore use one trigger regardless of which feed runner is
+        # active.
+        scan_event = frame.get("scan_complete")
+        if scan_event is not None:
+            msg = String()
+            msg.data = json.dumps(scan_event)
+            self.pub_scan_complete.publish(msg)
+            self.get_logger().info(
+                f"completed scan {scan_event.get('scan_id', '?')}; published {SCAN_COMPLETE_TOPIC}"
+            )
 
         cam_pos, cam_quat = habitat_pose_to_ros(frame["cam_pos"], frame["cam_quat"])
         if "base_pos" in frame:

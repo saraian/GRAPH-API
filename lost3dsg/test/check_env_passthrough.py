@@ -29,7 +29,7 @@ import sys
 SET_IN_CONTAINER = {"GRAPH_API_CONFIG", "GRAPH_API_OUTPUT_DIR", "HF_HOME", "PYTHONPATH",
                     "RTABMAP_GRID_ARGS", "PREFLIGHT_OBSERVE", "LOG_DIR", "ROS_DOMAIN_ID"}
 # Read by host-side processes only; passing them into the container would mean nothing.
-HOST_ONLY = {"OUT_DIR", "FEED_SHOW", "FEED_OVERLAY", "FEED_SEED", "FEED_WALK", "FEED_DWELL",
+HOST_ONLY = {"OUT_DIR", "FEED_SHOW", "FEED_OVERLAY", "FEED_SEED",
              "FEED_FPS", "FEED_SPAWN_FLOOR", "FEED_BRIDGE", "FEED_CTRL_PORT", "FEED_SEND_TIMEOUT",
              "FEED_MAX_SEND_BACKLOG", "HABITAT_SCENE", "HABITAT_DATASET", "HOME"}
 

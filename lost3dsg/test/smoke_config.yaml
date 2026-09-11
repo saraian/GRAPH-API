@@ -25,9 +25,6 @@ frames:
 habitat:
   single_floor: true      # HM3D 00861 is two-storey; evaluation runs on the start floor
   floor_tolerance_m: 0.5
-  mapping_seconds: 150.0  # continuous mapping tour (seconds)
-  walk_frames: 6         # frames moving per burst
-  dwell_frames: 0       # 0 = agent never stops (owner, 2026-08-31). FEED_DWELL in live_run.sh overrides this.
   fps: 3.0
   # OWNER RULING 25, 2026-09-01: 1280x960. SET HERE AND NOT ONLY IN CODE, because
   # perception_module/config.py supplies habitat.width 640 as a module default and the merged
@@ -64,6 +61,12 @@ perception:
   # It is read from MODAL_PERCEPTION_URL in the launcher's environment and must never be
   # committed again. Empty here on purpose.
   modal_endpoint: ""
+  # GA-477. DECLARED AT THE CODE DEFAULT, so it changes nothing about a run and makes the value
+  # answerable from the run's own config. Probe a10 compares this guard against the worst frame age
+  # the PREVIOUS run rejected; without the key it SKIPPED, and a skipped probe fails the gate -- so
+  # the tracked smoke config could not pass its own gate. Found by the ontology lane on their own
+  # config, which had the same gap.
+  max_frame_age_s: 1.0
   # seconds; a remote perception call. 25.0 was hardcoded and sat below all
   # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
   # INTERIM, NOT MEASURED. 180 was not derived from a distribution and must not be cited as

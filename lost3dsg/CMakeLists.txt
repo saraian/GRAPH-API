@@ -13,7 +13,9 @@ find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(tf2_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
@@ -46,6 +48,7 @@ install(PROGRAMS
   src/perception_module/perception_utils.py
   src/perception_module/object_manager_6.py
   src/perception_module/object_services.py
+  src/perception_module/scan_hook.py
   src/perception_module/room_manager.py
   # GA-299. habitat_camera_node.py is NOT installed: it is a HOST-side node. It imports
   # habitat_sim, which is not in graphapi-run:humble and is not meant to be -- habitat renders on
@@ -59,6 +62,8 @@ install(PROGRAMS
   # one of which already said "that module also imports habitat_sim".
   src/perception_module/habitat_feed_node.py
   src/perception_module/graph_api_bridge.py
+  src/perception_module/check_mapping_tf.py
+  src/perception_module/ros_bev.py
   src/perception_module/live_overlay.py
   src/perception_module/vlm_call.py
   src/perception_module/scene_analysis.py
@@ -89,6 +94,7 @@ install(PROGRAMS
   src/perception_module/gt_codec.py
   src/perception_module/visual_reid.py
   src/perception_module/association.py
+  src/perception_module/detection_index.py
   # GA-209's grid describer, imported by perception_2 and missing from this list — caught by
   # check_install_list.py in the smoke suite, which is what that check exists for.
   # Imported by build_hm3d_eval_manifest.py and metrics_eval_visualize.py and missing from this
@@ -138,7 +144,10 @@ install(DIRECTORY launch/
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  ament_add_pytest_test(scan_merge_test test/test_scan_merge.py)
+  ament_add_pytest_test(detection_index_test test/test_detection_index.py)
 endif()
 
 ament_package()

@@ -61,8 +61,8 @@ frames:
   agent_pose: habitat_camera
 paths:
   operations_log: /root/exchange/output/operations.txt
-  vitsam_encoder: ''
-  vitsam_decoder: ''
+  vitsam_encoder: "/models/vitsam/l2_encoder.onnx"   # the container mount of SAM_MODEL_DIR
+  vitsam_decoder: "/models/vitsam/l2_decoder.onnx"
   identification_prompt: ''
   scene_analysis_prompt: ''
   visual_prompt: ''
@@ -135,14 +135,10 @@ habitat:
   nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.navmesh
   single_floor: true
   floor_tolerance_m: 0.5
-  mapping_seconds: 900.0
-  walk_frames: 6
-  dwell_frames: 60
   fps: 3.0
   hfov: 90.0
   camera_pitch_deg: 0.0
   floor_confinement: teleport
-  tour_all_floors: false
   tour_end_settle_s: 90.0
   min_floor_share: 0.1
   dataset_root: /root/exchange/lost3dsg/habitat

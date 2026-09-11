@@ -214,7 +214,16 @@ if [ -n "${MODAL_PERCEPTION_URL:-}" ]; then
 elif [ -f "$CFG_LOCAL" ]; then
   ok "$CFG_LOCAL exists — left alone"
 else
-  printf 'perception:\n  backend: "local"   # written by install.sh: no MODAL_PERCEPTION_URL on this machine\n' > "$CFG_LOCAL"
+  # THE SEGMENTER PATHS GO IN TOO, and without them the local backend cannot start. The tracked
+  # config leaves paths.vitsam_* EMPTY and falls back to <package>/utils/l2_encoder.onnx, which is
+  # not in the image -- so probe a4 refuses with "the segmenter files do not resolve". Measured on
+  # Gin 2026-09-10 with the default config. /models/vitsam is where the launcher mounts
+  # SAM_MODEL_DIR, so these are the paths the CONTAINER will see, not this machine's.
+  { printf 'perception:\n  backend: "local"   # written by install.sh: no MODAL_PERCEPTION_URL on this machine\n'
+    printf 'paths:\n'
+    printf '  vitsam_encoder: "/models/vitsam/l2_encoder.onnx"   # the container mount of SAM_MODEL_DIR\n'
+    printf '  vitsam_decoder: "/models/vitsam/l2_decoder.onnx"\n'
+  } > "$CFG_LOCAL"
   ok "no endpoint, so wrote $CFG_LOCAL with backend: local (the detector runs in the container)"
 fi
 

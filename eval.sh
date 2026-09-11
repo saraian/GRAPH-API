@@ -4,7 +4,9 @@
 #   1. hm3d_ground_truth_manifest.py   the scene's ground truth      (needs habitat-sim)
 #   2. build_hm3d_eval_manifest.py     joins ground truth to the run
 #   3. metrics_eval.py                 the metrics
-#   4. metrics_eval_visualize.py       an HTML view of the boxes
+#   4. metrics_eval_visualize.py       an HTML view of the boxes, into metrics_eval_visualizer/
+#   5. time_metrics.py                  latency per stage, run/exploration/movement/online time
+#   6. eval_report.py                  Comparison_<stamp>.pdf with every statistic
 #
 #   ./eval.sh                    the newest run in the workspace
 #   ./eval.sh <bundle-dir>       that bundle
@@ -65,20 +67,21 @@ echo "        source: $(echo "$_res" | cut -d" " -f3-)"
 [ -f "$DSCFG" ] || { echo "!! the dataset config is not on this machine: $DSCFG" >&2; exit 3; }
 
 # ---- 1. ground truth. NEEDS habitat-sim, so it runs in the conda environment, not this shell.
+PY_HAB=""
 GT="$OUT/manifest_gt.json"
 if [ -s "$GT" ] && [ "$FORCE" = "0" ]; then
-  echo "== 1/4  ground truth: $GT exists, reusing it (--force to rebuild)"
+  echo "== 1/6  ground truth: $GT exists, reusing it (--force to rebuild)"
 else
   # The recipe used an env named habitat310; ours is habitat_env. Find one that can import
   # habitat_sim rather than assuming a name -- a wrong env name fails three steps later as a
   # missing manifest, which reads like a different fault.
-  PY_HAB=""
+  PY_HAB="${PY_HAB:-}"
   for c in "${EVAL_CONDA_PY:-}" "$HOME/miniconda3/envs/${EVAL_CONDA_ENV:-habitat310}/bin/python" \
            "$HOME/miniconda3/envs/habitat_env/bin/python" "$HOME/anaconda3/envs/habitat310/bin/python"; do
     [ -n "$c" ] && [ -x "$c" ] && "$c" -c 'import habitat_sim' 2>/dev/null && { PY_HAB="$c"; break; }
   done
   [ -n "$PY_HAB" ] || { echo "!! no python that can import habitat_sim. Set EVAL_CONDA_PY to one." >&2; exit 4; }
-  echo "== 1/4  ground truth  ($PY_HAB)"
+  echo "== 1/6  ground truth  ($PY_HAB)"
   "$PY_HAB" "$PM/hm3d_ground_truth_manifest.py" "$SCENE" --dataset-config "$DSCFG" --output "$GT" \
     || { echo "!! step 1 failed; the output above says why" >&2; exit 4; }
 fi
@@ -98,21 +101,62 @@ if [ ! -f "$PM/metrics_eval.py" ]; then
   exit 6
 fi
 
+# THE METRICS RUN ON A PYTHON THAT HAS cv2 AND numpy, not on whatever `python3` is. Measured
+# 2026-09-10: the ambient python3 has no cv2, and metrics_eval falls back to a polygon IoU that
+# needs it -- `RuntimeError: opencv-python è necessario per l'IoU dei poligoni` from three frames
+# down, which reads like a broken manifest rather than a missing package. The habitat environment
+# has cv2 4.9, so steps 2 to 4 use the same interpreter step 1 does.
+PY_EVAL=""
+for c in "${EVAL_PY:-}" "$PY_HAB" "$HOME/miniconda3/envs/${EVAL_CONDA_ENV:-habitat_env}/bin/python" python3; do
+  [ -n "$c" ] && command -v "$c" >/dev/null 2>&1 || [ -x "$c" ] || continue
+  "$c" -c 'import cv2, numpy' 2>/dev/null && { PY_EVAL="$c"; break; }
+done
+[ -n "$PY_EVAL" ] || { echo "!! no python with cv2 and numpy. Set EVAL_PY to one." >&2; exit 5; }
+echo "python: $PY_EVAL (has cv2 and numpy)"
+
 # ---- 2. join the ground truth to what the run recorded.
 EV="$OUT/manifest_eval.json"
-echo "== 2/4  join to the run"
-python3 "$PM/build_hm3d_eval_manifest.py" --ground-truth "$GT" --run-dir "$BUNDLE" --output "$EV" \
+echo "== 2/6  join to the run"
+"$PY_EVAL" "$PM/build_hm3d_eval_manifest.py" --ground-truth "$GT" --run-dir "$BUNDLE" --output "$EV" \
   || { echo "!! step 2 failed" >&2; exit 5; }
 
 # ---- 3. the metrics.
-echo "== 3/4  metrics"
-python3 "$PM/metrics_eval.py" "$EV" --output "$OUT/metrics.json" \
+echo "== 3/6  metrics"
+"$PY_EVAL" "$PM/metrics_eval.py" "$EV" --output "$OUT/metrics.json" \
   || { echo "!! step 3 failed" >&2; exit 6; }
 
 # ---- 4. the HTML view.
-echo "== 4/4  boxes"
-python3 "$PM/metrics_eval_visualize.py" "$EV" --output "$OUT/boxes.html" \
+# THE VISUALISATIONS GET THEIR OWN DIRECTORY, named for the tool that writes them, so a reader
+# opening a bundle finds them without knowing which script produced which file.
+echo "== 4/6  boxes"
+VIZ="$OUT/metrics_eval_visualizer"; mkdir -p "$VIZ"
+"$PY_EVAL" "$PM/metrics_eval_visualize.py" "$EV" --output "$VIZ/boxes.html" \
   || { echo "!! step 4 failed" >&2; exit 7; }
+
+# ---- 5. where the time went. Six measurements nothing else computes; see time_metrics.py for
+# what each is derived from. Runs BEFORE the report so the PDF can carry them.
+echo "== 5/6  time"
+"$PY_EVAL" "$HERE/lost3dsg/test/time_metrics.py" "$BUNDLE" \
+  || echo "   note: time metrics could not be computed; the report will say so"
+
+# ---- 6. the PDF report. Every statistic, with the provenance that makes it attributable.
+echo "== 6/6  report"
+# A DIFFERENT INTERPRETER AGAIN, and for the mirror of step 2's reason. The metrics need cv2,
+# which only the habitat environment has; the PDF needs reportlab, which only the system python
+# has. Measured 2026-09-10: reusing $PY_EVAL here failed with ModuleNotFoundError: reportlab.
+# Each step asks for the interpreter that can answer it rather than one that can answer most.
+PY_REPORT=""
+for c in "${EVAL_REPORT_PY:-}" python3 "$PY_EVAL" "$HOME/miniconda3/envs/${EVAL_CONDA_ENV:-habitat_env}/bin/python"; do
+  [ -n "$c" ] || continue
+  "$c" -c 'import reportlab' 2>/dev/null && { PY_REPORT="$c"; break; }
+done
+if [ -z "$PY_REPORT" ]; then
+  echo "!! no python with reportlab, so no PDF was written. pip install reportlab, or set" >&2
+  echo "   EVAL_REPORT_PY to an interpreter that has it. Steps 1-4 are done: $OUT" >&2
+  exit 8
+fi
+"$PY_REPORT" "$HERE/lost3dsg/test/eval_report.py" "$BUNDLE" \
+  || { echo "!! step 5 failed: no PDF written" >&2; exit 8; }
 
 echo
 echo "DONE. In $OUT:"

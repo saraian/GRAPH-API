@@ -3,7 +3,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.duration import Duration as ROS2Duration
 import numpy as np
 from cv_bridge import CvBridge
-import cv2, os, colorsys
+import cv2, os, colorsys, time
 from sensor_msgs.msg import Image, CameraInfo
 from scipy.spatial import KDTree
 from std_msgs.msg import ColorRGBA
@@ -31,7 +31,7 @@ class SyncedCameraData:
         self.node = node
         self.bridge = CvBridge()
         self.sync_tolerance_sec = float(sync_tolerance_ms) / 1000.0
-        self.default_camera_frame = "habitat_camera_optical"
+        self.default_camera_frame = config.CFG["frames"]["camera"]
 
         # Data cache - ALWAYS UPDATED with the most recent messages
         self.cached_rgb = None
@@ -39,6 +39,9 @@ class SyncedCameraData:
         self.cached_camera_info = None
         self.cached_transform = None
         self.all_ready = False
+        # Wall-clock receive time. Image stamps are the robot clock; this PC can
+        # be minutes ahead, so stamp-vs-get_clock().now() is not frame age.
+        self._rgb_received_mono = None
 
         # QoS for real robot sensor topics
         # GA-164. depth=1, not 10, and the callback comment three screens down says why:
@@ -74,6 +77,7 @@ class SyncedCameraData:
         """ALWAYS updates with the most recent RGB"""
         first_time = self.cached_rgb is None
         self.cached_rgb = msg  # Always update!
+        self._rgb_received_mono = time.monotonic()
         if first_time:
             self.node.get_logger().info("RGB received (first frame)")
         # Always try to get the transform
@@ -102,9 +106,9 @@ class SyncedCameraData:
             return
         if not hasattr(self.node, 'tf_buffer'):
             return
+        camera_frame = self.cached_rgb.header.frame_id or self.default_camera_frame
+        target_frame = config.world_frame()
         try:
-            camera_frame = self.cached_rgb.header.frame_id or self.default_camera_frame
-            target_frame = "map"
             lookup_time = Time.from_msg(self.cached_rgb.header.stamp)
             transform = self.node.tf_buffer.lookup_transform(
                 target_frame,
@@ -115,7 +119,8 @@ class SyncedCameraData:
             first_time = self.cached_transform is None
             self.cached_transform = transform
             if first_time:
-                self.node.get_logger().info("✓ Transform received (first)")
+                self.node.get_logger().info(
+                    f"Transform received (first): {target_frame} <- {camera_frame}")
                 self._check_all_ready()
         except Exception as e:
             # Per le bbox 3D preferiamo una posa esatta al timestamp del frame RGB:
@@ -134,10 +139,15 @@ class SyncedCameraData:
             #
             # A frame older than the buffer's cache window can never be transformed again.
             # Say so ONCE with the numbers, then DROP IT so the next frame gets a turn.
+            #
+            # Age is vs the newest TF in this tree (robot clock), not this PC's wall
+            # clock. A TIAGo and the workstation can disagree by minutes; that is not
+            # "the shutter opened 180s ago".
             try:
                 stamp_s = Time.from_msg(self.cached_rgb.header.stamp).nanoseconds / 1e9
-                now_s = self.node.get_clock().now().nanoseconds / 1e9
-                age = now_s - stamp_s
+                latest = self.node.tf_buffer.get_latest_common_time(
+                    target_frame, camera_frame)
+                age = (latest.nanoseconds / 1e9) - stamp_s
             except Exception:
                 age = None
 
@@ -195,10 +205,11 @@ class SyncedCameraData:
             self.node.get_logger().info(f"Synced data not ready, missing: {', '.join(missing)}")
             return None
 
-        # Controllo di freschezza: scarta dati troppo vecchi
-        now = self.node.get_clock().now()
+        # Freshness is how long THIS process has held the frame, not stamp vs the
+        # PC clock. Robot image stamps can be minutes behind wall time here.
         rgb_stamp = Time.from_msg(self.cached_rgb.header.stamp)
-        age = (now - rgb_stamp).nanoseconds / 1e9
+        received = self._rgb_received_mono
+        age = (time.monotonic() - received) if received is not None else 0.0
         if age > max_age:
             self.node.get_logger().warn(f"Cached frame too old ({age:.2f}s), discarding")
             return None

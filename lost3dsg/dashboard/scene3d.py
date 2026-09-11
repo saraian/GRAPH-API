@@ -421,7 +421,8 @@ def scene_payload(bundle, gt_scene=None):
            # vs truth: `walls` is GROUND TRUTH from the scene file, `detected_walls` is what
            # the wall detector measured, and `schedule` is what the run was told to walk. Three
            # different claims; merging any two would let the page render one as another.
-           "detected_walls": [], "schedule": None}
+           "detected_walls": [], "schedule": None, "ceiling_z": None}
+    _gt_items = []
 
     # The run's own room segmentation and the plan it followed. Both are optional: every
     # bundle recorded so far has an empty `detected_walls` because these runs launch with
@@ -500,6 +501,7 @@ def scene_payload(bundle, gt_scene=None):
             except (OSError, ValueError):
                 g = []
             items = g if isinstance(g, list) else g.get("objects", g.get("instances", []))
+            _gt_items = items
             regions = set()
             lo = [float("inf")] * 3
             hi = [float("-inf")] * 3
@@ -544,6 +546,34 @@ def scene_payload(bundle, gt_scene=None):
     # own note says so -- it is intent, not outcome, and is deliberately not read here.
     guard = ((bevdoc or {}).get("stats") or {}).get("floor_guard")
     out["mapped_floor"] = dict(guard) if isinstance(guard, dict) and "floor_y" in guard else None
+    # COMPUTED HERE, AFTER mapped_floor EXISTS. The first version sat above, beside the
+    # wall merge, where `out["mapped_floor"]` and `out["floors"]` were both still unset --
+    # so every fallback found nothing and ceiling_z was None on every bundle, which reads
+    # exactly like a scene with no annotated ceiling.
+    # THE CEILING OVER THE STOREY THIS RUN MAPPED, so the dollhouse cut has a height that
+    # comes from the building rather than from a guess. HM3D annotates ceilings (24 instances
+    # in hm3d_00861), and they sit at TWO heights here: z 0.70-1.05 is the lower storey's
+    # ceiling, under the upper floor at 1.21, and the 12 above it start at 3.32. Taking the
+    # LOWEST ceiling that begins above the mapped floor picks the right one of those without
+    # knowing how many storeys there are.
+    #
+    # None when the scene annotates no ceiling above the storey -- the page then leaves the
+    # roof alone rather than cutting at an invented height.
+    _mf = (out.get("mapped_floor") or {}).get("floor_y")
+    if _mf is None and out.get("floors"):
+        _mf = out["floors"][-1].get("z")
+    if _mf is not None:
+        _tops = []
+        for it in _gt_items:
+            if str(it.get("label") or "").strip().lower() != "ceiling":
+                continue
+            pos, ext = it.get("pos"), it.get("extents")
+            if not pos or not ext:
+                continue
+            lo_z = float(pos[2]) - abs(float(ext[2])) / 2
+            if lo_z > float(_mf) + 0.3:      # above the floor, not its own slab
+                _tops.append(lo_z)
+        out["ceiling_z"] = min(_tops) if _tops else None
     for o in out["objects"]:
         o["floor"] = assign_floor(o["box"][2], o["box"][5], floors)
     for rec in out["walls"] + out["openings"]:
@@ -1213,6 +1243,15 @@ if (P.floor_decks && P.floor_decks.some(d => d)) {
 // so it is CLIPPED instead, by two horizontal planes through the storey band, using
 // three's own per-material clippingPlanes. Nothing is re-uploaded and nothing is rebuilt.
 renderer.localClippingEnabled = true;
+// THE SIMS CUTOUT, as a clipping plane through the orbit centre facing the camera. The
+// wall-mesh cutaway below it can only hide GT wall objects, and HM3D ships none -- its
+// semantic annotation is a flat instance list with no wall geometry -- so on every scene here
+// the cutaway had nothing to act on and the building stayed sealed. Clipping the MESH is what
+// opens it, and the machinery was already present for storey banding.
+const CUTPLANE = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+// Keeps z BELOW its constant: normal (0,0,-1) makes the signed distance (constant - z), so
+// the half-space kept is everything under the ceiling. Same convention as CLIP[1].
+const CEILPLANE = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);
 const CLIP = [new THREE.Plane(new THREE.Vector3(0, 0, 1), 0),
               new THREE.Plane(new THREE.Vector3(0, 0, -1), 0)];
 let FLOOR = null;                 // null = ALL storeys
@@ -1262,6 +1301,22 @@ function applyFloor() {
       planes.push(CLIP[1]);
     }
   }
+  // THE CUTOUT RIDES ALONG WITH THE STOREY BAND. Membership is set here; the plane's own
+  // normal and offset are refreshed every frame in `cutaway()`, and three reads the plane
+  // object at draw time, so following the camera costs no material rebuild.
+  //
+  // THE ROOF COMES OFF TOO, which is what makes it a dollhouse rather than a sliced loaf.
+  // `ceiling_z` is the lowest annotated ceiling that begins above the storey this run mapped
+  // (computed server-side from the GT ceilings). On hm3d_00861 the mapped storey is the UPPER
+  // one at z 1.21 and its ceiling is at 3.32, while the lower storey's ceiling sits at
+  // 0.70-1.05 -- so a fixed offset above the floor would have cut the wrong one. Null when
+  // the scene annotates no ceiling above the storey, and then the roof is left alone rather
+  // than cut at an invented height.
+  if (CUT && typeof P.ceiling_z === 'number') {
+    CEILPLANE.constant = P.ceiling_z;
+    planes = planes.concat([CEILPLANE]);
+  }
+  if (CUT) planes = planes.concat([CUTPLANE]);
   for (const m of MESHMATS) { m.clippingPlanes = planes; m.needsUpdate = true; }
 }
 
@@ -1361,6 +1416,11 @@ const CAMDIR = new THREE.Vector3(), WOFF = new THREE.Vector3();
 function cutaway() {
   const use = CUT && show.wall;
   CAMDIR.subVectors(controls.target, camera.position).normalize();
+  // The cutout plane keeps the FAR side of the orbit centre, so everything between you and
+  // what you are looking at is removed -- the near wall and the roof over it. It is aimed
+  // afresh every frame, which is what makes it follow an orbit instead of cutting one fixed
+  // face. `setFromNormalAndCoplanarPoint` keeps the half-space the normal points into.
+  CUTPLANE.setFromNormalAndCoplanarPoint(CAMDIR, controls.target);
   for (const m of G.wall.children) {
     let vis = m.userData.onFloor !== false;
     if (vis && use) {
@@ -1515,6 +1575,26 @@ const basis = new BasisTextureLoader();
 // a path prefix, which leaves every texture untranscoded.
 basis.setTranscoderPath(PFX + '/vendor/basis/');
 basis.detectSupport(renderer);
+// BPTC IS REFUSED, AND ASTC WITH IT, because these are ETC1S textures. BasisTextureLoader
+// picks a transcode target by GPU support in the order ASTC, BPTC, DXT, ETC, PVRTC
+// (vendor_three/BasisTextureLoader.js:630-677), and BPTC means BC7_M5 -- a target meant for
+// UASTC sources. Feeding it ETC1S is what produced the scrambled checkerboard the owner
+// photographed twice: whole surfaces rebuilt from small tiles of unrelated texture. The
+// canonical ETC1S targets are BC1 and BC3, which is the DXT branch immediately below.
+//
+// WHY IT WAS NOT SEEN FROM HERE. `detectSupport` asks the GPU, so a headless Chrome on
+// swiftshader and a real GPU choose DIFFERENT branches: the mesh looked right in every
+// screenshot I took and wrong on the owner's machine, from the same code. A defect that
+// depends on the renderer cannot be closed by looking at one renderer.
+//
+// Two flags, not one: without also refusing ASTC a machine that supports it would take the
+// first branch and never reach DXT, which is the same bug wearing a different format. The
+// chosen format is printed on the status line, so what actually happened is readable rather
+// than assumed.
+if (basis.workerConfig) {
+  basis.workerConfig.bptcSupported = false;
+  basis.workerConfig.astcSupported = false;
+}
 basis.setWorkerLimit(4);
 
 const loader = new GLTFLoader();
@@ -1563,6 +1643,7 @@ loader.load(MESH_URL, g => {
 
   let tris = 0, textured = 0, fmt = '';
   const mats = new Set();
+  let raggedMips = 0;   // compressed textures whose mip chain is not 4x4-block aligned
   root.traverse(n => {
     if (!n.isMesh) return;
     const a = n.geometry.attributes.position;
@@ -1577,9 +1658,26 @@ loader.load(MESH_URL, g => {
       // A compressed texture with ONE mip level under a mipmapping minFilter samples as
       // black in WebGL. GLTFLoader overwrites minFilter from the glTF sampler (9986 here,
       // NearestMipmapLinear), so the guard has to come after it, not inside the loader.
-      if (m.map.mipmaps && m.map.mipmaps.length < 2) {
+      //
+      // AND A MIP CHAIN THAT IS NOT BLOCK-ALIGNED SAMPLES AS GARBAGE. These are BC7
+      // (COMPRESSED_RGBA_BPTC_UNORM, 0x8e8c), which stores 4x4 blocks: a level whose width
+      // or height is not a multiple of 4 has no whole-block representation, and sampling it
+      // returns neighbouring blocks in the wrong order -- the scrambled checkerboard the
+      // owner photographed on a distant wall, which is exactly where the small mips are
+      // used. The single-mip case above was already handled; this is the same fault one
+      // level further in, and it only shows at a distance, which is why it read as "the
+      // textures look weird" rather than as a broken texture.
+      //
+      // Dropping to LinearFilter uses level 0 alone: slightly more aliasing far away, and
+      // no garbage. Kept per-texture rather than applied to all of them, so the textures
+      // whose chains ARE aligned keep their mipmaps.
+      const mips = m.map.mipmaps || [];
+      const ragged = mips.length > 1 && mips.some(
+        lv => lv && ((lv.width % 4) !== 0 || (lv.height % 4) !== 0));
+      if (mips.length < 2 || (m.map.isCompressedTexture && ragged)) {
         m.map.minFilter = THREE.LinearFilter;
         m.map.needsUpdate = true;
+        if (ragged) raggedMips++;
       }
     }
   });
@@ -1628,6 +1726,11 @@ loader.load(MESH_URL, g => {
   const secs = ((performance.now() - T0) / 1000).toFixed(1);
   say('mesh', 'mesh: ' + Math.round(tris).toLocaleString() + ' triangles, ' +
       textured + ' of ' + mats.size + ' materials textured' +
+      // SAID OUT LOUD, because a silent downgrade is how the original fault survived: the
+      // page reported "57 of 57 materials textured" while some of them were sampling
+      // garbage from a ragged mip chain. If this number is non-zero the mesh is sharp at
+      // level 0 and slightly aliased far away, which is the trade being made.
+      (raggedMips ? ' (' + raggedMips + ' mip chains not block-aligned, using level 0)' : '') +
       (textured ? ' (' + fmt + ')' : ' -- HEIGHT-RAMP FALLBACK, textures did NOT transcode') +
       ', ' + secs + ' s. ' + verdict, cls);
   // A selection made during the ~1.2 s load ran dimMesh over an EMPTY MESHMATS, so the
@@ -1975,7 +2078,10 @@ document.getElementById('bPath').onclick = e => tog('path', e.target);
 document.getElementById('bFloor').onclick = e => tog('floor', e.target);
 document.getElementById('bMesh').onclick = e => tog('mesh', e.target);
 document.getElementById('bCut').onclick = e => { CUT = !CUT;
-  e.target.classList.toggle('on', CUT); render(); };
+  // applyFloor, not just render: CUT now decides whether the cutout plane is IN the
+  // materials' clippingPlanes at all, and that membership is set there. Repainting alone
+  // left the mesh clipped after the button said the cutout was off.
+  e.target.classList.toggle('on', CUT); applyFloor(); render(); };
 document.getElementById('bCam').onclick = e => tog('robot', e.target);
 document.getElementById('bLabel').onclick = e => { show.label = !show.label;
   e.target.classList.toggle('on', show.label); render(); };

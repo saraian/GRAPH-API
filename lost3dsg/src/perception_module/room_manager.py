@@ -40,6 +40,7 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
+from config import world_frame
 
 file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
@@ -864,7 +865,7 @@ class RoomManager:
         for frame in ('base_link', 'base_footprint', 'robot_base'):
             try:
                 tf = self.tf_buffer.lookup_transform(
-                    'map', frame, rclpy.time.Time(),
+                    world_frame(), frame, rclpy.time.Time(),
                     timeout=Duration(seconds=0.3))
                 return float(tf.transform.translation.x), float(tf.transform.translation.y)
             except Exception:
@@ -883,7 +884,7 @@ class RoomManager:
         for frame in ('base_link', 'base_footprint', 'robot_base'):
             try:
                 tf = self.tf_buffer.lookup_transform(
-                    'map', frame, rclpy.time.Time(),
+                    world_frame(), frame, rclpy.time.Time(),
                     timeout=Duration(seconds=0.3))
                 return float(tf.transform.translation.z)
             except Exception:
@@ -950,7 +951,7 @@ class RoomManager:
                     self._latest_cloud_obstacle_received_at = time.monotonic()
                 else:
                     self._latest_cloud_points = None
-                    self._latest_cloud_frame = msg.header.frame_id or 'map'
+                    self._latest_cloud_frame = msg.header.frame_id or world_frame()
                     self._latest_cloud_stamp = msg.header.stamp
                     self._latest_cloud_received_at = time.monotonic()
             return
@@ -959,17 +960,18 @@ class RoomManager:
             points = points.reshape(1, -1)
         points = points[:, :3].astype(np.float64, copy=False)
 
-        source_frame = (msg.header.frame_id or 'map').lstrip('/')
-        if source_frame != 'map':
+        target_frame = world_frame().lstrip('/')
+        source_frame = (msg.header.frame_id or target_frame).lstrip('/')
+        if source_frame != target_frame:
             try:
                 tf = self.tf_buffer.lookup_transform(
-                    'map', source_frame, msg.header.stamp,
+                    target_frame, source_frame, msg.header.stamp,
                     timeout=Duration(seconds=0.3))
                 points = self._transform_points(points, tf.transform)
             except Exception as exc:
                 now = time.time()
                 if now - self._last_cloud_warn_time > 5.0:
-                    self._log('warn', f'Cannot transform 3D cloud map<-{source_frame}: {exc}')
+                    self._log('warn', f'Cannot transform 3D cloud {target_frame}<-{source_frame}: {exc}')
                     self._last_cloud_warn_time = now
                 return
 
@@ -983,7 +985,7 @@ class RoomManager:
                 self._latest_cloud_obstacle_received_at = received_at
             else:
                 self._latest_cloud_points = points
-                self._latest_cloud_frame = 'map'
+                self._latest_cloud_frame = target_frame
                 self._latest_cloud_stamp = msg.header.stamp
                 self._latest_cloud_received_at = received_at
 
@@ -2917,6 +2919,10 @@ class RoomManager:
         return merged_candidates
 
     def process_grid(self, grid, full_resegment=True):
+        if grid.header.frame_id and grid.header.frame_id != world_frame():
+            self._log('warn', f'Ignoring occupancy grid in {grid.header.frame_id!r}; '
+                      f'expected {world_frame()!r}')
+            return
         with self._lock:
             self.last_grid = grid
             self.last_robot_xy = self._robot_pose()
@@ -3830,7 +3836,7 @@ class RoomManager:
             return
         output = MarkerArray()
         clear = Marker()
-        clear.header.frame_id = "map"
+        clear.header.frame_id = world_frame()
         clear.header.stamp = self.node.get_clock().now().to_msg()
         clear.action = Marker.DELETEALL
         output.markers.append(clear)
@@ -4052,7 +4058,9 @@ class RoomManager:
         if not force and time.time()-self._last_save_time < self._params['save_period_s']:
             return
         self._last_save_time = time.time()
-        output_dir = os.path.join(PROJECT_ROOT, 'output')
+        output_dir = (os.environ.get('GRAPH_API_OUTPUT_DIR')
+                      or os.environ.get('LOST3DSG_OUTPUT_DIR')
+                      or os.path.join(PROJECT_ROOT, 'output'))
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, 'room.json')
         rooms_payload = self._json_safe(list(self.scene_graph.values()))

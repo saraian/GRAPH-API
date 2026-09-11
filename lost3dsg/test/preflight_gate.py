@@ -277,8 +277,16 @@ def a2_config_identity(expect_name=None, expect_sha=None, expect_merged=None):
             "is not in the loop. This is a wiring fault, not a configuration choice."))
     # The old comparison was basename(GRAPH_API_CONFIG) against CFG_NAME, and the container
     # builds GRAPH_API_CONFIG from CFG_NAME — true for every value, so it could never fail.
-    if expect_name and os.path.basename(loaded_path) != expect_name:
-        return False, dict(detail, expected_name=expect_name)
+    # BASENAMES ON BOTH SIDES. CFG_NAME may now be a path relative to lost3dsg/test/ rather than a
+    # bare filename -- `--config` accepts a config anywhere, and the launcher resolves the name
+    # against its own directory. Comparing a basename against "../src/perception_module/config.yaml"
+    # failed with no reason attached, which is how this probe reported a WORKING run as broken on
+    # Gin, 2026-09-10. The directory half is already covered by the file-sha comparison below, which
+    # is the stronger check: it proves the CONTENT, not the spelling.
+    if expect_name and os.path.basename(loaded_path) != os.path.basename(expect_name):
+        return False, dict(detail, expected_name=expect_name, why=(
+            f"the container loaded {os.path.basename(loaded_path)!r} but the launcher named "
+            f"{os.path.basename(expect_name)!r} — the two are different files."))
     if expect_sha and file_sha != expect_sha:
         return False, dict(detail, expected_file_sha=expect_sha, why=(
             "the config file differs from the one the launcher hashed — the mounted tree is "
@@ -304,7 +312,30 @@ def a3_policy_reached_container(expect_policy):
     keys and this file learns nothing about any of them.
     """
     if not expect_policy:
-        return SKIPPED, {"reason": "no --expect-policy given; nothing to compare against"}
+        # GA-477 (2026-09-10, found by the ontology lane, whose third launch this cost). NOTHING TO
+        # COMPARE IS AN ANSWER, NOT AN ABSENCE. A skip fails the gate (:1574, and rightly -- a probe
+        # that did not run must not read as green), so a3 skipping made the gate UNPASSABLE for any
+        # stack with no policy layer: the launcher builds the expectation by looping over
+        # EXT_ENV_PASS, which is empty without an extension, so a3 skipped for graphapi_only_config,
+        # for smoke_config, and for every GRAPH-API-only deployment.
+        #
+        # This is the same finding GA-435 fixed for a7 four hours earlier -- "on a deployment with
+        # NO extension ... a GRAPH-API-only stack could not pass the gate at all" -- which survived
+        # one probe over because the fix was made where it was found rather than where it applied.
+        #
+        # SO THE DISCRIMINATOR IS WHETHER A POLICY LAYER EXISTS, not whether an expectation arrived.
+        # No extension declares one: there is nothing to deliver and nothing to check, and the probe
+        # says so. An extension IS configured and the expectation is missing: that is the launcher
+        # failing to compute what it promised, which is the fault a3 was written for, and it still
+        # skips.
+        if _found_exercised("auto"):
+            return SKIPPED, {"reason": "an extension is configured but no --expect-policy arrived; "
+                                       "the launcher builds it from EXT_ENV_PASS, so this is a gap "
+                                       "in the launcher, not an absent policy layer"}
+        return True, {"checked": {}, "mismatches": {},
+                      "reason": "no policy layer in this deployment: the config names no filter "
+                                "outside this repository, so no extension variable has to reach "
+                                "the container. Vacuously true, and recorded rather than skipped."}
     mismatches, seen = {}, {}
     for k, want in expect_policy.items():
         got = os.environ.get(k)
@@ -1212,6 +1243,13 @@ A12_ALLOWED_FILES = {
     "test/habitat_feed_host.py": "renders the semantic sensor (producer)",
     "test/live_run.sh": "exports FEED_GT_SEMANTIC and stamps gt_semantic",
     "test/preflight_gate.py": "this probe names the tokens",
+    # Added 2026-09-11. Verified before listing, the same way the two entries below were:
+    # nothing in CMakeLists' install list carries it (grep: 0), nothing under src/ or test/ imports
+    # it, and it runs AFTER a run from eval.sh -- never in the container and never on the inference
+    # path. Its four tokens are TABLE LABELS: "floors in ground truth", "regions in ground truth",
+    # "ground-truth room labels". A reporter that may not say "ground truth" cannot label a column.
+    "test/eval_report.py": "offline PDF reporter; imported by nothing, installed nowhere",
+
     "test/test_preflight_gate.py": "the negative test names the tokens",
     "src/perception_module/habitat_feed_node.py": "relays the blob to /gt/semantic_instance (transport)",
     "src/perception_module/gt_codec.py": "the run-length codec",

@@ -103,6 +103,20 @@ _DEFAULTS = {
         "merge_cost_ratio": 20.0,          # false-merge cost / missed-merge cost; threshold = log(ratio)
         "merge_min_consecutive": 2,        # consecutive sweeps a pair must hold before it commits
         "merge_max_distance_m": 0.8,       # centre distance beyond which a pair is never merged
+        # DECLARED 2026-09-11. Both were read from the config and absent from these defaults, so a
+        # deployment whose yaml omits them took the module fallback silently -- the same fault as
+        # camera_pitch_deg and max_frame_age_s. Values are the fallbacks the code already used:
+        # object_manager_6.py:136 and object_services.py:82.
+        "association_margin_m": 0.3,
+        "merge_aabb_margin_m": 0.8,
+        # DECLARED 2026-09-11. The post-scan merge (8c25efa) read both from the environment
+        # only, and neither is on the launcher's -e list, so nothing host-side could reach
+        # them: the settle was pinned at its literal for every run. A config home makes the
+        # value settable where it is actually read -- config.yaml travels into the container
+        # -- and leaves the environment as the documented per-run override it is everywhere
+        # else. Values are the literals object_manager_6.py:281-282 already used.
+        "scan_complete_topic": "/habitat/scan_complete",
+        "scan_merge_settle_s": 1.0,
         # Must stay STRICTLY above `sim_threshold` or a merge fuses pairs the association loop
         # just refused; object_services asserts that at load and the service now refuses a
         # request that carries a lower floor.
@@ -330,6 +344,9 @@ _DEFAULTS = {
         "dir": "",
     },
     "tf": {
+        # Common frame for robot poses, occupancy grids and projected 3D boxes. Habitat keeps
+        # the historical ``map`` frame; a TIAGo config can select its connected world frame.
+        "world_frame": "map",
         # seconds to wait for a transform lookup before giving up on the frame
         "lookup_timeout": 0.1,
         # GA-95: the TF buffer's cache window. A frame whose stamp is older than this can
@@ -415,8 +432,6 @@ _DEFAULTS = {
         # storeys, and HM3D navmeshes join them through the stairs
         "single_floor": True,
         "floor_tolerance_m": 0.5,
-        "mapping_seconds": 150.0,
-        "walk_frames": 6,
         # GA-258. DWELL MODE, dynamic by default. A fixed dwell is wrong in both
         # directions: it wastes frames when no merge is waiting to be confirmed, and leaves
         # before confirmation when one is. Dynamic dwell asks the object manager what is
@@ -424,11 +439,6 @@ _DEFAULTS = {
         # Set dwell_dynamic false for a fixed-length dwell -- which is what a clean
         # one-variable ablation of merge_min_consecutive needs, since dynamic dwell makes
         # duration co-vary with the parameter under test.
-        "dwell_dynamic": True,
-        "dwell_min_frames": 8,
-        "dwell_max_frames": 90,
-        "tour_waypoints": 0,
-        "tour_scan_frames": 12,
 
         # --- the camera the simulator renders ----------------------------------------------
         "hfov": 90.0,              # horizontal field of view, degrees; changes the intrinsics
@@ -438,13 +448,21 @@ _DEFAULTS = {
         # `teleport` moves the agent to the next storey when one is done; the alternative keeps
         # it on the storey it spawned on, which is what `single_floor` above enforces.
         "floor_confinement": "teleport",
-        "tour_all_floors": False,   # a base run sets this; a single-storey launch does not
+        # THE MOTION POLICY. A schedule is the only one (owner 2026-09-11): the agent drives the
+        # storey's precomputed Voronoi roadmap and turns a full circle at each stop. run.sh
+        # builds and caches the schedule per scene, so no path is named here.
+        "exploration_laps": 3,      # identical laps; a difference between two is a difference in
+        #                             the WORLD, not in the route
+        "navigation_mode": "navigate",   # or "teleport": no travel frames, only the scans
+        # Degrees per turn action. ONE number for the agent, the schedule's frame budget and the
+        # scan counter; schedule_batch.py --turn-step-deg must match it. 20 leaves a 4.5x overlap
+        # at a 90 degree field of view, where 10 gave 9x and spent 45% of a run on scans.
+        "turn_step_deg": 20.0,
         "tour_end_settle_s": 90.0,  # stand still at the end so the last merges can commit
         "min_floor_share": 0.10,    # a storey holding less than this share of the navmesh is
         #                             not a storey; it is a landing or a stairwell
         "dataset_root": "/root/exchange/lost3dsg/habitat",
 
-        "dwell_frames": 60,
         "fps": 3.0,
     },
     # extension seam (see hooks.py): empty = the pass-through blueprints
@@ -592,7 +610,7 @@ def _load():
                            for k, v in over.items() for sk in (v if isinstance(v, dict) else [k]))
             # TO STDERR, NOT STDOUT. The announcement is a message, not a value, and the
             # launcher CAPTURES this program's stdout to read the merged-config sha
-            # (live_run.sh:949, `--print-merged-sha`). On stdout the line landed INSIDE the JSON
+            # (run.sh, `--print-merged-sha`). On stdout the line landed INSIDE the JSON
             # string in run_metadata.json, newline and all, and the launcher then refused the
             # bundle with "run_metadata.json is not valid JSON". Measured 2026-09-10 on the first
             # run that ever used a local override -- the feature that makes the override honest
@@ -625,6 +643,27 @@ CFG, CFG_PATH, CFG_LOCAL_PATH = _load()
 
 # Backward compatibility: utils.py does `import config` / `config.simulation`.
 simulation = CFG["simulation"]
+
+
+def vlm_completion_kwargs():
+    """Return provider-specific completion options without hard-coding a backend.
+
+    llama.cpp accepts ``chat_template_kwargs.enable_thinking`` through the OpenAI client's
+    ``extra_body`` argument.  Other compatible providers can still supply their own body through
+    ``vlm.extra_body``; an empty result keeps the historical request unchanged.
+    """
+    vlm = CFG.get("vlm") or {}
+    extra = dict(vlm.get("extra_body") or {})
+    if vlm.get("enable_thinking") is False:
+        template = dict(extra.get("chat_template_kwargs") or {})
+        template["enable_thinking"] = False
+        extra["chat_template_kwargs"] = template
+    return {"extra_body": extra} if extra else {}
+
+
+def world_frame():
+    """Return the configured frame shared by perception, markers and the robot BEV."""
+    return str((CFG.get("tf") or {}).get("world_frame") or "map")
 
 
 def visibility(live=None):
