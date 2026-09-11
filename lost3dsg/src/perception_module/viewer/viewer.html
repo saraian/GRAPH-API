@@ -12,6 +12,20 @@
        under a run whose bundle claims to record its own environment.
        Served from the StaticFiles mount that graph_api_bridge.py:102 already provides. -->
   <script src="/viewer/cytoscape.min.js"></script>
+  <!-- CONTINUOUS PHYSICS. cytoscape's own `cose` runs a fixed number of iterations and then
+       STOPS, so a dragged node's neighbours never move and the graph cannot re-settle. cola is
+       a live constraint solver: it keeps simulating, it understands node overlap as a
+       constraint rather than as a post-hoc rescale, and it is O(n log n) rather than cose's
+       O(n^2). Vendored, like cytoscape and elk beside it, because the machines that run this
+       have no network. webcola first: the adapter requires it at load. -->
+  <script src="/viewer/webcola.min.js"></script>
+  <script src="/viewer/cytoscape-cola.js"></script>
+  <script>
+    // The adapter registers itself when both globals are present. Guarded and SAID OUT LOUD:
+    // a missing extension must not look like a physics button that does nothing.
+    if (window.cytoscape && window.cytoscapeCola) { window.cytoscape.use(window.cytoscapeCola); }
+    else { console.warn('[kg] cola not loaded; PHYSICS falls back to cose'); }
+  </script>
   <script src="/viewer/lucide.min.js"></script>
   <style>
     :root {
@@ -2914,9 +2928,20 @@
     // change is where they are put, not how many there are.
     let currentGraphLayout = 'map';
     let physicsOn = false;
+    // THE RUNNING SOLVER, so it can be stopped. cola with `infinite: true` simulates until it
+    // is told not to: left running it costs a core for as long as the tab is open, and a
+    // second layout started on top of it fights the first. Every path that starts one calls
+    // stopPhysics first, and switching PHYSICS off or changing LAYOUT MODE stops it too.
+    let runningPhysics = null;
+    function stopPhysics() {
+      if (!runningPhysics) return;
+      try { runningPhysics.stop(); } catch (e) { /* already finished */ }
+      runningPhysics = null;
+    }
 
     function toggleGraphPhysics() {
       physicsOn = !physicsOn;
+      if (!physicsOn) stopPhysics();
       const b = document.getElementById('btnPhysics');
       if (b) {
         b.textContent = '⚡ PHYSICS: ' + (physicsOn ? 'ON' : 'OFF');
@@ -3464,12 +3489,60 @@
 
     function runSelectedLayout() {
       if (!cy) return;
+      // STOPPED HERE, at the one place every layout change passes through, rather than in each
+      // branch. Five call sites reach this function and the map/float/grid branches return
+      // early; stopping only inside the physics branch would leave cola simulating underneath
+      // a mode that thinks it has placed the nodes, and the two would fight for every frame.
+      stopPhysics();
       let layoutOpts = null;
       // PHYSICS is a separate axis from LAYOUT MODE: it relaxes whatever mode is selected.
       // It is also the expensive one, so it only runs when explicitly asked for.
       if (physicsOn) {
         const n = cy.nodes().length;
-        const phys = cy.layout({
+        // COLA WHEN IT LOADED, cose otherwise. The two are not interchangeable and the
+        // difference is the point: cose solves once and freezes, so dragging a node leaves
+        // its neighbours where they were; cola keeps running, so the graph re-settles around
+        // whatever you move. `infinite` is what makes it dynamic rather than another one-shot.
+        //
+        // The parameters are cola's equivalents of the RoboData_UI barnesHut set the owner
+        // pointed at (gravitationalConstant -8000, springLength 95, avoidOverlap 0.1):
+        // edgeLength is the spring rest length, avoidOverlap is the same constraint by name,
+        // and handleDisconnected keeps components from flying apart the way a pure n-body does.
+        const useCola = typeof window.cytoscapeCola !== 'undefined';
+        const phys = cy.layout(useCola ? {
+          name: 'cola',
+          // `animate: false`, AND NOT BY PREFERENCE. cola's animated path does not tick in
+          // this vendored pair (cytoscape-cola 2.5.1 + webcola 3.4.0): MEASURED on this graph,
+          // `animate: true` emits `layoutstart` and then nothing -- no `layoutready`, no
+          // `layoutstop`, 0 of 70 nodes moved, whatever `infinite` is set to. With
+          // `animate: false` the same options move all 70 and fire the full sequence. So
+          // `infinite` is off too: continuous simulation needs the animated path to tick.
+          //
+          // WHAT IS KEPT is the part that mattered: cola's constraint solver, avoidOverlap as
+          // a real constraint rather than a post-hoc rescale, and per-edge spring lengths.
+          // WHAT IS NOT delivered is live drag-and-resettle motion.
+          infinite: false,
+          fit: false,              // refitting fights the user's own zoom
+          animate: false,
+          nodeDimensionsIncludeLabels: true,
+          avoidOverlap: true,
+          handleDisconnected: true,
+          // ROOMS ARE THE ANCHORS. A spring length per EDGE KIND is what makes objects cluster
+          // round the room they are in instead of spreading evenly: `isLocatedIn` is the
+          // object-to-room membership edge (38 of 67 on this graph) and gets a short rest
+          // length, so a room and its contents pull into a tight group, while the relational
+          // edges between objects stay long enough not to drag one room's contents into
+          // another's. With a single length for everything, membership and adjacency compete
+          // on equal terms and the rooms dissolve into one cloud.
+          //
+          // A number would have worked before rooms were drawn; a function is what carries the
+          // structure the graph actually has.
+          edgeLength: e => (e.data('label') === 'isLocatedIn' ? 70
+                            : e.data('label') === 'isIn' ? 90 : 260),
+          nodeSpacing: 12,
+          maxSimulationTime: n > 150 ? 2000 : 4000,
+          randomize: false
+        } : {
           name: 'cose', animate: false, numIter: n > 150 ? 120 : 600, randomize: false,
           nodeDimensionsIncludeLabels: true, fit: true, padding: 60,
           nodeRepulsion: 350000, idealEdgeLength: 220, edgeElasticity: 20,
@@ -3477,7 +3550,13 @@
         });
         // PHYSICS used to return without ever calling applyDensityScale, so the one mode
         // the owner runs in was the one mode with no density scaling at all.
+        //
+        // AN INFINITE LAYOUT NEVER FIRES `layoutstop`, so hanging the density rescale on that
+        // event would silently un-fix the bug above the moment cola is in use. cola emits
+        // `layoutready` once the first solve has settled, which is the moment the sizes are
+        // worth reading; cose keeps using layoutstop, which is the only event it has.
         phys.one('layoutstop', () => { cy.scratch('_degRank', null); applyDensityScale(); });
+        runningPhysics = phys;   // stopped at the top of this function on the next change
         phys.run();
         return;
       }
