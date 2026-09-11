@@ -459,6 +459,73 @@ def merge_path():
     assert "threshold_distance_m" not in sr, "the similarity arm must not carry the distance key"
 
 
+def merge_request_distance_survives_the_broad_phase():
+    """The AABB broad phase must WIDEN to the request's distance, never narrow it.
+
+    The load-time guard asserts `merge_aabb_margin_m >= merge_max_distance_m`, and its comment
+    says the margin exists so the broad phase "cannot hide a pair that the legacy merge
+    criterion would evaluate". It compares against the CONFIG value only. `_cb_merge_objects`
+    sets MAX_DISTANCE from `request.max_distance`, and `_merge_candidates` was never told it,
+    so a request asking for more than the config default was silently narrowed to the fixed
+    margin -- the pair was dropped before comparison and no refusal was written.
+
+    MEASURED before the fix, and reproduced here: centres 2.0 m apart, boxes 1.0 m apart, which
+    is past the 0.8 m margin but well inside a 3.0 m request.
+    """
+    svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
+    svc.get_logger = lambda: rosstub.Any()
+    svc.log_both = lambda *a, **k: None
+    svc.room_manager = room_manager.RoomManager.__new__(room_manager.RoomManager)
+    svc.room_manager.scene_graph = {}
+    svc.room_manager.current_room_id = "room_1"
+    svc.room_manager.room_at_bbox = lambda bbox: None
+
+    rows = []
+
+    class _Log:
+        def write(self, kind, oid, **kw):
+            rows.append((kind, kw.get("reason"), kw.get("by_reason")))
+
+    svc.decision_log = _Log()
+
+    PAST_MARGIN = {"x_min": 2.0, "x_max": 3.0, "y_min": 0.0, "y_max": 1.0,
+                   "z_min": 0.0, "z_max": 1.0}
+    gap = PAST_MARGIN["x_min"] - BOX["x_max"]
+    assert gap > object_services.MERGE_AABB_MARGIN_M, (
+        f"the pair must sit OUTSIDE the config margin or this proves nothing: "
+        f"gap {gap} m, margin {object_services.MERGE_AABB_MARGIN_M} m")
+
+    def sweep(asked):
+        rows.clear()
+        a = object_info.Object("chair", None, BOX, description="a chair", color="red",
+                               material="wood")
+        b = object_info.Object("chair", None, PAST_MARGIN, description="a chair", color="red",
+                               material="wood")
+        a.object_id, b.object_id = "obj_a", "obj_b"
+        a.creation_time, b.creation_time = 100.0, 200.0
+        wm.persistent_perceptions.clear()
+        wm.persistent_perceptions.extend([a, b])
+        req = rosstub.Any()
+        req.max_distance, req.min_similarity, req.dry_run = asked, 0.9, True
+        object_services.ObjectServices._cb_merge_objects(svc, req, rosstub.Any())
+        return list(rows)
+
+    # The instrument must be able to say the OTHER thing: at the config distance this pair is
+    # correctly dropped by the broad phase, and that is what the summary row is for.
+    at_config = sweep(object_services.MERGE_AABB_MARGIN_M)
+    assert any(k == "not_offered_summary" for k, _r, _b in at_config), at_config
+
+    # The fix: a wider request must reach the exact gate, so the pair is COMPARED. Nothing may
+    # be dropped by the broad phase, because the request asked for more than the margin.
+    wider = sweep(3.0)
+    assert not any(k == "not_offered_summary" for k, _r, _b in wider), (
+        f"a request wider than the margin was narrowed by the broad phase: {wider}")
+    assert any(k == "merge" or (k == "merge_refused" and r != "distance")
+               for k, r, _b in wider), \
+        f"the pair must reach the exact gate, not vanish: {wider}"
+    wm.persistent_perceptions.clear()
+
+
 def scan_summary():
     """GA-190: the tracking scan emits ONE summary row per cycle, and resets.
 
@@ -1372,6 +1439,8 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("detector failure skips the cycle, counted (GA-427)", detector_failure_skips_the_cycle),
                  ("merge lock covers the writes, not the sweep (GA-393)", merge_lock_covers_writes_only),
                  ("every config key the code reads is declared", every_config_key_read_is_declared),
+                 ("broad phase widens to the request's distance, never narrows",
+                  merge_request_distance_survives_the_broad_phase),
                  ("merge path (dry run)", merge_path)]:
     check(name, fn)
 

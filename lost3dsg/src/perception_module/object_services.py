@@ -1151,7 +1151,7 @@ class ObjectServices(Node):
                                        f"'{getattr(o, 'label', '?')}': {e}")
         return ctx, built
 
-    def _merge_candidates(self, objects, _refused):
+    def _merge_candidates(self, objects, _refused, max_distance_m=None):
         """-> (pairs, ctx, assoc_objects). Which pairs are even offered to a decision.
 
         The legacy engine uses the old merge gates, but its all-pairs enumeration is now
@@ -1166,6 +1166,22 @@ class ObjectServices(Node):
         broad phase.
         """
         if MERGE_ENGINE == "legacy":
+            # The load-time guard at the top of this module asserts the margin is at least the
+            # CONFIG distance, so the broad phase "cannot hide a pair that the legacy merge
+            # criterion would evaluate". It never sees `request.max_distance`, which is what
+            # `_cb_merge_objects` actually compares against, so a request asking for MORE than
+            # the config default was narrowed to the fixed margin and the pairs between the two
+            # were dropped here, uncompared. MEASURED before this fix: two objects 2.0 m apart
+            # with a 1.0 m box gap and `request.max_distance=3.0` were never compared.
+            #
+            # WIDEN, NEVER NARROW. `max` cannot drop a pair the fixed margin would have kept, so
+            # this changes no decision that the config path already makes. `max_distance_m` is
+            # positive by the time it arrives: `_cb_merge_objects` refuses a request at or below
+            # zero before reaching here. A non-numeric value raises rather than being muted --
+            # silently falling back to the config margin is the bug this removes.
+            margin = MERGE_AABB_MARGIN_M
+            if max_distance_m is not None:
+                margin = max(margin, float(max_distance_m))
             index = DetectionIndex()
             indexed = {}
             valid = []
@@ -1183,7 +1199,7 @@ class ObjectServices(Node):
             pair_indices = set()
             for i in valid:
                 key = f"merge:{i}"
-                for hit in index.query(objects[i].bbox, MERGE_AABB_MARGIN_M):
+                for hit in index.query(objects[i].bbox, margin):
                     examined += index.last_examined
                     j = indexed[hit]
                     if i < j:
@@ -1204,7 +1220,8 @@ class ObjectServices(Node):
                 'info',
                 f"[MERGE AABB] objects={len(objects)} all_pairs={all_pairs} "
                 f"candidates={len(pairs)} examined={examined} "
-                f"invalid_bbox={len(invalid)} margin={MERGE_AABB_MARGIN_M:.3f}m",
+                f"invalid_bbox={len(invalid)} margin={margin:.3f}m "
+                f"(config {MERGE_AABB_MARGIN_M:.3f}m, request {max_distance_m})",
             )
             # GA-232's rule, applied to this engine too: COUNTS, never per-pair rows -- the
             # per-pair population is what took hook_decisions.jsonl to 1.71 GB. Without this
@@ -1413,7 +1430,8 @@ class ObjectServices(Node):
             # `not_offered_summary` row, so a pair that was never compared is visible in the
             # bundle instead of being invisible the way refusals were before they were
             # logged.
-            pair_iter, assoc_ctx, assoc_objs = self._merge_candidates(objects, _refused)
+            pair_iter, assoc_ctx, assoc_objs = self._merge_candidates(
+                objects, _refused, MAX_DISTANCE)
 
             for a, b, pair_meta in pair_iter:
                     # GA-23: `a` is re-tested on every pair rather than once per outer
