@@ -34,6 +34,15 @@ lost3dsg/src/perception_module/config.local.yaml
 # Per-machine Claude Code settings (hooks); never committed.
 .claude/settings.local.json
 
+# Private PAL TIAGo inputs. Keep only the setup note in the repository; the
+# ISO, keys, builder and any local helper bundle must never be committed.
+/TIAGO_ISO/*
+!/TIAGO_ISO/README.md
+
+# Runtime staging used to adapt the private builder to a standalone clone.
+/.tiago-runtime/
+/.tiago-found-root/
+
 # RUN OUTPUT LIVES IN THE REPOSITORY NOW. Owner instruction 2026-09-10: results are stored in
 # <repo>/results, the live output is part of each run's own folder, and there is no separate
 # workspace directory. These MUST stay ignored: a run bundle is over a gigabyte, and untracked
@@ -44,3 +53,5 @@ lost3dsg/src/perception_module/config.local.yaml
 /maps/
 /output/
 /ws/
+# Local RGB-D bags; this can be a symlink to a larger per-machine volume.
+/bags

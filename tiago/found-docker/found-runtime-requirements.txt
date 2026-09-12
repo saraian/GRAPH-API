@@ -1,0 +1,34 @@
+# Python runtime for FOUND + LOST-3DSG on the PAL TIAGo development image.
+# Numpy/SciPy are pinned to the versions the graph-api Humble image uses.
+# Do not add opencv-python: the image already has python3-opencv (cv_bridge).
+# Do not add PyYAML: python3-yaml is already present.
+
+numpy==1.26.4
+scipy==1.11.4
+
+torch==2.2.2
+torchvision==0.17.2
+timm==0.9.16
+transformers==4.44.2
+sentence-transformers==3.1.1
+segment-anything==1.0
+ultralytics==8.2.103
+
+onnx==1.16.2
+# VitSAM uses ONNX Runtime directly; the Tiago container has CUDA and must use
+# the GPU provider instead of silently falling back to CPU.
+onnxruntime-gpu==1.19.0
+onnxsim==0.4.36
+
+gensim==4.3.2
+openai==1.35.13
+httpx==0.27.2
+webcolors==1.13
+rdflib==7.1.4
+pyoxigraph==0.4.9
+
+fastapi==0.115.0
+uvicorn==0.30.1
+requests==2.32.3
+tqdm==4.66.5
+Pillow==10.4.0

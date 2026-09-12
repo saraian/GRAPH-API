@@ -1,0 +1,78 @@
+# Overlay for FOUND + LOST-3DSG on the physical TIAGo.
+# GRAPH_API_CONFIG points here unless you pass another yaml.
+# Recursive merge is against the perception_module defaults, not config.yaml.
+
+simulation: false
+
+# Tiago has no waypoint-complete/360 navigation event. Run the same graph-wide
+# merge criterion periodically instead. Override per run with
+# TIAGO_MERGE_INTERVAL_S=<seconds>; set it to 0 to disable periodic merging.
+merge:
+  periodic_interval_s: 5.0
+
+frames:
+  camera: "head_front_camera_color_optical_frame"
+  motion_watch: ["base_footprint", "head_1_link", "head_2_link"]
+  motion_watch_base: []
+
+paths:
+  output_dir: "/ws/output"
+  operations_log: "/ws/output/operations.txt"
+  vitsam_encoder: "/models/vitsam/l2_encoder.onnx"
+  vitsam_decoder: "/models/vitsam/l2_decoder.onnx"
+
+embedding:
+  word2vec_path: "/ws/smoke_w2v.bin"
+  word2vec_limit: 200000
+
+tf:
+  # RTAB-Map owns found_map -> odom. PAL's disconnected office map is untouched.
+  world_frame: found_map
+
+bev:
+  source: ros
+  map_topic: /rtabmap/map
+  base_frame: base_footprint
+
+services:
+  feed_enabled: false
+
+rooms:
+  default_room_id: "room_0"
+
+vlm:
+  # Regolo multimodal endpoint; detector/VitSAM still runs in this container.
+  base_url: "https://api.regolo.ai/v1"
+  model: "gemma4-31b"
+  # Keep the credential out of this external config. Export REGOLO_API_KEY on the host;
+  # run_tiago.sh forwards it into the container for the runtime.
+  api_key: ""
+  enable_thinking: false
+  timeout: 120.0
+  retries: 1
+  crop_timeout: 60.0
+  crop_concurrency: 2
+
+perception:
+  backend: "local"
+  score_threshold: 0.15
+  nms_threshold: 0.50
+  # The physical RGB-D camera sees the room well beyond the 1.8 m Habitat
+  # default.  Without this, the depth-derived FOV is empty and disappearance
+  # deletion is correctly (but permanently) skipped.
+  fov_max_depth_m: 6.0
+
+association:
+  # On the physical Tiago, delete an object after one eligible disappearance
+  # sweep instead of inheriting the conservative shared default of five.
+  max_misses_before_delete: 1
+
+# Physical Tiago runs use Graph API's built-in pass-through seam. Do not load
+# the optional FOUND admission/ontology extension from the mounted legacy
+# checkout.
+hooks:
+  search_paths: []
+  filter: ""
+  refiner: ""
+  store: ""
+  decisions_log: ""
