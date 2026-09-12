@@ -265,7 +265,7 @@ _DEFAULTS = {
         # standing still, and any threshold that admits a scan rotation admits six metres of
         # driving. These keys make the gate tunable and record what it costs; they do not make
         # the quantity it compares physically meaningful.
-        "motion_position_threshold": 0.05,
+        "motion_position_threshold": 4.0,
         "motion_min_stationary_s": 0.5,
         # The frame the perception back-projects into. Must be an OPTICAL frame
         # (x right, y down, z forward). Publishing a body pose under this name

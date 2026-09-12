@@ -111,7 +111,7 @@ frames:
   # second, the same length as the sampling period.
   # Raising the threshold is NOT a fix: metres and radians are summed, so a turn on the spot
   # scores 6.28 without moving, and a threshold that admits it admits six metres of driving.
-  motion_position_threshold: 0.05
+  motion_position_threshold: 4.0
   motion_min_stationary_s: 0.5
 
 paths:
