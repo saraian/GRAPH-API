@@ -111,7 +111,7 @@ def describe(name, use_cache=True):
     frame_files = sorted((d / "frames").glob("*.jpg")) if (d / "frames").is_dir() else []
     n_frames = len(frame_files)
     # MEASURED resolution, from a frame the run actually wrote. `habitat.width` in the
-    # effective config is NOT trustworthy for this: live_run.sh records an incident where it
+    # effective config is NOT trustworthy for this: run_sim.sh records an incident where it
     # "read 1280 from my own code default while the merged config supplied 640 and the sensor
     # stayed at 640x480", and bundle 20260901_055513 still stamps 1280x960 beside 640x480
     # JPEGs. A page that printed the config value would republish a number the project has
@@ -238,7 +238,12 @@ def page():
                  if v else "—")
         engine = c["merge_engine"]
         eng_cls = "ev" if engine and "evidence" in str(engine) else "lg"
-        act = (f'<a class="go" href="/replay?bundle={r["name"]}">REPLAY</a>'
+        # OPEN, NOT REPLAY, and it points at the dashboard. The /replay page was retired
+        # (owner 2026-09-11) because it was a second rendering of the run /dash already shows;
+        # this row is now the way a recorded run is opened, so it loads the bundle and lands on
+        # the dashboard. A row that cannot be replayed still says why instead of offering a
+        # link that would open an empty player.
+        act = (f'<a class="go" href="#" onclick="return openBundle(\'{r["name"]}\')">OPEN</a>'
                if r["replayable"] else f'<span class="no" title="{r["why_not"]}">—</span>')
         body.append(f"""<tr>
 <td class="id">{r['name']}<div class="sub">{_cell(c['config_file'])} · {r['size']}</div></td>
@@ -258,7 +263,7 @@ def page():
 <td>{act}</td></tr>""")
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bundles</title>
+<title>Load a run</title>
 <style>
 :root{{--ground:#f7f6f3;--ink:#15161a;--dim:#5a5f68;--faint:#8d939c;--rule:#dfdcd6;--card:#fffefc;
   --ev:#1d7a52;--ev-bg:#e6f2ec;--lg:#9a5b06;--lg-bg:#faf0de}}
@@ -292,7 +297,7 @@ a.go{{font:600 10px ui-monospace,monospace;color:var(--ev);border:1px solid var(
 .no{{color:var(--faint);cursor:help}}
 </style></head><body><div class="wrap">
 <a class="back" href="/">&larr; DASHBOARD</a>
-<h1>Bundles</h1>
+<h1>Load a run</h1>
 <p class="sub2">Every archived run, by what it RECORDED rather than by when it happened.
 <b>{n_ok} of {len(rows)} can be replayed</b> — replay needs frames and detections, which a run
 only writes with <code>archive.per_detection</code> on. Hover a dash to see why not.</p>
@@ -301,7 +306,22 @@ only writes with <code>archive.per_detection</code> on. Hover a dash to see why 
 <th>objects</th><th>rooms</th><th>admit/rej/abst</th><th>merges</th><th></th></tr>
 {''.join(body)}
 </table></div>
-</div></body></html>"""
+</div>
+<script>
+// OPEN = point the server at this bundle, then go to the dashboard. This is what the tools
+// menu's LOAD button used to do; it lives here now, because this page is where the reader
+// can actually see which run they are choosing -- an <option> could show one line of it.
+async function openBundle(name) {{
+  try {{
+    const r = await fetch('/load_bundle?name=' + encodeURIComponent(name), {{method: 'POST'}});
+    const d = await r.json();
+    if (d.ok) {{ location.href = 'dash'; return false; }}
+    alert('could not open ' + name + ': ' + (d.why || ('HTTP ' + r.status)));
+  }} catch (e) {{ alert('could not open ' + name + ': ' + e.message); }}
+  return false;
+}}
+</script>
+</body></html>"""
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ just as it does with habitat_camera_objects_node.py.
 Motion comes from ONE policy: the precomputed exploration schedule named by
 FEED_SCHEDULE. The agent drives the storey's Voronoi roadmap, turns a full
 circle at each stop, and repeats the same lap FEED_LAPS times. There is no
-fallback. A run with no schedule has no motion at all, so live_run.sh builds or
+fallback. A run with no schedule has no motion at all, so run_sim.sh builds or
 finds the schedule before it starts anything and refuses the run if it cannot.
 
 The sampling policy this replaced — a mapping phase of greedy nearest-unvisited
@@ -264,9 +264,9 @@ def make_sim():
             "move_forward": habitat_sim.agent.ActionSpec(
                 "move_forward", habitat_sim.agent.ActuationSpec(amount=0.15)),
             "turn_left": habitat_sim.agent.ActionSpec(
-                "turn_left", habitat_sim.agent.ActuationSpec(amount=10.0)),
+                "turn_left", habitat_sim.agent.ActuationSpec(amount=TURN_STEP_DEG)),
             "turn_right": habitat_sim.agent.ActionSpec(
-                "turn_right", habitat_sim.agent.ActuationSpec(amount=10.0)),
+                "turn_right", habitat_sim.agent.ActuationSpec(amount=TURN_STEP_DEG)),
             "move_backward": habitat_sim.agent.ActionSpec(
                 "move_backward", habitat_sim.agent.ActuationSpec(amount=0.15)),
         },
@@ -964,7 +964,7 @@ _TOUR_RETIRED = ("tour_waypoints", "tour_scan_frames", "dwell_dynamic",
 # storey and teleported to it; a schedule is one storey by construction, and a multi-storey schedule
 # would need its own stair-crossing legs that no roadmap in schedules/ contains. So the switch now
 # REFUSES instead of doing nothing: the base-run shape is unchanged (one launch per storey through
-# run_house.sh), and a config asking for the other shape must be told the shape no longer exists.
+# run_sim.sh), and a config asking for the other shape must be told the shape no longer exists.
 TOUR_ALL_FLOORS = os.environ.get(
     "FEED_TOUR_ALL_FLOORS",
     "1" if hab_cfg.get("tour_all_floors", False) else "0").lower() in ("1", "true", "yes", "on")
@@ -972,7 +972,7 @@ if TOUR_ALL_FLOORS:
     raise SystemExit(
         "[feed] FEED_TOUR_ALL_FLOORS / habitat.tour_all_floors asks for one continuous session "
         "across every storey. That shape belonged to the sampling tour, which is removed "
-        "(owner 2026-09-11); a schedule drives one storey. Tour the house with run_house.sh, "
+        "(owner 2026-09-11); a schedule drives one storey. Tour the house with run_sim.sh, "
         "which relaunches the stack once per storey and is the base-run policy (rule 73).")
 
 # GA-434 / RULE 73. A NO-CAP RUN NEEDS ITS OWN ENDING, and until now it had none.
@@ -1028,8 +1028,21 @@ POST_SCAN_HOOK = os.environ.get("FEED_POST_SCAN_HOOK",
 # The scene is dynamic, so answering "what changed over there" needs a way to go and look;
 # this file supplies the mechanism only -- which point, and when, belongs to the caller.
 #
-# 36 frames is a full turn at the 10 degrees per `turn_left` the manual scan already assumes.
-REVISIT_SCAN_FRAMES = int(os.environ.get("FEED_REVISIT_SCAN", hab_cfg.get("revisit_scan_frames", 36)))
+# THE TURN ACTION, in degrees, and it is ONE number for the whole run. The schedule's frame budget
+# divides its scan angles by it, the agent's turn_left acts on it, and ScheduledTour counts frames
+# with it -- three readers, so a second copy of the value is a bundle whose budget describes a run
+# that did not happen.
+#
+# IT IS A MERGE PARAMETER, not only a speed one. A full 360 scan is 360/step frames, and a merge
+# commits only after merge_min_consecutive cycles of about 3.2 s each have seen the same pair. At
+# 10 that is 36 frames = 3.75 cycles; at 20 it is 18 = 1.87, and NO stop clears a threshold of 2.
+# 20 was tried on 2026-09-11 for the 36% of run time scans cost, and reverted the same day.
+TURN_STEP_DEG = float(os.environ.get("FEED_TURN_STEP_DEG", hab_cfg.get("turn_step_deg", 10.0)))
+if TURN_STEP_DEG <= 0 or TURN_STEP_DEG > 180:
+    raise SystemExit(f"[feed] turn_step_deg={TURN_STEP_DEG}; expected a positive angle under 180")
+
+# A full turn at the step above.
+REVISIT_SCAN_FRAMES = int(os.environ.get("FEED_REVISIT_SCAN", hab_cfg.get("revisit_scan_frames", int(round(360.0 / TURN_STEP_DEG)))))
 # Arrival tolerance, against the follower's own goal_radius of 0.4 m plus a margin: the follower
 # stops "close enough", and a target it never approached must not be read as a reach.
 REVISIT_ARRIVAL_TOL_M = float(os.environ.get("FEED_REVISIT_ARRIVAL_TOL",
@@ -1441,6 +1454,19 @@ MOVERS = {"navigate": _move_navigate, "teleport": _move_teleport,
           "follower": _move_navigate, "straight": _move_navigate}
 
 
+def _tour_activity(tour):
+    """-> "scan", "travel" or "done": what the agent is doing in THIS frame.
+
+    Read off the tour's own state rather than inferred from the pose, because a pose delta cannot
+    separate a turn on the spot from a tight corner, and the two are different things to a detector.
+    """
+    if tour is None:
+        return None
+    if getattr(tour, "house_done", False):
+        return "done"
+    return "scan" if getattr(tour, "scan_left", 0) > 0 else "travel"
+
+
 def _fire_post_scan(ctx):
     """Called once per completed 360 degree scan. -> what the hook returned, or None.
 
@@ -1502,6 +1528,24 @@ class ScheduledTour:
         # anchors to, the revisit counters the bundle reports, and the goto entry point all live
         # here. Substitutability is the contract; a partial one fails only at runtime.
         self.floor_y = float(schedule.get("height", 0.0))
+        # HOW A STOP SCANS, taken from the schedule rather than assumed. "continuous" turns once a
+        # frame, so a heading is held for ONE frame -- which is why a completed tour recorded a
+        # longest still stretch of 1 second in 24 minutes and its scans were drive-throughs.
+        # "stepped" holds each heading for hold_frames so a detection cycle can finish on a fixed
+        # view, and repeats the rotation once per camera tilt. A schedule written before the plan
+        # existed gets the continuous default, which is what those schedules were costed at.
+        self.plan = dict(schedule.get("scan_plan") or {})
+        self.scan_mode = str(self.plan.get("mode", "continuous"))
+        self.hold_frames = max(1, int(self.plan.get("hold_frames", 1)))
+        self.tilts = [float(t) for t in (self.plan.get("tilts_deg") or [CAMERA_PITCH_DEG])]
+        self._hold_left = 0          # frames still to hold on THIS heading
+        self._tilt_i = 0
+        self._tilt_now = None
+        self._tilt_warned = False
+        self.tilts_applied = 0
+        if self.scan_mode == "stepped":
+            print(f"[feed] SCHEDULE: stepped scan, {self.hold_frames} frames a heading, "
+                  f"tilts {self.tilts}", flush=True)
         self.todo = []
         self.revisit = None
         self.last_revisit = None
@@ -1537,15 +1581,68 @@ class ScheduledTour:
         return None
 
     def _scan_frames(self, deg):
-        return max(1, int(round(deg / 10.0)))     # the turn action is 10 degrees
+        """-> turn actions for one rotation of `deg`, floored at what a merge needs.
+
+        min_scan_frames comes from the schedule: a merge commits only after merge_min_consecutive
+        cycles have seen the same pair, and a stop that turns through fewer frames than that cannot
+        produce one however little new ground its geometry says it has.
+        """
+        floor = int(self.plan.get("min_scan_frames", 1))
+        return max(1, floor, int(round(deg / TURN_STEP_DEG)))
+
+    def _set_tilt(self, deg):
+        """Point the camera at `deg` below the horizon, for the stepped scan's second rotation.
+
+        NOT CONFIRMED BY A RUN. The sensor's pitch is set once when the simulator is built
+        (make_sim, s.orientation); this rotates the sensor's scene node instead, which is the only
+        way to change it mid-run. The stepped scan is off by default, so nothing reaches this until
+        somebody asks for it -- and when they do, the first thing to check is that the published
+        frames actually tilt.
+        """
+        if self._tilt_now == deg:
+            return True
+        try:
+            import magnum as mn
+            for sensor in self.sim.get_agent(0)._sensors.values():
+                sensor.node.rotation = mn.Quaternion.rotation(
+                    mn.Rad(math.radians(float(deg))), mn.Vector3.x_axis())
+            self._tilt_now = deg
+            return True
+        except Exception as exc:
+            # A tilt the simulator will not take must not stop the tour. It costs that rotation its
+            # angle, and the run says so ONCE -- loudly, because a stepped scan that silently runs
+            # both rotations at the same pitch is two identical rotations wearing different names.
+            if not self._tilt_warned:
+                self._tilt_warned = True
+                print(f"[feed] camera tilt {deg} REFUSED ({type(exc).__name__}: {exc}); every "
+                      "rotation runs at the fixed pitch and the two tilts are not distinct",
+                      flush=True)
+            return False
 
     def step(self, agent):
         if self.house_done:
             agent.act("turn_left")
             return
         if self.scan_left > 0:
+            # STEPPED: hold this heading still until the cycle has had its frames, THEN turn. The
+            # frames published while holding are the ones a detection cycle can finish on.
+            if self.scan_mode == "stepped" and self._hold_left > 0:
+                self._hold_left -= 1
+                return              # no action: the agent stands still and the frame still ships
             self.scan_left -= 1
             agent.act("turn_left")
+            if self.scan_mode == "stepped":
+                self._hold_left = self.hold_frames - 1
+            if self.scan_left == 0 and self._tilt_i + 1 < len(self.tilts):
+                # ANOTHER ROTATION AT THE NEXT TILT. The stop is not finished until every tilt has
+                # had its full turn; the hook fires once, after the last one, because one arrival
+                # is one scan however many times the camera went round.
+                self._tilt_i += 1
+                if self._set_tilt(self.tilts[self._tilt_i]):
+                    self.tilts_applied += 1
+                self.scan_left = self._scan_frames(self.points[self.i]["scan_deg"])
+                self._hold_left = self.hold_frames - 1 if self.scan_mode == "stepped" else 0
+                return
             if self.scan_left == 0:
                 self.scans_done += 1
                 pt = self.points[self.i]
@@ -1578,7 +1675,12 @@ class ScheduledTour:
         self.travel_frames += self.leg["frames"]
         if pt["scan_deg"]:
             self._tour_reached += 1
+            # Back to the first tilt for every new stop, so stop N+1 does not inherit stop N's.
+            self._tilt_i = 0
+            if len(self.tilts) > 1:
+                self._set_tilt(self.tilts[0])
             self.scan_left = self._scan_frames(pt["scan_deg"])
+            self._hold_left = self.hold_frames - 1 if self.scan_mode == "stepped" else 0
         else:
             self._advance()
 
@@ -1747,13 +1849,13 @@ def main():
     # THE SCHEDULE IS THE ONLY MOTION POLICY (owner 2026-09-11). The sampling tour that used to
     # stand here as the fallback is removed, so there is nothing to fall back TO: a run without a
     # schedule would publish frames from a robot that never moves, which is worse than no run.
-    # live_run.sh builds or finds the schedule and refuses the launch before this file starts, and
+    # run_sim.sh builds or finds the schedule and refuses the launch before this file starts, and
     # this refusal is the same statement for anyone starting the feed host on its own.
     if not SCHEDULE_PATH:
         raise SystemExit(
             "[feed] FEED_SCHEDULE is not set and the sampling policy is removed, so this run "
             "would have no motion at all. Build the scene's schedule with schedule_batch.py, or "
-            "start the run through live_run.sh, which does it for you.")
+            "start the run through run_sim.sh, which does it for you.")
     if not have_nav:
         raise SystemExit(
             f"[feed] scene {SCENE} has no loaded navmesh, so a schedule cannot be driven. "
@@ -1909,9 +2011,9 @@ def main():
         elif act == "backward":
             act_once("move_backward", 0.15)
         elif act == "left":
-            act_once("turn_left", 10.0)
+            act_once("turn_left", TURN_STEP_DEG)
         elif act == "right":
-            act_once("turn_right", 10.0)
+            act_once("turn_right", TURN_STEP_DEG)
         elif act == "scan":
             manual_scan = 36            # one 10° turn per frame, like the tour scan
         elif act in ("teleport", "nav_goal"):
@@ -1995,7 +2097,7 @@ def main():
     # cleanly and its dwell is in NONE of the four places it could be — no feed block in
     # run_metadata.json, no feed_stats.json, and config.yaml records the intent rather than the
     # effect (bundle 20260831_033330 has config.yaml mapping_seconds 0.0 against a feed_stats.json
-    # and a log that both say 150). live_run.sh now stamps these into the bundle, but live_run.sh
+    # and a log that both say 150). run_sim.sh now stamps these into the bundle, but run_sim.sh
     # is not the only way this file is started, and a run started any other way was exactly how
     # run 19 became unrecoverable. This line costs nothing and fails closed.
     print(f"[feed] resolved: fps={FPS} laps={EXPLORATION_LAPS} seed={SEED} scene={SCENE} "
@@ -2405,6 +2507,17 @@ def main():
                     "x": float(_cp[0]), "y": float(_cp[1]), "z": float(_cp[2]), "yaw": float(_yaw),
                     "qx": float(_cq[0]), "qy": float(_cq[1]), "qz": float(_cq[2]), "qw": float(_cq[3]),
                     "base_z": float(ros_agent_pos[2]), "phase": label,
+                    # WHAT THE AGENT WAS DOING WHEN THIS FRAME WAS TAKEN. `phase` says SCHEDULE for
+                    # every frame of a scheduled run -- it distinguishes the motion POLICY, not the
+                    # activity -- so no bundle could tell a frame taken while turning on the spot
+                    # from one taken while walking a corridor. That question decides whether a
+                    # detection had a fixed viewpoint, how many VLM calls a scan is worth, and
+                    # whether two consecutive cycles saw the same place. ScheduledTour knew the
+                    # answer all along and never wrote it down.
+                    "activity": _tour_activity(tour),
+                    "stop_index": getattr(tour, "i", None),
+                    "lap": getattr(tour, "lap", None),
+                    "scan_left": getattr(tour, "scan_left", None),
                 }) + "\n")
         except (BrokenPipeError, ConnectionResetError, socket.error, OSError) as exc:
             frames_send_failed += 1

@@ -7,7 +7,7 @@ early-death condition still reads a LOG LINE for it -- a sentence in the stack l
 future edit breaks silently.
 
 live_stack_container.sh writes terminating_node.json from the loop that watched the nodes, at the
-moment it knows; live_run.sh folds it into run_metadata.json. THE BRANCH NO RUN EXERCISES is the
+moment it knows; run_sim.sh folds it into run_metadata.json. THE BRANCH NO RUN EXERCISES is the
 absent one: a container killed from outside, or one that died before its watch loop, leaves no
 terminating_node.json at all, and the fold must say that in words rather than leaving a null a
 reader will interpret as "nobody looked".
@@ -25,7 +25,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LAUNCHER = os.path.join(HERE, "live_run.sh")
+LAUNCHER = os.path.join(HERE, "..", "..", "run_sim.sh")
 BEGIN = "# >>> TEST-EXTRACT stamp_block"
 END = "# <<< TEST-EXTRACT stamp_block"
 

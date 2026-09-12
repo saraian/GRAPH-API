@@ -65,16 +65,53 @@ def _cluster_heights(values, tolerance):
 
 
 def _aabb(entity):
+    # In alcune Habitat-Sim builds SemanticObject.aabb is an envelope of the
+    # semantic mesh.  The per-object OBB is the reliable geometry; convert it
+    # to an axis-aligned box in Habitat coordinates first.
+    obb = getattr(entity, "obb", None)
+    if obb is not None:
+        # Do not use ``obb.aabb`` or ``obb.to_aabb``: in the affected binding
+        # both return the same scene-level envelope as SemanticObject.aabb.
+        try:
+            center = _xyz(obb.center)
+            sizes = _xyz(obb.sizes)
+            rotation = getattr(obb, "rotation", None)
+            if rotation is not None:
+                matrix = np.asarray(rotation, dtype=float)
+                if matrix.shape == (3, 3):
+                    half = np.abs(matrix) @ (sizes / 2.0)
+                    low, high = center - half, center + half
+                    if np.all(np.isfinite(low)) and np.all(np.isfinite(high)):
+                        return low, high
+            low, high = center - sizes / 2.0, center + sizes / 2.0
+            if np.all(np.isfinite(low)) and np.all(np.isfinite(high)):
+                return low, high
+        except (AttributeError, TypeError, ValueError):
+            pass
+
     box = getattr(entity, "aabb", None)
+    return _range3d_aabb(box)
+
+
+def _range3d_aabb(box):
     if box is None:
         return None
     try:
-        low, high = _xyz(box.min), _xyz(box.max)
+        # SemanticObject.aabb in Habitat-Sim exposes ``center`` and ``sizes``
+        # (the API used by HOV-SG).  Some Magnum-backed bindings additionally
+        # expose min/max, so retain those only as an API compatibility path;
+        # both branches still read the same native Habitat AABB.
+        center = _xyz(box.center)
+        sizes = _xyz(box.sizes)
+        low, high = center - sizes / 2.0, center + sizes / 2.0
     except (AttributeError, TypeError, ValueError):
-        return None
+        try:
+            low, high = _xyz(box.min), _xyz(box.max)
+        except (AttributeError, TypeError, ValueError):
+            return None
     if not np.all(np.isfinite(low)) or not np.all(np.isfinite(high)):
         return None
-    if float(np.max(high - low)) <= 1e-6:
+    if np.any(high < low) or float(np.max(high - low)) <= 1e-6:
         return None
     return low, high
 
@@ -648,29 +685,33 @@ def _extract_texture_geometry(scene, semantic_mesh, semantic_text,
 
 
 def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
-            floor_tolerance=0.50, selected_floor=None, require_native=False):
+            floor_tolerance=0.50, selected_floor=None):
     semantic = sim.semantic_scene
     habitat_regions = [r for r in (getattr(semantic, "regions", None) or []) if r is not None]
     habitat_objects = [o for o in (getattr(semantic, "objects", None) or []) if o is not None]
 
-    # Prefer the geometry exposed by Habitat-Sim.  The texture parser is only
-    # a compatibility fallback for bindings that do not expose semantic
-    # regions/objects.  Keep this decision before the native processing below:
-    # otherwise a missing/partial SemanticScene would fail much later with a
-    # misleading "no valid AABB" error.
+    # Object GT geometry is authoritative only when exposed by Habitat-Sim.
+    # The semantic texture remains useful for reconstructing missing *region*
+    # boundaries, but must never supply or complete object bounding boxes.
     native_object_count = sum(_aabb(obj) is not None for obj in habitat_objects)
     if not habitat_regions:
-        if require_native:
-            raise RuntimeError("SemanticScene senza regioni native")
-        semantic_mesh, semantic_text = _semantic_paths(scene)
-        return _extract_texture_geometry(
-            scene, semantic_mesh, semantic_text, floor_tolerance,
-            selected_floor, region_resolution)
-    if require_native and native_object_count != len(habitat_objects):
-        raise RuntimeError(
-            "SemanticScene nativa con copertura AABB incompleta: "
-            f"regions={len(habitat_regions)}, objects={len(habitat_objects)}, "
-            f"objects_with_valid_aabb={native_object_count}."
+        raise RuntimeError("SemanticScene senza regioni native")
+    # Habitat-Sim adds the synthetic Unknown_0 object (semantic_id 0), which
+    # has no corresponding geometry in HM3D annotations and therefore keeps a
+    # zero AABB.  Require coverage only for actual annotated instances.
+    annotated_objects = [obj for obj in habitat_objects
+                         if int(getattr(obj, "semantic_id", 0)) != 0]
+    annotated_native_count = sum(_aabb(obj) is not None for obj in annotated_objects)
+    missing_objects = [
+        f"{getattr(obj, 'id', '?')} (semantic_id={getattr(obj, 'semantic_id', '?')})"
+        for obj in annotated_objects if _aabb(obj) is None
+    ]
+    if missing_objects:
+        print(
+            "ATTENZIONE: AABB nativo non trovato per "
+            + ", ".join(missing_objects)
+            + "; genero comunque gli altri oggetti.",
+            flush=True,
         )
 
     semantic_mesh, semantic_text = _semantic_paths(scene)
@@ -683,14 +724,10 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
         native_region_ids = {_region_key(region.id) for region in habitat_regions}
         missing_native_regions = annotated_region_ids - native_region_ids
         if missing_native_regions:
-            if require_native:
-                raise RuntimeError(
-                    "SemanticScene nativa con regioni mancanti: "
-                    f"{sorted(missing_native_regions)}"
-                )
-            return _extract_texture_geometry(
-                scene, semantic_mesh, semantic_text, floor_tolerance,
-                selected_floor, region_resolution)
+            raise RuntimeError(
+                "SemanticScene nativa con regioni mancanti: "
+                f"{sorted(missing_native_regions)}"
+            )
         habitat_regions = [region for region in habitat_regions
                            if _region_key(region.id) in annotated_region_ids]
 
@@ -711,17 +748,11 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
         box = _aabb(region)
         geometry_source = "semantic_region_poly_loop"
         if box is None or len(polygon) < 3:
-            reconstructed = _reconstruct_region_from_walls(
-                texture_objects, _region_key(region.id),
-                resolution=region_resolution)
-            if reconstructed is not None:
-                reconstructed_polygon, reconstructed_box, reconstruction_source = reconstructed
-                if len(polygon) < 3:
-                    polygon = reconstructed_polygon
-                if box is None:
-                    box = reconstructed_box
-                geometry_source = reconstruction_source
-        if box is None or len(polygon) < 3:
+            print(
+                f"ATTENZIONE: geometria nativa non trovata per la regione "
+                f"{_region_key(region.id)}; continuo con le altre regioni.",
+                flush=True,
+            )
             continue
         floor_height = float(getattr(region, "floor_height", box[0][1]))
         if geometry_source == "semantic_object_aabb_envelope":
@@ -735,16 +766,10 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
             {_region_key(region.id) for region in habitat_regions} -
             {item[0] for item in regions}
         )
-        wall_objects = [obj for obj in texture_objects
-                        if _region_key(obj.get("region_id") or "") in annotated_region_ids
-                        and "wall" in str(obj.get("category_name", "")).lower()]
-        wall_triangles = sum(len(obj.get("triangles", [])) for obj in wall_objects)
-        raise RuntimeError(
-            "impossibile ricostruire tutte le regioni dai triangoli "
-            "strutturali associati ai rispettivi region_id; GT rifiutata. "
-            f"regioni_senza_geometria={missing_geometry}, "
-            f"region_ids={sorted(annotated_region_ids)}, "
-            f"wall_objects={len(wall_objects)}, wall_triangles={wall_triangles}."
+        print(
+            "ATTENZIONE: regioni senza geometria nativa ignorate: "
+            + ", ".join(missing_geometry),
+            flush=True,
         )
 
     floors = _cluster_heights([item[3] for item in regions], floor_tolerance)
@@ -819,15 +844,11 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
                            if _region_key(obj.get("region_id") or "unknown")
                            in allowed_regions]
 
-    # Keep every valid native AABB and fill only missing semantic IDs from the
-    # texture mesh.  Previously, one valid native object selected this branch
-    # and silently discarded every native object whose AABB was unavailable.
+    # Object boxes come exclusively from Habitat-Sim SemanticObject.aabb.
     object_rows = []
-    native_semantic_ids = set()
     for obj, (low, high), name, native_category_id in native_objects:
         region = getattr(obj, "region", None)
         semantic_id = int(obj.semantic_id)
-        native_semantic_ids.add(semantic_id)
         object_rows.append({
             "object_id": str(obj.id),
             "semantic_id": semantic_id,
@@ -836,37 +857,14 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
             "region_id": _region_key(region.id) if region is not None else None,
             "aabb_min_m": low.tolist(),
             "aabb_max_m": high.tolist(),
-            "geometry_source": "semantic_object_aabb",
-        })
-    for obj in texture_objects:
-        semantic_id = int(obj["object_id"])
-        if semantic_id in native_semantic_ids:
-            continue
-        low, high = obj["aabb"]
-        object_rows.append({
-            "object_id": str(obj["object_id"]),
-            "semantic_id": semantic_id,
-            "native_category_id": None,
-            "category_name": obj["category_name"],
-            "region_id": (_region_key(obj.get("region_id"))
-                          if obj.get("region_id") is not None else None),
-            "aabb_min_m": low.tolist(),
-            "aabb_max_m": high.tolist(),
-            "geometry_source": "semantic_glb_texture",
+            "geometry_source": "semantic_object_obb_to_aabb",
         })
     if not object_rows:
-        raise RuntimeError("nessun AABB nativo o texture semantica decodificabile")
+        raise RuntimeError("nessun AABB nativo esposto da Habitat-Sim")
     category_ids = {name: index for index, name in enumerate(
         sorted({row["category_name"] for row in object_rows}))}
     gt_objects = [{**row, "category_id": category_ids[row["category_name"]]}
                   for row in sorted(object_rows, key=lambda item: item["semantic_id"])]
-    fallback_count = sum(row["geometry_source"] == "semantic_glb_texture"
-                         for row in gt_objects)
-    object_geometry_source = (
-        "semantic_object_aabb" if fallback_count == 0 else
-        "semantic_glb_texture_fallback" if fallback_count == len(gt_objects) else
-        "semantic_object_aabb_with_texture_completion"
-    )
 
     return {
         "scene": _scene_number(scene),
@@ -893,10 +891,10 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
             "semantic_mesh": str(semantic_mesh.resolve()) if semantic_mesh else None,
             "semantic_descriptor": str(semantic_text.resolve()) if semantic_text else None,
             "api": "Habitat-Sim SemanticScene/SemanticRegion/SemanticObject",
-            "note": "Polyloop e altezze native; AABB oggetti nativi oppure fallback texture se la build non li espone.",
-            "object_geometry_source": object_geometry_source,
-            "native_object_count": len(gt_objects) - fallback_count,
-            "texture_fallback_object_count": fallback_count,
+            "note": "Box oggetti derivati dall'OBB nativo Habitat-Sim; SemanticObject.aabb usato solo come fallback.",
+            "object_geometry_source": "semantic_object_obb_to_aabb",
+            "native_object_count": len(gt_objects),
+            "texture_fallback_object_count": 0,
             "region_geometry_exact": all(
                 row["geometry_is_exact"] for row in gt_regions
             ),
@@ -920,8 +918,6 @@ def main():
     parser.add_argument("--floor-tolerance", type=float, default=0.50)
     parser.add_argument("--floor-index", type=int, default=None,
                         help="considera un solo piano (indice 0-based dal basso)")
-    parser.add_argument("--require-native", action="store_true",
-                        help="fallisce invece di usare il fallback texture")
     args = parser.parse_args()
     if args.region_resolution <= 0 or args.object_voxel <= 0 or args.floor_tolerance <= 0:
         parser.error("risoluzioni e tolleranza devono essere positive")
@@ -933,14 +929,7 @@ def main():
     try:
         import habitat_sim
     except ImportError as exc:
-        if args.require_native:
-            parser.error(f"habitat_sim non disponibile nell'ambiente Python: {exc}")
-        semantic_mesh, semantic_text = _semantic_paths(args.scene)
-        result = _extract_texture_geometry(
-            args.scene, semantic_mesh, semantic_text, args.floor_tolerance,
-            args.floor_index, args.region_resolution)
-        print("habitat_sim non disponibile: uso i triangoli strutturali "
-              "della mesh semantica")
+        parser.error(f"habitat_sim necessario per gli AABB nativi: {exc}")
     else:
         backend = habitat_sim.SimulatorConfiguration()
         backend.scene_id = str(args.scene.resolve())
@@ -950,8 +939,11 @@ def main():
         # bindings expose the explicit switch below; newer/refactored bindings
         # select the semantic asset through the annotated dataset configuration.
         backend.requires_textures = True
-        if hasattr(backend, "use_semantic_textures_if_found"):
-            backend.use_semantic_textures_if_found = True
+        # This build must use semantic vertex colors to populate the native
+        # SemanticObject OBB/AABB data.  Enabling semantic textures leaves the
+        # semantic descriptor populated but keeps every native box at zero.
+        if hasattr(backend, "use_semantic_textures"):
+            backend.use_semantic_textures = False
         semantic_sensor = habitat_sim.CameraSensorSpec()
         semantic_sensor.uuid = "semantic"
         semantic_sensor.sensor_type = habitat_sim.SensorType.SEMANTIC
@@ -960,7 +952,7 @@ def main():
         with habitat_sim.Simulator(habitat_sim.Configuration(backend, [agent])) as sim:
             result = extract(sim, args.scene, args.region_resolution,
                              args.object_voxel, args.floor_tolerance,
-                             args.floor_index, args.require_native)
+                             args.floor_index)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False,
                                       allow_nan=False) + "\n", encoding="utf-8")

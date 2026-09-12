@@ -26,7 +26,7 @@ import os
 import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPT = os.path.join(HERE, "live_run.sh")
+SCRIPT = os.path.join(HERE, "..", "..", "run_sim.sh")
 OPEN_RE = re.compile(r'cat\s+<<EOF\s*>\s*"\$RUN_DIR/run_metadata\.json"')
 
 

@@ -1,25 +1,30 @@
 # 02_no_mapping_phase.yaml — a complete run configuration. Use it directly:
-#     ./run_headless.sh --config schedules/configs/02_no_mapping_phase.yaml
+#     ./run_sim_headless.sh --config schedules/configs/02_no_mapping_phase.yaml
 # or name it from a schedule arm with `config_file:`.
 #
-# RETIRED 2026-09-11, AND IT MUST NOT BE RUN AS AN ARM. This was the control for the reference:
-# identical to 01_reference.yaml except mapping_seconds: 0. The mapping phase was removed with the
-# sampling policy on the owner's instruction, so the one setting that made this arm different no
-# longer exists and the two files are now byte-for-byte equivalent in every key they declare.
-# Running both would report a difference of zero as a finding. The file is kept, not deleted,
-# because bundles already name it and a reader needs to find out what it meant.
+# RETIRED 2026-09-11, AND IT MUST NOT BE RUN AS AN ARM. It was the control for the
+# reference: identical except `mapping_seconds: 0`. The mapping phase was removed with the
+# sampling policy on the owner's instruction, so the one setting that made this arm
+# different no longer exists and this file is now identical to 01_reference. Running both
+# would report a difference of zero as a finding. Kept rather than deleted because bundles
+# already name it and a reader needs to find out what it meant.
 #
 # WHAT DIFFERS FROM THE TRACKED config.yaml:
-#   habitat.localization_mode: 'rtabmap'
-#   habitat.mapping_seconds: 0.0   (the key is gone; see the note above)
-#   hooks.filter: ''
-#   perception.backend: 'local'
-# Generated 2026-09-10T19:09:47 from
-# lost3dsg/src/perception_module/config.yaml. Edit freely; it is yours.
+#   nothing. This arm IS the tracked configuration.
+#
+# GENERATED, DO NOT HAND-EDIT. Rewrite it with:
+#     python3 lost3dsg/test/regen_arm_configs.py
+# generated_at:   2026-09-12T10:49:01
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 8533c66cf3695915
+#
+# A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
+# code then takes its module fallback instead. If a bundle's config is missing a key
+# you expected, compare the sha above against the tracked config before concluding
+# the arm set it deliberately: `regen_arm_configs.py --check` answers that.
 
 vlm:
-  base_url: http://localhost:11434/v1
-  model: gemma4:e2b
+  base_url: https://api.regolo.ai/v1
+  model: gemma4-31b
   api_key: ''
   timeout: 30.0
   retries: 2
@@ -42,10 +47,13 @@ association:
   max_volume_threshold: 0.5
   bbox_reduction_ratio: 0.3
   reevaluation_radius_m: 2.0
+  association_margin_m: 0.3
   merge_engine: legacy
   merge_cost_ratio: 20.0
   merge_min_consecutive: 2
   merge_max_distance_m: 0.8
+  merge_aabb_margin_m: 0.8
+  merge_min_evidence: 1
   merge_min_similarity: 0.925
   merge_knn_k: null
   update_in_place_distance_m: 0.5
@@ -56,20 +64,57 @@ association:
   max_observations_per_object: 64
   suspicious_max_extent_m: 3.0
   suspicious_max_volume_m3: 1.5
+  scan_complete_topic: /habitat/scan_complete
+  scan_merge_settle_s: 1.0
+  scan_merge_settle_max_s: 10.0
 frames:
   camera: habitat_camera_optical
   agent_pose: habitat_camera
+  motion_position_threshold: 4.0
+  motion_min_stationary_s: 0.5
 paths:
   operations_log: /root/exchange/output/operations.txt
-  vitsam_encoder: "/models/vitsam/l2_encoder.onnx"   # the container mount of SAM_MODEL_DIR
-  vitsam_decoder: "/models/vitsam/l2_decoder.onnx"
+  vitsam_encoder: /models/vitsam/l2_encoder.onnx
+  vitsam_decoder: /models/vitsam/l2_decoder.onnx
   identification_prompt: ''
   scene_analysis_prompt: ''
   visual_prompt: ''
 tf:
+  world_frame: map
   lookup_timeout: 0.1
 walls:
   min_interval_s: 0.5
+  height_band_m:
+  - 0.4
+  - 2.0
+  depth_range_m:
+  - 0.3
+  - 8.0
+  pixel_stride: 4
+  temporal_window_s: 2.5
+  temporal_max_frames: 8
+  temporal_voxel_m: 0.035
+  floor_reset_m: 0.6
+  floor_min_points: 20
+  floor_cache_s: 10.0
+  floor_fallback_camera_height_m: 1.5
+  use_normal_prefilter: true
+  vertical_normal_tolerance_deg: 20.0
+  normal_max_depth_jump_ratio: 0.08
+  normal_min_component_px: 12
+  min_segment_length_m: 0.5
+  min_vertical_extent_m: 0.8
+  max_inlier_rms_m: 0.05
+  min_confidence: 0.45
+  confidence_target_frames: 4
+  viewpoint_separation_m: 0.15
+  pose_covariance_topic: /rtabmap/localization_pose
+  max_pose_std_m: 0.25
+  line_inlier_tolerance_m: 0.05
+  depth_noise_per_m: 0.006
+  min_inliers: 60
+  min_inliers_floor: 20
+  inlier_reference_range_m: 2.0
   grid_resolution_m: 0.05
   vertical_bands: 4
   min_vertical_bands: 3
@@ -86,7 +131,7 @@ walls:
   max_segments: 12
 rooms:
   default_room_id: ''
-  gvd_method: medial_axis
+  gvd_method: ridge
   enable_3d_structural_filter: true
   gvd_3d_min_points_per_cell: 4
   gvd_3d_min_vertical_span_m: 0.75
@@ -102,15 +147,14 @@ rooms:
   gvd_3d_support_dilation_px: 1
   enable_detected_wall_support: true
   detected_wall_reinforce_obstacles: true
+  detected_wall_close_free_space: true
   detected_wall_min_observations: 2
   detected_wall_max_age_s: 300.0
-  detected_wall_min_length_m: 1.5
-  detected_wall_min_vertical_extent_m: 1.2
-  detected_wall_max_rms_m: 0.03
-  detected_wall_merge_angle_deg: 8.0
+  detected_wall_merge_angle_deg: 15.0
   detected_wall_merge_distance_m: 0.18
   detected_wall_merge_gap_m: 0.5
-  detected_wall_thickness_m: 0.12
+  detected_wall_interpolation_gap_m: 0.2
+  detected_wall_thickness_m: 0.06
   detected_wall_door_endpoint_radius_m: 0.2
   detected_wall_door_min_support: 0.16
   detected_wall_door_max_m: 2.0
@@ -120,24 +164,39 @@ rooms:
   room_nested_merge_max_area_m2: 8.0
   room_nested_merge_area_ratio: 0.3
   gvd_3d_nonwall_component_ratio: 0.01
-  gvd_door_nms_m: 1.2
+  gvd_door_nms_m: 1.6
   gvd_critical_endpoint_margin_m: 0.2
+  doorway_vlm_enabled: true
+  doorway_vlm_min_confidence: 0.55
+  doorway_vlm_min_confirmations: 1
+  doorway_require_wall_support: true
+  doorway_vlm_key_resolution_m: 0.25
+  doorway_vlm_show_rejected: false
+  doorway_vlm_show_pending: false
+  doorway_vlm_cluster_distance_m: 1.2
+  room_use_watershed: false
+  doorway_vlm_max_candidates_per_call: 8
+  doorway_vlm_retry_s: 8.0
+  doorway_vlm_max_image_age_s: 2.0
+  doorway_vlm_state_max_age_s: 60.0
+  doorway_vlm_camera_topic: /camera/rgb
+  doorway_vlm_camera_info_topic: /camera/camera_info
+  doorway_vlm_camera_frame: habitat_camera_optical
+  window_vlm_enabled: true
+  window_vlm_retry_s: 10.0
   min_room_area_m2: 1.5
   room_partition_change_confirmations: 3
+  room_partition_min_area_retention_ratio: 0.75
   room_partition_stable_iou_min: 0.65
+  gvd_fill_cloud_nonwall_direct: true
   gvd_min_robot_component_ratio: 0.15
 habitat:
   localization_mode: rtabmap
-  scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
-  scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
-  nav_scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.navmesh
   single_floor: true
   floor_tolerance_m: 0.5
   fps: 3.0
   hfov: 90.0
-  camera_pitch_deg: 0.0
+  camera_pitch_deg: -30.0
   floor_confinement: teleport
   tour_end_settle_s: 90.0
   min_floor_share: 0.1
@@ -157,7 +216,7 @@ run:
   rtabmap_grid_args: ''
   localize_db_copy: true
   pose_source: simulator
-  wall_detector: false
+  wall_detector: true
   gt_semantic: true
   gt_scene_instance: ''
   house_id: ''
@@ -169,12 +228,16 @@ size_check:
   enforce: false
 hooks:
   search_paths: []
-  filter: ''
+  filter: envelope_size:SizeFilter
   refiner: ''
   store: ''
   decisions_log: ''
 perception:
+  frame_queue_max: 8
+  frame_queue_min_translation_m: 0.25
+  frame_queue_min_rotation_rad: 0.26
   backend: local
+  max_frame_age_s: 1.0
   modal_endpoint: ''
   score_threshold: 0.15
   nms_threshold: 0.5
@@ -187,3 +250,5 @@ perception:
   - doorway
   - door frame
   - doorframe
+archive:
+  per_detection: true

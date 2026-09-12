@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 
@@ -46,6 +47,7 @@ from object_services import (
     synchronized_world_model,
 )
 from perception_utils import room_frame_due
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy
 from room_manager import RoomManager
@@ -278,6 +280,10 @@ GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL") or (
 GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
 GRAPH_API_AUTOSTART = os.environ.get("GRAPH_API_AUTOSTART", "1").lower() not in {"0", "false", "no"}
 SYNC_BUFFER_LIMIT = 20
+# Discards tolerated before the stuck-latch alarm fires, and only while NOT ONE
+# pair has been processed. A healthy driving run refuses plenty of moving
+# observations; it also processes the stationary ones, which is what clears this.
+MOTION_LATCH_ALARM_PAIRS = 25
 # Config first, environment override second -- the same precedence every other knob uses.
 # These were environment-ONLY, and neither name is on the launcher's -e list, so setting
 # either host-side reached nothing and the settle was fixed at its literal for every run.
@@ -294,6 +300,11 @@ SCAN_MERGE_SETTLE_S = float(os.environ.get(
 _MERGE_CONFIG = (CFG.get("merge", {}) or {})
 TIAGO_MERGE_INTERVAL_S = float(os.environ.get(
     "TIAGO_MERGE_INTERVAL_S", _MERGE_CONFIG.get("periodic_interval_s", 0.0)))
+# The FLOOR is the configured value; this is the ceiling, so one pathological VLM round trip
+# cannot stall every later sweep. A scan takes ~12 s at 36 frames and 3 fps, so a settle
+# longer than this would start eating the next stop.
+SCAN_MERGE_SETTLE_MAX_S = float(os.environ.get(
+    "SCAN_MERGE_SETTLE_MAX_S", _ASSOC.get("scan_merge_settle_max_s", 10.0)))
 
 def _launch_graph_api_bridge():
     bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph_api_bridge.py")
@@ -519,6 +530,23 @@ def _stamp_key(stamp_msg):
     return (int(stamp_msg.sec), int(stamp_msg.nanosec))
 
 
+def _join_key(msg, stamp):
+    """The key the two streams are paired on.
+
+    `cycle_id` when the publisher supplies one, the header stamp otherwise. The stamp held
+    while boxes and descriptions were produced inside one synchronous cycle; under the frame
+    queue the box is published as soon as geometry is computed and the description waits on a
+    VLM round trip, so the two drift. MEASURED on 20260911_193627: boxes ran two minutes ahead
+    of descriptions and the keys never met -- 50 detections, 0 admissions, a full overlay and
+    an empty object table.
+    FALLS BACK rather than requiring the field, so a bundle recorded before the interface
+    changed still joins the way it did, and a mixed pair cannot silently half-match: a message
+    with no cycle_id keys on its stamp, and one with a cycle_id keys on that.
+    """
+    cid = getattr(msg, "cycle_id", "") or ""
+    return ("cycle", cid) if cid else ("stamp",) + _stamp_key(stamp)
+
+
 def _stamp_key_str(stamp_msg):
     sec, nanosec = _stamp_key(stamp_msg)
     return f"{sec}.{nanosec:09d}"
@@ -683,11 +711,17 @@ class ObjectManagerService(Node):
         # the robot is doing when it arrives -- see _try_process.
         self._moving_since = None
         self._dropped_moving_pairs = 0
+        self._processed_pairs = 0
+        self._motion_starvation_warned = False
         # Arrival counters. The two callbacks used to buffer unconditionally with a single
         # silent `stamp is None` exit, so "every message arrived unusable" and "no message
         # arrived" produced identical evidence -- which is the pair of possibilities three
         # lanes could not separate on runs 7 and 8. These make the next run state which.
         self._n_desc_msgs = 0
+        # A bounded window, so the settle delay follows the CURRENT arm rather than the
+        # whole run: the online and offline VLMs differ by seconds, and a run that
+        # switches or recovers should not be held to its worst minute forever.
+        self._desc_lag_s = deque(maxlen=64)
         self._n_bbox_msgs = 0
         self._n_desc_no_stamp = 0
         self._n_bbox_no_stamp = 0
@@ -810,7 +844,26 @@ class ObjectManagerService(Node):
         self.get_logger().info('Object Tracking Service ready')
 
         # Subscribers
-        self.create_subscription(Bool, "/robot_movement_detected", self.movement_callback, qos_poly)
+        # THE MOVEMENT LATCH GETS ITS OWN GROUP. It is a one-line callback that flips a boolean,
+        # and it decides whether ANY observation reaches the object store: `_dropped_moving_pairs`
+        # counts pairs discarded while the latch says "moving", and the latch only opens on the
+        # STOP edge of this topic.
+        #
+        # MEASURED on 20260911_184539, with perception_2's own motion-watch group already fixed:
+        # perception_2 published 10 movement events including "Robot stopped", and this node saw
+        # ZERO of them while discarding 118 pairs as observed during motion. 792 detections over
+        # 217 cycles produced 0 admissions and no persistent_perception.json at all -- the feed
+        # overlay was full of boxes and the object table was empty, because a detection is not an
+        # object and nothing was ever admitted.
+        #
+        # Sharing the node's DEFAULT group put this behind `_descriptions_callback`, the bbox
+        # timer and the room RGB path; a MultiThreadedExecutor does not help, because a default
+        # group is mutually exclusive. Its own group, and mutually exclusive rather than
+        # reentrant: the callback writes the latch and two concurrent runs could interleave a
+        # stale edge over a fresh one.
+        self.movement_cb_group = MutuallyExclusiveCallbackGroup()
+        self.create_subscription(Bool, "/robot_movement_detected", self.movement_callback, qos_poly,
+                                 callback_group=self.movement_cb_group)
 
         self.create_subscription(ObjectDescriptionArray, '/object_descriptions', self._descriptions_callback, qos_standard)
         # GA-108: describer answers that arrived after their cycle, addressed by the crop's
@@ -1052,14 +1105,16 @@ class ObjectManagerService(Node):
                     self._scan_merge_timer.cancel()
                 except Exception:
                     pass
+            _settle = self._scan_settle_s()
             self._scan_merge_timer = self.create_timer(
-                max(0.0, SCAN_MERGE_SETTLE_S),
+                _settle,
                 self._run_pending_scan_merge,
             )
         self.object_services.log_both(
             'info',
             f"[SCAN] completed full-turn hook received ({scan_id}); "
-            f"merge scheduled in {SCAN_MERGE_SETTLE_S:.2f}s",
+            f"merge scheduled in {_settle:.2f}s "
+            f"(measured description lag, {len(self._desc_lag_s)} samples)",
         )
 
     def _run_pending_scan_merge(self):
@@ -1791,8 +1846,32 @@ class ObjectManagerService(Node):
                     "crop_path": crop_path,
                 }
                 decision = self.filter_hook.judge(proposal)
+                # EVERY ADMISSION CARRIES A decision_id, WHOEVER THE FILTER IS.
+                #
+                # The `link` row below joins an admission to the object it produced, and it is
+                # written only when the filter put a decision_id in its own annotation. No filter
+                # in THIS repository does: neither the pass-through in hooks.py nor
+                # envelope_size.SizeFilter mentions the word. MEASURED on 20260911_160215 --
+                # 43 admissions, 27 of them admitted, and ZERO link rows.
+                #
+                # Without the link the only key shared by the decision log and the world model is
+                # the label, which joined 9 of 11 objects on the 26 August run, and the analysis
+                # falls back to label plus centroid rounded to a grid -- making a published count
+                # a function of the rounding constant (54 at 0.1 m, 33 at 1.0 m, same run).
+                #
+                # Generated HERE rather than asked of every filter: the seam must not require a
+                # courtesy from an extension to stay joinable, and the run the owner asked for
+                # next has NO filter at all. A filter that supplies its own id keeps it.
+                _ann = dict(decision.annotation or {})
+                _ann.setdefault("decision_id", uuid.uuid4().hex[:16])   # opaque, and unique ACROSS
+                #   runs, so two bundles can be read together without their ids colliding
+                # room_id ON THE ROW, not only in the proposal. The proposal above carries it
+                # and the row did not, so every admission in every bundle read room_id: None
+                # -- 232 of 232 on 20260911_173938. Table VI scores objects INSIDE a room, so
+                # with no room on the decision it cannot score above zero however good the
+                # segmentation gets. Recorded here, where the room was actually decided.
                 self.decision_log.write("admission", label, filter=self.filter_hook.name, outcome=decision.outcome,
-                                        reason=decision.reason, annotation=decision.annotation)
+                                        reason=decision.reason, room_id=room_id, annotation=_ann)
                 if not decision.admitted:
                     self.object_services.log_both('warn', f"[{self.filter_hook.name}] refused {label}: {decision.reason}")
                     continue
@@ -1814,7 +1893,7 @@ class ObjectManagerService(Node):
                     #
                     # decision_id is an opaque string the hook put in its own annotation dict:
                     # generic seam data, nothing imported from any particular filter.
-                    decision_id = (decision.annotation or {}).get("decision_id")
+                    decision_id = _ann.get("decision_id")
                     linked_id = getattr(new_obj, "object_id", None)
                     if decision_id and linked_id:
                         self.decision_log.write("link", linked_id,
@@ -2305,10 +2384,42 @@ class ObjectManagerService(Node):
                 'warn', f"[SYNC] /object_descriptions message with no usable stamp "
                         f"({self._n_desc_no_stamp} of {self._n_desc_msgs})")
             return
-        self._pending_descriptions[_stamp_key(stamp)] = msg
+        # THE OBSERVED DESCRIPTION LAG, measured here rather than assumed anywhere.
+        #
+        # A description is published with the stamp of the frame it describes, so the gap
+        # between that stamp and now IS the round trip the settle delay has to cover. It is
+        # not a constant: on the online VLM it measured a 2.4 s median with a 7.9 s p95, and
+        # it moves with the model, the arm and the network.
+        try:
+            age = self.get_clock().now().nanoseconds * 1e-9 - (stamp.sec + stamp.nanosec * 1e-9)
+            if 0.0 <= age < 120.0:          # a negative or absurd age is a clock artefact, not a lag
+                self._desc_lag_s.append(age)
+        except Exception:
+            pass
+        self._pending_descriptions[_join_key(msg, stamp)] = msg
         while len(self._pending_descriptions) > SYNC_BUFFER_LIMIT:
             self._pending_descriptions.pop(next(iter(self._pending_descriptions)))
         self._try_process()
+
+    def _scan_settle_s(self):
+        """How long to wait after a scan before merging: the MEASURED description lag.
+
+        SCAN_MERGE_SETTLE_S was a constant 1.0 s whose own docstring says it exists to let
+        the last frame of a turn finish its VLM round trip. MEASURED on the online arm, that
+        round trip has a 2.4 s median and a 7.9 s p95 -- so the constant covered neither, and
+        a description that lands after the sweep leaves its object uncomparable until the
+        next one.
+        RETURNS THE p90 OF WHAT THIS RUN HAS ACTUALLY SEEN, not a mean: the tail is the whole
+        point, and a mean sits under it by construction. Falls back to the configured constant
+        until there are enough samples to have a tail at all, and is clamped so a single
+        pathological round trip cannot stall every later sweep.
+        """
+        lags = list(self._desc_lag_s)
+        if len(lags) < 5:
+            return max(0.0, SCAN_MERGE_SETTLE_S)
+        lags.sort()
+        p90 = lags[min(len(lags) - 1, int(0.9 * (len(lags) - 1)))]
+        return float(min(SCAN_MERGE_SETTLE_MAX_S, max(SCAN_MERGE_SETTLE_S, p90)))
 
     def _check_input_silence(self):
         """No detections for a while: say so once, then END THE RUN if it persists.
@@ -2420,7 +2531,7 @@ class ObjectManagerService(Node):
                 'warn', f"[SYNC] /bbox_3d message with no usable stamp "
                         f"({self._n_bbox_no_stamp} of {self._n_bbox_msgs})")
             return
-        self._pending_bboxes[_stamp_key(stamp)] = msg
+        self._pending_bboxes[_join_key(msg, stamp)] = msg
         while len(self._pending_bboxes) > SYNC_BUFFER_LIMIT:
             self._pending_bboxes.pop(next(iter(self._pending_bboxes)))
         self._try_process()
@@ -2455,8 +2566,31 @@ class ObjectManagerService(Node):
 
         for stamp_key in common_keys:
             bboxes_msg = self._pending_bboxes[stamp_key]
-            if self._moving_since is not None:
-                observed_at = stamp_key[0] + stamp_key[1] * 1e-9
+            # THE MOTION LATCH IS OFF WHEN THE FRAME QUEUE IS ON. Owner 2026-09-11.
+            #
+            # This gate predates the frame queue. It drops any pair whose frame was captured
+            # while the robot was moving, on the reasoning that such a pair "can never become
+            # valid". The queue makes that reasoning false: a queued frame is processed on the
+            # transform CAPTURED WITH IT, so motion afterwards cannot invalidate its geometry --
+            # which is the whole argument the queue was built on.
+            #
+            # MEASURED on 20260911_191655: perception_2 published ONE movement edge and ZERO
+            # stop edges all run -- the motion score adds metres to radians against a 0.05
+            # threshold and a tour that drives and spins never falls below it (0 of 436 samples
+            # on 20260911_133641). So `_moving_since` was set once at second one and never
+            # cleared, and this gate discarded EVERY pair: 53 cycles, 233 detections, 0
+            # admissions, no belief file, while the feed overlay was full of boxes.
+            #
+            # Gated on frame_queue_max rather than deleted: with the queue OFF a frame really is
+            # processed live and the old reasoning still holds, so that path keeps its guard.
+            _queue_on = int(CFG.get("perception", {}).get("frame_queue_max", 0) or 0) > 0
+            if self._moving_since is not None and not _queue_on:
+                # THE KEY IS NO LONGER ALWAYS A STAMP. _join_key returns ("cycle", id) when the
+                # publisher supplies a cycle_id and ("stamp", sec, nanosec) otherwise, so the
+                # observation time comes from the MESSAGE rather than from the key. Indexing
+                # the key here would read a uuid as a number the moment the queue is on.
+                _bs = bboxes_msg.header.stamp
+                observed_at = _bs.sec + _bs.nanosec * 1e-9
                 if observed_at >= self._moving_since:
                     # Taken during this motion, so it can never become valid -- the stamp
                     # does not change when the robot stops. Drop it once, here, rather than
@@ -2468,6 +2602,29 @@ class ObjectManagerService(Node):
                         'warn',
                         f"[SYNC] pair {_stamp_key_str(bboxes_msg.header.stamp)} observed during "
                         f"motion -- discarded (total {self._dropped_moving_pairs})")
+                    # SAY IT ONCE, LOUDLY, WHEN THE LATCH IS CLEARLY STUCK.
+                    #
+                    # `_moving_since` is set by the "moving" edge of /robot_movement_detected
+                    # and cleared only by its "stopped" edge. If that stop is never published
+                    # the latch never opens, every later pair lands here, and the object store
+                    # stops growing -- with nothing in the log saying so, because each discard
+                    # reads as one ordinary refusal. That is what happened twice on 2026-09-11:
+                    # 426 discards and 0 pairs processed in one 18-minute run, ending with 5
+                    # objects from 455 detections.
+                    #
+                    # The condition is DISCARDS WITH NO PROCESSED PAIR AT ALL. A run that is
+                    # pairing normally and refuses some moving observations never trips it, at
+                    # any discard count.
+                    if (self._dropped_moving_pairs >= MOTION_LATCH_ALARM_PAIRS
+                            and self._processed_pairs == 0
+                            and not self._motion_starvation_warned):
+                        self._motion_starvation_warned = True
+                        self.object_services.log_both(
+                            'error',
+                            f"[SYNC] {self._dropped_moving_pairs} pairs discarded as 'observed "
+                            f"during motion' and NOT ONE has ever been processed. The stop edge "
+                            f"of /robot_movement_detected is not arriving, so no observation "
+                            f"can reach the object store for the rest of this run.")
                     continue
 
             descriptions = self._pending_descriptions.pop(stamp_key, None)
@@ -2475,6 +2632,10 @@ class ObjectManagerService(Node):
             if descriptions is None or bboxes is None:
                 continue
 
+            self._processed_pairs += 1
+            # DEBUG, and that matters: this line does not reach the bundle's launch log, so
+            # "it never appears" is not evidence that no pair was processed. The counter above
+            # is what answers that question.
             self.object_services.log_both(
                 'debug',
                 f"[SYNC] Processing matched perception stamp {_stamp_key_str(descriptions.header.stamp)}"

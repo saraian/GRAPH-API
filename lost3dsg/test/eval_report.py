@@ -30,6 +30,43 @@ import json
 import pathlib
 import sys
 
+# WHAT EACH TABLE SHOWS, in the reader's terms. Owner 2026-09-11: "add a small explanation to each
+# section (what do the metrics show)". Written for someone opening the PDF without the code beside
+# them, and each one says what a BAD number would mean -- a description that only defines the
+# number leaves the reader no better off than the label already did.
+TABLE_NOTES = {
+    "table_ii_floor_regions":
+        "Did the run find the right storeys, and did it carve them into the right rooms? Floor "
+        "accuracy compares the storeys the run mapped against the storeys the scene has. Region "
+        "precision and recall compare the ROOMS the run segmented against the ground truth's "
+        "regions: low recall means the run merged several real rooms into one, low precision "
+        "means it split one room into several.",
+    "table_iii_rooms":
+        "Given a room the run did find, did it call it the right KIND -- kitchen, corridor, "
+        "bedroom? Exact accuracy demands the same label; approximate accuracy accepts a near "
+        "neighbour. This says nothing about whether the room's shape was right, which is Table II.",
+    "table_iv_objects":
+        "Did the run put objects in the right places? Precision is the share of objects it "
+        "reported that are really there; recall is the share of real objects it found. Mean IoU "
+        "is how well a matched box overlaps the true one -- above 0.5 is the usual bar for "
+        "'the same object'. The top-k rows ask whether the right label was in the k most likely, "
+        "and they can only be computed for matches that were CLASSIFIED.",
+    "table_v_retrieval":
+        "Could the finished graph answer a question and could the robot act on the answer? "
+        "Retrieval success @10 is how often the right object was in the ten returned; navigation "
+        "success is how often driving to it arrived. These need a trial set; with none, the run "
+        "produced a map nobody asked anything of.",
+    "table_vi_room_objects":
+        "The same objects as Table IV, but scored INSIDE each room -- it asks whether the right "
+        "things ended up in the right room. A run can score well in Table IV and nothing here: "
+        "that happens when the objects are correctly placed in space but the room segmentation "
+        "does not line up with the ground truth's regions, so every object falls outside the "
+        "room it belongs to. Read this table together with Table II's region precision.",
+    "table_vii_representation":
+        "How much the map costs to keep. The point of comparison is between arms, not against a "
+        "target: a representation that is much larger for the same recall is paying for nothing.",
+}
+
 # The tables, in the order the paper reads them. `(key, title, [(field, label, unit)])`.
 TABLES = [
     ("table_ii_floor_regions", "Table II — floors and regions", [
@@ -159,6 +196,10 @@ def build_pdf(runs, out_path: pathlib.Path, title: str):
     styles = getSampleStyleSheet()
     small = ParagraphStyle("small", parent=styles["BodyText"], fontSize=8, leading=10)
     note = ParagraphStyle("note", parent=small, textColor=colors.HexColor("#8a4b00"))
+    # A separate style from `note`: note is amber and means "something is wrong here".
+    # An explanation of what a table shows is not a warning, and colouring it the same
+    # would make every section look like it had a problem.
+    explain = ParagraphStyle("explain", parent=small, textColor=colors.HexColor("#444444"))
     page = landscape(A4) if len(runs) > 2 else A4
     doc = SimpleDocTemplate(str(out_path), pagesize=page,
                             leftMargin=15 * mm, rightMargin=15 * mm,
@@ -200,7 +241,12 @@ def build_pdf(runs, out_path: pathlib.Path, title: str):
             if all(c == "not measured" for c in cells):
                 missing_any = True
             rows.append([label] + cells)
-        flow += [Paragraph(ttitle, styles["Heading2"]), grid(rows, head), Spacer(1, 3 * mm)]
+        flow += [Paragraph(ttitle, styles["Heading2"])]
+        # The explanation goes BEFORE the numbers: a reader who meets the table first has
+        # already formed a reading of it by the time an explanation underneath arrives.
+        if TABLE_NOTES.get(key):
+            flow += [Paragraph(TABLE_NOTES[key], explain), Spacer(1, 1.5 * mm)]
+        flow += [grid(rows, head), Spacer(1, 3 * mm)]
 
     # WHAT THE PIPELINE DID NOT PRODUCE, in metrics_eval's own words. This is the section that
     # stops a reader treating "not measured" as a poor score.

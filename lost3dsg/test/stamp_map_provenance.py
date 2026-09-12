@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the provenance sidecar of a published map, measured at publish time. GA-295(c).
 
-Called by live_run.sh's publish step:
+Called by run_sim.sh's publish step:
     stamp_map_provenance.py <published.db> <scene> <source_run> <integrity_marker> [params_sha]
 
 WHY THIS EXISTS. mp3d_17DRP was published with NO provenance file at all, so when GA-295 found
@@ -104,7 +104,7 @@ def main():
         "scene": scene,
         "source_run": source_run,
         "published_at": datetime.datetime.now().astimezone().isoformat(),
-        "published_by": "live_run.sh publish path (stamp_map_provenance.py)",
+        "published_by": "run_sim.sh publish path (stamp_map_provenance.py)",
         "integrity_check": integrity,
         "nodes": nodes,
         "bytes": db.stat().st_size,

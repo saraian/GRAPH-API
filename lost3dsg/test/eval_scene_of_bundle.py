@@ -11,7 +11,7 @@ TWO SOURCES, IN ORDER.
    `habitat.scene_dataset` outright. The colleague's configuration does.
 
 2. The scene NAME plus this machine's library. **A bundle records a NAME, not a file**:
-   `run_metadata.json` says `scene: hm3d_00861`, and `live_run.sh:469-476` turns that into a path
+   `run_metadata.json` says `scene: hm3d_00861`, and `run_sim.sh-476` turns that into a path
    using `HM3D_ROOT`. So an evaluation is NOT reproducible from a bundle alone -- the same name
    resolves to a different file on a different machine, and nothing in the bundle would show it.
    Filed as GA-464: the launcher should record the resolved paths. Until it does, this repeats the
@@ -28,7 +28,7 @@ import os
 import pathlib
 import sys
 
-# THE LAUNCHER'S OWN TABLE, live_run.sh:469-476. Duplicated on purpose and marked as such: the
+# THE LAUNCHER'S OWN TABLE, run_sim.sh-476. Duplicated on purpose and marked as such: the
 # alternative is parsing a bash case statement, and a wrong parse is silent. If the launcher gains
 # a scene, this needs it too -- which is the argument for GA-464 rather than for a cleverer parser.
 _HM3D_CFG = "hm3d_annotated_basis.scene_dataset_config.json"
@@ -42,15 +42,6 @@ SCENES = {
 
 def resolve(bundle: pathlib.Path, env=None):
     env = os.environ if env is None else env
-    cfg = bundle / "config.yaml"
-    if cfg.exists():
-        try:
-            import yaml
-            hab = (yaml.safe_load(cfg.read_text()) or {}).get("habitat") or {}
-            if hab.get("scene") and hab.get("scene_dataset"):
-                return str(hab["scene"]), str(hab["scene_dataset"]), "the bundle's own config.yaml"
-        except Exception:
-            pass  # a config we cannot parse is not a reason to stop; fall through to the name.
     meta = bundle / "run_metadata.json"
     name = ""
     if meta.exists():
@@ -58,6 +49,28 @@ def resolve(bundle: pathlib.Path, env=None):
             name = (json.loads(meta.read_text()) or {}).get("scene") or ""
         except Exception:
             name = ""
+
+    # THE NAME IS READ FIRST, AND IT POLICES THE PATH. The launcher owns the scene: `run_sim.sh`
+    # picks DEF_SCENE from its own argument (:538) and never reads `habitat.scene`, so a config can
+    # carry a scene the run did not drive. MEASURED 2026-09-11: schedules/configs/06 and 07 named
+    # 00824-Dd4bFSTQ8gi while every run of them drives hm3d_00861. Trusting the config there would
+    # score the belief against a DIFFERENT HOUSE and report the result as ground truth.
+    cfg = bundle / "config.yaml"
+    if cfg.exists():
+        try:
+            import yaml
+            hab = (yaml.safe_load(cfg.read_text()) or {}).get("habitat") or {}
+            if hab.get("scene") and hab.get("scene_dataset"):
+                path = str(hab["scene"])
+                token = SCENES.get(name, (None, "", None))[1].split("/")[0] if name in SCENES else None
+                if token and token not in path:
+                    return ("MISSING", "MISSING",
+                            f"the bundle's config.yaml names {path!r}, which is not the recorded "
+                            f"scene {name!r} ({token}). Refusing rather than scoring against the "
+                            f"wrong house; remove habitat.scene from the run config.")
+                return path, str(hab["scene_dataset"]), "the bundle's own config.yaml"
+        except Exception:
+            pass  # a config we cannot parse is not a reason to stop; fall through to the name.
     if name in SCENES:
         var, rel_scene, rel_cfg = SCENES[name]
         root = env.get(var, "")
@@ -76,6 +89,23 @@ def _selfcheck():
         # 1. nothing at all -> MISSING, and the reason says so.
         s, c, why = resolve(b, {})
         assert (s, c) == ("MISSING", "MISSING") and "no scene recorded" in why, why
+        # A CONFIG NAMING ANOTHER HOUSE IS REFUSED, not preferred. schedules/configs/06 and 07
+        # carried 00824-Dd4bFSTQ8gi while every run of them drives hm3d_00861, and the old order
+        # would have scored the belief against that other house and called it ground truth.
+        (b / "run_metadata.json").write_text(json.dumps({"scene": "hm3d_00861"}))
+        (b / "config.yaml").write_text(
+            "habitat:\n  scene: /x/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb\n"
+            "  scene_dataset: /x/cfg.json\n")
+        s, c, why = resolve(b, {"HM3D_ROOT": "/lib"})
+        assert (s, c) == ("MISSING", "MISSING"), (s, c)
+        assert "not the recorded scene" in why, why
+        # The SAME house in the config is used as written.
+        (b / "config.yaml").write_text(
+            "habitat:\n  scene: /x/00861-GLAQ4DNUx5U/GLAQ4DNUx5U.basis.glb\n"
+            "  scene_dataset: /x/cfg.json\n")
+        s, c, why = resolve(b, {"HM3D_ROOT": "/lib"})
+        assert s == "/x/00861-GLAQ4DNUx5U/GLAQ4DNUx5U.basis.glb", s
+        (b / "config.yaml").unlink()
         # 2. a name, with the library set -> the launcher's path.
         (b / "run_metadata.json").write_text(json.dumps({"scene": "hm3d_00861"}))
         s, c, why = resolve(b, {"HM3D_ROOT": "/lib"})
@@ -86,12 +116,14 @@ def _selfcheck():
         #    "/00861-.../x.glb" would be a real-looking path that names nothing.
         s, c, why = resolve(b, {})
         assert (s, c) == ("MISSING", "MISSING") and "HM3D_ROOT is not set" in why, why
-        # 4. the config wins over the name, because it is what the run actually loaded.
-        (b / "config.yaml").write_text('habitat:\n  scene: /from/cfg.glb\n  scene_dataset: /from/cfg.json\n')
+        # 4. the config wins over the name ONLY WHEN IT NAMES THE SAME HOUSE. It is what the run
+        #    loaded, so its exact path is preferred -- but the recorded name polices it (case 6).
+        (b / "config.yaml").write_text(
+            'habitat:\n  scene: /from/00861-GLAQ4DNUx5U/cfg.glb\n  scene_dataset: /from/cfg.json\n')
         try:
             import yaml  # noqa: F401
             s, c, why = resolve(b, {"HM3D_ROOT": "/lib"})
-            assert s == "/from/cfg.glb" and "config.yaml" in why, (s, why)
+            assert s == "/from/00861-GLAQ4DNUx5U/cfg.glb" and "config.yaml" in why, (s, why)
         except ImportError:
             print("  (no yaml here; the config-wins case was not exercised)")
         # 5. an unknown name is named in the reason rather than guessed at.

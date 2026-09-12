@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import json
 import logging
+import math
 import os
 import sys
 import time
+import uuid
 import urllib.request
-from collections import Counter
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
@@ -48,7 +50,7 @@ from rclpy.logging import LoggingSeverity  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy  # noqa: E402
 from sensor_msgs.msg import Image, PointCloud2  # noqa: E402
-from std_msgs.msg import Bool, String  # noqa: E402
+from std_msgs.msg import Bool, Int32, String  # noqa: E402
 from tf2_ros import TransformException  # noqa: E402
 
 # Compat shim for older transforms3d/tf_transformations on NumPy >= 1.24
@@ -232,6 +234,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         super().__init__("detection_node")
         self.sensor_cb_group = ReentrantCallbackGroup()
         self.perception_cb_group = MutuallyExclusiveCallbackGroup()
+        # THE MOTION WATCH GETS ITS OWN GROUP, and this is not tidiness.
+        #
+        # `joint_callback` is the ONLY publisher of /robot_movement_detected, and
+        # object_manager_6 latches on its "moving" edge and unlatches on its "stopped" edge.
+        # On the perception group the watch is serialised behind `_perception_timer_callback`,
+        # which blocks for the whole detect + VLM round trip. MEASURED on
+        # 20260911_181716_hm3d_00861: the 1 Hz timer evaluated FOUR times in 18 minutes. It
+        # caught one moving edge at +29 s and never saw a stationary sample again, so the stop
+        # was never published, the latch never opened, and object_manager_6 discarded 426 of
+        # 426 matched pairs as "observed during motion". The run ended with 5 objects from 455
+        # detections. The 17:39 run is the control: same single latch, but it closed at +535 s,
+        # and that run reached 184 objects.
+        #
+        # Its own mutually-exclusive group, not the reentrant sensor one: the watch reads and
+        # writes `last_joint_positions`, and two concurrent runs of it would difference a
+        # position against one this same callback had just replaced.
+        self.motion_cb_group = MutuallyExclusiveCallbackGroup()
         self._perception_lock = Lock()
 
         self.file_logger = module_logger
@@ -371,6 +390,60 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
     def _init_subscribers(self):
         self.camera_data = utils.SyncedCameraData(self, sync_tolerance_ms=2000)
+
+        # THE FRAME QUEUE. Owner's decision 2026-09-11, on this measurement: two COMPLETE
+        # tours (20260911_133641 and _140421) of 4344 frames each produced ONE and TWO
+        # perception cycles, and neither bundle has a detections file. The motion gate below
+        # is why. It is not mis-tuned: the tour's longest pause is 1 SECOND, the same length
+        # as the gate's sampling period, so a sampler measuring the delta since its own last
+        # sample almost never lands inside a pause. Raising the threshold cannot fix it
+        # either, because the score adds METRES to RADIANS (:1561) -- a turn on the spot
+        # scores 6.28 standing still, and any threshold admitting that admits six metres of
+        # driving.
+        #
+        # So processing is decoupled from the gate instead. A frame is a SNAPSHOT: its pixels
+        # and its transform were taken together, and what the robot does afterwards cannot
+        # change them. Capture runs on the SENSOR group, which is reentrant, so it keeps
+        # filling while a cycle occupies the perception group; capture on the perception
+        # group would stop for the whole cycle and the queue could never hold more than the
+        # one frame it just consumed.
+        #
+        # OFF BY DEFAULT (0). Arming it is a run-time decision, and with it at 0 every path
+        # below behaves exactly as it did before this existed.
+        #
+        # Full discards the OLDEST, so the queue always holds the N most recent captures.
+        #
+        # CORRECTED 2026-09-11 by the first armed run (20260911_150406), which refuted the
+        # rationale written here before it. That said the queue had to stay under about nine
+        # because `compute_fov_volume_from_depth` looks TF up by the frame's stamp against a
+        # 30 s buffer, at depth x CYCLE time. That is the wrong product. Because the oldest is
+        # discarded, a popped frame's age is bounded by depth x CAPTURE interval, not by the
+        # cycle: MEASURED 0.53 s per successful capture read over 1450 s, so at depth 8 a
+        # popped frame is about 4.2 s old, not 30. The run logged NO TF failure of any kind,
+        # and the queue sat full (depth 7 after the pop) on 261 of 262 cycles.
+        #
+        # So the TF buffer is not what bounds this, and the real cost of depth is STALENESS:
+        # a saturated queue processes the oldest of the N most recent frames, so depth buys
+        # lag rather than coverage while newer frames are being dropped anyway. `queue_age_s`
+        # on the per-cycle row is what measures it.
+        _perc_cfg = (CFG.get("perception", {}) or {})
+        self.frame_queue_max = int(os.environ.get(
+            "FRAME_QUEUE_MAX", _perc_cfg.get("frame_queue_max", 0)))
+        self.frame_queue_min_translation_m = float(os.environ.get(
+            "FRAME_QUEUE_MIN_TRANSLATION_M",
+            _perc_cfg.get("frame_queue_min_translation_m", 0.25)))
+        self.frame_queue_min_rotation_rad = float(os.environ.get(
+            "FRAME_QUEUE_MIN_ROTATION_RAD",
+            _perc_cfg.get("frame_queue_min_rotation_rad", 0.26)))
+        self.frame_queue = (deque(maxlen=self.frame_queue_max)
+                            if self.frame_queue_max > 0 else None)
+        # Not None ONLY while a queued snapshot is being processed. The motion gates consult
+        # it: a snapshot cannot be invalidated by motion that happened after it was taken.
+        self._queued_frame = None
+        self._queue_last_pose = None
+        self._queue_captured = 0
+        self._queue_redundant = 0
+        self._queue_dropped = 0
         
     def _init_state(self):
         # GA-236. The frames to watch come from CONFIG, not a TIAGo literal.
@@ -390,7 +463,22 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.head_joints = list(_frames_cfg.get("motion_watch") or ["habitat_camera"])
         self.base_joints = list(_frames_cfg.get("motion_watch_base") or [])
         self._motion_absent_logged = False
-        self.position_threshold = 0.05
+        # Config first, environment override second. Both were hardcoded here, so no run
+        # could change the gate that decides whether perception runs at all.
+        #
+        # THE DEFAULT IS 4.0, WHICH IS UPSTREAM'S VALUE AND NOT OURS. The merge of 2026-09-12
+        # met two fixes for one fault: ours made this configurable at the old 0.05, theirs
+        # raised it to a hardcoded 4.0. Both halves are kept -- the plumbing from ours, the
+        # NUMBER from theirs, because theirs is the one that was measured against a run.
+        #
+        # What 4.0 means: the score adds metres of translation to radians of rotation, so one
+        # 10-degree turn action scores about 0.175 and a metre of travel scores 1.0. At 4.0 the
+        # gate is effectively open, which is the intent under the frame queue -- a queued frame
+        # carries its own transform, so motion cannot invalidate it. Set it low again to get
+        # the old stop-and-look behaviour back.
+        self.position_threshold = float(os.environ.get(
+            "MOTION_POSITION_THRESHOLD",
+            _frames_cfg.get("motion_position_threshold", 4.0)))
         # GA-359. The pose source, and the gate that refuses to place a box on a stale
         # localisation. Under `rtabmap` the localiser publishes /localization_pose ONLY while
         # localised; a cycle with no pose newer than `localization_max_age_s` is SKIPPED and
@@ -424,7 +512,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.last_detection_time = None
         self.first_detection_done = False
         self.robot_has_moved_once = False
-        self.min_stationary_after_movement = 0.5
+        self.min_stationary_after_movement = float(os.environ.get(
+            "MOTION_MIN_STATIONARY_S",
+            (CFG.get("frames", {}) or {}).get("motion_min_stationary_s", 0.5)))
         self.processing_interrupted = False
         self.manual_trigger_requested = False
         self.waiting_for_input = False
@@ -445,7 +535,15 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
     def _create_timers(self):
         self.create_timer(0.5, self._perception_timer_callback, callback_group=self.perception_cb_group)
-        self.create_timer(1.0, self.joint_callback, callback_group=self.perception_cb_group)
+        if self.frame_queue is not None:
+            # SENSOR group on purpose: reentrant, so capture continues while a cycle holds
+            # the perception group. On the perception group this would be serialised behind
+            # the cycle and the queue could never buffer anything.
+            self.create_timer(0.5, self._capture_frame_callback,
+                              callback_group=self.sensor_cb_group)
+            self._queue_depth_pub = self.create_publisher(
+                Int32, "/perception/frame_queue_depth", 10)
+        self.create_timer(1.0, self.joint_callback, callback_group=self.motion_cb_group)
         self.get_logger().info("Perception timers created")
 
 
@@ -490,7 +588,71 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         except Exception as exc:
             self.get_logger().error(f"Error: {exc}")
 
+    @staticmethod
+    def _frame_viewpoint(frame):
+        """(x, y, z, qx, qy, qz, qw) of a captured frame, or None when it cannot be read.
+
+        None means ABSTAIN: the caller keeps the frame rather than pruning it, because a
+        viewpoint that cannot be measured is not evidence that the viewpoint is redundant.
+        """
+        tf = (frame or {}).get("transform")
+        try:
+            t, r = tf.transform.translation, tf.transform.rotation
+            return (t.x, t.y, t.z, r.x, r.y, r.z, r.w)
+        except AttributeError:
+            return None
+
+    @staticmethod
+    def _viewpoint_delta(a, b):
+        """(metres moved, radians turned) between two viewpoints. Kept SEPARATE.
+
+        The motion gate's own score adds these two together, which is why no threshold can
+        express "turning in place is fine, driving is not". Here they stay apart and each
+        has its own threshold.
+        """
+        lin = sum((a[i] - b[i]) ** 2 for i in range(3)) ** 0.5
+        dot = abs(sum(a[3 + i] * b[3 + i] for i in range(4)))
+        ang = 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+        return lin, ang
+
+    def _capture_frame_callback(self):
+        """Take one snapshot into the queue, if it shows a viewpoint the last one did not.
+
+        Runs regardless of motion. `get_synced_data` CONSUMES its cache, so each call yields
+        at most one frame and a redundant one is dropped here rather than re-read later.
+        """
+        if self.frame_queue is None:
+            return
+        frame = self.camera_data.get_synced_data()
+        if frame is None:
+            return
+        pose = self._frame_viewpoint(frame)
+        if pose is not None and self._queue_last_pose is not None:
+            lin, ang = self._viewpoint_delta(self._queue_last_pose, pose)
+            if (lin < self.frame_queue_min_translation_m
+                    and ang < self.frame_queue_min_rotation_rad):
+                self._queue_redundant += 1
+                return
+        if len(self.frame_queue) == self.frame_queue.maxlen:
+            self._queue_dropped += 1
+        # Stamped so the CYCLE can report how stale the frame it processed was. Without this
+        # the queue's cost is unmeasurable: a deep queue trades freshness for nothing when it
+        # is saturated, and only the age says which is happening.
+        frame["_queued_at_mono"] = time.monotonic()
+        self.frame_queue.append(frame)
+        self._queue_last_pose = pose
+        self._queue_captured += 1
+        pub = getattr(self, "_queue_depth_pub", None)
+        if pub is not None:
+            msg = Int32()
+            msg.data = len(self.frame_queue)
+            pub.publish(msg)
+
     def _abort_if_moving(self, stage):
+        # A queued frame is a SNAPSHOT. Its pixels and its transform were captured together,
+        # and motion after that moment cannot invalidate either, so the gate does not apply.
+        if self._queued_frame is not None:
+            return False
         if not self.is_stationary:
             self.processing_interrupted = True
             self.log_both("warn", f"Robot moved during {stage}: perception aborted")
@@ -508,7 +670,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         t = getattr(self, "_last_localization_time", None)
         return t is not None and (time.monotonic() - t) <= self.localization_max_age_s
 
-    def _run_perception_cycle(self, reason=""):
+    def _run_perception_cycle(self, reason="", frame=None):
         if not self._localised():
             # Skipped, not deferred with a stale pose. Logged at info once per skip because the
             # count is the evidence (rule 5); the hold continues on the feed side by itself.
@@ -528,7 +690,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 "info",
                 f"_run_perception_cycle: stationary={self.is_stationary}, first_done={self.first_detection_done}, manual={self.manual_trigger_requested}",
             )
-            self.publish_objects()
+            self.publish_objects(frame=frame)
             now = self.get_clock().now()
             self.first_detection_done = True
             self.last_detection_time = now
@@ -550,6 +712,26 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             "debug",
             f"timer: manual={self.manual_trigger_requested}, first_done={self.first_detection_done}, stationary={self.is_stationary}, stationary_start={self.time_stationary_start}",
         )
+
+        # THE QUEUE PATH. It replaces the stillness gate rather than adding to it: a queued
+        # frame is processed on its own captured transform, so waiting for the robot to stop
+        # would discard exactly the evidence this exists to keep. A manual trigger still
+        # wins, because an operator asking for a cycle means the live view, not the backlog.
+        if self.frame_queue is not None and not self.manual_trigger_requested:
+            if not self.frame_queue:
+                return
+            frame = self.frame_queue.popleft()
+            self._queued_frame = frame
+            try:
+                self._run_perception_cycle(
+                    f"frame queue: depth {len(self.frame_queue)} after this one "
+                    f"(captured {self._queue_captured}, redundant {self._queue_redundant}, "
+                    f"dropped {self._queue_dropped})",
+                    frame=frame)
+            finally:
+                self._queued_frame = None
+            self.first_detection_done = True
+            return
 
         if self.manual_trigger_requested:
             self.log_both("info", "timer: manual trigger requested")
@@ -706,7 +888,12 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         """Asynchronous / Lazy refinement of object semantics and attributes."""
         pass
 
-    def publish_objects(self):
+    def publish_objects(self, frame=None):
+        """`frame` is a captured snapshot from the queue; None means read the live camera.
+
+        A supplied frame also disarms the motion gates in this method: the snapshot's pixels
+        and transform were taken together, and motion afterwards cannot invalidate either.
+        """
         # WN1. The TRUE cycle wall time, entry to completion of this method. `total_ms`
         # covers only run_detection's own span and was logged as "total cycle" -- ~2x off
         # against the publish_objects wall. Interrupted/empty cycles do not write one:
@@ -715,14 +902,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.processing_interrupted = False
         self.log_both("info", "publish_objects entered")
 
-        if not self.is_stationary:
+        if frame is None and not self.is_stationary:
             self.get_logger().warn("Robot moving at the start, canceling processing")
             return
 
-        camera_data = self.camera_data.get_synced_data()
+        # A supplied frame is already a snapshot; re-reading the camera here would both
+        # discard it and consume a second frame, because get_synced_data invalidates its
+        # cache on every successful read.
+        camera_data = frame if frame is not None else self.camera_data.get_synced_data()
         if camera_data is None:
             self.get_logger().warn("Could not get synced camera data, waiting ...")
             return
+
+        # None on the live path, and None is the honest value: a live frame was never queued,
+        # so it has no queue age, and 0.0 would read as "measured, and it was zero".
+        queued_at = (frame or {}).get("_queued_at_mono") if frame is not None else None
+        self._last_queue_age_s = (
+            round(time.monotonic() - queued_at, 3) if queued_at is not None else None)
 
         image_raw = camera_data["rgb"]
         depth = camera_data["depth"]
@@ -738,7 +934,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         detections = self.run_detection(camera_data)
         self.log_both("info", f"publish_objects: after run_detection, detections={len(detections)}")
 
-        if self.processing_interrupted or not self.is_stationary:
+        if frame is None and (self.processing_interrupted or not self.is_stationary):
             self.get_logger().error("Processing interrupted: robot moving during detection")
             return
         if not detections:
@@ -805,8 +1001,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         vlm_results = self._unified_scene_description_results(detections)
         descriptions = self._build_descriptions(detections, vlm_results, crops_data)
         _mark("describer_queue")
-        self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp)
-        self._publish_description_array(detections, descriptions, cycle_stamp)
+        # ONE ID FOR THIS CYCLE, carried by BOTH arrays. object_manager_6 joins on it instead
+        # of the header stamp: the box is published as soon as geometry is computed and the
+        # description waits on a VLM round trip, so their stamps drift apart under the frame
+        # queue and the exact-stamp join stopped matching entirely (20260911_193627: boxes two
+        # minutes ahead of descriptions, 50 detections, 0 admissions).
+        cycle_id = uuid.uuid4().hex[:16]
+        self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp, cycle_id)
+        self._publish_description_array(detections, descriptions, cycle_stamp, cycle_id)
         self._publish_late_descriptions(cycle_stamp)
         self._update_world_model(detections, centroids_3d, bboxes_3d, descriptions)
         self._queue_perceptions_json()
@@ -850,13 +1052,35 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # GA-359: which authority placed this cycle's boxes, and how many cycles were refused
         # for want of a fresh localisation up to now. Both additive keys.
         skipped = getattr(self, "cycles_skipped_unlocalised", None)
+        _q = getattr(self, "frame_queue", None)
+        _age = getattr(self, "_last_queue_age_s", None)
+
+        def _as_int(v):
+            return v if isinstance(v, int) and not isinstance(v, bool) else None
+
         row = dict(lat, t=lat["last_updated"], cycle=self._cycle_count,
                    frame_id=frame_id, n_detections=n_detections,
                    gt_semantic_hit=(hit if isinstance(hit, bool) else None),
                    pose_source=getattr(self, "pose_source", None) if isinstance(getattr(self, "pose_source", None), str) else None,
                    localization_pose_topic=(getattr(self, "localization_pose_topic", None)
                                             if isinstance(getattr(self, "localization_pose_topic", None), str) else None),
-                   cycles_skipped_unlocalised=(skipped if isinstance(skipped, int) else None))
+                   cycles_skipped_unlocalised=(skipped if isinstance(skipped, int) else None),
+                   # THE FRAME QUEUE, on the row rather than only in the log line. Counters in
+                   # a log are a property of the launch, not of the bundle: a reader could see
+                   # "the queue dropped frames" only by parsing unstructured text under
+                   # ros/log/, which is the same defect the merge broad phase had when it
+                   # logged what it pruned without recording it. None throughout when the
+                   # queue is off, which is not the same as zero.
+                   # isinstance-guarded like `cycles_skipped_unlocalised` above: only a real
+                   # number is a measurement, and anything else must read as "not measured"
+                   # rather than reach the row and make it unserialisable.
+                   queue_depth=_as_int(len(_q) if isinstance(_q, deque) else None),
+                   queue_captured=_as_int(getattr(self, "_queue_captured", None)),
+                   queue_redundant=_as_int(getattr(self, "_queue_redundant", None)),
+                   queue_dropped=_as_int(getattr(self, "_queue_dropped", None)),
+                   # How stale the processed frame was. This is the number that says whether
+                   # the configured depth is buying coverage or only lag.
+                   queue_age_s=(_age if isinstance(_age, (int, float)) else None))
         # WRITTEN SYNCHRONOUSLY, NOT QUEUED. Owner 2026-09-11: "measured time is critical,
         # especially perception loop latency." This row IS that measurement, and going through
         # _io_executor lost it: MEASURED across the archive, 3 of the 6 bundles whose runs
@@ -1372,8 +1596,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 room_id=getattr(self, "current_room_id", None),
                 semantic_frame=semantic)
 
-    def _publish_bbox_array(self, detections, bboxes_3d, fov_volume, cycle_stamp):
+    def _publish_bbox_array(self, detections, bboxes_3d, fov_volume, cycle_stamp, cycle_id=""):
         msg = self.make_header_msg(Bbox3dArray, stamp=cycle_stamp, frame_id=world_frame())
+        msg.cycle_id = cycle_id
         if fov_volume:
             for key, value in fov_volume.items():
                 setattr(msg, f"fov_{key}", value)
@@ -1429,8 +1654,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             msg.boxes.append(box_msg)
         self.bbox_pub.publish(msg)
 
-    def _publish_description_array(self, detections, descriptions, cycle_stamp):
+    def _publish_description_array(self, detections, descriptions, cycle_stamp, cycle_id=""):
         desc_array = self.make_header_msg(ObjectDescriptionArray, stamp=cycle_stamp, frame_id=world_frame())
+        desc_array.cycle_id = cycle_id
         for det, desc in zip(detections, descriptions):
             obj_msg = ObjectDescription()
             obj_msg.label = det.instance_label

@@ -86,7 +86,7 @@ NONSENSE_LABEL = "zzqx_not_a_real_object_kind"
 
 
 # ---------------------------------------------------------------------------------------
-# Digests. ONE implementation, used by the probes here AND by live_run.sh via --print-*,
+# Digests. ONE implementation, used by the probes here AND by run_sim.sh via --print-*,
 # so the launcher never restates the hashing. A check that restates its subject drifts from
 # it in silence, which is how the tautological a2 survived.
 #
@@ -633,7 +633,7 @@ def a4_perception_twice(frame=None):
     return False, detail
 
 
-# Only these reach the bundle: live_run.sh copies *.json, *.jsonl and *.log out of the
+# Only these reach the bundle: run_sim.sh copies *.json, *.jsonl and *.log out of the
 # scratch directory. Leftover detection_*.png are never archived, and a gate that fails on a
 # file nobody copies gets skipped.
 ARCHIVED_GLOBS = (".json", ".jsonl", ".log")
@@ -682,7 +682,7 @@ def a5_bundle_clean(run_dir, run_start_epoch, scratch_dir=None):
               "stale_count": len(stale), "stale": stale[:20]}
     if stale:
         detail["why"] = ("these artefacts predate this run and would be archived into its "
-                         "bundle under its source hashes. live_run.sh renames $OUT_DIR before "
+                         "bundle under its source hashes. run_sim.sh renames $OUT_DIR before "
                          "each run; that did not happen. Move /tmp/graphapi_live by hand, then "
                          "restart.")
     return (not stale), detail
@@ -1241,7 +1241,10 @@ GT_TOKENS = r"FEED_GT_|GT_SEMANTIC|gt_semantic|habitat_gt|/gt/semantic_instance|
 # Files that may name a GT token, each with the reason it is allowed. Anything else FAILS.
 A12_ALLOWED_FILES = {
     "test/habitat_feed_host.py": "renders the semantic sensor (producer)",
-    "test/live_run.sh": "exports FEED_GT_SEMANTIC and stamps gt_semantic",
+    # ../run_sim.sh, not test/run_sim.sh: the launcher was inlined into the repository root on
+    # 2026-09-11 (owner: "live_run will have to be discarded"), which moved it OUT of the tree
+    # this probe greps. The scan below reaches it by name for that reason.
+    "../run_sim.sh": "exports FEED_GT_SEMANTIC and stamps gt_semantic",
     "test/preflight_gate.py": "this probe names the tokens",
     # Added 2026-09-11. Verified before listing, the same way the two entries below were:
     # nothing in CMakeLists' install list carries it (grep: 0), nothing under src/ or test/ imports
@@ -1249,6 +1252,14 @@ A12_ALLOWED_FILES = {
     # path. Its four tokens are TABLE LABELS: "floors in ground truth", "regions in ground truth",
     # "ground-truth room labels". A reporter that may not say "ground truth" cannot label a column.
     "test/eval_report.py": "offline PDF reporter; imported by nothing, installed nowhere",
+
+    # Added 2026-09-11, and VERIFIED before listing rather than waved through because the gate was
+    # in the way: `run_metrics.py` arrived with e3130f8 "Metrics bugs fixed". Nothing imports it
+    # (grep: 0), it is NOT in CMakeLists' install list (line 85 installs habitat_run_metrics.py, a
+    # different file), and it drives the offline HM3D evaluation through subprocess. Its tokens are
+    # FILE NAMES -- `manifest_gt_00824.json` -- not a read of the semantic sensor. An evaluation
+    # driver that may not say "gt" cannot name the manifest it was given.
+    "src/perception_module/run_metrics.py": "offline metrics driver; imported by nothing, installed nowhere",
 
     "test/test_preflight_gate.py": "the negative test names the tokens",
     "src/perception_module/habitat_feed_node.py": "relays the blob to /gt/semantic_instance (transport)",
@@ -1277,7 +1288,7 @@ A12_ALLOWED_FILES = {
     "src/perception_module/metrics_eval.py":
         "offline HOV-SG metrics; installed, but imported only by two offline tools",
     # Added 2026-09-10. The config DECLARES the `gt_semantic` switch — a config that carries a
-    # setting has to name it, exactly as live_run.sh does when it exports FEED_GT_SEMANTIC. Both
+    # setting has to name it, exactly as run_sim.sh does when it exports FEED_GT_SEMANTIC. Both
     # entries are a declaration plus a comment; neither reads a ground-truth value. Verified before
     # listing: the only token in either file is the key's own name, once.
     "src/perception_module/config.py": "declares the gt_semantic switch; the key's name, not a read",
@@ -1313,6 +1324,17 @@ def a12_gt_isolation(root=None):
            "--exclude-dir=__pycache__", "--exclude-dir=.ruff_cache"] + dirs
     out = subprocess.run(cmd, cwd=root, capture_output=True, text=True).stdout.split()
     files = sorted(f.replace(os.sep, "/") for f in out)
+    # THE LAUNCHER IS OUTSIDE THIS ROOT AND IS STILL SCANNED. It was run_sim.sh and
+    # was therefore inside the grepped tree; on 2026-09-11 it was inlined into the repository root,
+    # which silently took the file that exports FEED_GT_SEMANTIC out of a12's reach. A probe whose
+    # coverage shrinks when a file moves, and which keeps passing, is rule 78 exactly: frozen on a
+    # pass. Reached by name, and its absence is NOT a pass -- a missing launcher is reported.
+    launcher = os.path.join(os.path.dirname(root), "run_sim.sh")
+    if not os.path.isfile(launcher):
+        return SKIPPED, {"reason": f"the launcher {launcher} is absent, so its GT tokens were "
+                                   f"not examined; a12 cannot attest a tree it could not read"}
+    if subprocess.run(["/bin/grep", "-qE", GT_TOKENS, launcher]).returncode == 0:
+        files = sorted(files + ["../run_sim.sh"])
     not_allowed = [f for f in files if f not in A12_ALLOWED_FILES]
     bad_functions = {}
     p2 = os.path.join(root, "src", "perception_module", "perception_2.py")
@@ -1404,7 +1426,6 @@ PROBES = {
     "a3": ("policy_reached_container", a3_policy_reached_container),
     "a4": ("perception_twice", a4_perception_twice),
     "a5": ("bundle_clean", a5_bundle_clean),
-    "a6": ("camera_pose_offset", a6_camera_pose_offset),
     "a7": ("source_frozen", a7_source_frozen),
     "a8": ("stack_imports", a8_stack_imports),
     "a10": ("frame_age_vs_rejected", a10_frame_age_rejected_frames),
@@ -1423,6 +1444,16 @@ PROBES = {
 # These are merged in ONLY when named explicitly with --only, so the default gate is exactly
 # the eight probes that can answer before the stack exists.
 POST_START_PROBES = {
+    # a6 MOVED HERE 2026-09-11, and it is not a demotion. It reads the base_link ->
+    # habitat_camera offset, which the feed NODE publishes only once frames arrive. Since
+    # b6da753 ("Warm VitSAM before releasing the Habitat feed") the feed HOST blocks on
+    # $VITSAM_READY_FILE, which perception_2 writes AFTER its warmup -- and perception_2
+    # starts AFTER this gate. So in the default set a6 could not pass by construction: it
+    # waited 20 s for a transform that waited for a file written later. MEASURED: three
+    # launches on 2026-09-11 reported skipped=['a6'], a SKIP fails the gate, and no run
+    # could start. live_stack_container.sh now runs it after the warmup gate opens, and it
+    # still BLOCKS: a wrong mount height ends the run, at the first moment it can answer.
+    "a6": ("camera_pose_offset", a6_camera_pose_offset),
     "a9": ("feed_streaming", a9_feed_streaming),
     "a13": ("pose_authority", a13_pose_authority),
 }

@@ -192,7 +192,13 @@ class DetectionArchive:
                 "stamp": stamp,
                 "label": getattr(det, "label", None),
                 "instance_label": getattr(det, "instance_label", None),
-                "score": float(getattr(det, "score", 0.0) or 0.0),
+                # NULL STAYS NULL. `or 0.0` turned the detector's honest "no calibrated
+                # score" (detection_pipeline.py sets score=None) into a fabricated 0.0 on
+                # every row -- 622 of 622 in 20260911_173938_hm3d_00861. Every reader then
+                # showed "0.00" because its `score != null` test passed. The readers were
+                # right; the writer was inventing the number.
+                "score": None if getattr(det, "score", None) is None
+                         else float(det.score),
                 "bbox_2d": [float(v) for v in getattr(det, "bbox", []) or []],
                 "bbox_3d": bbox_3d,
                 "centroid": list(centroid) if centroid is not None else None,
@@ -430,9 +436,9 @@ def demo():
     import numpy as np
 
     class D:
-        def __init__(self, label, box, mask, inst=None):
+        def __init__(self, label, box, mask, inst=None, score=0.9):
             self.label, self.bbox, self.mask, self.instance_label = label, box, mask, inst
-            self.score = 0.9
+            self.score = score
 
     class Stamp:
         sec, nanosec = 1788200177, 475640800
@@ -477,8 +483,15 @@ def demo():
         print(f"  rows {a.stats()['rows']}, refused {a.stats()['failed']} "
               f"(a row without a 2D box is not a row)")
 
+        # A detector that reports no score must not be recorded as scoring zero. This is
+        # the live case: detection_pipeline sets score=None on every detection.
+        a.record_detection(fid, D("lamp", (5, 5, 9, 9), None, "lamp#1", score=None))
+
         rows = [json.loads(x) for x in open(os.path.join(tmp, "detections.jsonl"))]
-        assert len(rows) == 2
+        assert len(rows) == 3
+        assert rows[0]["score"] == 0.9, rows[0]["score"]
+        assert rows[2]["score"] is None, rows[2]["score"]
+        print("  score None -> null (not 0.0); a real score round-trips")
         assert rows[0]["mask_rle"] and rows[0]["mask_rle"]["size"] == [48, 64], rows[0]["mask_rle"]
         assert rows[0]["instance_label"] == "bed#1"
         # THE POINT OF THE WHOLE FILE: these two share a frame, so co-visibility can veto.

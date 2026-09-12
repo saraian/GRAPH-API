@@ -52,6 +52,17 @@ association:
   merge_near_distance_m: 0.02    # 2 cm centre distance, configurable for sensor noise
   merge_near_iou_threshold: 0.25 # minimum 3D AABB IoU for the geometry override
   merge_aabb_margin_m: 0.8    # AABB broad-phase margin; must be >= merge_max_distance_m
+  # HOW MANY of the three optional terms (colour, material, description) must have been
+  # COMPARABLE before two objects may be fused. At 0 a pair with nothing measurable scores
+  # 1.0000 on label agreement alone and merges -- and adding evidence LOWERS the score, so
+  # the least-informed pair in the map is the highest-scoring one (nlp_utils.py:340).
+  # Declared here, not left to config.py's fallback: a config passed as GRAPH_API_CONFIG
+  # REPLACES this file, so an arm that does not name the key carries no trace of it and a
+  # reader of the bundle cannot tell what guarded the merge. That is how frame_queue_max
+  # sat silently at 0 on 2026-09-11.
+  # It is what makes a LATE description safe: an undescribed pair is refused rather than
+  # fused, and the next post-scan sweep merges it once the description lands.
+  merge_min_evidence: 1
   merge_min_similarity: 0.925 # MUST stay strictly above sim_threshold above, or a merge fuses
                               # pairs the association loop has just refused. object_services
                               # asserts this at load and the merge service refuses a request
@@ -80,6 +91,12 @@ association:
   # list, so the settle could not be changed for a run at all.
   scan_complete_topic: "/habitat/scan_complete"
   scan_merge_settle_s: 1.0
+  # The CEILING on the settle above, which is now a floor rather than the value used: the
+  # merge after a scan waits for the p90 of the description round trips this run has
+  # actually seen, because that round trip is 2.4 s median and 7.9 s p95 on the online VLM
+  # and moves with the arm. This bounds it so one pathological call cannot stall every
+  # later sweep -- a scan is about 12 s at 36 frames and 3 fps.
+  scan_merge_settle_max_s: 10.0
 
 frames:
   # OPTICAL frame (x right, y down, z forward) the perception back-projects
@@ -88,6 +105,19 @@ frames:
   camera: "habitat_camera_optical"
   # Physical camera axes (x forward, y left, z up) for the saved agent pose.
   agent_pose: "habitat_camera"
+
+  # The motion gate: perception runs only while the camera is still. A score is metres of
+  # translation PLUS radians of rotation since the previous 1 Hz sample, and the camera counts
+  # as moving at or above this value; it must then stay below it for the settle below before a
+  # cycle may run.
+  # MEASURED 2026-09-11 on two COMPLETE tours (20260911_133641, _140421): 4344 frames each and
+  # ONE and TWO perception cycles between them. The tour drives through its waypoints instead
+  # of dwelling -- about 195 waypoint visits, 14 still windows -- and its longest pause is 1
+  # second, the same length as the sampling period.
+  # Raising the threshold is NOT a fix: metres and radians are summed, so a turn on the spot
+  # scores 6.28 without moving, and a threshold that admits it admits six metres of driving.
+  motion_position_threshold: 4.0
+  motion_min_stationary_s: 0.5
 
 paths:
   operations_log: "/root/exchange/output/operations.txt"
@@ -234,12 +264,14 @@ rooms:
   gvd_min_robot_component_ratio: 0.15
 
 habitat:
+  # NO scene KEYS HERE. The launcher owns the scene: run_sim.sh picks it from its own
+  # argument (DEF_SCENE) and never reads these. Leaving them made every bundle's config
+  # claim 00824-Dd4bFSTQ8gi while the run drove hm3d_00861, and the evaluation resolver
+  # refused outright rather than score against the wrong house -- correctly, but it
+  # blocked eval on 20260911_173938. config.py still carries them as module defaults for
+  # habitat_nav.py and habitat_camera_objects_node.py, neither of which the live stack
+  # launches (checked: 0 references in live_stack_container.sh).
   localization_mode: rtabmap  # rtabmap | ground_truth
-  scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
-  scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
-  nav_scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.navmesh
   # keep the simulated agent on the floor it starts on: the 2D grid cannot separate
   # storeys and HM3D navmeshes join them through the stairs (goal filter on height)
   single_floor: true
@@ -307,7 +339,11 @@ run:
                             # Only one may publish map->odom, so this also decides which
                             # component owns that transform. Override: FEED_POSE_SOURCE.
   # --- what the perception side runs --------------------------------------------------------
-  wall_detector: false      # run the wall detector node. Override: WALL_DETECTOR.
+  # ON since 2026-09-11. With it off the wall detector never runs, `detected_walls` is [],
+  # `max_wall_support` is 0.0, and all 12 accepted doorway candidates fail the wall-support
+  # test -- cut_validation proposed 0, so a whole storey stays ONE room against 12 in ground
+  # truth and Table VI cannot score. The door code was never given walls to anchor to.
+  wall_detector: true       # run the wall detector node. Override: WALL_DETECTOR.
   gt_semantic: true         # render the simulator's semantic frame so archived detections can
                             # be joined to ground truth offline. It never reaches the runtime
                             # decision path; a preflight probe refuses a reader that tries.
@@ -350,6 +386,30 @@ hooks:
   decisions_log: ""       # JSONL of decisions/revisions; empty -> output/hook_decisions.jsonl
 
 perception:
+  # THE FRAME QUEUE. 0 is OFF and is what every run before 2026-09-11 did: perception waited
+  # for the motion gate and processed whatever the camera held at that instant.
+  # WHY IT EXISTS, measured on two COMPLETE tours (20260911_133641 and _140421): 4344 frames
+  # each and ONE and TWO perception cycles between them, with no detections file in either
+  # bundle. The tour's longest pause is 1 second, the same length as the gate's sampling
+  # period, so the gate almost never observes a pause; and its score adds metres to radians,
+  # so no threshold can admit a turn on the spot without also admitting six metres of driving.
+  # Above 0, frames are captured regardless of motion and each is processed on its own
+  # captured transform.
+  # CORRECTED 2026-09-11 by the first armed run (20260911_150406). Depth is NOT bounded by the
+  # TF buffer: the queue discards the oldest when full, so a processed frame's age is depth
+  # times the CAPTURE interval (measured 0.53 s) -- about 4.2 s at depth 8, not 30 -- and that
+  # run logged no TF failure at all, sitting full on 261 of 262 cycles.
+  # What depth really costs is STALENESS. While the queue is saturated it processes the oldest
+  # of the most recent frames and drops the rest, so depth buys lag rather than coverage.
+  # queue_age_s on each row of perception_latencies.jsonl is the measurement.
+  # ARMED at 8 by the owner, 2026-09-11, to be tested by a run. 8 sits under the ~9 the TF
+  # buffer allows (30 s of buffer, ~3.2 s a cycle). The code fallback stays 0, so a
+  # deployment whose yaml lacks this key does NOT silently arm.
+  frame_queue_max: 8
+  # How far the viewpoint must move before a frame is worth queueing. Translation and
+  # rotation are separate on purpose; 0.26 rad is about 15 degrees.
+  frame_queue_min_translation_m: 0.25
+  frame_queue_min_rotation_rad: 0.26
   backend: "local"        # "modal" | "managed" | "local"
   # DECLARED so probe a10 can compare it. The code has read this key since GA-281
   # (config.py:468) and the file never named it, so a10 SKIPPED -- and a skipped probe
@@ -370,3 +430,16 @@ perception:
   # Structural surfaces and openings already come from room geometry. Set [] to let
   # the whole-scene VLM return them.
   excluded_labels: ["wall", "floor", "ceiling", "door", "doorway", "door frame", "doorframe"]
+
+# THE FRAME ARCHIVE. The replay dashboard's timeline reads frames/ plus detections.jsonl, and only
+# this writes them (perception_2.py:327 -> detection_archive.py). The module default is False
+# (config.py:322), so with this key absent EVERY bundle reads "NO FRAMES" or "EMPTY" in the picker
+# and nothing can be stepped through.
+#
+# MEASURED 2026-09-11: absent from this file since the 2026-09-10 tree consolidation. The old
+# untracked regolo_config.yaml set it and its own comment warned that losing it made "every run
+# after it produce a bundle the dashboard could only report as recorded no frames". Regenerating
+# the arm configs from this file carried the absence into all of them, so the warning came true a
+# second time. Set HERE, in the tracked config, so no arm can lose it again.
+archive:
+  per_detection: true

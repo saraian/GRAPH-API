@@ -400,6 +400,28 @@ def _install_ros_stubs():
         shutdown=lambda *a, **k: None, ok=lambda: True)
     mod("rclpy.node", Node=_Stub)
     sys.modules["rclpy"].node = sys.modules["rclpy.node"]
+    # rclpy.qos, because the bridge imports FOUR NAMES FROM IT BY NAME
+    # (graph_api_bridge.py:28: `from rclpy.qos import DurabilityPolicy, HistoryPolicy,
+    # QoSProfile, ReliabilityPolicy`). A `from X import a, b` fails on a stub module that
+    # lacks the attributes, and `rclpy` here is a plain module rather than a package, so the
+    # submodule has to be registered in sys.modules explicitly -- the error is the misleading
+    # "'rclpy' is not a package" rather than a missing name.
+    #
+    # THIS IS STUB DRIFT AND IT WILL RECUR. The dashboard loads the bridge in-process to reuse
+    # its routes; every ROS import the bridge grows has to appear here or the dashboard stops
+    # starting at all, which is how it failed today after a QoS import landed upstream. The
+    # values are inert: nothing in a replay reads a QoS profile, it only has to import.
+    # The policy names are used as ENUMS -- `ReliabilityPolicy.BEST_EFFORT` -- so attribute
+    # access happens on the CLASS, which never reaches _Stub's instance __getattr__. A
+    # metaclass answers any member, so the stub does not have to know which constants the
+    # bridge picks today or grows tomorrow.
+    class _AnyMember(type):
+        def __getattr__(cls, _):
+            return 0
+    _Policy = _AnyMember("_Policy", (), {})
+    mod("rclpy.qos", DurabilityPolicy=_Policy, HistoryPolicy=_Policy,
+        QoSProfile=_Stub, ReliabilityPolicy=_Policy)
+    sys.modules["rclpy"].qos = sys.modules["rclpy.qos"]
     mod("cv2", imencode=lambda *a, **k: (False, None), imdecode=lambda *a, **k: None,
         cvtColor=lambda *a, **k: None, COLOR_BGR2RGB=4)
     mod("cv_bridge", CvBridge=_Stub)
@@ -673,7 +695,18 @@ def _replay_mode_html(bundle: Path) -> str:
   // ---- badge + canvas ----------------------------------------------------------------
   const badge = document.createElement('div');
   badge.id = 'replayBadge';
+  // THE HOST IS PART OF THE RUN'S IDENTITY, not decoration. Bundles are followed from other
+  // machines now (lost3dsg/test/follow_remote_run.sh), so a reader looking at a timeline has
+  // no way to tell a local run from one pulled off the lab machine unless the page says. The
+  // value is the bundle's OWN `machine` stamp, written by live_run.sh at launch -- not this
+  // process's hostname, which would name the machine doing the SERVING and be wrong for every
+  // followed run. Absent on bundles recorded before the stamp existed, and then it is omitted
+  // rather than guessed.
   badge.textContent = (LIVE_MODE ? 'LIVE' : 'REPLAY') + ' \u00b7 ' + BUNDLE;
+  fetch(PFX + '/replay/host/' + encodeURIComponent(BUNDLE))
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {{ if (d && d.machine) badge.textContent += ' \u00b7 ' + d.machine; }})
+    .catch(() => {{}});
   wrap.appendChild(badge);
 
   const cv = document.createElement('canvas');
@@ -1931,9 +1964,8 @@ def _tools_menu_html(bundles=None) -> str:
         f'      <a href="{_h.escape(_infra, quote=True)}" target="_blank" rel="noopener"\n'
         '         title="Infra orchestration dashboard (private network only)"\n'
         '         style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">INFRA &nearr;</a>\n')
-    opts = "".join(f'<option value="{_h.escape(b)}" title="{_h.escape(_bundle_tag(b)[1])}">'
-                   f'{_h.escape(b)} \u2014 {_h.escape(_bundle_tag(b)[0])}</option>'
-                   for b in (bundles or []))
+    # (the bundle <select> was built here. It went with the picker: the Load page lists the same
+    #  runs with room to show what each one holds, which an <option> could not.)
     # An extension's menu rows, built from the SAME Page objects that install the routes, so a link
     # and its page cannot drift apart -- the failure that used to leave the menu offering a 404.
     _style = ("background:#1e293b;color:#e2e8f0;border:1px solid #334155;"
@@ -1942,7 +1974,7 @@ def _tools_menu_html(bundles=None) -> str:
         f'      <a href="{_h.escape(pg.route.lstrip("/"))}" style="{_style}">'
         f'{_h.escape(pg.menu_label)} &rarr;</a>\n'
         for pg in dash_ext.pages() if pg.menu_label)
-    menu = (TOOLS_MENU_TEMPLATE.replace("__OPTS__", opts)
+    menu = (TOOLS_MENU_TEMPLATE
             .replace("__INTERNAL_LINKS__", internal)
             .replace("__EXT_LINKS__", ext_links))
     if dash_env.flag("DASH_PUBLIC"):
@@ -1955,75 +1987,126 @@ def _tools_menu_html(bundles=None) -> str:
         # These match the RELATIVE hrefs above. If a link's spelling changes this list must change
         # in the SAME edit: a stale entry silently re-exposes a link the owner ordered removed and
         # nothing errors. test_routes asserts both halves.
-        dead = ('href="./"', 'href="dash"', 'href="replay"')
+        dead = ('href="./"', 'href="dash"')
         menu = "\n".join(ln for ln in menu.splitlines()
                           if not any(d in ln for d in dead))
     return menu
 
 
 TOOLS_MENU_TEMPLATE = """
-<div id="toolsMenu" style="position:fixed;right:12px;bottom:12px;z-index:99999;
-     font:600 11px ui-monospace,monospace;text-align:right;">
-  <div id="toolsPanel" hidden style="margin-bottom:6px;background:#0b1220;border:1px solid #334155;
-       border-radius:8px;padding:8px;min-width:250px;box-shadow:0 6px 24px rgba(0,0,0,.5);">
-    <div style="color:#64748b;margin-bottom:6px;letter-spacing:.05em;">LOAD BUNDLE &mdash; switches to replay</div>
-    <div style="display:flex;gap:5px;margin-bottom:9px;">
-      <select id="bundlePick" style="flex:1;min-width:0;background:#0f172a;color:#e2e8f0;
-              border:1px solid #334155;border-radius:5px;padding:4px;font:inherit;">__OPTS__</select>
-      <button onclick="loadPickedBundle()" style="background:#0e2537;color:#38bdf8;
-              border:1px solid #38bdf8;border-radius:5px;padding:4px 9px;cursor:pointer;font:inherit;">LOAD</button>
-    </div>
-    <div id="bundleMsg" style="color:#94a3b8;margin-bottom:9px;white-space:normal;"></div>
-    <div style="display:flex;flex-direction:column;gap:5px;">
-      <a href="./"        style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">START &rarr;</a>
-      <a href="dash"     style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">DASHBOARD &rarr;</a>
-__EXT_LINKS__      <a href="replay"   style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">REPLAY &rarr;</a>
-      <a href="bundles"  style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">BUNDLES &rarr;</a>
-__INTERNAL_LINKS__      <button id="rvizLaunchBtn" onclick="startRviz()" hidden
-              style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;
-                     padding:6px 10px;cursor:pointer;font:inherit;">OPEN RVIZ</button>
-      <div id="rvizLaunchMsg" style="color:#94a3b8;white-space:normal;"></div>
-    </div>
-  </div>
-  <button id="toolsToggle" onclick="toggleTools()"
-          style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;
-                 padding:7px 12px;cursor:pointer;font:inherit;">&#9776; TOOLS</button>
+<!-- A LEFT SIDEBAR, not a corner popover (owner 2026-09-11). The hamburger alone opens it: the
+     word TOOLS beside the icon was a label for a thing the icon already says.
+     WHAT WENT, and why the menu is shorter than it was:
+       REPLAY  -- the dashboard IS the replay view; two links to one page is two names for it.
+       the bundle picker and its LOAD button -- the Load page does this with room to show what
+                  each bundle holds, where a <select> could only show one line of it.
+     WHAT WAS RENAMED: START -> NEW, BUNDLES -> LOAD, DASHBOARD -> LIVE.
+     LIVE IS DISABLED WITHOUT A LIVE RUN. It used to be a link that led to a page reporting no
+     camera and no bridge; a control that cannot do its job should say so before it is pressed,
+     not after. The recorded runs are reached through LOAD instead. -->
+<div id="toolsMenu" style="position:fixed;left:0;top:0;bottom:0;z-index:99999;
+     font:600 11px ui-monospace,monospace;">
+  <!-- BOTH CHILDREN ARE ABSOLUTE, AND BOTH START AT left:0. They used to be flex items in a row,
+       which put the panel to the RIGHT of the button: the button is only ~31 px tall, so below it
+       the page showed through a column the width of the button for the whole height of the
+       sidebar. That strip is the gap the owner saw. Overlaying the button on the panel instead
+       means the drawer reaches the screen edge and the button does not move when it opens. -->
+  <button id="toolsToggle" onclick="toggleTools()" title="Menu"
+          style="position:absolute;left:0;top:10px;z-index:1;
+                 background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-left:0;
+                 border-radius:0 6px 6px 0;padding:9px 10px;cursor:pointer;font:inherit;
+                 line-height:1;">&#9776;</button>
+  <!-- ONE `display` DECLARATION. There were two -- `display:none` first and `display:flex` last --
+       and the last one wins, so the panel was OPEN on every load while the comment below claimed
+       its own inline `display:none` kept it shut. `flex-direction` and `gap` are inert until
+       `toggleTools` sets `display:flex`, so they can stay. -->
+  <div id="toolsPanel"
+       style="display:none;flex-direction:column;gap:6px;
+              position:absolute;left:0;top:0;bottom:0;
+              background:#0b1220;border-right:1px solid #334155;padding:44px 10px 12px;
+              min-width:210px;box-shadow:6px 0 24px rgba(0,0,0,.5);overflow:auto;">
+    <div style="color:#64748b;margin-bottom:2px;letter-spacing:.05em;">MENU</div>
+    <a href="./"      style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">NEW &rarr;</a>
+    <a id="liveLink" href="dash" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LIVE &rarr;</a>
+    <a href="bundles" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LOAD &rarr;</a>
+__EXT_LINKS____INTERNAL_LINKS__  </div>
 </div>
 <script>
   function toggleTools() {
     var p = document.getElementById('toolsPanel');
-    p.hidden = !p.hidden;
-    try { localStorage.setItem('toolsOpen', p.hidden ? '0' : '1'); } catch (e) {}
+    // DISPLAY, NOT `hidden`. The panel is a flex column, so it carries an inline
+    // `display:flex`; the `[hidden]` rule is a UA stylesheet rule and an inline style outranks
+    // it. Setting `hidden` therefore toggled an attribute that changed nothing and the sidebar
+    // could never be closed. Nothing about the attribute said so -- it is only visible if you
+    // ask which rule wins.
+    var open = p.style.display !== 'none';
+    p.style.display = open ? 'none' : 'flex';
   }
+  // ANY CHOICE CLOSES IT. A sidebar that stays open over the page after you have picked where
+  // to go is in the way of the thing you asked for -- and on a same-page link (LIVE while
+  // already on the dashboard) nothing reloads, so it would simply sit there. Delegated to the
+  // panel so a link added later is covered without being registered here.
   (function () {
-    try { if (localStorage.getItem('toolsOpen') === '1') document.getElementById('toolsPanel').hidden = false; } catch (e) {}
+    var p = document.getElementById('toolsPanel');
+    if (!p) return;
+    p.addEventListener('click', function (e) {
+      if (e.target.closest('a,button')) p.style.display = 'none';
+    });
+    // AND A CLICK ANYWHERE ELSE CLOSES IT (owner 2026-09-11). `toolsMenu` holds the panel AND
+    // the hamburger, so a press on the hamburger is never "outside" and `toggleTools` keeps
+    // both directions. Registered on the document, not the page body, because the dashboard's
+    // own panels stop propagation in places and a body listener would miss those clicks.
+    document.addEventListener('click', function (e) {
+      if (p.style.display === 'none') return;
+      var m = document.getElementById('toolsMenu');
+      if (m && !m.contains(e.target)) p.style.display = 'none';
+    });
+  })();
+  (function () {
+    // COLLAPSED ON EVERY LOAD (owner 2026-09-11): the panel's own inline display:none is what
+    // does it, so there is no restore step to get wrong.
     var local = ['localhost', '127.0.0.1', '::1', ''];
     if (local.indexOf(location.hostname) !== -1) document.getElementById('rvizLaunchBtn').hidden = false;
+    // LIVE ANSWERS FOR ITSELF. /mode_info is the server's own verdict on whether a bridge is
+    // answering, which is the same source the banner uses -- so the link and the banner cannot
+    // disagree. Disabled rather than hidden: a reader who knows the link should be there is
+    // told why it is not available, instead of wondering where it went.
+    // POLLED, because a run can start after this page was opened. `mode_info` reports the
+    // mode decided at START-UP and never revisited, so gating on it left LIVE dead for the
+    // lifetime of the tab -- the owner's "Live does not detect the current run". `bridge_live`
+    // asks the bridge each time.
+    function refreshLive() {
+      var a = document.getElementById('liveLink');
+      if (!a) return;
+      fetch('bridge_live').then(function (r) { return r.json(); }).then(function (d) {
+        if (d && d.live) {
+          a.href = 'dash';
+          a.style.opacity = '';
+          a.style.cursor = '';
+          a.title = 'the run that is going now';
+        } else {
+          a.removeAttribute('href');
+          a.style.opacity = '.45';
+          a.style.cursor = 'not-allowed';
+          a.title = 'no live run: start one from NEW, or open a recorded run from LOAD';
+        }
+      }).catch(function () {});
+    }
+    refreshLive();
+    setInterval(refreshLive, 5000);
   })();
-  async function loadPickedBundle() {
-    var sel = document.getElementById('bundlePick'), msg = document.getElementById('bundleMsg');
-    if (!sel || !sel.value) { msg.textContent = 'no bundle selected'; return; }
-    msg.style.color = '#94a3b8'; msg.textContent = 'loading ' + sel.value + '...';
-    try {
-      var r = await fetch('/load_bundle?name=' + encodeURIComponent(sel.value), { method: 'POST' });
-      var d = await r.json();
-      if (d.ok) { msg.style.color = '#10b981'; msg.textContent = 'now serving ' + d.bundle + ' -- reloading';
-        // GA-380: the twin of the start page's navigation, one function away, and missed the first
-        // time -- which is the copy warning this file already carries. Relative, so it needs no helper.
-        setTimeout(function () { location.href = 'dash'; }, 700); }
-      else { msg.style.color = '#f87171'; msg.textContent = 'failed: ' + (d.why || ('HTTP ' + r.status)); }
-    } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'failed: ' + e.message; }
-  }
   async function startRviz() {
     var btn = document.getElementById('rvizLaunchBtn'), msg = document.getElementById('rvizLaunchMsg');
     btn.disabled = true; msg.style.color = '#94a3b8'; msg.textContent = 'starting RViz...';
     try {
       var r = await fetch('/start_rviz', { method: 'POST' });
       var d = await r.json();
-      if (d.started) { msg.style.color = '#10b981'; msg.textContent = 'RViz starting (pid ' + d.pid + ') on the SERVER display. Log: ' + d.log; }
-      else if (d.already_running) { msg.style.color = '#eab308'; msg.textContent = d.reason; }
-      else { msg.style.color = '#f87171'; msg.textContent = 'failed: ' + (d.reason || ('HTTP ' + r.status)); }
-    } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'failed: ' + e.message; }
+      // NOTHING IS SAID ON SUCCESS. The old line reported a pid and a log path on the SERVER,
+      // which is not the reader's machine and not a question they asked; it then stayed on
+      // screen. A failure still speaks, because that is the case the reader must act on.
+      if (d.started || d.already_running) { msg.textContent = ''; }
+      else { msg.style.color = '#f87171'; msg.textContent = 'RViz did not start: ' + (d.reason || ('HTTP ' + r.status)); }
+    } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'RViz did not start: ' + e.message; }
     btn.disabled = false;
   }
 </script>
@@ -2113,14 +2196,14 @@ def with_tools_menu(html: str) -> str:
 # The checkout the runs directory sits in, used only to DISPLAY default paths in the
 # launcher form. Derived, never a literal, so it names no deployment.
 RUNS_PARENT = RUNS_ROOT.parent
-LIVE_RUN = GRAPH_API_ROOT / "lost3dsg/test/live_run.sh"
+LIVE_RUN = GRAPH_API_ROOT / "run_sim.sh"   # was run_sim.sh; inlined into run_sim.sh 2026-09-11
 LAUNCH_LOG_DIR = Path(tempfile.gettempdir()) / "found-launcher"
 
 # The four the script's own `case` statement accepts. Anything else exits 1 before it starts,
 # so the form offers exactly these rather than a free-text box that fails a minute later.
 SCENES = ["hm3d_00861", "hm3d_00337", "hm3d_00770", "mp3d_17DRP"]
 
-# EVERY variable live_run.sh reads, grouped, each with THE SCRIPT'S OWN DEFAULT as its
+# EVERY variable run_sim.sh reads, grouped, each with THE SCRIPT'S OWN DEFAULT as its
 # placeholder. Read out of the script rather than remembered: a form that offers a stale
 # default is worse than one that offers none, because it looks authoritative.
 #
@@ -2148,7 +2231,7 @@ RUN_SETTINGS = [
         ("FEED_FPS", "3", "text", "frames per second published to the stack"),
         ("FEED_SEED", "7", "text", "spawn seed -- same seed, same starting point"),
         # The sampling policy is removed (owner 2026-09-11), so FEED_WALK, FEED_DWELL,
-        # FEED_TEST_TOUR and FEED_TEST_TOUR_SCAN are gone from this form: live_run.sh refuses a run
+        # FEED_TEST_TOUR and FEED_TEST_TOUR_SCAN are gone from this form: run_sim.sh refuses a run
         # that sets any of them. A schedule states its own stops and its own scan at each.
         ("FEED_EXPLORATION_LAPS", "3", "text", "complete passes of the storey's roadmap"),
         ("FEED_MOVE_FN", "navigate", "choice:navigate|teleport",
@@ -2161,7 +2244,7 @@ RUN_SETTINGS = [
     ("MAP", "rtabmap: where this run spawns and what it maps against", [
         # MAPPING_ONLY and FEED_MAPPING_SECONDS selected the mapping phase, which went with the
         # sampling policy on 2026-09-11. A scheduled run maps while it drives the roadmap, so
-        # there is no separate phase to time; live_run.sh refuses both names.
+        # there is no separate phase to time; run_sim.sh refuses both names.
         ("FEED_SPAWN_FLOOR", "", "text", "spawn height; blank lets the navmesh choose"),
         ("RTABMAP_LOCALIZE_DB", "", "text", "localise against this .db instead of mapping"),
     ]),
@@ -2191,7 +2274,7 @@ _SECRET_NAMES = {f[0] for _, _, fields in RUN_SETTINGS for f in fields if f[2] =
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,60}$")
 
 # The launched run, as this process knows it. `pid` is the process GROUP leader, because
-# live_run.sh is started in its own session -- see _start_run for why that matters to stopping.
+# run_sim.sh is started in its own session -- see _start_run for why that matters to stopping.
 RUN_PROC = {"pid": None, "scene": None, "log": None, "started": None}
 
 
@@ -2232,7 +2315,7 @@ CONTAINER = "graphapi_live"
 
 
 def _container_up() -> bool:
-    """Is the run's container up. live_run.sh refuses to start over one (fixed name, fixed
+    """Is the run's container up. run_sim.sh refuses to start over one (fixed name, fixed
     ports), and its EXIT trap does not stop it: the trap kills the feed and archives the
     bundle, and leaves `docker run` to the signal. So the container can outlive the run."""
     try:
@@ -2318,6 +2401,11 @@ START_PAGE_CSS = """
   .run:hover { background:#132038; border-color:var(--rule); }
   .run .n { color:var(--ink); }
   .run .m { color:var(--faint); font-size:11px; white-space:nowrap; }
+  .run .mach { color:var(--faint); font-size:11px; white-space:nowrap; opacity:.75;
+               min-width:5.5em; text-align:right; }
+  .run .del { background:transparent; border:1px solid transparent; color:var(--faint);
+              border-radius:4px; padding:1px 6px; cursor:pointer; font:inherit; line-height:1; }
+  .run .del:hover { border-color:#ef4444; color:#ef4444; }
   /* GA-398: a run that cannot be replayed is marked on the row rather than discovered by
      clicking it and finding a player that does nothing. AMBER, not red: an empty bundle is not
      an error, and one with no frames may still hold the evidence a figure is quoted from. */
@@ -2358,7 +2446,13 @@ START_PAGE_CSS = """
 
 
 def _bundle_tag(name):
-    """(short tag, long title) for a bundle -- what it holds, in the reader's words.
+    """(machine, short tag, long title) for a bundle -- what it holds, in the reader's words.
+
+    THREE elements, not two: the machine that recorded the run was added in front once bundles
+    began arriving from other hosts (lost3dsg/test/follow_remote_run.sh), and a row that does
+    not say where a run came from lets a followed run pass for a local one. The docstring said
+    two for a while after the code returned three, and the test that pinned the shape was left
+    on the old one -- so it failed with a tuple that was CORRECT.
 
     GA-398, owner 2026-09-08: a run with no frames offered a player that did nothing, and the
     picker gave no way to tell an empty launch from the archive that carries the citable evidence.
@@ -2371,19 +2465,28 @@ def _bundle_tag(name):
     try:
         c = _load_bundle_index().describe(name)
     except Exception as exc:                       # noqa: BLE001 - a listing must not die on one bad row
-        return "unreadable", f"{type(exc).__name__}: {exc}"
+        return "?", "unreadable", f"{type(exc).__name__}: {exc}"
     # WHOSE RUN IS THIS. Bundles from two machines can sit in one picker only if each says which
-    # machine made it; before 2026-09-10 none did, so an older bundle reads "machine not recorded"
-    # rather than being assumed local. Prefixed, so it is the first thing in the row rather than a
-    # detail at the end of a title nobody hovers.
+    # machine made it; before 2026-09-10 none did, so an older bundle reads "?" rather than being
+    # assumed local.
+    # THE MACHINE IS ITS OWN COLUMN (owner 2026-09-11), not a prefix glued to the tag. It used
+    # to read "[gin] NO FRAMES - 223 decisions", which put two unrelated facts in one string and
+    # left a run recorded HERE with no marking at all -- so "no prefix" meant both "this machine"
+    # and "nobody recorded one". The column names the machine in every case.
     _m = c.get("machine")
     _host = _socket.gethostname()
+    _mach_short = _m or "?"
     if _m and _m != _host:
-        _mach_short, _mach_long = f"[{_m}] ", f"recorded on {_m}, not this machine ({_host}). "
+        _mach_long = f"recorded on {_m}, not this machine ({_host}). "
     elif _m:
-        _mach_short, _mach_long = "", f"recorded on this machine ({_m}). "
+        _mach_long = f"recorded on this machine ({_m}). "
     else:
-        _mach_short, _mach_long = "", "machine not recorded (bundle predates the field). "
+        # "?", NOT "". Two lines set this column for the same case -- `_m or "?"` above and this
+        # one -- and the later won, so an unrecorded machine rendered as an EMPTY column. That
+        # is the exact ambiguity the comment above says the column exists to remove: a blank
+        # reads as "nothing to say here", which is indistinguishable from a run whose machine
+        # simply was not written down. "?" says the second thing out loud.
+        _mach_short, _mach_long = "?", "machine not recorded (bundle predates the field). "
     frames, dets = c.get("frames") or 0, c.get("detections") or 0
     kinds = c.get("decisions") or {}
     decisions = sum(v for v in kinds.values() if isinstance(v, int))
@@ -2392,14 +2495,14 @@ def _bundle_tag(name):
         # a run with frames but no detections can be stepped through and shows no boxes, and saying
         # "replayable" of it would be this file disagreeing with the page that lists it.
         ok = c.get("replayable")
-        return (_mach_short + f"{frames} frames \u00b7 {dets} detections",
+        return (_mach_short, f"{frames} frames \u00b7 {dets} detections",
                 _mach_long + f"{frames} frames, {dets} detections, {decisions} decisions, {c.get('size')} -- "
                 + ("replayable" if ok else (c.get("why_not") or "not replayable")))
     if decisions:
-        return (_mach_short + "NO FRAMES \u00b7 %d decisions" % decisions,
+        return (_mach_short, "NO FRAMES \u00b7 %d decisions" % decisions,
                 _mach_long + f"no frames -- this run recorded none, but it holds {decisions} decisions and "
                 f"{c.get('objects', 0)} objects. The player cannot step through it; its evidence is intact.")
-    return (_mach_short + "EMPTY \u00b7 nothing recorded",
+    return (_mach_short, "EMPTY \u00b7 nothing recorded",
             _mach_long + "no frames, no detections and no decisions: an aborted launch or a mapping-only run, "
             "which writes no perception output by design. Nothing here can be replayed or quoted.")
 
@@ -2407,7 +2510,7 @@ def _bundle_tag(name):
 def _start_page_html(bundles, current, mode, why):
     """The initial window: pick a recorded run, or configure and launch a new one.
 
-    EVERY variable live_run.sh reads is on the form, grouped and collapsed. The alternative --
+    EVERY variable run_sim.sh reads is on the form, grouped and collapsed. The alternative --
     a short list of "the ones that matter" -- was rejected by the owner, and the objection is
     sound: which ones matter is a property of the experiment, not of the launcher, so a
     launcher that decides for you is a launcher you have to leave to change one field.
@@ -2420,12 +2523,24 @@ def _start_page_html(bundles, current, mode, why):
     rows = []
     for b in bundles:
         cur = " cur" if current and b == current else ""
-        tag, title = _bundle_tag(b)
+        # A LISTED RUN THAT IS NOT ON DISK IS NOT LISTED. `results/latest` is a symlink and it
+        # goes dangling the moment its target is deleted; before this, the picker still drew the
+        # row, the click loaded nothing, and the page said nothing about why. Skipped here rather
+        # than handled at open time, so a name that cannot be opened is never offered.
+        if not (RUNS_ROOT / b).is_dir():
+            continue
+        machine, tag, title = _bundle_tag(b)
         empty = " empty" if tag.startswith(("EMPTY", "NO FRAMES")) else ""
+        # The row is clickable to OPEN; the delete button stops the click reaching it, or every
+        # deletion would also load the bundle it just removed.
         rows.append(f'<div class="run{cur}{empty}" onclick="openBundle(this.dataset.b)" '
                     f'data-b="{_h.escape(b)}" title="{_h.escape(title)}">'
                     f'<span class="n">{_h.escape(b)}</span>'
-                    f'<span class="m">{_h.escape(tag)}</span></div>')
+                    f'<span class="mach" title="the machine that recorded this run">{_h.escape(machine)}</span>'
+                    f'<span class="m">{_h.escape(tag)}</span>'
+                    f'<button class="del" title="Delete this bundle from disk" '
+                    f'onclick="event.stopPropagation();deleteBundle(this.closest(\'.run\').dataset.b)">&#x2715;</button>'
+                    f'</div>')
 
     groups = []
     for name, blurb, fields in RUN_SETTINGS:
@@ -2467,9 +2582,9 @@ def _start_page_html(bundles, current, mode, why):
             f'<header><h1>{_h.escape(_brand)}</h1>{badge}<span class="sub">{_h.escape(why or "")}</span>'
             f'<span style="flex:1"></span>{resume}</header>'
             '<main>'
-            '<section><h2>Open a recorded run</h2>'
-            f'<div class="runs">{"".join(rows) or "<div class=sub>no runs in " + str(RUNS_ROOT) + "</div>"}</div>'
-            '<div id="openMsg" class="sub" style="margin-top:10px"></div></section>'
+            # (the recorded-run list stood here. It is the LOAD page's job since the
+            #  owner's 2026-09-11 restructure: NEW opens the configure-and-launch form
+            #  and nothing else, so it goes where its name says it goes.)
             # Owner 2026-09-08 (applied first to the droplet snapshot by ARIA, carried here): a
             # PUBLIC deployment cannot launch anything, so the launch section is not offered there.
             # Gated on DASH_PUBLIC, not on the mode: a dashboard started BEFORE a run is in
@@ -2477,7 +2592,7 @@ def _start_page_html(bundles, current, mode, why):
             + ("" if dash_env.flag("DASH_PUBLIC") else
                '<section><h2>Start a new run</h2>'
                f'<div><label for="f_scene">scene</label><select id="f_scene">{scene_opts}</select>'
-               '<div class="hint">the four live_run.sh accepts; override the paths under SCENE</div></div>'
+               '<div class="hint">the four run_sim.sh accepts; override the paths under SCENE</div></div>'
                f'{"".join(groups)}'
                '<div class="bar"><button id="go" onclick="startRun()">LAUNCH RUN</button>'
                '<button class="plain stop" id="stopBtn" onclick="stopRun()" hidden>STOP (SIGINT)</button>'
@@ -2489,6 +2604,22 @@ def _start_page_html(bundles, current, mode, why):
 
 START_PAGE_JS = """
 <script>
+async function deleteBundle(name) {
+  // TYPED, not clicked. A bundle is hours of machine time and the only copy; an "are you sure"
+  // dialog is dismissed by reflex, and 83 bundles were removed in one afternoon on 2026-09-11.
+  // Typing the word is the smallest thing that cannot happen by accident.
+  const a = prompt('Delete ' + name + ' permanently?\\n\\nThis removes the directory from disk and '
+                 + 'cannot be undone. Type DELETE to confirm.');
+  if (a !== 'DELETE') return;
+  try {
+    const r = await fetch('delete_bundle', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({bundle: name})});
+    const j = await r.json();
+    if (!r.ok || !j.deleted) { alert('Not deleted: ' + (j.error || r.status)); return; }
+    location.reload();
+  } catch (e) { alert('Not deleted: ' + e); }
+}
+
 async function openBundle(name) {
   var msg = document.getElementById('openMsg');
   msg.textContent = 'loading ' + name + '...';
@@ -2576,6 +2707,13 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
     from fastapi import Request
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+    def _safe_current(fn):
+        """current_fn() or None. It touches the filesystem and a delete guard must not die on it."""
+        try:
+            return fn()
+        except Exception:
+            return None
+
     def _local(request) -> bool:
         return (request.client.host if request and request.client else "") in (
             "127.0.0.1", "::1", "localhost")
@@ -2588,6 +2726,74 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
             current = None
         return HTMLResponse(with_tools_menu(
             _start_page_html(bundles_fn(), current, MODE["mode"], MODE["why"])))
+
+    @app.post("/delete_bundle")
+    async def _delete_bundle(request: Request):
+        """Remove one run bundle from disk. Owner 2026-09-11.
+
+        LOOPBACK ONLY. This deletes hours of machine time and there is no second copy; the RViz
+        launcher on this server is gated the same way and for a weaker reason.
+
+        THE NAME IS RESOLVED AGAINST RUNS_ROOT AND CHECKED AFTERWARDS, not merely inspected for
+        "..". A name is rejected unless the resolved path's PARENT is exactly RUNS_ROOT and the
+        directory looks like a run bundle -- so a symlink, an absolute path or any spelling that
+        escapes the runs directory fails the same test rather than each needing its own rule.
+
+        THE CURRENT BUNDLE IS REFUSED. Deleting the directory the server is serving leaves every
+        route reading a path that no longer exists, and the page says nothing about why.
+        """
+        if not _local(request):
+            return JSONResponse(status_code=403, content={
+                "deleted": False, "error": "deleting a bundle is loopback-only"})
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        name = str(body.get("bundle") or "").strip()
+        if not name:
+            return JSONResponse(status_code=400, content={"deleted": False, "error": "no bundle named"})
+        target = (RUNS_ROOT / name).resolve()
+        if target.parent != RUNS_ROOT.resolve() or not target.is_dir():
+            return JSONResponse(status_code=400, content={
+                "deleted": False, "error": f"{name!r} is not a directory directly inside {RUNS_ROOT}"})
+        if not is_run_dir(target):
+            return JSONResponse(status_code=400, content={
+                "deleted": False, "error": f"{name!r} does not look like a run bundle"})
+        # WHAT "THE CURRENT BUNDLE" MEANS, and it is more than one path.
+        #
+        # MEASURED 2026-09-11, and it cost the best bundle of the day: this guard compared
+        # `current_fn()` against the target and let the served bundle through, because the server
+        # was started as `--bundle latest` and `current_fn()` answered with the SYMLINK's name
+        # while the target was the resolved directory. Two spellings of one directory compared
+        # unequal, the run was deleted, and `results/latest` was left dangling.
+        #
+        # Every spelling is resolved and ALL of them are refused: what current_fn says, what
+        # GRAPH_API_OUTPUT_DIR says, and whatever `latest` points at. A path that cannot be
+        # resolved is skipped rather than treated as a match -- a broken symlink must not make
+        # every bundle undeletable.
+        protected = set()
+        for cand in (_safe_current(current_fn), os.environ.get("GRAPH_API_OUTPUT_DIR"),
+                     RUNS_ROOT / "latest"):
+            if not cand:
+                continue
+            try:
+                protected.add(Path(cand).resolve())
+            except OSError:
+                continue
+        if target in protected:
+            return JSONResponse(status_code=409, content={
+                "deleted": False,
+                "error": "this is the bundle being served (or the one `latest` points at); "
+                         "open another run first"})
+        import shutil as _sh
+        size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
+        try:
+            _sh.rmtree(target)
+        except OSError as exc:
+            return JSONResponse(status_code=500, content={"deleted": False, "error": str(exc)})
+        _load_bundle_index.cache_clear() if hasattr(_load_bundle_index, "cache_clear") else None
+        print(f"[dash] deleted bundle {name} ({size/1e6:.1f} MB)", flush=True)
+        return JSONResponse(content={"deleted": True, "bundle": name, "freed_bytes": size})
 
     @app.get("/dash", response_class=HTMLResponse)
     def _dash():
@@ -2804,7 +3010,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
 
     @app.post("/start_run")
     async def _start_run(request: Request):
-        """Launch live_run.sh with the submitted settings.
+        """Launch run_sim.sh with the submitted settings.
 
         LOOPBACK ONLY. The run opens a habitat window on the SERVER's display and takes the
         server's GPU, ROS graph and control ports; from another machine the person pressing
@@ -2813,7 +3019,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         A NEW SESSION, deliberately (`start_new_session=True`). Two things follow, both
         wanted: the run survives a restart of this dashboard, and it gets its own process
         group, which is the only way `/stop_run` can deliver SIGINT to the whole stack.
-        live_run.sh publishes the map from an EXIT trap, so the documented way to stop it is
+        run_sim.sh publishes the map from an EXIT trap, so the documented way to stop it is
         the interrupt -- kill the pid alone and the trap runs while its children keep the
         ports.
         """
@@ -2837,7 +3043,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         if _container_up():
             return JSONResponse(status_code=409, content={
                 "started": False,
-                "why": (f"container {CONTAINER} is still up; live_run.sh refuses to start over "
+                "why": (f"container {CONTAINER} is still up; run_sim.sh refuses to start over "
                         f"it. Press STOP, or: docker stop {CONTAINER}")})
         try:
             body = await request.json()
@@ -2892,7 +3098,7 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         if not _pid_alive(pid):
             return JSONResponse(status_code=409, content={
                 "stopped": False, "why": "no run launched from here is running"})
-        # SIGINT, not SIGTERM, and to the GROUP. live_run.sh publishes the map from its EXIT
+        # SIGINT, not SIGTERM, and to the GROUP. run_sim.sh publishes the map from its EXIT
         # trap and documents Ctrl-C as the way to stop it; SIGTERM to the leader alone leaves
         # the container and the feed holding their ports.
         try:
@@ -3014,6 +3220,12 @@ def _install_decision_reader(m, bundle: Path):
         resolves per call, not the one this process started on."""
         configured = os.environ.get("GRAPH_API_OUTPUT_DIR")
         return (Path(configured) if configured else bundle) / "hook_decisions.jsonl"
+
+    # EXPOSED, so a route that is asked for ANOTHER bundle can read that bundle's log through
+    # the same filter and the same memo. Without this the only reader outside this closure was
+    # the process-wide `_DECISIONS_CACHE`, which is why /replay/events served the wrong run.
+    # Not a second parser: one function, two callers.
+    m._blob_for = _blob_for
 
     def _cached_records():
         log = _current_log()
@@ -3238,12 +3450,14 @@ def build_app(bundle: Path):
             import replay_view
         return replay_view
 
-    @m.app.get("/replay", response_class=HTMLResponse)
-    def _replay(bundle: str = None):
-        """Frame-by-frame replay of an ARCHIVED run. Not the live view -- the bridge serves
-        that on :8081 while a run is up, and the two are easy to confuse precisely when
-        nothing is appearing."""
-        return HTMLResponse(with_tools_menu(_load_replay_view().page(bundle)))
+    # THE /replay PAGE IS GONE (owner 2026-09-11): it was a second rendering of the run the
+    # dashboard already shows. `/dash` carries the transport bar, the overlays and the graph in
+    # both modes -- GA-345 made the bar serve live and replay alike -- so the separate page was
+    # a second name for the same view, and two names invite the reader to wonder which is
+    # authoritative. A recorded run is opened from the LOAD page, which points at `/dash`.
+    #
+    # The /replay/* DATA routes below are untouched: they are what the dashboard fetches, and
+    # they are not a page.
 
     @m.app.get("/replay/index/{bundle}")
     def _replay_index(bundle: str):
@@ -3268,6 +3482,22 @@ def build_app(bundle: Path):
         snapshot. `match` says whether the row is this frame's or the preceding cycle's."""
         return JSONResponse(_load_replay_view().cycle_for_frame(bundle, frame_id))
 
+    @m.app.get("/replay/host/{bundle}")
+    def _replay_host(bundle: str):
+        """Which machine recorded this bundle, from its own run_metadata.
+
+        Read per bundle, never from this process: a dashboard can serve a run pulled off
+        another machine, and answering with the SERVER's hostname would label every followed
+        run as local. `machine` is stamped by live_run.sh at launch; older bundles have none
+        and get null, which the page renders as nothing at all.
+        """
+        try:
+            meta = json.loads((RUNS_ROOT / bundle / "run_metadata.json").read_text())
+        except (OSError, ValueError):
+            return JSONResponse({"machine": None})
+        mach = meta.get("machine")
+        return JSONResponse({"machine": str(mach) if mach else None})
+
     @m.app.get("/replay/events/{bundle}")
     def _replay_events(bundle: str):
         """Timestamped events for the scrubber. GA-229.
@@ -3276,8 +3506,24 @@ def build_app(bundle: Path):
         never disagree about what happened. `merge_refused` is deliberately absent: 2.35 M
         ticks is not a timeline, it is a solid bar.
         """
+        # THE BUNDLE THAT WAS ASKED FOR, not the one this process happens to be serving. This
+        # endpoint took `bundle` and then read `m._DECISIONS_CACHE`, which `_cached_records`
+        # fills from `_current_log()` -- the SERVED run. So selecting any other run in the
+        # picker drew that run's frames under the served run's ticks and verdicts.
+        # MEASURED: asking for 20260910_125420 (0 frames, no decisions) returned the same 98
+        # events, with the same first timestamp, as asking for 20260910_170036. The owner saw
+        # it as "only the feed is live, the rest comes from the wrong run", which is exactly
+        # what a per-bundle route reading a process-wide cache produces.
+        #
+        # `_blob_for` already memoises per (path, mtime, size) and keeps the last few, so
+        # reading another bundle here costs one parse and does not evict the served run's.
+        log = (RUNS_ROOT / bundle / "hook_decisions.jsonl")
+        try:
+            st = log.stat()
+        except OSError:
+            return JSONResponse({"events": [], "error": f"no hook_decisions.jsonl in {bundle}"})
         out = []
-        for r in m._DECISIONS_CACHE["records"]:
+        for r in m._blob_for(log, st)["records"]:
             t = r.get("t")
             if not isinstance(t, (int, float)):
                 continue
@@ -3494,7 +3740,14 @@ def build_app(bundle: Path):
     # the panel showed "Connection refused" where the run's own output was sitting on disk the
     # whole time. Serve the archived logs instead, newest last, tagged by the node that wrote
     # each line so a merged view stays attributable.
-    _LOG_ORDER = ("perception.log", "om6.log", "rtabmap.log", "bridge.log",
+    # `launch.log` CARRIES THE NODES NOW. Since the launcher became one script the per-node
+    # files are created and left EMPTY -- measured on 20260911_181716_hm3d_00861: perception.log,
+    # om6.log, rtabmap.log and bridge.log are all 0 bytes while launch.log holds 2.3 MB of their
+    # output, tagged `[object_manager_6.py-4]` and so on. The panel merged four empty files with
+    # feed_node and system_health, which is exactly the owner's "we're receiving log only from
+    # the feed node". The per-node names stay: they cost nothing when empty, and a deployment
+    # that still writes them must not lose them.
+    _LOG_ORDER = ("launch.log", "perception.log", "om6.log", "rtabmap.log", "bridge.log",
                   "feed_host.log", "feed_node.log", "system_health.log")
 
     m.app.router.routes = [r for r in m.app.router.routes
@@ -3503,7 +3756,7 @@ def build_app(bundle: Path):
     @m.app.get("/logs")
     def _bundle_logs(lines: int = 400):
         rv = _load_replay_view()
-        out, missing = [], []
+        out, missing, per_source, stampless = [], [], [], []
         for name in _LOG_ORDER:
             path = rv.log_path(bundle.name, name)
             if path is None:
@@ -3517,11 +3770,59 @@ def build_app(bundle: Path):
                 if size > 262144:
                     f.readline()
                 tail = f.read().decode("utf-8", errors="replace").splitlines()
-            for ln in tail[-lines:]:
-                out.append((_line_stamp(ln), f"{tag} {ln}"))
+            # THE CONTINUATION STAMP IS PER FILE. `_line_stamp` carries the last stamp it saw
+            # so a traceback line stays attached to the message above it -- but the carry used
+            # to survive from one FILE to the next, which is a different claim entirely.
+            # MEASURED on 20260911_184539: launch.log carries a stamp on 355 of 400 lines while
+            # feed_host.log and system_health.log carry NONE AT ALL, so those two inherited
+            # launch.log's final stamp, sorted to the very end, and the `[-lines:]` below kept
+            # nothing but them. The panel showed one source and the owner reported exactly that.
+            _last_stamp[0] = 0.0
+            block = [(_line_stamp(ln), f"{tag} {ln}") for ln in tail[-lines:]]
+            # A source with no stamp anywhere cannot be placed chronologically, and pinning it
+            # at 0.0 would bury it just as surely as inheriting someone else's stamp floated it.
+            # Its mtime is when its last line was written, so the block is laid out ending
+            # there, one millisecond apart, which keeps the file's own order and puts it at
+            # roughly its own time among the stamped sources.
+            if block and not any(t for t, _ in block):
+                stampless.append((len(per_source), path.stat().st_mtime))
+            per_source.append(block)
+        # PLACE THE STAMPLESS SOURCES ACROSS THE RUN, not at the end of it. A file with no
+        # stamp anywhere still covers roughly the same wall-clock span as the stamped ones, so
+        # spreading its tail over that span interleaves it. Bunching it against its own mtime
+        # instead put the whole file inside the last fraction of a second, where it outranked
+        # every stamped line: measured on 20260911_184539, feed_host.log alone took 250 of the
+        # 400 slots that way. Its mtime is the fallback when nothing carries a stamp at all.
+        stamped = [t for b in per_source for t, _ in b if t]
+        lo, hi = (min(stamped), max(stamped)) if stamped else (0.0, 0.0)
+        for idx, mtime in stampless:
+            blk = per_source[idx]
+            if not blk:
+                continue
+            if stamped and hi > lo:
+                step = (hi - lo) / len(blk)
+                per_source[idx] = [(lo + i * step, txt) for i, (_, txt) in enumerate(blk)]
+            else:
+                per_source[idx] = [(mtime - (len(blk) - i) * 0.001, txt)
+                                   for i, (_, txt) in enumerate(blk)]
         # Sorted by the ROS stamp so the merge is chronological rather than file-ordered.
         # Lines without a stamp keep the stamp of the line above them, so a traceback stays
         # attached to the message that introduced it instead of migrating to the top.
+        #
+        # EVERY SOURCE THAT HAS CONTENT GETS A SHARE. Sorting the union and cutting the tail
+        # lets the chattiest file own the whole window: launch.log's 400-line tail spans about
+        # 20 seconds of a 25-minute run, so on time alone it wins every slot. The panel is a
+        # merge of sources, so each one is guaranteed a floor and the remainder is filled
+        # chronologically from what is left.
+        live = [b for b in per_source if b]
+        if live:
+            floor = max(1, lines // (len(live) * 2))
+            for b in live:
+                out.extend(b[-floor:])
+            taken = {id(x) for b in live for x in b[-floor:]}
+            rest = sorted((x for b in live for x in b if id(x) not in taken),
+                          key=lambda x: x[0])
+            out.extend(rest[-(lines - len(out)):] if lines > len(out) else [])
         out.sort(key=lambda x: x[0])
         return JSONResponse({
             "logs": [t for _, t in out][-lines:],
@@ -3565,6 +3866,22 @@ def build_app(bundle: Path):
               f"mode {was} -> replay)", flush=True)
         return {"ok": True, "bundle": str(target), "pinned": BUNDLE_PIN["pinned"],
                 "mode": "replay", "was": was}
+
+    @m.app.get("/bridge_live")
+    def _bridge_live():
+        """Is a bridge answering RIGHT NOW -- asked fresh, not read from the startup verdict.
+
+        MODE is decided once, by a probe at start-up (`by="probe"`), and never revisited. That
+        is right for the mode the page renders in, but wrong for a CONTROL that offers to go to
+        the live view: a dashboard opened before the run began reported "no live run" for as
+        long as it stayed open, and the owner saw a LIVE link that never woke up. This asks the
+        bridge each time it is called, so the sidebar can enable itself the moment a run starts.
+
+        Cheap on purpose: a 0.6 s connect to /health and nothing else. It is polled by every
+        open page, so it must not do real work.
+        """
+        ok, why = _probe_bridge(timeout=0.6)
+        return JSONResponse({"live": bool(ok), "why": why})
 
     @m.app.get("/mode_info")
     def _mode_info():

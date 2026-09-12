@@ -54,7 +54,7 @@ def _polygon_mask(polygon_ros, spec, floor_index):
 
 
 def _predicted_aabb(bbox):
-    """Inverte hab->ROS=(-hab_z,-hab_x,hab_y) usato dal feed Habitat."""
+    """Read the run's ROS/z-up AABB without changing its frame."""
     required = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
     if not isinstance(bbox, dict) or not all(k in bbox for k in required):
         return None
@@ -66,16 +66,61 @@ def _predicted_aabb(bbox):
             or any(values[f"{axis}_min"] > values[f"{axis}_max"]
                    for axis in "xyz")):
         return None
-    low = np.asarray([-values["y_max"], values["z_min"], -values["x_max"]])
-    high = np.asarray([-values["y_min"], values["z_max"], -values["x_min"]])
+    low = np.asarray([values["x_min"], values["y_min"], values["z_min"]])
+    high = np.asarray([values["x_max"], values["y_max"], values["z_max"]])
     return low, high
+
+
+def _habitat_aabb_to_ros(row):
+    """Convert a Habitat (x,y,z), Y-up AABB to ROS (x,y,z), Z-up."""
+    try:
+        low = np.asarray(row["aabb_min_m"], dtype=float)
+        high = np.asarray(row["aabb_max_m"], dtype=float)
+        if low.shape != (3,) or high.shape != (3,):
+            return row
+        ros_low = np.asarray([-high[2], -high[0], low[1]])
+        ros_high = np.asarray([-low[2], -low[0], high[1]])
+        return {**row, "aabb_min_m": ros_low.tolist(),
+                "aabb_max_m": ros_high.tolist()}
+    except (KeyError, TypeError, ValueError):
+        return row
+
+
+def _habitat_polygon_to_ros(row):
+    """Convert a Habitat X-Z polygon to ROS X-Y."""
+    polygon = row.get("polygon_xz_m") if isinstance(row, dict) else None
+    if not isinstance(polygon, list):
+        return row
+    try:
+        converted = [[-float(point[1]), -float(point[0])] for point in polygon]
+    except (IndexError, TypeError, ValueError):
+        return row
+    return {**row, "polygon_xz_m": converted}
 
 
 def _base_label(label):
     return re.sub(r"#\d+$", "", str(label)).strip().lower()
 
 
-def build(gt, run_dir, persistent_path=None):
+def _rotate_ros_aabb(box, yaw_deg):
+    """Rotate a ROS AABB around the origin in the horizontal X-Y plane."""
+    if box is None or not yaw_deg:
+        return box
+    low, high = box
+    corners = np.asarray([
+        [x, y, z] for x in (low[0], high[0])
+        for y in (low[1], high[1])
+        for z in (low[2], high[2])
+    ], dtype=float)
+    angle = math.radians(float(yaw_deg))
+    rotation = np.asarray([[math.cos(angle), -math.sin(angle), 0.0],
+                           [math.sin(angle), math.cos(angle), 0.0],
+                           [0.0, 0.0, 1.0]])
+    rotated = corners @ rotation.T
+    return rotated.min(axis=0), rotated.max(axis=0)
+
+
+def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
     room_doc = _load(run_dir / "room.json", {}, required=True)
     bev = _load(run_dir / "bev_data.json", {}, required=True)
     objects = _load(persistent_path or run_dir / "persistent_perception.json", [],
@@ -88,6 +133,15 @@ def build(gt, run_dir, persistent_path=None):
     if not isinstance(objects, list):
         raise RuntimeError("persistent_perception deve contenere una lista JSON")
     result = dict(gt)
+    # Keep the complete evaluation manifest in ROS coordinates: run bboxes are
+    # serialized by the perception stack in ROS (x,y,z), while HM3D GT is
+    # generated in Habitat (x,y,z), Y-up.
+    result["ground_truth_objects"] = [
+        _habitat_aabb_to_ros(row) for row in gt.get("ground_truth_objects", [])
+    ]
+    result["ground_truth_regions"] = [
+        _habitat_polygon_to_ros(row) for row in gt.get("ground_truth_regions", [])
+    ]
 
     gt_floors = [float(v) for v in gt.get("ground_truth_floors_m", [])]
     run_floors = [float(v) for v in bev.get("floors", [])]
@@ -153,7 +207,7 @@ def build(gt, run_dir, persistent_path=None):
         if not isinstance(obj, dict):
             invalid_predicted_aabb_count += 1
             continue
-        box = _predicted_aabb(obj.get("bbox"))
+        box = _rotate_ros_aabb(_predicted_aabb(obj.get("bbox")), prediction_yaw_deg)
         if box is None:
             invalid_predicted_aabb_count += 1
             continue
@@ -198,7 +252,8 @@ def build(gt, run_dir, persistent_path=None):
         str(path.resolve()) for path in representation_candidates if path.is_file()
     ))
     result["adapter_notes"] = {
-        "coordinates": "habitat->ROS=(-hab_z,-hab_x,hab_y); ROS->habitat=(-ros_y,ros_z,-ros_x)",
+        "coordinates": "ROS (x,y,z), Z-up; GT converted from Habitat (-hab_z,-hab_x,hab_y)",
+        "prediction_yaw_deg": float(prediction_yaw_deg),
         "active_floor_index": floor_for_rooms,
         "category_embeddings_complete": bool(category_vectors),
         "source_object_count": len(objects),
@@ -214,6 +269,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--persistent-perception", type=Path,
                         help="JSON persistente alternativo, eventualmente arricchito con CLIP")
+    parser.add_argument("--prediction-yaw-deg", type=float, default=0.0,
+                        choices=(0.0, 90.0, 180.0, 270.0),
+                        help="rotazione ROS delle predizioni attorno all'origine")
     args = parser.parse_args()
     gt = _load(args.ground_truth, None)
     if not isinstance(gt, dict):
@@ -225,7 +283,7 @@ def main():
     if not persistent_path.is_file():
         parser.error(f"artefatto mancante: {persistent_path}")
     try:
-        result = build(gt, args.run_dir, persistent_path)
+        result = build(gt, args.run_dir, persistent_path, args.prediction_yaw_deg)
     except RuntimeError as exc:
         parser.error(str(exc))
     args.output.parent.mkdir(parents=True, exist_ok=True)

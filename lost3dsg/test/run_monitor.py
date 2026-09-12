@@ -20,9 +20,13 @@ WHAT IT WATCHES, and why each one is here rather than a prettier summary:
               planned at all, which is the shape that wasted six runs.
   decisions   rows in hook_decisions.jsonl. Zero during the mapping phase is normal; zero after it
               means perception admitted nothing.
-  belief      entries in actual_perceptions.json, written by perception_2's background writer. A
-              growing decisions count with an absent belief file is the split that hid a whole
-              class of missing output.
+  belief      objects HELD, from persistent_perception.json. This is the world model.
+  seen        entries in actual_perceptions.json, which perception_2 CLEARS AND REFILLS EVERY
+              CYCLE (perception_2.py:1647) -- it is the last cycle's detections, NOT the belief.
+              Reported separately because it was read as the belief all of 2026-09-11 and made a
+              run holding 38 objects look like a run holding 2. A growing decisions count with
+              an absent file is still the split that hid a whole class of missing output; it is
+              just a different file from the one that answers "what does the run believe".
   ended       terminating_node.ended once the run stops: tour_complete, operator_abort,
               mapping_time, node_death, unrecorded. `unrecorded` means the container never reached
               its own end -- it is not "unknown".
@@ -77,7 +81,11 @@ def snapshot(bundle: pathlib.Path):
     fs = _json(bundle / "feed_stats.json", {}) or {}
     meta = _json(bundle / "run_metadata.json", {}) or {}
     pf = _json(bundle / "preflight.json", {}) or {}
-    belief = _json(bundle / "actual_perceptions.json", None)
+    # THE BELIEF IS persistent_perception.json. actual_perceptions.json is a per-cycle snapshot.
+    held = _json(bundle / "persistent_perception.json", None)
+    if isinstance(held, dict):
+        held = held.get("objects")
+    seen = _json(bundle / "actual_perceptions.json", None)
     tn = meta.get("terminating_node") or {}
     verdict = pf.get("verdict")
     if verdict is None and pf.get("failed") is not None:
@@ -89,7 +97,8 @@ def snapshot(bundle: pathlib.Path):
         "reached": fs.get("tour_waypoints_reached"),
         "planned": fs.get("tour_waypoints_planned"),
         "decisions": _lines(bundle / "hook_decisions.jsonl"),
-        "belief": (len(belief) if isinstance(belief, list) else None),
+        "belief": (len(held) if isinstance(held, list) else None),
+        "seen": (len(seen) if isinstance(seen, list) else None),
         "ended": tn.get("ended") or (tn.get("node") if tn else None),
         "size_mb": round(sum(f.stat().st_size for f in bundle.rglob("*") if f.is_file())
                          / 1e6, 1),
@@ -103,6 +112,7 @@ def line(s: dict) -> str:
     return (f"{datetime.datetime.now():%H:%M:%S}  container {c:<7}  gate {str(v(s['gate'], '?')):<4}  "
             f"moved {v(s['moved_m']):>7} m  waypoints {v(s['reached'])}/{v(s['planned'])}  "
             f"decisions {v(s['decisions']):>6}  belief {v(s['belief']):>5}  "
+            f"seen {v(s['seen']):>4}  "
             f"{s['size_mb']:>7} MB" + (f"  ended {s['ended']}" if s["ended"] else ""))
 
 
@@ -160,9 +170,18 @@ def _selfcheck():
         assert s["decisions"] == 3, s
         # AN ABSENT BELIEF FILE IS None, NOT 0. That distinction is the whole reason this field is
         # here: "no belief file" and "a belief file with nothing in it" are different faults.
-        assert s["belief"] is None, s
-        (b / "actual_perceptions.json").write_text("[]")
-        assert snapshot(b)["belief"] == 0, snapshot(b)
+        assert s["belief"] is None and s["seen"] is None, s
+        # AND THE TWO FILES ARE NOT THE SAME CLAIM. persistent_perception.json is what the run
+        # believes; actual_perceptions.json is the last cycle's detections. Exercised with
+        # DIFFERENT counts, because a test using equal ones would pass with the fields swapped --
+        # which is exactly the mistake this change repairs.
+        (b / "actual_perceptions.json").write_text("[{}]")
+        (b / "persistent_perception.json").write_text("[{},{},{}]")
+        s2 = snapshot(b)
+        assert s2["belief"] == 3 and s2["seen"] == 1, s2
+        # a dict form with an "objects" key is read too
+        (b / "persistent_perception.json").write_text('{"objects": [{},{}]}')
+        assert snapshot(b)["belief"] == 2, snapshot(b)
         # a torn json must not crash the watch
         (b / "feed_stats.json").write_text("{not json")
         assert snapshot(b)["moved_m"] is None

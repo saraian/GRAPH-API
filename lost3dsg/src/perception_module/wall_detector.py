@@ -334,12 +334,27 @@ def _consolidate_plane_landmarks(xy, z, candidates):
     return [cluster["segment"] for cluster in clusters[:MAX_SEGMENTS]]
 
 
-def _fit_segments_grid_hough(xy, z, ranges=None):
+def _fit_segments_grid_hough(xy, z, ranges=None, floor_z=0.0):
     """Extract walls from a metric 2.5D grid, then refine them against the source points.
 
     Pixel density affects cell counts but not the size of the Hough problem. Requiring support
     in several vertical bands rejects low furniture before line extraction. Hough supplies only
     candidates; PCA/TLS and robust percentiles produce the published geometry.
+
+    `z` IS IN THE MAP FRAME AND `floor_z` SAYS WHERE ITS FLOOR IS. The vertical banding compares
+    against HEIGHT_BAND_M, which is measured from the floor, so without the floor the two are in
+    different units. The caller passed map-frame z and this function binned it as if the floor
+    were at 0: with a real floor at -1.62 m every point fell below the band and `np.clip` piled
+    all of them into band 0, so `band_counts` was 1 everywhere, `MIN_VERTICAL_BANDS` (3) could
+    never be met, and this returned [] on EVERY call. MEASURED on 20260911_181716_hm3d_00861:
+    629 fits completed, 629 with zero walls, `last_reason` stuck at "fit_completed_no_walls"
+    while 14,923 points carried wall-like normals.
+
+    The default of 0.0 is the self-check's own convention (it synthesises z from 0.5 to 1.9 with
+    the floor at the origin) -- which is exactly why the self-check passed throughout.
+
+    The returned zmin/zmax stay in the MAP frame: they are published geometry, and every
+    consumer reads them as a difference.
     """
     if len(xy) < MIN_INLIERS_FLOOR:
         return []
@@ -361,7 +376,7 @@ def _fit_segments_grid_hough(xy, z, ranges=None):
     flat = ij[:, 1] * width + ij[:, 0]
     counts = np.bincount(flat, minlength=width * height)
     band_h = (HEIGHT_BAND_M[1] - HEIGHT_BAND_M[0]) / max(1, VERTICAL_BANDS)
-    zb = np.clip(((z - HEIGHT_BAND_M[0]) / band_h).astype(np.int32),
+    zb = np.clip(((z - float(floor_z) - HEIGHT_BAND_M[0]) / band_h).astype(np.int32),
                  0, VERTICAL_BANDS - 1)
     masks = np.zeros(width * height, dtype=np.uint16)
     np.bitwise_or.at(masks, flat, np.left_shift(np.uint16(1), zb.astype(np.uint16)))
@@ -669,7 +684,8 @@ def _node_class():
                     continue
                 try:
                     fit_start = time.perf_counter()
-                    segments = _fit_segments_grid_hough(job[0], job[1], job[2])
+                    segments = _fit_segments_grid_hough(
+                        job[0], job[1], job[2], floor_z=job[4])
                     walls = segments_to_wall_dicts(
                         segments, temporal_frames=job[3], floor_z=job[4],
                         floor_source=job[5], evidence_points=(job[0], job[1], job[2]),
@@ -873,6 +889,23 @@ def _selfcheck():
     z = rng.uniform(0.5, 1.9, n)
     segs = _fit_segments_grid_hough(xy, z)
     assert len(segs) == 1, f"one wall expected, got {len(segs)}"
+
+    # THE SAME WALL, IN THE MAP FRAME. Every case above puts the floor at 0, which is the one
+    # height at which a missing floor offset cannot show. A real run's floor is wherever the
+    # map's origin puts it -- -1.62 m in 20260911_181716_hm3d_00861 -- and with the offset
+    # dropped, `np.clip` piled every point into vertical band 0, MIN_VERTICAL_BANDS could never
+    # be met and this returned [] on all 629 fits of that run while the self-check stayed green.
+    for floor in (-1.62, +0.85):
+        moved = _fit_segments_grid_hough(xy, z + floor, floor_z=floor)
+        assert len(moved) == 1, (
+            f"the same wall with its floor at {floor} m gave {len(moved)} segments; "
+            f"the height band is being compared against the wrong frame")
+        assert abs((moved[0][3] - moved[0][2]) - (segs[0][3] - segs[0][2])) < 0.05, \
+            "vertical extent must not depend on where the floor sits"
+    # And the offset must MATTER: passing map-frame z without saying where its floor is has to
+    # fail, or the parameter could be ignored and every assertion above would still pass.
+    assert not _fit_segments_grid_hough(xy, z - 1.62), \
+        "map-frame z with no floor_z must find nothing -- otherwise the banding is not being applied"
     p0, p1, zmin, zmax, npts, rms = segs[0]
     assert math.hypot(*(p1 - p0)) > 2.5, "the wall should span its length"
     assert zmax - zmin > MIN_VERTICAL_EXTENT_M, "vertical extent should be recovered"

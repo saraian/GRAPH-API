@@ -29,7 +29,31 @@ import sys
 import numpy as np
 from scipy import ndimage
 
-SCAN_STEP_DEG = 10.0      # habitat's turn action, so a full scan is 36 actions
+# THE TURN ACTION, in degrees, and it is a MERGE parameter as much as a speed one.
+#
+# A merge commits only after `merge_min_consecutive` consecutive sweeps see the same pair -- 2 in
+# the arm running now -- and a detection cycle takes about 3.2 s, so a stop needs roughly 19 frames
+# at 3 f/s before a merge can commit there. A full 360 scan costs 360 / SCAN_STEP_DEG frames:
+#
+#     10 deg -> 36 frames = 12.0 s = 3.75 cycles     clears the threshold
+#     20 deg -> 18 frames =  6.0 s = 1.87 cycles     DOES NOT, at any stop
+#
+# 20 was tried on 2026-09-11 for the 36% of run time scans cost and reverted the same day, because
+# the saving was taken out of the one thing the scan exists to produce. habitat_feed_host.py MUST
+# agree with this number -- it is the amount on the turn_left action spec and the divisor in
+# ScheduledTour._scan_frames -- or the budget in the schedule describes a run that did not happen.
+# habitat.turn_step_deg carries it to both.
+SCAN_STEP_DEG = 10.0
+
+# How coverage is measured. The choice changes what "100%" means, so it is recorded in every
+# schedule beside the number.
+#   los        a stop covers what it can SEE: the ray to the point is unobstructed. No distance
+#              limit, which is right for the simulator -- its depth sensor has none.
+#   los_range  the same ray test, stopped at a measured useful depth.
+#   radius     free space within a fixed radius, straight-line, THROUGH WALLS. What every schedule
+#              before 2026-09-11 used. Kept so old numbers stay reproducible, not because it is
+#              right: it counts the bathroom behind a wall as covered from the hall.
+COVERAGE_MODELS = ("los", "los_range", "radius")
 
 
 def topdown(navmesh, height, mpp):
@@ -389,6 +413,173 @@ def junctions_uncovered(g, waypoints, radius_px):
     return junc, missed
 
 
+def visible_from(free, sy, sx, max_px=None, n_rays=720):
+    """-> bool grid of the cells a sensor at (sy, sx) can SEE.
+
+    Ray marching, vectorised: every ray advances one step per iteration, all of them at once, and a
+    ray stops the first time it leaves free space. That is what makes this affordable -- the naive
+    loop is 720 rays x 800 steps per stop in Python, and there are thousands of stops.
+
+    WHY LINE OF SIGHT AND NOT A RADIUS. The old measure was a distance transform over free space,
+    which is straight-line distance ignoring walls, so a stop in the hall counted the bathroom
+    behind it as covered. A schedule could read 100% while never entering a room. The ray test
+    cannot say that: a wall between the stop and the cell ends the ray.
+    """
+    h, w = free.shape
+    if max_px is None:
+        max_px = float(math.hypot(h, w))
+    seen = np.zeros_like(free, dtype=bool)
+    if not free[sy, sx]:
+        return seen
+    seen[sy, sx] = True
+    ang = np.linspace(0.0, 2.0 * math.pi, int(n_rays), endpoint=False)
+    dy, dx = np.sin(ang), np.cos(ang)
+    y = np.full(ang.shape, float(sy))
+    x = np.full(ang.shape, float(sx))
+    alive = np.ones(ang.shape, dtype=bool)
+    for _ in range(int(max_px)):
+        y[alive] += dy[alive]
+        x[alive] += dx[alive]
+        iy = np.rint(y).astype(np.int32)
+        ix = np.rint(x).astype(np.int32)
+        inside = alive & (iy >= 0) & (iy < h) & (ix >= 0) & (ix < w)
+        alive &= inside
+        if not alive.any():
+            break
+        yy, xx = iy[alive], ix[alive]
+        open_ = free[yy, xx]
+        seen[yy[open_], xx[open_]] = True
+        # A ray dies ON the obstacle, not before it: the wall itself is visible, the room behind
+        # it is not.
+        idx = np.flatnonzero(alive)
+        alive[idx[~open_]] = False
+    return seen
+
+
+def covered_mask(free, stops_px, model, radius_px, range_px, n_rays=720):
+    """-> bool grid of the free cells some stop covers, under the named model."""
+    if model not in COVERAGE_MODELS:
+        raise ValueError(f"coverage model {model!r} is not one of {COVERAGE_MODELS}")
+    if model == "radius":
+        mark = np.zeros_like(free, dtype=bool)
+        for sy, sx in stops_px:
+            if 0 <= sy < free.shape[0] and 0 <= sx < free.shape[1]:
+                mark[sy, sx] = True
+        return free & (ndimage.distance_transform_edt(~mark) <= radius_px)
+    cap = range_px if model == "los_range" else None
+    out = np.zeros_like(free, dtype=bool)
+    for sy, sx in stops_px:
+        if 0 <= sy < free.shape[0] and 0 <= sx < free.shape[1]:
+            out |= visible_from(free, sy, sx, cap, n_rays)
+    return out & free
+
+
+def top_up_stops(free, stops_px, model, radius_px, range_px, target=1.0,
+                 candidates=240, max_add=60, n_rays=180, rng=None):
+    """-> (extra stops, coverage before, coverage after). Add stops until coverage reaches target.
+
+    GREEDY SET COVER. Each round samples free cells that are not yet covered, measures what each
+    would see, and keeps the best one. Greedy is within ln(n) of optimal for set cover and there is
+    no cheaper guarantee; more to the point, it stops when the target is met rather than adding a
+    fixed number.
+
+    IT SAMPLES RATHER THAN SCORING EVERY CELL. A storey has tens of thousands of free cells and
+    each score is a full visibility pass; 240 candidates drawn from the uncovered region find a
+    good stop without pricing all of them. The candidates come from the UNCOVERED cells, so every
+    one of them is worth something.
+    """
+    rng = rng or np.random.default_rng(7)
+    stops = list(stops_px)
+    total = int(free.sum())
+    if total == 0:
+        return [], 1.0, 1.0
+    cov = covered_mask(free, stops, model, radius_px, range_px, n_rays=720)
+    before = float(cov.sum()) / total
+    added = []
+    while float(cov.sum()) / total < target and len(added) < max_add:
+        gap = free & ~cov
+        ys, xs = np.nonzero(gap)
+        if ys.size == 0:
+            break
+        pick = rng.choice(ys.size, size=min(int(candidates), ys.size), replace=False)
+        best, best_gain, best_seen = None, 0, None
+        for i in pick:
+            sy, sx = int(ys[i]), int(xs[i])
+            seen = (visible_from(free, sy, sx, range_px if model == "los_range" else None, n_rays)
+                    if model != "radius" else
+                    covered_mask(free, [(sy, sx)], "radius", radius_px, range_px))
+            gain = int((seen & gap).sum())
+            if gain > best_gain:
+                best, best_gain, best_seen = (sy, sx), gain, seen
+        if best is None or best_gain == 0:
+            break
+        stops.append(best)
+        added.append(best)
+        cov |= best_seen
+    return added, round(before, 4), round(float(cov.sum()) / total, 4)
+
+
+def shortcut(walk_xz, clear_world, step_m, rounds=3):
+    """-> a shorter, straighter version of the path, every shortcut checked against free space.
+
+    CORNER TURNING COSTS AS MUCH AS DRIVING: 1.30 million degrees a lap over the 209 storeys, at
+    27.3% of the frames. Total turning along a polyline is a property of its SHAPE, not of how
+    finely it is sampled, so nothing is saved by re-spacing the points -- the zig-zags themselves
+    have to go. This drops any middle point whose two neighbours can see each other through free
+    space, which cuts distance and turning together.
+    """
+    pts = list(walk_xz)
+    for _ in range(int(rounds)):
+        out, i, dropped = [pts[0]], 1, False
+        while i < len(pts) - 1:
+            a, c = out[-1], pts[i + 1]
+            n = max(2, int(math.dist(a, c) / (step_m / 2)))
+            if all(clear_world(a[0] + (c[0] - a[0]) * t / n, a[1] + (c[1] - a[1]) * t / n)
+                   for t in range(n + 1)):
+                i += 1          # the middle point is redundant, skip it
+                dropped = True
+            else:
+                out.append(pts[i])
+                i += 1
+        out.append(pts[-1])
+        pts = out
+        if not dropped:
+            break
+    return pts
+
+
+def two_opt(order, dist, rounds=40):
+    """-> a shorter visiting order. Nearest neighbour, then 2-opt until it stops improving.
+
+    The DFS order drives every backtrack: it leaves a branch the way it came. 2-opt reverses a
+    segment whenever that shortens the tour, which removes the crossings a depth-first walk leaves
+    behind. `dist` is the roadmap distance, not the straight line, so a shortcut through a wall is
+    never proposed.
+
+    THE ROOT STAYS FIRST. It is where the run starts, and a schedule that begins somewhere else
+    would need the agent teleported there.
+    """
+    if len(order) < 4:
+        return list(order)
+    root, rest = order[0], list(order[1:])
+    tour, pool = [root], set(rest)
+    while pool:
+        nxt = min(pool, key=lambda v: dist(tour[-1], v))
+        tour.append(nxt)
+        pool.discard(nxt)
+    for _ in range(int(rounds)):
+        improved = False
+        for i in range(1, len(tour) - 2):
+            for k in range(i + 1, len(tour) - 1):
+                a, b, c, d = tour[i - 1], tour[i], tour[k], tour[k + 1]
+                if dist(a, b) + dist(c, d) > dist(a, c) + dist(b, d) + 1e-9:
+                    tour[i:k + 1] = reversed(tour[i:k + 1])
+                    improved = True
+        if not improved:
+            break
+    return tour
+
+
 def dfs_route(edges, root):
     """-> (visit order, full walk of waypoints). Depth-first, nearest branch first.
 
@@ -465,18 +656,25 @@ def rdp(pts, eps):
 
 
 def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan_deg,
-                     clear_world=None):
+                     clear_world=None, scan_for=None, smooth=True):
     """-> (trajectory, budget). The path the robot drives, and what it costs in frames.
 
     A STOP IS SCANNED ONCE, ON FIRST ARRIVAL. Depth-first search comes back through a waypoint every
     time it backtracks out of a branch; scanning again would spend 36 frames looking at a place the
     run has already seen. `order` is where it scans, `walk` is what it drives.
     """
+    # scan_for(waypoint) -> the degrees to turn at that stop, or None to use scan_deg everywhere.
+    # A full circle is what a stop in a room needs; a stop in a corridor whose walls the run has
+    # already seen needs less, and the frames saved are real. The caller decides, because only it
+    # knows what is already covered.
+    def _scan(w):
+        return float(scan_deg if scan_for is None else scan_for(w))
+
     first_visit = {w: i for i, w in enumerate(order)}
     unsafe = [0]
     traj, seen = [], set()
     start = walk[0]
-    traj.append({"xyz": to_world(start), "scan_deg": scan_deg, "stop": 0, "leg": None})
+    traj.append({"xyz": to_world(start), "scan_deg": _scan(start), "stop": 0, "leg": None})
     seen.add(start)
     drive_m = 0.0
     for leg, (u, v) in enumerate(zip(walk, walk[1:])):
@@ -503,6 +701,13 @@ def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan
             if not ok:
                 keep = xz
                 unsafe[0] += 1
+        # STRAIGHTEN WHAT IS LEFT. RDP only drops a point that is close to the chord between its
+        # neighbours; it keeps a wide zig-zag whose corners are far from that chord, and those
+        # corners are where the turning bill is. The shortcut pass drops any point its neighbours
+        # can see past, so distance and turning fall together. Every shortcut is checked against
+        # free space, exactly as the RDP result above is.
+        if smooth and clear_world is not None and len(keep) > 2:
+            keep = shortcut(keep, clear_world, step_m)
         for k in range(1, len(keep)):
             drive_m += math.dist(keep[k - 1], keep[k])
         for k, (x, z) in enumerate(keep[1:], start=1):
@@ -510,13 +715,14 @@ def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan
             entry = {"xyz": [round(x, 3), pts[0][1], round(z, 3)], "scan_deg": 0,
                      "stop": None, "leg": leg}
             if last and v not in seen:
-                entry["scan_deg"] = scan_deg
+                entry["scan_deg"] = _scan(v)
                 entry["stop"] = first_visit[v]
                 seen.add(v)
             traj.append(entry)
 
-    # Turning to face each segment is a real cost, not a rounding error: at 10 degrees per action a
-    # right-angle corner is 9 frames.
+    # Turning to face each segment is a real cost, not a rounding error: at 20 degrees per action a
+    # right-angle corner is 5 frames, and the corners across one lap of 209 storeys came to 1.30
+    # million degrees before this pass existed.
     turn_total = 0.0
     prev_h = None
     for a_, b_ in zip(traj, traj[1:]):
@@ -531,7 +737,8 @@ def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan
         "corner_turn_deg": int(round(turn_total)),
         "corner_turn_frames": int(round(turn_total / turn_deg)),
         "scan_stops": len(order),
-        "scan_frames": len(order) * int(round(scan_deg / turn_deg)),
+        "scan_deg_total": int(round(sum(_scan(w) for w in order))),
+        "scan_frames": sum(max(1, int(round(_scan(w) / turn_deg))) for w in order),
         "trajectory_points": len(traj),
         "legs_kept_unsimplified": unsafe[0],
     }

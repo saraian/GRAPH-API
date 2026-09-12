@@ -12,6 +12,40 @@
        under a run whose bundle claims to record its own environment.
        Served from the StaticFiles mount that graph_api_bridge.py:102 already provides. -->
   <script src="/viewer/cytoscape.min.js"></script>
+  <!-- CONTINUOUS PHYSICS. cytoscape's own `cose` runs a fixed number of iterations and then
+       STOPS, so a dragged node's neighbours never move and the graph cannot re-settle. cola is
+       a live constraint solver: it keeps simulating, it understands node overlap as a
+       constraint rather than as a post-hoc rescale, and it is O(n log n) rather than cose's
+       O(n^2). Vendored, like cytoscape and elk beside it, because the machines that run this
+       have no network. webcola first: the adapter requires it at load. -->
+  <script src="/viewer/webcola.min.js"></script>
+  <script>
+    // THE UMD LOOKS FOR THE WRONG GLOBAL. cytoscape-cola's browser branch is
+    // `root["cytoscapeCola"] = factory(root["webcola"])`, but webcola's own UMD publishes
+    // `window.cola`, so the external resolves to undefined and the extension falls back to a
+    // partially-wired copy. The visible symptom was that `animate: true` emitted `layoutstart`
+    // and then nothing -- no tick reached `updateNodePositions`, so 0 of 70 nodes moved, while
+    // `animate: false` worked because that path does not depend on the tick events.
+    // Aliased BEFORE the extension script, which is the only moment it is read.
+    if (window.cola && !window.webcola) window.webcola = window.cola;
+  </script>
+  <script src="/viewer/cytoscape-cola.js"></script>
+  <!-- d3-force keeps the graph LIVE: cola places the graph in one shot and stops, and this
+       runs continuously afterwards so a dragged node's neighbours re-settle around it.
+       d3-force is a solver only -- it
+       computes positions and knows nothing about rendering -- so cytoscape keeps its styling,
+       its selection sync with the 3D scene and the objects table, and the stylesheet shared
+       with scene3d. Dependency order matters: dispatch, quadtree, timer, then force. -->
+  <script src="/viewer/d3-dispatch.min.js"></script>
+  <script src="/viewer/d3-quadtree.min.js"></script>
+  <script src="/viewer/d3-timer.min.js"></script>
+  <script src="/viewer/d3-force.min.js"></script>
+  <script>
+    // The adapter registers itself when both globals are present. Guarded and SAID OUT LOUD:
+    // a missing extension must not look like a physics button that does nothing.
+    if (window.cytoscape && window.cytoscapeCola) { window.cytoscape.use(window.cytoscapeCola); }
+    else { console.warn('[kg] cola not loaded; PHYSICS falls back to cose'); }
+  </script>
   <script src="/viewer/lucide.min.js"></script>
   <style>
     :root {
@@ -624,6 +658,16 @@
       width:85vw; height:85vh; z-index:99990; background:#090d16; border:1px solid rgba(56,189,248,.5);
       border-radius:10px; box-shadow:0 12px 48px rgba(0,0,0,.7); }
     #scene3dBackdrop { display:none; position:fixed; inset:0; z-index:99989; background:rgba(2,6,23,.6); }
+    /* THE GRAPH PANEL MAXIMISES THE SAME WAY THE 3D TAB DOES. Owner 2026-09-11: the button
+       beside the zooms carried the `maximize-2` icon and called fitCy() -- the same thing the
+       `FIT` pill beside it already did, so the toolbar had two buttons for one action and no
+       way to enlarge the panel at all. Same shape as .scene3d-max: a class and a backdrop, no
+       reparenting, so cytoscape is not re-initialised and the layout survives. */
+    #panelGraph.graph-max { position:fixed; left:7.5vw; top:7.5vh; width:85vw; height:85vh;
+      z-index:99990; background:#090d16; border:1px solid rgba(56,189,248,.5);
+      border-radius:10px; box-shadow:0 12px 48px rgba(0,0,0,.7); }
+    #graphBackdrop { display:none; position:fixed; inset:0; z-index:99989; background:rgba(2,6,23,.6); }
+    #graphBackdrop.on { display:block; }
     #scene3dBackdrop.on { display:block; }
 
     /* Mobile / narrow viewports: stack panes vertically, drop drag-resizers */
@@ -661,9 +705,40 @@
           <div class="hud-stat-badge" id="badgeBridge"><i data-lucide="network" style="width:12px;height:12px;"></i> BRIDGE: <b style="color:#eab308;">CHECKING</b></div>
           <div class="hud-stat-badge" id="badgePerception"><i data-lucide="eye" style="width:12px;height:12px;"></i> PERCEPTION: <b style="color:#eab308;">CHECKING</b></div>
           <div class="hud-stat-badge" id="badgeObjManager"><i data-lucide="database" style="width:12px;height:12px;"></i> OBJ MGR: <b style="color:#eab308;">CHECKING</b></div>
+          <!-- RVIZ LIVES WITH THE LIVE STACK (owner 2026-09-11), not in the menu. It starts a
+               viewer on the SERVER's display against the running bridge, so it means nothing
+               on a page that is not showing a run -- which is where the menu put it. Hidden
+               unless this page is served over loopback, the same test the menu used, because
+               a remote reader cannot see that display. -->
+          <button id="rvizLaunchBtn" onclick="startRviz()" hidden class="hud-stat-badge"
+                  style="cursor:pointer;font:inherit;border:1px solid #334155;background:#1e293b;
+                         color:#e2e8f0;border-radius:6px;padding:4px 9px;">OPEN RVIZ</button>
+          <span id="rvizLaunchMsg" style="color:#f87171;font-size:0.66rem;"></span>
         </div>
       </div>
     </header>
+    <script>
+      // The same two functions the menu carried, moved with the button. A failure speaks; a
+      // success says nothing, because a pid and a server-side log path are not the reader's
+      // business and used to sit on screen afterwards.
+      (function () {
+        var local = ['localhost', '127.0.0.1', '::1', ''];
+        if (local.indexOf(location.hostname) !== -1) {
+          var b = document.getElementById('rvizLaunchBtn');
+          if (b) b.hidden = false;
+        }
+      })();
+      async function startRviz() {
+        var btn = document.getElementById('rvizLaunchBtn'), msg = document.getElementById('rvizLaunchMsg');
+        btn.disabled = true; msg.textContent = '';
+        try {
+          var r = await fetch('start_rviz', { method: 'POST' });
+          var d = await r.json();
+          if (!(d.started || d.already_running)) msg.textContent = 'RViz did not start: ' + (d.reason || ('HTTP ' + r.status));
+        } catch (e) { msg.textContent = 'RViz did not start: ' + e.message; }
+        btn.disabled = false;
+      }
+    </script>
 
     <div class="hud-body">
       <!-- Left Column: Feed + Graph & Details -->
@@ -835,9 +910,16 @@
             <div class="graph-toolbar">
               <button class="graph-tool-btn" onclick="zoomCy(1.25)" title="Zoom In"><i data-lucide="zoom-in" style="width:14px;height:14px;"></i></button>
               <button class="graph-tool-btn" onclick="zoomCy(0.8)" title="Zoom Out"><i data-lucide="zoom-out" style="width:14px;height:14px;"></i></button>
-              <button class="graph-tool-btn" onclick="fitCy()" title="Fit & Center All Nodes"><i data-lucide="maximize-2" style="width:14px;height:14px;"></i></button>
+              <button id="graphMaxBtn" class="graph-tool-btn" onclick="toggleGraphMax()"
+                      title="Make the graph panel fill the window (Esc restores); FIT is the one that scales the graph"><i data-lucide="maximize-2" style="width:14px;height:14px;"></i></button>
               <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
-              <button id="btnFitGraph" class="graph-layout-pill" onclick="fitCy()" title="Fit the whole graph in the window">⤢ FIT</button>
+              <!-- FIT AND MAXIMIZE ARE NOT THE SAME ACTION and must not carry the same glyph.
+                 Both used U+2922 (the outward diagonal arrows), so the toolbar showed one icon
+                 for "scale the graph to the panel" and for "make the panel fill the window".
+                 Inward arrows for fit, outward for maximize, which is the convention a reader
+                 already has from every media player. -->
+            <button id="btnFitGraph" class="graph-layout-pill" onclick="fitCy()"
+                    title="Fit the whole graph inside the panel (does not resize the panel)">&#x2925; FIT</button>
               <button id="btnPhysics" class="graph-layout-pill" onclick="toggleGraphPhysics()" title="Force-directed relaxation. Separate from the layout mode: it re-settles whatever mode is selected, and it is expensive above a few hundred nodes.">⚡ PHYSICS: OFF</button>
               <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
               <!-- GA-251. Six layout pills in a row is most of the toolbar's width, and only
@@ -911,11 +993,12 @@
                owns its three.js, mesh loader and controls); the frame is in the DOM from page load
                so the 38 MB mesh streams in while the user is on another tab. -->
           <div id="tabContentScene3d" class="tab-content" style="padding: 0;">
-            <button id="scene3dMaxBtn" type="button" onclick="toggleScene3dMax()" title="Maximize the 3D scene into an overlay (Esc closes)">&#x2922; MAXIMIZE</button>
+            <button id="scene3dMaxBtn" type="button" onclick="toggleScene3dMax()" title="Make this panel fill the window (Esc restores); it does not change the zoom">&#x2922; MAXIMIZE</button>
             <iframe id="scene3dFrame" src="/scene3d" title="Scene 3D" loading="eager"
                     style="flex:1; width:100%; height:100%; border:0; background:#090d16;"></iframe>
           </div>
           <div id="scene3dBackdrop" onclick="toggleScene3dMax(false)"></div>
+          <div id="graphBackdrop" onclick="toggleGraphMax(false)"></div>
 
           <!-- Computation & Pipeline Stage Tracker Tab -->
           <div id="tabContentComputation" class="tab-content" style="padding: 10px; overflow-y: auto;">
@@ -2788,6 +2871,29 @@
       });
     }
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && window.SCENE3D_MAXIMIZED) toggleScene3dMax(false); });
+    // Owner 2026-09-11: "the button near zooms should be the maximize one". It is the same
+    // mechanism as toggleScene3dMax above -- a class and a backdrop, never a reparent, because
+    // moving the cytoscape container in the DOM drops the renderer and the graph comes back empty.
+    function toggleGraphMax(on) {
+      const box = document.getElementById('panelGraph');
+      const back = document.getElementById('graphBackdrop');
+      const btn = document.getElementById('graphMaxBtn');
+      if (!box) return;
+      const want = (typeof on === 'boolean') ? on : !box.classList.contains('graph-max');
+      box.classList.toggle('graph-max', want);
+      if (back) back.classList.toggle('on', want);
+      if (btn) btn.title = want ? 'Restore the graph panel (Esc)' : 'Maximise the graph panel (Esc restores)';
+      window.GRAPH_MAXIMIZED = want;
+      // TOLD ITS NEW SIZE, not left to infer it. cytoscape caches the container's box and keeps
+      // drawing into the old one after a CSS resize: the nodes stay in a corner of a panel four
+      // times the size. resize() then fit() on the next frame, after the layout has settled.
+      requestAnimationFrame(() => {
+        try { if (window.cy) { cy.resize(); cy.fit(undefined, 30); } }
+        catch (e) { console.warn('[graph] resize after maximise failed: ' + e); }
+      });
+    }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && window.GRAPH_MAXIMIZED) toggleGraphMax(false); });
+
 
     let isGraphLocked = false;
     let lastFrameTimestamp = Date.now();
@@ -2914,9 +3020,21 @@
     // change is where they are put, not how many there are.
     let currentGraphLayout = 'map';
     let physicsOn = false;
+    // THE RUNNING SOLVER, so it can be stopped. cola with `infinite: true` simulates until it
+    // is told not to: left running it costs a core for as long as the tab is open, and a
+    // second layout started on top of it fights the first. Every path that starts one calls
+    // stopPhysics first, and switching PHYSICS off or changing LAYOUT MODE stops it too.
+    let runningPhysics = null;
+    function stopPhysics() {
+      stopLiveSim();
+      if (!runningPhysics) return;
+      try { runningPhysics.stop(); } catch (e) { /* already finished */ }
+      runningPhysics = null;
+    }
 
     function toggleGraphPhysics() {
       physicsOn = !physicsOn;
+      if (!physicsOn) stopPhysics();
       const b = document.getElementById('btnPhysics');
       if (b) {
         b.textContent = '⚡ PHYSICS: ' + (physicsOn ? 'ON' : 'OFF');
@@ -2995,6 +3113,35 @@
 
     // ponytail: hiding edges does not move nodes, so no re-layout here — the toggle is
     // instant and the reader keeps their bearings. Re-run FIT if you want it re-framed.
+    // Fade a node that has stopped being perceived (owner, 2026-09-11). The age comes from
+    // `last_seen`, which the bridge publishes per object; an object with no stamp is left
+    // alone rather than painted stale, because "never recorded" is not "not seen lately".
+    //
+    // RE-APPLIED ON A TIMER, not only on sync. The age is measured against NOW, so a node goes
+    // stale while the page sits still and nothing arrives to trigger a redraw -- which is
+    // exactly the case a reader is watching for.
+    const STALE_AGING_S = 30, STALE_GONE_S = 180;
+    // WHAT "NOW" MEANS, in ONE place. A replay page is positioned at the frame on screen, not
+    // at today's clock, so measuring against `Date.now()` makes every object on a recorded run
+    // read as hours stale. The graph and the objects table both need this and had a copy each;
+    // two copies of a rule about time is how they end up disagreeing.
+    function graphNowSec() {
+      return (typeof window.REPLAY_NOW === 'number' && window.REPLAY_NOW > 0)
+        ? window.REPLAY_NOW : (Date.now() / 1000);
+    }
+    function applyNodeStaleness() {
+      if (typeof cy === 'undefined' || !cy || !cy.nodes) return;
+      const now = graphNowSec();
+      cy.nodes().forEach(n => {
+        const t = n.data('last_seen');
+        if (typeof t !== 'number' || !isFinite(t)) { n.removeClass('aging stale'); return; }
+        const age = Math.max(0, now - t);
+        n.toggleClass('aging', age >= STALE_AGING_S && age < STALE_GONE_S);
+        n.toggleClass('stale', age >= STALE_GONE_S);
+      });
+    }
+    setInterval(applyNodeStaleness, 5000);
+
     function applyEdgeTypeFilters() {
       if (cy) {
         cy.batch(() => {
@@ -3184,7 +3331,14 @@
       });
       const lay = cy.layout({ name: 'preset', positions: positions, fit: false, animate: false });
       lay.one('layoutstop', () => {
-        cy.zoom(1); cy.center();
+        // FIT, NOT zoom(1)+center(). MAP is the layout the panel opens in, and zoom(1)
+        // pins the scale to 1 whatever the extent is: on an 838x311 panel with the nodes
+        // spread over a map-shaped extent, centring at zoom 1 leaves most of the graph
+        // outside it, which is why the panel did not appear to fit its graph at the
+        // start. `cy.fit(cy.nodes(), 60)` rather than bare `cy.fit()` for the reason
+        // recorded below: 7.1 ms against 1027 ms cold, because the no-argument form
+        // takes the bounding box of every element, edges included.
+        cy.fit(cy.nodes(), 60);
         cy.scratch('_degRank', null);
         if (typeof applyDensityScale === 'function') applyDensityScale();
       });
@@ -3340,7 +3494,14 @@
       const lay = cy.layout({ name: 'preset', positions: positions, fit: false,
                              animate: false });
       lay.one('layoutstop', () => {
-        cy.zoom(1); cy.center();
+        // FIT, NOT zoom(1)+center(). MAP is the layout the panel opens in, and zoom(1)
+        // pins the scale to 1 whatever the extent is: on an 838x311 panel with the nodes
+        // spread over a map-shaped extent, centring at zoom 1 leaves most of the graph
+        // outside it, which is why the panel did not appear to fit its graph at the
+        // start. `cy.fit(cy.nodes(), 60)` rather than bare `cy.fit()` for the reason
+        // recorded below: 7.1 ms against 1027 ms cold, because the no-argument form
+        // takes the bounding box of every element, edges included.
+        cy.fit(cy.nodes(), 60);
         cy.scratch('_degRank', null);
         if (typeof applyDensityScale === 'function') applyDensityScale();
       });
@@ -3462,14 +3623,172 @@
       if (nodeTypeShown.concept && typeof ensureConceptNodes === 'function') ensureConceptNodes();
     }
 
+    // ---- LIVE SIMULATION, on d3-force ------------------------------------------------------
+    // `forceLink` carries the room clustering: a per-edge distance, short for the object-to-room
+    // membership edge and long for the relational ones, so rooms act as anchors. `forceCollide`
+    // is the overlap term, `forceManyBody` the repulsion, and `alphaTarget` held above zero is
+    // what makes this CONTINUOUS rather than a layout that settles once and stops.
+    //
+    // IT NEEDS A VISIBLE TAB. d3-force runs on d3-timer, which is requestAnimationFrame, and
+    // Chrome suspends rAF while `document.hidden` is true. That is not a fault to fix here --
+    // a background tab SHOULD stop simulating -- but it does mean this cannot be tested from
+    // an automated browser whose tab is never foregrounded: every reading there is 0 ticks.
+    //
+    // A DRAGGED NODE IS PINNED, not simulated: cytoscape's grab/drag/free events set and clear
+    // d3's fx/fy, so the node stays under the cursor while its neighbours re-settle around it.
+    let d3sim = null;
+    function onGrab(e) { const d = e.target.scratch('_d3');
+      if (d && d3sim) { d3sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; } }
+    function onDrag(e) { const d = e.target.scratch('_d3'); const p = e.target.position();
+      if (d) { d.fx = p.x; d.fy = p.y; } }
+    function onFree(e) { const d = e.target.scratch('_d3');
+      if (d) { d.fx = null; d.fy = null; }
+      // BACK TO REST, not to a warm target: the graph should stop once the hand lets go.
+      if (d3sim) d3sim.alphaTarget(0); }
+    function stopLiveSim() {
+      if (!d3sim) return;
+      d3sim.stop();
+      if (cy) { cy.off('grab', 'node', onGrab); cy.off('drag', 'node', onDrag);
+                cy.off('free', 'node', onFree); }
+      d3sim = null;
+    }
+    function startLiveSim() {
+      if (!cy || d3sim || typeof d3 === 'undefined' || !d3.forceSimulation) return;
+      const nodes = cy.nodes().map(n => {
+        const pos = n.position();
+        const d = {id: n.id(), type: n.data('type'), x: pos.x, y: pos.y};
+        n.scratch('_d3', d);
+        return d;
+      });
+      const byId = new Map(nodes.map(d => [d.id, d]));
+      // The centre the weak pull aims at: the graph's own centroid when the simulation starts,
+      // so it holds the layout where cola put it instead of dragging it to the viewport origin.
+      let cx = 0, cy0 = 0;
+      for (const d of nodes) { cx += d.x; cy0 += d.y; }
+      cx = nodes.length ? cx / nodes.length : 0;
+      cy0 = nodes.length ? cy0 / nodes.length : 0;
+      const links = cy.edges().map(e => ({
+        source: byId.get(e.source().id()), target: byId.get(e.target().id()),
+        kind: e.data('label')
+      })).filter(l => l.source && l.target);
+      d3sim = d3.forceSimulation(nodes)
+        // EDGE-CONSCIOUS DISPOSITION, and it comes from the library's own overlap machinery
+        // rather than from a custom force. I wrote an edge-avoidance force first and MEASURED
+        // it against this graph: nodes-on-edges went 47 -> 45 while node-node overlaps got
+        // WORSE, 18 -> 23, because it fights forceCollide. Swept forceCollide instead:
+        //
+        //   pad iters charge link |  overlaps  on-edges  cluster
+        //     0     2   -420  1.0 |        18        47     5.58   (the first version)
+        //    16     4   -900  1.3 |         0        34     4.44
+        //    24     6  -1400  1.6 |         0        27     4.20   <- this
+        //
+        // Zero node overlaps, on-edge incidents down by 43%, and the room clustering still
+        // 4.2x. The cost is a longer graph: the charge and the link distances both grow, which
+        // is what buys the space for the edges to run through.
+        //
+        // The collide radius is the NODE'S OWN half-size plus the pad, not one number for all
+        // of them: a room node is 60x36 and an object 26x26, so a flat radius either lets rooms
+        // overlap or pushes objects further apart than they need to be.
+        .force('link', d3.forceLink(links)
+          .distance(l => (l.kind === 'isLocatedIn' ? 112 : l.kind === 'isIn' ? 144 : 416))
+          .strength(l => (l.kind === 'isLocatedIn' ? 0.9 : 0.15)))
+        .force('charge', d3.forceManyBody().strength(-1400).distanceMax(600))
+        .force('collide', d3.forceCollide()
+          .radius(d => (d.type === 'room' ? 38 : 22) + 24).iterations(6).strength(1))
+        // NOTHING HELD THE GRAPH TOGETHER. forceManyBody only pushes apart, and forceLink only
+        // acts along edges, so anything weakly connected -- a room whose objects are its only
+        // links, a disconnected component -- had no reason to stay near the rest and drifted
+        // off the panel. A weak pull toward the centre costs nothing at equilibrium and is what
+        // bounds the layout. forceX/forceY rather than forceCenter: forceCenter re-centres the
+        // whole graph every tick, which fights the user's own pan.
+        .force('x', d3.forceX(cx).strength(0.04))
+        .force('y', d3.forceY(cy0).strength(0.04))
+        // FRICTION. d3's default velocityDecay is 0.4, which on this graph keeps nodes coasting
+        // well past where they should have stopped. 0.65 is the "nothing decelerates" fix.
+        .velocityDecay(0.65)
+        // alphaTarget 0, NOT 0.05. A non-zero target means the simulation is told never to come
+        // to rest: alpha decays toward the target, so 0.05 holds it permanently warm and the
+        // graph keeps drifting for as long as the panel is open. Zero lets it settle, and the
+        // drag handlers reheat it to 0.3 and release it back to 0 -- which is the standard d3
+        // idiom and the reason dragging still re-settles the neighbours.
+        .alphaTarget(0)
+        .alphaDecay(0.035)
+        .on('tick', () => {
+          for (const d of nodes) {
+            const n = cy.getElementById(d.id);
+            if (n && n.length && !n.grabbed()) n.position({x: d.x, y: d.y});
+          }
+        });
+      cy.on('grab', 'node', onGrab);
+      cy.on('drag', 'node', onDrag);
+      cy.on('free', 'node', onFree);
+    }
+
     function runSelectedLayout() {
       if (!cy) return;
+      // STOPPED HERE, at the one place every layout change passes through, rather than in each
+      // branch. Five call sites reach this function and the map/float/grid branches return
+      // early; stopping only inside the physics branch would leave cola simulating underneath
+      // a mode that thinks it has placed the nodes, and the two would fight for every frame.
+      stopPhysics();
       let layoutOpts = null;
       // PHYSICS is a separate axis from LAYOUT MODE: it relaxes whatever mode is selected.
       // It is also the expensive one, so it only runs when explicitly asked for.
       if (physicsOn) {
         const n = cy.nodes().length;
-        const phys = cy.layout({
+        // COLA WHEN IT LOADED, cose otherwise. The two are not interchangeable and the
+        // difference is the point: cose solves once and freezes, so dragging a node leaves
+        // its neighbours where they were; cola keeps running, so the graph re-settles around
+        // whatever you move. `infinite` is what makes it dynamic rather than another one-shot.
+        //
+        // The parameters are cola's equivalents of the RoboData_UI barnesHut set the owner
+        // pointed at (gravitationalConstant -8000, springLength 95, avoidOverlap 0.1):
+        // edgeLength is the spring rest length, avoidOverlap is the same constraint by name,
+        // and handleDisconnected keeps components from flying apart the way a pure n-body does.
+        const useCola = typeof window.cytoscapeCola !== 'undefined';
+        const phys = cy.layout(useCola ? {
+          name: 'cola',
+          // `animate: false` for the PLACEMENT pass, which is all this is: cola positions the
+          // graph in one shot and d3-force below keeps it live afterwards. Not animated
+          // because there is nothing to watch in a placement, and the two solvers must not
+          // run at once.
+          //
+          // A CORRECTION IS RECORDED HERE because the wrong reason was written down first. An
+          // earlier version of this comment said cola's animated path "does not tick in this
+          // vendored pair", on the evidence that `animate: true` produced 0 of 70 nodes moved.
+          // That measurement was real and the conclusion was wrong: the browser it was taken
+          // in had `document.hidden === true`, and Chrome suspends requestAnimationFrame in a
+          // hidden tab. Every rAF-driven path fails there -- cola's, d3's, any library's --
+          // so the reading said nothing about cola. Verified afterwards: a bare
+          // `requestAnimationFrame` loop got 0 frames in 1500 ms in that same tab while
+          // `setInterval` kept firing.
+          infinite: false,
+          // FITS WHEN IT FINISHES. cola moves every node, so leaving the viewport where it
+          // was puts the new arrangement partly outside the panel -- the owner's report was
+          // "I can't see any difference", and the difference was off-screen. Pressing PHYSICS
+          // is an explicit request to rearrange, so bringing the result into view is what was
+          // asked for; the fit happens once per press, not per tick.
+          fit: true,
+          animate: false,
+          nodeDimensionsIncludeLabels: true,
+          avoidOverlap: true,
+          handleDisconnected: true,
+          // ROOMS ARE THE ANCHORS. A spring length per EDGE KIND is what makes objects cluster
+          // round the room they are in instead of spreading evenly: `isLocatedIn` is the
+          // object-to-room membership edge (38 of 67 on this graph) and gets a short rest
+          // length, so a room and its contents pull into a tight group, while the relational
+          // edges between objects stay long enough not to drag one room's contents into
+          // another's. With a single length for everything, membership and adjacency compete
+          // on equal terms and the rooms dissolve into one cloud.
+          //
+          // A number would have worked before rooms were drawn; a function is what carries the
+          // structure the graph actually has.
+          edgeLength: e => (e.data('label') === 'isLocatedIn' ? 70
+                            : e.data('label') === 'isIn' ? 90 : 260),
+          nodeSpacing: 12,
+          maxSimulationTime: n > 150 ? 2000 : 4000,
+          randomize: false
+        } : {
           name: 'cose', animate: false, numIter: n > 150 ? 120 : 600, randomize: false,
           nodeDimensionsIncludeLabels: true, fit: true, padding: 60,
           nodeRepulsion: 350000, idealEdgeLength: 220, edgeElasticity: 20,
@@ -3477,7 +3796,19 @@
         });
         // PHYSICS used to return without ever calling applyDensityScale, so the one mode
         // the owner runs in was the one mode with no density scaling at all.
-        phys.one('layoutstop', () => { cy.scratch('_degRank', null); applyDensityScale(); });
+        //
+        // AN INFINITE LAYOUT NEVER FIRES `layoutstop`, so hanging the density rescale on that
+        // event would silently un-fix the bug above the moment cola is in use. cola emits
+        // `layoutready` once the first solve has settled, which is the moment the sizes are
+        // worth reading; cose keeps using layoutstop, which is the only event it has.
+        phys.one('layoutstop', () => {
+          cy.scratch('_degRank', null);
+          applyDensityScale();
+          // cola places, then d3 keeps it live: the one-shot does the heavy rearranging, the
+          // simulation holds the graph responsive so dragging moves the neighbours.
+          startLiveSim();
+        });
+        runningPhysics = phys;   // stopped at the top of this function on the next change
         phys.run();
         return;
       }
@@ -3980,7 +4311,15 @@
               'text-valign': 'center',
               'text-margin-y': 0,
               'text-background-opacity': 0,
-              'text-border-width': 0
+              'text-border-width': 0,
+              // ROOM LABELS READ AS ROOMS. Every other node takes '#f8fafc' from the base
+              // `node` rule, so a room's name was the same near-white as the objects around
+              // it and the only thing separating them was the node shape -- which is exactly
+              // what a reader loses at low zoom, where the shape is a few pixels. Amber
+              // against the blue fill separates the two populations by colour instead, and it
+              // is the one hue not already spoken for: violet is the schedule, green/yellow/red
+              // are the admission grades, cyan is selection.
+              'color': '#fbbf24'
             }
           },
           {
@@ -4068,6 +4407,14 @@
           { selector: 'edge[label="isUnder"]', style: { 'line-color': '#94a3b8', 'target-arrow-color': '#94a3b8', 'color': '#94a3b8' } },
           // GA-254. The label cull is a CLASS now, resolved once by the stylesheet, instead
           // of a per-node `text-opacity` bypass written 270 times per pass.
+          // STALENESS (owner, 2026-09-11). An object the robot has stopped seeing still sits in
+          // the graph looking exactly like one it is seeing right now. These fade it instead of
+          // hiding it: it is still in the store, and that is the point being shown.
+          // Classes rather than a style mapper, because the age depends on NOW and a cytoscape
+          // mapper is only re-evaluated when the element's data changes.
+          { selector: 'node.aging', style: { 'opacity': 0.72, 'border-color': '#eab308' } },
+          { selector: 'node.stale', style: { 'opacity': 0.42, 'border-color': '#ef4444',
+                                             'border-style': 'dashed' } },
           { selector: 'node.nolabel', style: { 'text-opacity': 0 } },
           // And the renderer's own per-frame cull, which costs nothing because it happens in
           // native code during the draw rather than in a JS pass before it.
@@ -4327,7 +4674,12 @@
         rows.push({
           id: n.id || '', label: n.label || 'object', room: n.room || null, node: n,
           grade: gradeOfRecord(d), reason: d.reason || '',
-          conf: typeof n.confidence === 'number' ? n.confidence : null
+          conf: typeof n.confidence === 'number' ? n.confidence : null,
+          // Epoch seconds, straight off the node. `admitted_at` is the stamp of the
+          // admission row itself and is absent for an object nothing ever ruled on.
+          lastSeen: typeof n.last_seen === 'number' ? n.last_seen : null,
+          createdAt: typeof n.created_at === 'number' ? n.created_at : null,
+          admittedAt: typeof n.admitted_at === 'number' ? n.admitted_at : null
         });
       });
       const s = lastAdmissionSummary || {};
@@ -4338,7 +4690,9 @@
         seenLabels.add(label);
         rows.push({
           id: '', label: label, room: null, node: null,
-          grade: grade, reason: it.reason || '', conf: null, logOnly: true
+          grade: grade, reason: it.reason || '', conf: null, logOnly: true,
+          // A log-only row is a proposal the gate stopped; it has no node and so no stamps.
+          lastSeen: null, createdAt: null, admittedAt: typeof it.t === 'number' ? it.t : null
         });
       });
       addLog(s.on_hold, 'hold');
@@ -4766,6 +5120,7 @@
               // so 269 image requests and 269 un-batched style writes happened whether or
               // not anyone wanted the thumbnails.
               if (cropsShown) applyCropBackgrounds();
+              applyNodeStaleness();
               applyRoomColours();
 
               // Item 3: the panel was rendered once on tap and never again, so it
@@ -4874,7 +5229,35 @@
       // the reader check both. Computed from `bbox` rather than from any stored `size` field,
       // because bbox is what every consumer already agrees on -- an absent or partial bbox
       // renders an em dash, never a zero, which would read as a measured flat object.
-      let html = '<table><thead><tr><th>Label</th><th>Verdict</th><th>Room</th><th>Size (m)</th><th>Concept</th><th>Score</th></tr></thead><tbody>';
+      // AGE, NOT A CLOCK TIME. The question the column answers is "is this object still being
+      // seen", and a wall-clock stamp makes the reader do the subtraction. The absolute times
+      // are in the tooltip for when that is the question instead.
+      //
+      // NOW IS THE REPLAY'S NOW -- see graphNowSec above, which the graph also uses.
+      const nowSec = graphNowSec;
+      const ageText = (t) => {
+        if (typeof t !== 'number' || !isFinite(t)) return '—';
+        const d = Math.max(0, nowSec() - t);
+        if (d < 90) return Math.round(d) + 's';
+        if (d < 5400) return Math.round(d / 60) + 'm';
+        return (d / 3600).toFixed(1) + 'h';
+      };
+      // Fades as an object goes unseen. The thresholds are read as "this cycle", "a little
+      // while ago" and "not lately"; nothing is hidden, because an object the robot has
+      // stopped seeing is exactly what a reader is looking for here.
+      const staleColour = (t) => {
+        if (typeof t !== 'number' || !isFinite(t)) return 'var(--muted)';
+        const d = Math.max(0, nowSec() - t);
+        return d < 30 ? '#10b981' : (d < 180 ? '#eab308' : '#ef4444');
+      };
+      const stampTitle = (r) => {
+        const fmt = (t) => (typeof t === 'number' && isFinite(t))
+          ? new Date(t * 1000).toLocaleTimeString() : 'not recorded';
+        return 'created ' + fmt(r.createdAt) +
+               '  ·  admitted ' + fmt(r.admittedAt) +
+               '  ·  last seen ' + fmt(r.lastSeen);
+      };
+      let html = '<table><thead><tr><th>Label</th><th>Verdict</th><th>Room</th><th>Size (m)</th><th>Concept</th><th>Score</th><th title="How long ago this object was last perceived. The tooltip carries the creation and admission times.">Last seen</th></tr></thead><tbody>';
       let shown = 0;
       graded.forEach(r => {
         const onto = r.node ? getAlignment(r.node) : null;
@@ -4909,6 +5292,8 @@
           <td style="font-size:0.66rem; color:var(--muted); white-space:nowrap;">${sizeTxt}</td>
           <td style="color:#a78bfa; font-size:0.68rem;">${conceptName}</td>
           <td>${conf === null || conf === undefined ? '—' : (conf * 100).toFixed(0) + '%'}</td>
+          <td style="font-size:0.66rem; white-space:nowrap; color:${staleColour(r.lastSeen)};"
+              title="${escHtml(stampTitle(r))}">${ageText(r.lastSeen)}</td>
         </tr>`;
       });
       html += '</tbody></table>';

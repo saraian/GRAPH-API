@@ -9,6 +9,7 @@ whether or not the endpoint exists, so only a check that reads both sides finds 
 Run: python3 found/dashboard/test_routes.py
 """
 import ast
+import collections
 import importlib.util
 import json
 import os
@@ -103,8 +104,16 @@ def test_the_tools_menu_never_links_to_a_route_that_is_not_served():
     # would have found nothing and passed vacuously, which is the shape it exists to catch.
     # digits included: a re-added link with a digit in its name (scene3d was one) would otherwise be
     # skipped in silence -- the same vacuity this check exists to catch, one character narrower.
-    linked = {"/" + h if h != "./" else "/" for h in re.findall(r'<a href="([a-z0-9_]*|\./)"', menu)}
-    assert len(linked) >= 4, f"the menu parse found almost nothing ({linked}); the pattern is stale"
+    # ATTRIBUTES MAY PRECEDE href. The pattern used to require `<a href=` with nothing between,
+    # so the moment a link gained an id -- `<a id="liveLink" href="dash">` -- it vanished from
+    # the parse and this check quietly stopped covering it. `[^>]*?` before the href is what
+    # makes the parse about links rather than about attribute order.
+    linked = {"/" + h if h != "./" else "/"
+              for h in re.findall(r'<a [^>]*?href="([a-z0-9_]*|\./)"', menu)}
+    # THREE, not four: the menu is NEW, LIVE and LOAD since /replay was retired (owner
+    # 2026-09-11) and the bundle picker moved to the Load page. The floor exists to catch a
+    # pattern that has gone stale and matches nothing, so it tracks the real count.
+    assert len(linked) >= 3, f"the menu parse found almost nothing ({linked}); the pattern is stale"
     # Both spellings: the page routes are hung on `m.app` inside build_app, the start page and
     # /dash on the bare `app` in another function. Matching only one of them made this check
     # report /dash as unserved when it has been served all along.
@@ -619,7 +628,16 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
                 start = c.get("/").text
             finally:
                 os.environ.pop("DASH_PUBLIC", None)
-            assert "Start a new run" not in start and "Open a recorded run" in start
+            # THE RECORDED-RUN LIST IS NOT ON THIS PAGE ANY MORE (owner 2026-09-11): NEW opens
+            # the configure-and-launch form and nothing else, and the runs are on LOAD. So the
+            # PUBLIC start page, which also has no launch section, is left with neither -- and
+            # that is only acceptable because LOAD is still reachable from the menu for a public
+            # deployment. Asserted here, or a later edit could drop that link and leave a public
+            # reader with no way to reach any run at all.
+            assert "Start a new run" not in start, "a public deployment must not offer a launch"
+            assert "Open a recorded run" not in start, "the run list moved to the LOAD page"
+            assert 'href="bundles"' in pub, \
+                "a public deployment has no start-page run list, so LOAD is its only way to a run"
             # the crop ticker is NAMED (so it is greppable and its guard is assertable) but must NOT
             # be blocked in replay: that is the one mode where it is needed, because the graph
             # version never changes there and a crop that failed once would stay missing
@@ -731,13 +749,20 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
             assert "_bundle_tag" in (HERE / "replay_server.py").read_text()
             # the fixture HAS one frame, so it must not be tagged empty; a name with nothing behind
             # it must be. Both directions, so the tag cannot be a constant.
+            # THREE elements: (machine, short tag, long title). The machine came first when
+            # bundles began arriving from other hosts; this check was written against the
+            # two-element shape and failed on a tuple that was correct. Indexed by position
+            # with the shape asserted, so the next element added here fails loudly rather than
+            # silently shifting what "the short tag" means.
             tag_frames = rs._bundle_tag("20260101_000000_test")
-            assert tag_frames[0].startswith("1 frames"), tag_frames
-            assert "no detections.jsonl" in tag_frames[1], tag_frames
+            assert len(tag_frames) == 3, tag_frames
+            assert tag_frames[1].startswith("1 frames"), tag_frames
+            assert "no detections.jsonl" in tag_frames[2], tag_frames
             (Path(td) / "20260101_000001_bare").mkdir()
             tag_empty = rs._bundle_tag("20260101_000001_bare")
-            assert tag_empty[0].startswith("EMPTY"), tag_empty
-            assert "aborted launch or a mapping-only run" in tag_empty[1], tag_empty
+            assert len(tag_empty) == 3, tag_empty
+            assert tag_empty[1].startswith("EMPTY"), tag_empty
+            assert "aborted launch or a mapping-only run" in tag_empty[2], tag_empty
             start_page = c.get("/").text
             assert "location.href = location.pathname.replace" in start_page, \
                 "the start page still navigates to an absolute /dash"
@@ -780,7 +805,14 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
             assert 'href="dash"' in live, "a lab instance keeps every link"
             # and every menu href is relative, or the app breaks under a path prefix
             assert 'href="/' not in live, "an absolute menu href is back; it will navigate to the site root"
-            assert "location.href = 'dash'" in live, "the post-pick navigation is absolute again"
+            # THE POST-PICK NAVIGATION MOVED WITH THE PICKER. It was in the tools menu's
+            # LOAD button; the menu has no picker since the 2026-09-11 restructure, so the
+            # check follows it to the LOAD page, where a bundle is chosen now. Still asserted
+            # RELATIVE ('dash', not '/dash') -- that is the property, and it is what lets the
+            # app work under a path prefix.
+            _bi = (HERE / "bundle_index.py").read_text()
+            assert "location.href = 'dash'" in _bi, "the post-pick navigation is absolute again"
+            assert "location.href = '/dash'" not in _bi, "the post-pick navigation is absolute again"
             rs.MODE.update(mode="replay", why="test")
             url = "/replay/frame/20260101_000000_test/1700000000_000000000.jpg"
             r = c.get(url)
@@ -843,6 +875,74 @@ def test_only_directories_named_like_a_run_are_served():
             assert not _rs.is_run_dir(root / "latest"), "a symlink is not a run directory"
         finally:
             _rs.RUNS_ROOT = old_root
+
+
+def test_the_ros_stub_covers_every_ros_import_the_bridge_makes():
+    """The in-process bridge must not be able to grow an import the stub has never heard of.
+
+    WHY THIS EXISTS. replay_server loads graph_api_bridge IN THIS PROCESS to reuse its routes,
+    with `_install_ros_stubs()` standing in for ROS. The bridge is another lane's file, so it
+    grows imports on its own schedule, and the stub only learns about them when the dashboard
+    STOPS STARTING. That happened on 2026-09-11: a `from rclpy.qos import DurabilityPolicy,
+    HistoryPolicy, QoSProfile, ReliabilityPolicy` landed upstream and the dashboard died with
+    "No module named 'rclpy.qos'; 'rclpy' is not a package" -- which reads like a broken ROS
+    install, not like a stub that is one module behind.
+
+    ASSERTED AGAINST THE BRIDGE'S OWN SOURCE, so the next such import fails here, in a test
+    that names the missing module, instead of at start-up in a message that misdirects. The
+    NAMES are checked too, not just the module: `from X import a, b` fails on a stub module
+    that lacks the attributes, which is a different failure from a missing module.
+    """
+    import ast
+    import importlib.util as _ilv
+
+    # Loaded the same way the viewer check loads it, and for the same reason: this file must
+    # read the module it is testing, not a second copy that could differ.
+    _spec = _ilv.spec_from_file_location("rs_stub_probe", HERE / "replay_server.py")
+    _rs = _ilv.module_from_spec(_spec)
+    _spec.loader.exec_module(_rs)
+
+    src = _rs.BRIDGE.read_text()
+    tree = ast.parse(src)
+    # Only the ROS-side imports: those are what the stub exists to replace. cv2 and cv_bridge
+    # are in the same family and already stubbed, so they are checked with them.
+    ROSY = ("rclpy", "sensor_msgs", "geometry_msgs", "std_msgs", "nav_msgs",
+            "visualization_msgs", "cv_bridge", "cv2", "lost3dsg", "tf2_ros", "builtin_interfaces")
+    # MODULE LEVEL ONLY -- `tree.body`, not `ast.walk`. An import at the top of the file must
+    # resolve for the module to import at all, which is what the stub has to satisfy. An import
+    # inside a function is a different promise: the bridge guards `tf2_ros` and `rclpy.time`
+    # behind try/except precisely so the overlay degrades when TF is absent (graph_api_bridge.py
+    # :243, "Optional on purpose"). Requiring those would make this check demand stubs for the
+    # things the bridge already handles being without -- a stricter test that is wrong.
+    need = {}
+    for n in tree.body:
+        if isinstance(n, ast.ImportFrom) and n.module:
+            root = n.module.split(".")[0]
+            if root in ROSY:
+                need.setdefault(n.module, set()).update(a.name for a in n.names)
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name.split(".")[0] in ROSY:
+                    need.setdefault(a.name, set())
+    assert need, "no ROS imports found in the bridge; this check is reading the wrong file"
+
+    _rs._install_ros_stubs()
+    missing_mod, missing_name = [], []
+    for mod_name, names in sorted(need.items()):
+        m = sys.modules.get(mod_name)
+        if m is None:
+            missing_mod.append(mod_name)
+            continue
+        for nm in sorted(names):
+            if not hasattr(m, nm):
+                missing_name.append(f"{mod_name}.{nm}")
+    assert not missing_mod, (
+        "the bridge imports ROS modules the dashboard's stub does not provide, so the "
+        f"dashboard will not start: {missing_mod}")
+    assert not missing_name, (
+        "the stub provides these modules but not the names imported from them, so "
+        f"`from X import ...` will fail: {missing_name}")
+    print(f"  ros stub: covers {len(need)} ROS modules the bridge imports")
 
 
 def test_an_empty_timeline_names_this_runs_reason_not_a_generic_one():
@@ -943,17 +1043,28 @@ def test_the_bundle_tag_says_which_machine_recorded_it():
                     meta["machine"] = machine
                 (d / "run_metadata.json").write_text(_json.dumps(meta))
             rs._load_bundle_index().RUNS_DIR = Path(td)
-            local_s, local_l = rs._bundle_tag("20260101_000000_local")
-            remote_s, remote_l = rs._bundle_tag("20260101_000001_remote")
-            old_s, old_l = rs._bundle_tag("20260101_000002_old")
-            # the OTHER machine is named in the row itself, not only in a title nobody hovers
-            assert remote_s.startswith("[somewhere-else] "), remote_s
+            # THREE elements: (machine, short tag, long title). This check was written when the
+            # machine was a PREFIX on the short tag and unpacked two; the machine is its own
+            # element now, so unpacking two raised ValueError on a correct return. The
+            # assertions below were already aimed at the right thing, they just had the wrong
+            # name bound to it.
+            local_m, local_s, local_l = rs._bundle_tag("20260101_000000_local")
+            remote_m, remote_s, remote_l = rs._bundle_tag("20260101_000001_remote")
+            old_m, old_s, old_l = rs._bundle_tag("20260101_000002_old")
+            # THE MACHINE IS ITS OWN COLUMN (owner 2026-09-11), so it is the bare name, not a
+            # bracketed prefix on the tag. The bracket form was the previous design and this
+            # check still asserted it. Every case is named, including this machine -- "no
+            # marking" used to mean both "recorded here" and "nobody recorded one", which is
+            # the ambiguity the column removes.
+            assert remote_m == "somewhere-else", remote_m
             assert "not this machine" in remote_l, remote_l
-            # this machine is not shouted at the reader in every row, but the title still says it
-            assert not local_s.startswith("["), local_s
+            # a run recorded HERE names this host rather than being left blank
+            assert local_m == here, (local_m, here)
             assert here in local_l, local_l
             # and an OLD bundle says it does not know, rather than reading as local
-            assert not old_s.startswith("["), old_s
+            # "?" and not "": a blank column cannot be told apart from a column with nothing
+            # to say, which is the ambiguity this column was added to remove.
+            assert old_m == "?", old_m
             assert "not recorded" in old_l, old_l
             assert here not in old_l, "a bundle with no machine key must not read as this machine"
         finally:
@@ -965,10 +1076,113 @@ def test_the_bundle_tag_says_which_machine_recorded_it():
 
 
 
+def test_the_sidebar_is_closed_on_load_and_can_be_clicked_away():
+    """Two defects in one style attribute, and neither is visible by reading it left to right.
+
+    `#toolsPanel` carried `display:none` AND, forty characters later, `display:flex`. The last
+    declaration wins, so the sidebar was open on every page load while the code comment beside it
+    said its own `display:none` kept it shut. CSS decides that, not reading order, so the check
+    counts the declarations rather than looking for the one it hopes is there.
+
+    The panel also has to close when the reader clicks the page instead of the menu.
+    """
+    whole = (HERE / "replay_server.py").read_text()
+    # SCOPE IT TO THE TEMPLATE. The first draft searched the whole file for
+    # `document.addEventListener('click'` and matched an unrelated one in the BEV declutter
+    # block, then asserted about that. A check that reads the wrong region is a check that
+    # answers a question nobody asked.
+    src = whole[whole.index("TOOLS_MENU_TEMPLATE = "):]
+    src = src[:src.index('\n"""', src.index('"""') + 3)]
+    i = src.index('<div id="toolsPanel"')
+    style = src[src.index('style="', i) + 7:src.index('">', i)]
+    decls = [d.strip() for d in style.split(";") if d.strip().startswith("display")]
+    assert len(decls) == 1, f"#toolsPanel declares display {len(decls)} times: {decls}"
+    assert decls[0].replace(" ", "") == "display:none", \
+        f"the sidebar is not closed on load: {decls[0]}"
+    # It must still be able to OPEN as a flex column, or the fix above closes it forever.
+    assert "flex-direction:column" in style.replace(" ", "").replace("\n", "")
+    assert "p.style.display = 'flex'" in src or "'none' : 'flex'" in src, \
+        "nothing reopens the panel"
+    # And a click outside it closes it (owner 2026-09-11). `toolsMenu` wraps the panel AND the
+    # hamburger, so the containment test must name the WRAPPER: testing against the panel alone
+    # would close the sidebar on the press that opened it.
+    assert "document.addEventListener('click'" in src, "no outside-click handler"
+    outside = src[src.index("document.addEventListener('click'"):]
+    outside = outside[:outside.index("});")]
+    assert "toolsMenu" in outside and "contains(e.target)" in outside, outside
+
+
+def test_the_log_panel_shows_every_source_not_just_the_loudest():
+    """The terminal merges several log files. Every one that has content must appear in it.
+
+    TWICE this panel has shown ONE source and looked like a broken feed. The mechanism is the
+    same both times: `_line_stamp` carries the last stamp it saw so a traceback line stays
+    attached to the message above it, and that carry used to survive from one FILE to the next.
+    MEASURED on 20260911_184539: launch.log carries a ROS stamp on 355 of 400 lines while
+    feed_host.log and system_health.log carry NONE, so those two inherited launch.log's final
+    stamp, sorted to the very end, and the tail cut kept nothing else. Before launch.log was
+    added to the order the same carry started at 0.0 and system_health won instead.
+
+    The fixture reproduces exactly that shape -- one stamped source, two stampless ones -- and
+    asserts what the panel is FOR, which is the merge. Asserting only "some lines came back"
+    is what let this ship twice.
+    """
+    from fastapi.testclient import TestClient
+    rs = _replay_server()
+    with tempfile.TemporaryDirectory() as td:
+        b = Path(td) / "20260101_000000_test"
+        (b / "frames").mkdir(parents=True)
+        (b / "persistent_perception.json").write_text("[]")
+        logs = b / "logs"
+        logs.mkdir()
+        # STAMPED, and chatty: 800 lines inside two seconds, the way a ros2 launch log runs.
+        (logs / "launch.log").write_text("".join(
+            f"[object_manager_6.py-4] [INFO] [178900000{i % 10}.{i:09d}] [om6]: cycle {i}\n"
+            for i in range(800)))
+        # STAMPLESS, both of them, exactly like the real files.
+        (logs / "feed_host.log").write_text("".join(
+            f"[feed] frame {i} rendered\n" for i in range(300)))
+        (logs / "system_health.log").write_text("".join(
+            f"=== health sample {i} ===\n" for i in range(300)))
+        prev_runs = os.environ.get("GRAPH_API_RUNS_DIR")
+        os.environ["GRAPH_API_RUNS_DIR"] = td
+        _rv = ("replay_view", f"{__package__}.replay_view" if __package__ else "replay_view")
+        parked = {k: sys.modules.pop(k) for k in _rv if k in sys.modules}
+        before = set(sys.modules)
+        try:
+            rs.RUNS_ROOT = Path(td)
+            rs.MODE.update(mode="replay", why="test")
+            m = rs.build_app(b)
+            got = TestClient(m.app).get("/logs?lines=400").json()
+            lines = got.get("logs") or []
+            assert len(lines) > 0, f"the panel returned nothing: {got}"
+            tags = collections.Counter(
+                ln.split("]")[0].lstrip("[") for ln in lines if ln.startswith("["))
+            for want in ("launch", "feed_host", "system_health"):
+                assert tags.get(want), (
+                    f"{want} is missing from the merged panel; it showed {dict(tags)}")
+            # And no single source may own the window: that is the failure wearing its
+            # other face, and a floor of one line each would satisfy the loop above.
+            assert max(tags.values()) < len(lines), f"one source took everything: {dict(tags)}"
+            assert max(tags.values()) <= 0.9 * len(lines), \
+                f"one source took {max(tags.values())} of {len(lines)} lines: {dict(tags)}"
+        finally:
+            if prev_runs is None:
+                os.environ.pop("GRAPH_API_RUNS_DIR", None)
+            else:
+                os.environ["GRAPH_API_RUNS_DIR"] = prev_runs
+            _purge_modules(before)
+            sys.modules.update(parked)
+
+
 if __name__ == "__main__":
     # REBUILT 2026-09-10 after a bad slice removed it. A suite whose runner is gone still EXITS 0
     # and prints nothing, which is the most dangerous green there is -- so the names are derived
     # from the file below rather than retyped, and the count is asserted against what ran.
+    # FIRST, because every check below it loads the bridge in-process and a stub gap kills
+    # that import. Run later, this one never gets to speak: the suite dies on the raw
+    # "No module named 'rclpy.qos'" instead of on a line naming the missing stub entry.
+    test_the_ros_stub_covers_every_ros_import_the_bridge_makes()
     fetched = test_every_endpoint_the_viewer_fetches_is_defined()
     test_the_tools_menu_never_links_to_a_route_that_is_not_served()
     test_no_duplicate_routes()
@@ -988,6 +1202,8 @@ if __name__ == "__main__":
     test_the_bundle_tag_says_which_machine_recorded_it()
     test_an_empty_timeline_names_this_runs_reason_not_a_generic_one()
     test_only_directories_named_like_a_run_are_served()
-    _ran = 19
+    test_the_sidebar_is_closed_on_load_and_can_be_clicked_away()
+    test_the_log_panel_shows_every_source_not_just_the_loudest()
+    _ran = 22
     print(f"all {_ran} checks passed (viewer fetches {len(fetched)} endpoints: "
           f"{', '.join(fetched)})")

@@ -1,0 +1,16 @@
+# TWO BASELINE RUNS: the same configuration with the labelling VLM online, then offline.
+#
+#     ./run_headless.sh --schedule schedules/vlm.runs.yaml
+#
+# Both arms are the tracked default otherwise: local detector, rtabmap SLAM (exact sync), NO
+# mapping phase, the scheduled exploration, camera tilted 30 degrees down.
+#
+# THEY ARE NOT THE SAME MODEL. Online is gemma4-31b on regolo; offline is gemma3:27b in ollama,
+# because the 31b is not in ollama's registry. Any difference between the two arms therefore mixes
+# the hosting with the model, and no report may attribute it to hosting alone.
+scene: hm3d_00861
+arms:
+  - name: vlm_online_gemma4_31b
+    config_file: schedules/configs/06_vlm_online.yaml
+  - name: vlm_offline_gemma3_27b
+    config_file: schedules/configs/07_vlm_offline.yaml

@@ -177,7 +177,7 @@ MERGE_KNN_K = None if _knn_k in (None, 0, "", "none") else int(_knn_k)
 # persistence rather than by inflating a score through repetition.
 # Env overrides config, so an ablation changes ONE variable per run instead of editing a
 # shared file between two runs that must otherwise be identical. Recorded into
-# run_metadata by live_run.sh, so a bundle states which arm produced it.
+# run_metadata by run_sim.sh, so a bundle states which arm produced it.
 MERGE_MIN_CONSECUTIVE = int(os.environ.get(
     "MERGE_MIN_CONSECUTIVE", CFG["association"].get("merge_min_consecutive", 2)))
 

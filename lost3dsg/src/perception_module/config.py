@@ -260,6 +260,19 @@ _DEFAULTS = {
         # second rather than once. A TIAGo deployment sets these to its own frames.
         "motion_watch": ["habitat_camera"],
         "motion_watch_base": [],
+        # DECLARED 2026-09-11. Both were hardcoded in perception_2.py (:404 and :438), so no
+        # run could change them. MEASURED on 20260911_133641 and _140421: two COMPLETE tours,
+        # 4344 frames each, produced ONE and TWO perception cycles. Over 1832 one-second
+        # windows only ~1% fall below 0.05, and the longest continuous still stretch in 24
+        # minutes is 1 SECOND -- the same size as the sampling period, so a 1 Hz sampler
+        # measuring the delta since its last sample almost always straddles the pause.
+        # NOTE, and this is why raising the threshold is not the fix: the score adds METRES to
+        # RADIANS (perception_2.py:1561), so a full turn on the spot scores 6.28 while
+        # standing still, and any threshold that admits a scan rotation admits six metres of
+        # driving. These keys make the gate tunable and record what it costs; they do not make
+        # the quantity it compares physically meaningful.
+        "motion_position_threshold": 4.0,
+        "motion_min_stationary_s": 0.5,
         # The frame the perception back-projects into. Must be an OPTICAL frame
         # (x right, y down, z forward). Publishing a body pose under this name
         # puts depth into the height axis — see habitat_camera_node.py, which
@@ -455,15 +468,17 @@ _DEFAULTS = {
         # it on the storey it spawned on, which is what `single_floor` above enforces.
         "floor_confinement": "teleport",
         # THE MOTION POLICY. A schedule is the only one (owner 2026-09-11): the agent drives the
-        # storey's precomputed Voronoi roadmap and turns a full circle at each stop. run.sh
+        # storey's precomputed Voronoi roadmap and turns a full circle at each stop. run_sim.sh
         # builds and caches the schedule per scene, so no path is named here.
         "exploration_laps": 3,      # identical laps; a difference between two is a difference in
         #                             the WORLD, not in the route
         "navigation_mode": "navigate",   # or "teleport": no travel frames, only the scans
         # Degrees per turn action. ONE number for the agent, the schedule's frame budget and the
-        # scan counter; schedule_batch.py --turn-step-deg must match it. 20 leaves a 4.5x overlap
-        # at a 90 degree field of view, where 10 gave 9x and spent 45% of a run on scans.
-        "turn_step_deg": 20.0,
+        # scan counter; schedule_batch.py --turn-step-deg must match it. It is a MERGE parameter:
+        # a full 360 scan is 360/step frames, and a merge needs merge_min_consecutive cycles at
+        # ~3.2 s to commit. 10 gives 36 frames (3.75 cycles); 20 gives 18 (1.87) and no stop clears
+        # the threshold. Owner 2026-09-11, after 20 was tried and measured.
+        "turn_step_deg": 10.0,
         "tour_end_settle_s": 90.0,  # stand still at the end so the last merges can commit
         "min_floor_share": 0.10,    # a storey holding less than this share of the navmesh is
         #                             not a storey; it is a landing or a stairwell
@@ -491,7 +506,12 @@ _DEFAULTS = {
         "rtabmap_grid_args": "",
         "localize_db_copy": True,   # work on a COPY so a run cannot modify the shared map
         "pose_source": "simulator",  # simulator | rtabmap; also decides who owns map->odom
-        "wall_detector": False,
+        # ON since 2026-09-11. The MODULE default matters because a config passed as
+        # GRAPH_API_CONFIG REPLACES config.yaml rather than layering on it, so a config that
+        # does not mention this key -- the colleague's regolo_config.yaml does not -- lands
+        # here. With it False the wall detector never runs, detected_walls is [], every
+        # doorway candidate fails its wall-support test, and a storey stays ONE room.
+        "wall_detector": True,
         "gt_semantic": True,        # archived for the offline join only; never on the
         #                             decision path, and a preflight probe enforces that
         "gt_scene_instance": "",
@@ -527,6 +547,25 @@ _DEFAULTS = {
         "depth_tol_rel": 0.05,
     },
     "perception": {
+        # THE FRAME QUEUE, declared 2026-09-11. OFF at 0, which is what every run before this
+        # did: perception waits for the motion gate and processes the live frame. Above 0,
+        # frames are captured into a queue regardless of motion and each is processed on its
+        # OWN transform, because a snapshot cannot be invalidated by motion after it.
+        # MEASURED, and this is why it exists: two COMPLETE tours produced ONE and TWO cycles
+        # out of 4344 frames each (20260911_133641, _140421).
+        # CORRECTED 2026-09-11 by the first armed run: depth is NOT bounded by the TF buffer.
+        # Full discards the oldest, so a popped frame's age is depth x CAPTURE interval
+        # (measured 0.53 s), about 4.2 s at depth 8 -- not depth x cycle time. That run logged
+        # no TF failure at all. What depth actually costs is STALENESS, and while the queue is
+        # saturated it buys lag rather than coverage; `queue_age_s` on the per-cycle row is
+        # the measurement.
+        "frame_queue_max": 0,
+        # A frame joins the queue only if the viewpoint moved this far since the last one
+        # ACCEPTED. Translation and rotation are SEPARATE thresholds: the motion gate's own
+        # score adds metres to radians, which is precisely why it cannot say "turning in
+        # place is fine, driving is not". 0.26 rad is about 15 degrees.
+        "frame_queue_min_translation_m": 0.25,
+        "frame_queue_min_rotation_rad": 0.26,
         # GA-276. IoU-NMS cannot see a nested box: fully contained at a 5x size
         # difference gives IoU 0.2. Suppress on IoS (intersection over the SMALLER box)
         # as well. Measured 61 fully-contained same-class pairs in one run, every one
@@ -616,7 +655,7 @@ def _load():
                            for k, v in over.items() for sk in (v if isinstance(v, dict) else [k]))
             # TO STDERR, NOT STDOUT. The announcement is a message, not a value, and the
             # launcher CAPTURES this program's stdout to read the merged-config sha
-            # (run.sh, `--print-merged-sha`). On stdout the line landed INSIDE the JSON
+            # (run_sim.sh, `--print-merged-sha`). On stdout the line landed INSIDE the JSON
             # string in run_metadata.json, newline and all, and the launcher then refused the
             # bundle with "run_metadata.json is not valid JSON". Measured 2026-09-10 on the first
             # run that ever used a local override -- the feature that makes the override honest

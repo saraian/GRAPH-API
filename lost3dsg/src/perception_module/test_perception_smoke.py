@@ -542,6 +542,128 @@ def merge_request_distance_survives_the_broad_phase():
     wm.persistent_perceptions.clear()
 
 
+def frame_queue_decouples_processing_from_the_motion_gate():
+    """A queued snapshot is processed while the gate still says the robot is moving.
+
+    MEASURED, and this is the whole reason the queue exists: two COMPLETE tours
+    (20260911_133641 and _140421) of 4344 frames each produced ONE and TWO perception cycles,
+    with no detections file in either bundle. The gate is not mis-tuned -- the tour's longest
+    pause is 1 s, the same length as the gate's own sampling period, so a sampler measuring
+    the delta since its last sample almost never lands inside a pause. A snapshot cannot be
+    invalidated by motion that happened after it was taken, so the gate must not apply to one.
+
+    Asserted here: OFF by default; capture ignores motion; a redundant viewpoint is dropped;
+    translation and rotation are judged SEPARATELY; and the abort gate stands down for a
+    queued frame but still fires for a live one.
+    """
+    from collections import deque
+
+    N = perception_2.DetectObjectsNode
+
+    # The bound is DERIVED here rather than written as a number, because the number I wrote
+    # first was wrong and the first armed run refuted it. Since the queue discards the OLDEST
+    # when full, a processed frame's age is depth x CAPTURE interval -- NOT depth x cycle
+    # time, which is what the earlier bound of 9 came from. Measured on 20260911_150406:
+    # 0.53 s per capture read, so depth 8 is about 4.2 s of staleness against a 30 s TF
+    # buffer, and that run logged no TF failure at all.
+    _CAPTURE_INTERVAL_S = 0.5     # the capture timer in _create_timers
+    _TF_BUFFER_S = 30.0           # what compute_fov_volume_from_depth can still look up
+    _q = object_services.CFG["perception"]
+    _stale_s = _q["frame_queue_max"] * _CAPTURE_INTERVAL_S
+    assert _stale_s <= _TF_BUFFER_S, (
+        f"frame_queue_max {_q['frame_queue_max']} means a processed frame can be {_stale_s:.1f}s "
+        f"old, past the {_TF_BUFFER_S:.0f}s TF buffer, so its transform lookup would fail")
+    assert _q["frame_queue_max"] >= 0, _q["frame_queue_max"]
+    if _q["frame_queue_max"] > 0:
+        assert _q["frame_queue_min_translation_m"] > 0 and _q["frame_queue_min_rotation_rad"] > 0, \
+            "an armed queue with a zero viewpoint threshold queues every frame it sees"
+
+    class _Cam:
+        def __init__(self, frames):
+            self.frames = list(frames)
+
+        def get_synced_data(self):
+            # The real one CONSUMES its cache on every successful read.
+            return self.frames.pop(0) if self.frames else None
+
+    # REAL objects, not rosstub.Any(): Any answers every attribute, so the coordinates would
+    # be stubs rather than numbers and the arithmetic under test would never run. Same trap
+    # the GA-427 check hit.
+    def snap(x, y=0.0, z=0.0, qz=0.0, qw=1.0):
+        ns = types.SimpleNamespace
+        return {"rgb": "px", "depth": "d", "camera_info": None,
+                "transform": ns(transform=ns(translation=ns(x=x, y=y, z=z),
+                                             rotation=ns(x=0.0, y=0.0, z=qz, w=qw)))}
+
+    node = N.__new__(N)
+    node.frame_queue = deque(maxlen=4)
+    node.frame_queue_min_translation_m = 0.25
+    node.frame_queue_min_rotation_rad = 0.26
+    node._queued_frame = None
+    node._queue_last_pose = None
+    node._queue_captured = node._queue_redundant = node._queue_dropped = 0
+    node.is_stationary = False          # the gate says MOVING for every call below
+    node.processing_interrupted = False
+    node.log_both = lambda *a, **k: None
+
+    # 1. The first frame is always taken, and motion does not stop it.
+    node.camera_data = _Cam([snap(0.0)])
+    N._capture_frame_callback(node)
+    assert node._queue_captured == 1 and len(node.frame_queue) == 1, node._queue_captured
+
+    # 2. The same viewpoint again is redundant and is dropped, not queued.
+    node.camera_data = _Cam([snap(0.01)])
+    N._capture_frame_callback(node)
+    assert node._queue_captured == 1 and node._queue_redundant == 1, \
+        (node._queue_captured, node._queue_redundant)
+
+    # 3. Translation alone past its own threshold is enough.
+    node.camera_data = _Cam([snap(0.60)])
+    N._capture_frame_callback(node)
+    assert node._queue_captured == 2, node._queue_captured
+
+    # 4. ROTATION ALONE is enough, with no translation at all. This is the case the motion
+    #    gate cannot express: it sums metres and radians, so it cannot separate a turn in
+    #    place from driving. 90 degrees about z.
+    import math as _m
+    half = _m.pi / 4.0
+    node.camera_data = _Cam([snap(0.60, qz=_m.sin(half), qw=_m.cos(half))])
+    N._capture_frame_callback(node)
+    assert node._queue_captured == 3, \
+        f"a pure rotation must be a new viewpoint: {node._queue_captured}"
+
+    # 4b. THE CASE THAT DISCRIMINATES. A small shuffle AND a small turn, each below its own
+    #     threshold: 0.20 m and 0.20 rad. Separate thresholds call this the same viewpoint.
+    #     A SUMMED score -- which is exactly what the motion gate computes -- calls it new,
+    #     because 0.40 clears 0.25. Without this case the test passes either way, and the
+    #     separation it claims to protect is untested.
+    tot = _m.pi / 2.0 + 0.20
+    node.camera_data = _Cam([snap(0.80, qz=_m.sin(tot / 2.0), qw=_m.cos(tot / 2.0))])
+    N._capture_frame_callback(node)
+    assert node._queue_captured == 3, (
+        "0.20 m and 0.20 rad are each below their own threshold, so this is the SAME "
+        f"viewpoint; summing them into one score is the motion gate's error: {node._queue_captured}")
+
+    # 5. An unreadable transform ABSTAINS from pruning rather than assuming redundancy.
+    node.camera_data = _Cam([{"rgb": "px", "depth": "d", "camera_info": None, "transform": None}])
+    N._capture_frame_callback(node)
+    assert node._queue_captured == 4, node._queue_captured
+
+    # 6. Full means the OLDEST goes, and the loss is COUNTED rather than silent.
+    node.camera_data = _Cam([snap(9.0)])
+    N._capture_frame_callback(node)
+    assert node._queue_dropped == 1 and len(node.frame_queue) == 4, \
+        (node._queue_dropped, len(node.frame_queue))
+
+    # 7. The abort gate stands down for a queued snapshot and still fires for a live cycle.
+    node._queued_frame = {"rgb": "px"}
+    assert N._abort_if_moving(node, "detection") is False, \
+        "a snapshot cannot be invalidated by motion after it was captured"
+    node._queued_frame = None
+    assert N._abort_if_moving(node, "detection") is True, \
+        "the live path must still abort while the robot moves"
+
+
 def scan_summary():
     """GA-190: the tracking scan emits ONE summary row per cycle, and resets.
 
@@ -907,6 +1029,33 @@ def cycle_ms_recorded():
         with open(os.path.join(tmp, "perception_latencies.json")) as fh:
             on_disk = _json.load(fh)
         assert on_disk["cycle_ms"] == 13700.0 and on_disk["total_ms"] == 100.0
+
+        # With no queue on this node every queue key is None, and None is the honest value:
+        # "the queue was off" is not "the queue dropped zero frames".
+        assert all(rows[0][k] is None for k in
+                   ("queue_depth", "queue_captured", "queue_redundant", "queue_dropped",
+                    "queue_age_s")), rows[0]
+
+        # ARMED, the counters reach the ROW rather than only the log line. A counter that
+        # lives only in the container log is a property of the launch, not of the bundle --
+        # the defect the merge broad phase had when it logged what it pruned without
+        # recording it, and the reason this was added on 2026-09-11.
+        from collections import deque as _dq
+        node.frame_queue = _dq([{"rgb": "a"}, {"rgb": "b"}], maxlen=8)
+        node._queue_captured, node._queue_redundant, node._queue_dropped = 519, 174, 454
+        node._last_queue_age_s = 4.2
+        saved = perception_2.LATENCY_JSON_PATHS, perception_2.LATENCY_JSONL_PATHS
+        perception_2.LATENCY_JSON_PATHS = (os.path.join(tmp, "b.json"),)
+        perception_2.LATENCY_JSONL_PATHS = (os.path.join(tmp, "b.jsonl"),)
+        try:
+            perception_2.DetectObjectsNode._record_cycle_ms(node, 4.3, frame_id="f2",
+                                                            n_detections=3)
+        finally:
+            perception_2.LATENCY_JSON_PATHS, perception_2.LATENCY_JSONL_PATHS = saved
+        with open(os.path.join(tmp, "b.jsonl")) as fh:
+            armed = [_json.loads(line) for line in fh][-1]
+        assert (armed["queue_depth"], armed["queue_captured"], armed["queue_redundant"],
+                armed["queue_dropped"], armed["queue_age_s"]) == (2, 519, 174, 454, 4.2), armed
 
 
 def disappearance_removal_client():
@@ -1405,7 +1554,7 @@ def localisation_gate():
     node._last_localization_time = None
     node.cycles_skipped_unlocalised = 0
     ran = []
-    node.publish_objects = lambda: ran.append(1)
+    node.publish_objects = lambda frame=None: ran.append(1)
     node._perception_lock = __import__("threading").Lock()
     node.get_clock = lambda: rosstub.Any()
     node.first_detection_done = False
@@ -1457,6 +1606,8 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("every config key the code reads is declared", every_config_key_read_is_declared),
                  ("broad phase widens to the request's distance, never narrows",
                   merge_request_distance_survives_the_broad_phase),
+                 ("frame queue processes a snapshot while the gate says moving",
+                  frame_queue_decouples_processing_from_the_motion_gate),
                  ("merge path (dry run)", merge_path)]:
     check(name, fn)
 

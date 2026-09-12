@@ -255,20 +255,20 @@ fi
 
 # A MISSING DISPLAY IS NOT A FAILURE, IT IS A CHOICE OF SCRIPT. rviz, the preview window and the
 # overlay all default to on and each aborts without an X server -- measured on Gin 2026-09-10,
-# where six runs passed their gate and then died on rviz. run_headless.sh exists for exactly this,
+# where six runs passed their gate and then died on rviz. run_sim_headless.sh exists for exactly this,
 # so name it rather than refusing the install.
 if [ -n "$(ls /tmp/.X11-unix/ 2>/dev/null)" ]; then
-  ok "an X display is available ($(ls /tmp/.X11-unix/ | tr '\n' ' ')) — use ./run.sh"
+  ok "an X display is available ($(ls /tmp/.X11-unix/ | tr '\n' ' ')) — use ./run_sim.sh"
 else
-  ok "no X display — USE ./run_headless.sh, not ./run.sh. It turns rviz and the preview window off;
-         ./run.sh would pass its gate and then die when rviz aborts with no display."
+  ok "no X display — USE ./run_sim_headless.sh, not ./run_sim.sh. It turns rviz and the preview window off;
+         ./run_sim.sh would pass its gate and then die when rviz aborts with no display."
 fi
 
 if [ "$FAIL" = "0" ]; then
   if [ -n "$(ls /tmp/.X11-unix/ 2>/dev/null)" ]; then
-    printf '\nINSTALLED. Next:  ./run.sh\n'
+    printf '\nINSTALLED. Next:  ./run_sim.sh\n'
   else
-    printf '\nINSTALLED. Next:  ./run_headless.sh          (this machine has no display)\n'
+    printf '\nINSTALLED. Next:  ./run_sim_headless.sh          (this machine has no display)\n'
   fi
 else
   printf '\nNOT INSTALLED. Fix the FAIL lines above and run this again — it is safe to repeat.\n'

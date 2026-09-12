@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record WHICH FLOOR a published rtabmap map covers, measured from its own node poses.
 
-Called by live_run.sh's publish step. Usage: stamp_floor.py <db> [scene_floors_json]
+Called by run_sim.sh's publish step. Usage: stamp_floor.py <db> [scene_floors_json]
 
 WHY THIS EXISTS. hm3d_00861 has four floors and only ONE has ever been mapped, by any run. The
 map did not say which. A robot loading it could not tell whether it was the right storey, and

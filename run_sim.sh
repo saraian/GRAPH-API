@@ -1,55 +1,65 @@
 #!/usr/bin/env bash
+# THE ONLY SCRIPT A PERSON RUNS. There is nothing behind it.
+#
+# Owner, 2026-09-10: "ONE config file, ONE install script and ONE launch script."
+# Owner, 2026-09-11: "We're not using live_run.sh anymore. The storey schedule should come before
+# as a multi-storey run is actually multiple runs. live_run will have to be discarded and use the
+# official config of run and run_sim_headless.sh". So this file holds BOTH halves:
+#   the storeys are resolved FIRST, then one run is performed per storey.
+# lost3dsg/test/live_run.sh and lost3dsg/test/run_house.sh are DELETED. If a step anywhere names
+# either of them, the step is wrong.
+#
+# WHAT A BASE RUN IS (rule 73, owner 2026-09-10): the whole house, every storey, NO CAP, one
+# mapping session per storey. It produces ONE BUNDLE PER STOREY, not one per run. Nothing spans
+# the house: each storey's map has its own SLAM origin, so coverage, an object seen on two
+# storeys and the duplicate rate are all post-hoc joins across the bundles the manifest names.
+#
+#   ./run_sim.sh                       every storey of the scene in the config
+#   ./run_sim.sh hm3d_00861            that scene, this run only
+#   ./run_sim.sh --one-storey          a single storey
+#   ./run_sim.sh --config <file>       a specific run configuration
+#   ./run_sim.sh --schedule <file>     a list of runs, each with its own configuration
+#   ./run_sim_headless.sh ...          the same, with no rviz and no preview window
+#
+# SETTINGS LIVE IN THE CONFIG FILE, not in flags here. A setting you cannot find in the config is
+# a bug in the config, not a missing flag. The environment still overrides for one run:
+#
+#   WHERE THINGS GO
+#     WORKSPACE_ROOT  root holding maps/ and results/ (default: this checkout)
+#     RESULTS_DIR     run bundles; the bundle IS the live output (default $WORKSPACE_ROOT/results)
+#     SCHEDULE_DIR    cached exploration schedules (default $WORKSPACE_ROOT/schedules)
+#   THE HOUSE
+#     HOUSE_FLOORS    the storeys to tour, e.g. "-1.59 +1.21". Read from the published maps
+#                     when unset, so no discovery launch is needed.
+#     FEED_SPAWN_FLOOR  with --one-storey, which storey. REQUIRED when the scene has per-floor
+#                     maps and you are pinning by hand.
+#   EXPLORATION
+#     FEED_SCHEDULE          a schedule file; built and cached automatically when unset.
+#                            MANDATORY: it is the only motion policy, so a run refuses without one
+#     FEED_EXPLORATION_LAPS  complete passes of the storey (config habitat.exploration_laps)
+#     FEED_NAVIGATION_MODE   navigate (drive it) or teleport (set the pose)
+#   FEED (each also readable from the config's habitat.* section)
+#     FEED_FPS  FEED_WIDTH  FEED_HEIGHT  FEED_MOVE_FN  FEED_CAMERA_PITCH_DEG
+#     FEED_GT_SEMANTIC  FEED_SHOW  FEED_OVERLAY
+#   STACK
+#     RVIZ            0 to run headless; also skipped automatically with no X socket
+#     WALL_DETECTOR   1 starts the wall detector (default 0)
+#     FEED_HF_OFFLINE 1 refuses to download models mid-run (default 1)
+#     IMAGE_TAG       container image
+#   EXTENSION
+#     EXT_ENV_FILE    a shell file the extension ships; REQUIRED when the config names hooks.filter
+#     EXT_MOUNTS EXT_ENV_PASS EXT_TREES EXT_POLICY_JSON EXT_STORE_REPAIR EXT_POST_RUN
+#
+# HOW IT RUNS N STOREYS FROM ONE FILE: it re-invokes itself once per storey, as a child process
+# with GRAPH_API_STOREY_CHILD=1. One file, N processes. A shell function would have shared this
+# process's traps, background jobs and exported variables across storeys, and storey 2 would
+# inherit storey 1's feed host and container names.
 
-# --help must answer BEFORE anything else parses $1: the scene switch below refused it as a
-# scene name, which is the least useful reply to someone asking what the arguments are.
-case "${1:-}" in
-  -h|--help)
-    cat <<'USAGE'
-live_run.sh — one launch of the GRAPH-API stack against the Habitat feed.
-
-  bash live_run.sh [scene]
-
-SCENE (default hm3d_00861)
-  hm3d_00861  hm3d_00337  hm3d_00770  mp3d_17DRP
-  Any other name is refused; HABITAT_SCENE overrides the path outright.
-
-WHERE THINGS GO
-  WORKSPACE_ROOT   root holding maps/ and results/. MUST hold one of them; it is derived from the
-                   checkout when unset, which is wrong whenever the checkout is not inside it.
-  RESULTS_DIR      run bundles (default $WORKSPACE_ROOT/results). The bundle IS the live output.
-  SCHEDULE_DIR     cached exploration schedules (default $WORKSPACE_ROOT/schedules)
-
-EXPLORATION
-  FEED_SCHEDULE          a schedule file; built and cached automatically when unset.
-                         MANDATORY: it is the only motion policy, so a run refuses without one
-  FEED_EXPLORATION_LAPS  complete passes of the storey (config habitat.exploration_laps, default 3)
-  FEED_NAVIGATION_MODE   navigate (drive it) or teleport (set the pose)
-  FEED_SPAWN_FLOOR       storey height; REQUIRED when the scene has per-floor maps
-  FEED_TOUR_ALL_FLOORS   1 tours every storey in one launch; default 0, one launch per storey
-
-FEED (each also readable from config.yaml habitat.*)
-  FEED_FPS  FEED_WIDTH  FEED_HEIGHT  FEED_EXPLORATION_LAPS  FEED_MOVE_FN
-  FEED_CAMERA_PITCH_DEG  FEED_GT_SEMANTIC  FEED_SHOW  FEED_OVERLAY
-
-STACK
-  CFG_NAME        config file (regolo_config.yaml with an API key, else smoke_config.yaml)
-  RVIZ            0 to run headless; also skipped automatically with no X socket
-  WALL_DETECTOR   1 starts the wall detector (default 0)
-  FEED_HF_OFFLINE 1 refuses to download models mid-run (default 1)
-  IMAGE_TAG       container image (default graphapi-run:humble-ga290)
-
-EXTENSION
-  EXT_ENV_FILE    a shell file the extension ships; REQUIRED when the config names hooks.filter
-  EXT_MOUNTS EXT_ENV_PASS EXT_TREES EXT_POLICY_JSON EXT_STORE_REPAIR EXT_POST_RUN
-
-EXAMPLES
-  bash live_run.sh hm3d_00861
-  FEED_SPAWN_FLOOR=1.21 FEED_EXPLORATION_LAPS=1 bash live_run.sh hm3d_00861
-  RVIZ=0 EXT_ENV_FILE=/path/to/env.sh bash live_run.sh hm3d_00337
-USAGE
-    exit 0
-    ;;
-esac
+# ======================================================================================
+# ONE STOREY, ONE RUN. Everything from here to the parent section is the engine: the gate, the
+# host feed, the container, the archive. It is entered only as a child of the parent below.
+# ======================================================================================
+if [ "${GRAPH_API_STOREY_CHILD:-0}" = "1" ]; then
 # Live demo on this machine: habitat renders on the host (conda habitat_env),
 # the ROS 2 stack runs in the graphapi-run:humble-ga290 container (patched rtabmap, GA-290)
 # over a TCP feed.
@@ -57,7 +67,13 @@ esac
 #   ./live_run.sh [scene]  # foreground; ctrl-C stops everything
 # scene: hm3d_00861 (default) | hm3d_00337 | hm3d_00770 | mp3d_17DRP
 # HABITAT_SCENE/HABITAT_DATASET env vars still override everything.
+# THE ENGINE RUNS UNDER `set -e` ALONE, deliberately. It was written that way over three
+# weeks and reads unset variables in a hundred places with a bare $VAR; the parent above runs
+# under `set -euo pipefail`, and inheriting -u here would abort the first such read. The modes
+# are set per section rather than once at the top so neither half constrains the other.
 set -e
+set +u
+set +o pipefail
 
 # NUMBERS ARE FORMATTED IN THE C LOCALE, NOT THE MACHINE'S. Measured on Gin 2026-09-10, whose
 # LANG is it_IT.UTF-8: `printf "floor_%+.2f" 1.21` failed outright with "1.21: numero non valido",
@@ -67,8 +83,13 @@ set -e
 # here. Every float this script formats or compares goes through the same locale, so it is set
 # once, at the top, rather than guarded per call site.
 export LC_ALL=C
-HERE=$(cd "$(dirname "$0")" && pwd)
-REPO=$(cd "$HERE/../.." && pwd)
+# HERE IS lost3dsg/test, AND IT IS NO LONGER DERIVED FROM $0. This engine used to be
+# lost3dsg/test/live_run.sh, so `dirname $0` was that directory and ~200 paths below are
+# written as "$HERE/<something in lost3dsg/test>". The script now lives at the repository
+# root (owner 2026-09-11: "live_run will have to be discarded"), so $0 is the root and HERE
+# is pinned instead. Deriving it would silently move every one of those paths.
+REPO=$(cd "$(dirname "$0")" && pwd)
+HERE="$REPO/lost3dsg/test"
 
 # GA-319. The Modal endpoint URL is a CREDENTIAL -- the deployed app exposes fastapi_endpoint with
 # no proxy auth, so the URL alone buys GPU time on this account. It used to live in config.yaml and
@@ -549,11 +570,17 @@ esac
 if [ -n "${REGOLO_API_KEY:-}" ]; then
   export OPENAI_API_KEY="${OPENAI_API_KEY:-$REGOLO_API_KEY}"
 fi
-if [ -n "${OPENAI_API_KEY:-}" ]; then
-  CFG_NAME=${CFG_NAME:-regolo_config.yaml}
-else
-  CFG_NAME=${CFG_NAME:-smoke_config.yaml}
-fi
+# THE CONFIG COMES FROM THE PARENT, AND ONLY FROM THE PARENT. Owner 2026-09-11: "use the
+# official config of run and run_sim_headless.sh". This used to default CFG_NAME to
+# regolo_config.yaml when a key was present and smoke_config.yaml when it was not, so a run
+# could load a config nobody chose -- and regolo_config.yaml is UNTRACKED, so the fallback
+# named a file that does not exist in a fresh clone. A missing config is now a refusal.
+# ASSIGNED HERE, not merely inherited. test_env_stamp.sh requires every variable interpolated
+# into run_metadata.json to be ASSIGNED above the heredoc, and the reason is a measured one: a
+# variable that is only inherited is one some other caller can leave unset, and the stamp then
+# records "" while the run loads a config nobody named. The :? form is both the assignment and
+# the refusal, so there is one place to read rather than two.
+CFG_NAME="${CFG_NAME:?is not set. This section is not an entry point: run ./run_sim.sh or ./run_sim_headless.sh, which read the config and set it. Pass --config <file> to choose one.}"
 # EXPORTED, because `docker run -e CFG_NAME` copies the parent process environment and a
 # shell variable that was only assigned is not in it. Without this the echo below prints
 # regolo while the container falls back to smoke_config.yaml — the operator reads one
@@ -655,7 +682,14 @@ export RUN_DIR
 # there writes the database outside docker AND into the bundle, and a later launch cannot destroy it
 # with --delete_db_on_start because each storey has its own.
 mkdir -p "$RUN_DIR/ros"
-mkdir -p "$RUN_DIR/logs" "$RUN_DIR/crops" "$RUN_DIR/snapshots"
+# NO "crops" DIRECTORY. One name for the crops, and it is `cropped_images` -- the name
+# input_output.py writes and graph_api_bridge._crop_dirs reads. This line used to create an
+# EMPTY `crops/` beside it, and that empty directory was not merely untidy: the dashboard
+# resolves `crops` BEFORE `cropped_images` (dashboard/server.py:86, `next(d for d in ... if
+# d.is_dir())`), so it found the empty one and served nothing. MEASURED 2026-09-11: 64
+# bundles on disk carry a crops/ directory and NOT ONE of them has a file in it, while
+# cropped_images/ holds 1012 files and 37 MB for a single run.
+mkdir -p "$RUN_DIR/logs" "$RUN_DIR/snapshots"
 # GA-381. THE DIRECTORY IS CREATED BEFORE THE CHECKS RUN, so every early refusal (a10, the mapping
 # cap check, the missing-map refusal, a bad config) leaves a directory that a sweep cannot tell from
 # a genuine early run — and 67 bundles exist, the oldest of which predate the gate and have no
@@ -860,6 +894,24 @@ export FEED_MOVE_FN="${FEED_MOVE_FN:-$(_cfg_hab navigation_mode navigate)}"
 # and the switch below was 0 in every one of the first 12 bundles, so not one row was ever
 # labelled ("no semantic frame" on 100% of rows). The cost is a third render per frame on the
 # host; the archive refuses on any shape mismatch rather than guessing. Set 0 to opt out.
+# THE WALL DETECTOR, FROM THE CONFIG. live_stack_container.sh reads ${WALL_DETECTOR:-0} and
+# nothing exported it, so `run.wall_detector` in the config was INERT -- a key a reader would
+# take for the setting while the stack always ran with the detector off. That is how a whole
+# storey stayed one room: no walls, so no doorway candidate had support, so no cut was proposed.
+# An explicit WALL_DETECTOR in the environment still wins, as with every other knob here.
+_cfg_run() {   # $1 = key under `run:`, $2 = fallback
+  python3 -c "
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    v = (c.get('run') or {}).get(sys.argv[2])
+    print(sys.argv[3] if v is None else ('1' if v is True else ('0' if v is False else v)))
+except Exception:
+    print(sys.argv[3])" "${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" "$1" "$2" 2>/dev/null || echo "$2"
+}
+export WALL_DETECTOR="${WALL_DETECTOR:-$(_cfg_run wall_detector 0)}"
+echo "    wall detector: $WALL_DETECTOR (config run.wall_detector)"
+
 export FEED_GT_SEMANTIC="${FEED_GT_SEMANTIC:-1}"
 # MAPPING_ONLY builds a localization map and runs no detector. 900 s is a STARTING POINT AND
 # NOT A MEASUREMENT: the only dwell=0 coverage figure that exists is run A's 7.5 m in 636 s, and
@@ -1048,8 +1100,32 @@ export PREFLIGHT_EXPECT_MERGED_SHA="$MERGED_SHA"
 # The docker run line at the bottom now uses "$IMAGE_TAG" — until this change it hardcoded
 # graphapi-run:humble, so IMAGE_TAG only ever stamped metadata and an override would have
 # launched the pristine image while recording itself as the patched one.
+# THE IMAGE. Owner ruling 2026-09-11: the upstream default `hrai/sim:saved` replaces
+# graphapi-run:humble-ga290. It is NOT on this machine and is not in any registry reachable
+# from here, so it has to be built or loaded before a run works. Checked below rather than
+# discovered at `docker run`, and NOT silently replaced by whatever image happens to be
+# present: a run on a different image is a different experiment.
 IMAGE_TAG=${IMAGE_TAG:-hrai/sim:saved}
-IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
+# THE IMAGE MUST EXIST BEFORE ANYTHING ELSE IS SPENT. Checked HERE, where IMAGE_TAG is settled,
+# rather than at `docker run` several hundred lines later: otherwise the gate, the build and the
+# feed host are all paid for first and the failure arrives minutes later as a docker error.
+#
+# It also keeps run_metadata.json valid. MEASURED 2026-09-11: with the image absent,
+# `docker image inspect` printed an EMPTY LINE to stdout and exited non-zero, so the `|| echo`
+# below produced "\nunknown" -- a raw newline inside a JSON string. The bundle then failed to
+# parse at "line 82 column 22" and the run died writing its own header.
+if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+  echo "!! the container image '$IMAGE_TAG' is not on this machine, and no run can start without it."
+  echo "   Build or load it, or name one that is present:"
+  echo "     IMAGE_TAG=<image> ./run_sim_headless.sh ..."
+  echo "   Present now:"
+  docker images --format '     {{.Repository}}:{{.Tag}}' | grep -iE 'graphapi|sim' || echo "     (no image here looks like a run image)"
+  exit 1
+fi
+# `tr -d` as well as the guard above: a digest is a single token, and anything that puts a newline
+# in it corrupts the bundle's header rather than merely reading oddly.
+IMAGE_DIGEST=$(docker image inspect -f '{{.Id}}' "$IMAGE_TAG" 2>/dev/null | tr -d '\r\n' || true)
+IMAGE_DIGEST=${IMAGE_DIGEST:-unknown}
 # GA-437 (2026-09-10). THE STAMP MUST READ THE CACHE THE RUN USES. This was
 # $WORKSPACE_ROOT/.hf_cache, which made WORKSPACE_ROOT do double duty as the data root AND the model
 # cache; after the workspace moved to a neutral directory it names nothing, and _enc_rev below would
@@ -1442,9 +1518,71 @@ echo ">>> ROS stack in container (web viewer -> http://localhost:${BRIDGE_PORT:-
 # declared host-only. Do NOT put comments between the continued lines below — a comment after a
 # `\` swallows the continuation, and a backtick-comment terminates an assignment prefix. Both were
 # measured on 2026-08-31; both pass `bash -n`.
+# FREEZE THE CONTAINER SCRIPT INTO THE RUN DIRECTORY, AND RUN THAT COPY.
+#
+# The container used to be started as `/graph_api/lost3dsg/test/live_stack_container.sh` -- the
+# READ-ONLY MOUNT OF THE LIVE HOST TREE. Bash reads a script incrementally, by byte offset, so a
+# host-side edit while the container is running moves the ground under the interpreter and it
+# resumes at a shifted position.
+#
+# MEASURED 2026-09-11, and it cost a run: `live_stack_container.sh: line 691: syntax error near
+# unexpected token 'then'` at 29 of 65 waypoints, while the host copy parsed cleanly and line 691
+# held a `case`. Another lane wrote the file at 15:16 during a run that started at 15:04.
+#
+# a7 DID NOT AND COULD NOT CATCH IT. a7 freezes the tree copied into /ws/install; the one script
+# that drives the whole container was executed from the mount, outside that freeze, and a7 passed
+# at teardown while this happened.
+#
+# The copy lands in the bundle, so it is also provenance: the script that ran is the script the
+# bundle holds, rather than whatever the host tree says afterwards.
+cp "$HERE/live_stack_container.sh" "$RUN_DIR/live_stack_container.sh"
 rm -f "$RUN_DIR/NOT_STARTED"   # GA-381: past every check; from here the directory is a real attempt
+# FRAME_QUEUE_MAX, SCAN_COMPLETE_TOPIC and SCAN_MERGE_SETTLE_S are config-backed knobs whose
+# ENVIRONMENT OVERRIDE needs this passthrough. Each has a home in the config, so the knob
+# works without the -e line; without it the documented per-run override is a lever that looks
+# connected and is not. check_env_passthrough.py found all three by reading them inside the
+# container and not finding them on this list.
+#
+# RE-STAMP THE SOURCE IMMEDIATELY BEFORE THE CONTAINER STARTS.
+#
+# The provenance stamp above is taken ~490 lines earlier, and between the two sit the image build
+# and the feed-host startup -- MINUTES. Any change under lost3dsg in that window made a7 compare
+# the launcher's stamp against the container's hash of the same mount at a later moment, and fail.
+#
+# MEASURED 2026-09-11, three runs lost to it. On the third: launcher 8b5fc4925fef358c, container
+# 0885d78908d97a83, and the host tree hashed 0885d78908d97a83 RIGHT THEN -- so the container and
+# the live tree agreed and the LAUNCHER'S STAMP was the stale one. `find -newermt` showed nothing
+# changed, which is consistent with a DELETION: a removed file leaves no mtime behind.
+#
+# THE HONEST STAMP IS THE ONE TAKEN WHEN THE CONTAINER COPIES THE TREE, not minutes before, so the
+# stamp is refreshed here and the bundle is corrected to match. This is not a relaxation of a7:
+# a7 still compares the launcher against the container, and the window it polices is now seconds
+# instead of minutes. A change during THAT window still fails, and should.
+read -r _SRC_SHA_NOW _SRC_N_NOW <<<"$(_tree_sha "$REPO/lost3dsg")"
+if [ "$_SRC_SHA_NOW" != "$SRC_SHA" ]; then
+  echo "    source changed during startup: $SRC_SHA ($SRC_N) -> $_SRC_SHA_NOW ($_SRC_N_NOW)"
+  echo "    re-stamping: the bundle records the tree the container is about to copy."
+  SRC_SHA="$_SRC_SHA_NOW"; SRC_N="$_SRC_N_NOW"
+  export PREFLIGHT_EXPECT_SRC_SHA="graph_api=$SRC_SHA${EXT_SRC_SHAS:+,$EXT_SRC_SHAS}"
+  python3 - "$RUN_DIR/run_metadata.json" "$SRC_SHA" "$SRC_N" <<'PYSTAMP' ||     { echo "!! could not correct the provenance in run_metadata.json — aborting rather than";       echo "   launching a run whose bundle names a tree it did not execute"; exit 1; }
+import json, sys
+path, sha, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+d = json.load(open(path))
+d["graph_api_src_sha256_16"] = sha
+d["graph_api_files"] = n
+d.setdefault("provenance_notes", []).append(
+    "graph_api_src re-stamped immediately before the container started; the earlier stamp was "
+    "taken before the image build and the tree changed in between")
+json.dump(d, open(path, "w"), indent=2)
+PYSTAMP
+fi
+
+# NO COMMENT LINES INSIDE THIS COMMAND. Every line below is joined by a trailing backslash, so
+# a "#" line here is not a comment -- docker receives "#" and each following word as ARGUMENTS.
+# `bash -n` accepts it, because it is valid syntax; only the run fails. Done once, 2026-09-11.
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
   -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
+  -e FRAME_QUEUE_MAX -e SCAN_COMPLETE_TOPIC -e SCAN_MERGE_SETTLE_S \
   -e MERGE_MIN_CONSECUTIVE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
   -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
@@ -1485,7 +1623,7 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
   -v "${HF_SHARED_CACHE:-/DATA/huggingface_cache}":/models/hf \
   -v "$OUT_DIR":/out \
-  "$IMAGE_TAG" /graph_api/lost3dsg/test/live_stack_container.sh
+  "$IMAGE_TAG" /ws/output/live_stack_container.sh
 
 # Post-run archive
 # NOTHING TO COPY: $OUT_DIR IS $RUN_DIR since 2026-09-10 (one directory per run). The host-side
@@ -1504,3 +1642,224 @@ docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host
 # verdict "fail" or "skipped" was refused or was never checked. None of those is worth reading,
 # and `latest` is what a tool follows when nobody told it which bundle to open.
 _verdict=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict','absent'))"              "$RUN_DIR/preflight.json" 2>/dev/null || echo absent)
+  # THE CHILD MUST EXIT HERE. Without this line the engine falls off its own end, reaches the `fi`
+  # and RUNS THE PARENT SECTION BELOW -- so every storey that finished started a WHOLE NEW HOUSE
+  # RUN, each of which started a child that did it again. MEASURED 2026-09-11: one launch became
+  # house_20260911_133641, _140421 and _143114, seven nested run_sim.sh shells deep, and it would not
+  # have stopped on its own. The engine's last statement is an assignment, not an exit, so there
+  # is nothing else to stop the fall-through.
+  # The engine's own status, not a forced 0: the parent reads it to decide whether the storey
+  # failed, and it stops the house on a failure rather than touring the next storey into the
+  # same fault. Under `set -e` a non-zero would already have left the shell, so this is 0 in
+  # practice -- but it stays faithful if a tolerated-failure command is ever added above.
+  exit $?
+fi   # end of the one-storey engine
+
+# ======================================================================================
+# THE PARENT. Arguments, the config, the storeys, then one child run per storey.
+# ======================================================================================
+set -euo pipefail
+export LC_ALL=C     # the same reason as the engine: floor_%+.2f under it_IT.UTF-8 is a hard error
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+ONE_STOREY=0
+SCENE_ARG=""
+SCHEDULE=""
+CONFIG=""
+_next_is_schedule=0
+_next_is_config=0
+for a in "$@"; do
+  if [ "$_next_is_schedule" = "1" ]; then SCHEDULE="$a"; _next_is_schedule=0; continue; fi
+  if [ "$_next_is_config" = "1" ]; then CONFIG="$a"; _next_is_config=0; continue; fi
+  case "$a" in
+    --schedule)   _next_is_schedule=1 ;;
+    --config)     _next_is_config=1 ;;
+    --one-storey) ONE_STOREY=1 ;;
+    -h|--help)    sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)           echo "!! unknown option: $a. This script takes a scene, --one-storey," >&2
+                  echo "   --config <file> and --schedule <file>." >&2
+                  echo "   Every other setting belongs in the config file." >&2; exit 2 ;;
+    *)            SCENE_ARG="$a" ;;
+  esac
+done
+
+# --schedule WITHOUT A FILE MUST REFUSE, NOT FALL THROUGH. Measured 2026-09-10: `./run_sim.sh
+# --schedule` with the filename forgotten left SCHEDULE empty and STARTED A FULL HOUSE RUN.
+# An option that silently becomes a different command is worse than an unknown option.
+if [ "$_next_is_schedule" = "1" ]; then
+  echo "!! --schedule needs a file: ./run_sim.sh --schedule schedules/<name>.runs.yaml" >&2
+  exit 2
+fi
+if [ "$_next_is_config" = "1" ]; then
+  echo "!! --config needs a file: ./run_sim.sh --config schedules/configs/<name>.yaml" >&2
+  exit 2
+fi
+
+# THE CONFIG, AND IT IS THE ONLY PLACE ONE IS CHOSEN (owner 2026-09-11). Both variables are set,
+# because they are read in different places and disagreeing is how a bundle comes to name one file
+# while loading another: GRAPH_API_CONFIG is what config.py opens, CFG_NAME is what the run echoes,
+# stamps and hands to the container.
+#
+# THE DEFAULT IS THE TRACKED CONFIG. It used to be decided down in the engine -- regolo_config.yaml
+# when an API key was present, smoke_config.yaml otherwise -- and regolo_config.yaml is UNTRACKED,
+# so on a fresh clone that fallback named a file which does not exist.
+CONFIG="${CONFIG:-${GRAPH_API_CONFIG:-$HERE/lost3dsg/src/perception_module/config.yaml}}"
+[ -f "$CONFIG" ] || { echo "!! no such config file: $CONFIG" >&2; exit 2; }
+CONFIG="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
+export GRAPH_API_CONFIG="$CONFIG"
+# CFG_NAME IS RESOLVED RELATIVE TO lost3dsg/test/, NOT A BARE FILENAME. The engine checks that
+# "$HERE/$CFG_NAME" exists with HERE=lost3dsg/test, so a basename sent it looking in that directory
+# and it aborted with "config.yaml does not exist" for a config sitting in src/perception_module.
+# Measured on Gin 2026-09-10. A path relative to that directory resolves for the engine AND inside
+# the container, which mounts the same layout at /graph_api.
+export CFG_NAME="$(realpath --relative-to="$HERE/lost3dsg/test" "$CONFIG")"
+echo "config: $CONFIG"
+
+if [ -n "$SCHEDULE" ] && [ ! -f "$SCHEDULE" ]; then
+  echo "!! no such schedule file: $SCHEDULE" >&2
+  exit 2
+fi
+
+# A SCHEDULE OF RUNS, each with its own configuration. Owner instruction 2026-09-10. The driver
+# writes one real config file per arm, passes it as GRAPH_API_CONFIG, runs this script once per
+# arm, and records which arm produced which bundle. It is a separate file because it needs yaml
+# and a manifest, and because "read config.yaml ALWAYS" means an arm must be a FILE rather than a
+# pile of variables at launch time.
+if [ -n "$SCHEDULE" ]; then
+  exec python3 "$HERE/lost3dsg/test/schedule_runs.py" "$SCHEDULE" --runner "$0"
+fi
+
+# RULE 73 FORBIDS A CAP. A cap truncates a storey mid-tour and leaves a bundle that LOOKS
+# finished, which is the one failure a reader cannot see. Refuse rather than unset it: the caller
+# meant something by it.
+if [ -n "${CAP_MIN:-}" ]; then
+  echo "!! CAP_MIN=$CAP_MIN is set, and a base run has no cap (rule 73)." >&2
+  echo "   Each storey ends when its tour completes. Clear CAP_MIN." >&2
+  exit 2
+fi
+# FEED_TOUR_ALL_FLOORS asked for the continuous teleporting tour, which is removed with the
+# sampling policy (owner 2026-09-11). The feed host refuses it too; this catches it before N
+# children start.
+if [ "${FEED_TOUR_ALL_FLOORS:-0}" != "0" ]; then
+  echo "!! FEED_TOUR_ALL_FLOORS=$FEED_TOUR_ALL_FLOORS: the continuous teleporting tour is removed" >&2
+  echo "   with the sampling policy (owner 2026-09-11). This script IS how a house is toured now:" >&2
+  echo "   one run per storey, one map per storey (ruling 25). Clear the variable." >&2
+  exit 2
+fi
+
+# THE SETUP IS CHECKED HERE, WHERE THE PERSON IS, rather than failing three layers down with a
+# message about a mount. install.sh writes config.local.yaml; without it a modal-backend run has
+# no endpoint, and the failure would otherwise arrive as a container error.
+if [ ! -f "$HERE/lost3dsg/test/env.local.sh" ] && [ ! -f "$HERE/config.local.yaml" ]; then
+  echo "!! Not installed yet: no config.local.yaml (or lost3dsg/test/env.local.sh)." >&2
+  echo "   Run ./install.sh once, then fill in the values it names." >&2
+  exit 2
+fi
+
+# ---- THE STOREYS, RESOLVED BEFORE ANY RUN STARTS -------------------------------------
+# Owner 2026-09-11: "The storey schedule should come before as a multi-storey run is actually
+# multiple runs."
+#
+# THE PUBLISHED MAPS NAME THE STOREYS, so there is no discovery launch. There used to be one: the
+# first launch ran unpinned and the storeys were read afterwards from its own bev_data.json. That
+# contradicted the engine, which REFUSES an unpinned spawn whenever the scene has per-floor maps
+# and no whole-scene map -- it will not map from scratch by accident. MEASURED 2026-09-11:
+# house_20260911_131347 died on exactly that, exit 1, before a single frame.
+SCENE_NAME="${SCENE_ARG:-${SCENE:-hm3d_00861}}"
+WORKSPACE_ROOT="${WORKSPACE_ROOT:-$HERE}"
+RESULTS_DIR="${RESULTS_DIR:-$WORKSPACE_ROOT/results}"
+FLOORS="${HOUSE_FLOORS:-}"
+_floor_source="HOUSE_FLOORS"
+if [ -z "$FLOORS" ]; then
+  _mapdir="$WORKSPACE_ROOT/maps/$SCENE_NAME"
+  FLOORS="$(ls -d "$_mapdir"/floor_* 2>/dev/null | sed -E 's#.*/floor_##' | sort -g | tr '\n' ' ')"
+  _floor_source="the published maps in $_mapdir"
+fi
+FLOORS="$(echo $FLOORS)"      # collapse the trailing space so ${FLOORS%% *} is exact
+
+# --one-storey: ONE run, and it still has to be pinned when the maps are per-floor.
+if [ "$ONE_STOREY" = "1" ]; then
+  FLOORS="${FEED_SPAWN_FLOOR:-${FLOORS%% *}}"
+  _floor_source="--one-storey (${_floor_source})"
+fi
+
+HOUSE_ID="house_$(date +%Y%m%d_%H%M%S)"
+HOUSE_DIR="$RESULTS_DIR/$HOUSE_ID"
+mkdir -p "$HOUSE_DIR"
+echo ">>> RUN $HOUSE_ID — scene $SCENE_NAME"
+if [ -n "$FLOORS" ]; then
+  echo "    storeys: $FLOORS   (from $_floor_source)"
+else
+  # A scene with no published maps has nothing to pin, and the engine only refuses an unpinned
+  # spawn when per-floor maps EXIST. One unpinned run is the right answer here, not a refusal.
+  echo "    storeys: <none published> — one unpinned run, which will map from scratch"
+fi
+echo "    manifest: $HOUSE_DIR/manifest.json"
+
+storeys_done=()
+bundles=()
+statuses=()
+
+run_storey() {   # $1 = floor, or "" for an unpinned spawn
+  local floor="$1" stamp bundle rc=0
+  stamp="$(date +%Y%m%d_%H%M%S)"
+  # The stamp is the bundle's name and the engine REFUSES a name already taken, so two storeys
+  # starting inside the same second cannot land in one bundle.
+  while [ -e "$RESULTS_DIR/${stamp}_${SCENE_NAME}" ]; do sleep 1; stamp="$(date +%Y%m%d_%H%M%S)"; done
+  echo ""
+  echo ">>> STOREY ${floor:-<unpinned>} — running (bundle stamp $stamp)"
+  if [ -n "$floor" ]; then
+    GRAPH_API_STOREY_CHILD=1 RUN_TIMESTAMP="$stamp" HOUSE_ID="$HOUSE_ID" FEED_SPAWN_FLOOR="$floor" \
+      bash "$0" ${SCENE_ARG:+"$SCENE_ARG"} || rc=$?
+  else
+    GRAPH_API_STOREY_CHILD=1 RUN_TIMESTAMP="$stamp" HOUSE_ID="$HOUSE_ID" \
+      bash "$0" ${SCENE_ARG:+"$SCENE_ARG"} || rc=$?
+  fi
+  bundle="$(ls -d "$RESULTS_DIR/${stamp}_"* 2>/dev/null | head -1 || true)"
+  storeys_done+=("${floor:-unpinned}")
+  bundles+=("${bundle:-none}")
+  statuses+=("$rc")
+  if [ "$rc" -ne 0 ]; then
+    echo "!! STOREY ${floor:-<unpinned>} FAILED (exit $rc). Stopping here."
+    echo "   A storey usually fails for a reason the next storey would hit too, and four identical"
+    echo "   failures cost four runs to learn once. The manifest records what did run."
+  fi
+  return "$rc"
+}
+
+house_rc=0
+if [ -z "$FLOORS" ]; then
+  run_storey "" || house_rc=$?
+else
+  for z in $FLOORS; do
+    run_storey "$z" || { house_rc=$?; break; }
+  done
+fi
+
+python3 - "$HOUSE_DIR/manifest.json" "$HOUSE_ID" "$house_rc" "$SCENE_NAME" "$CONFIG" \
+         "${storeys_done[@]}" -- "${bundles[@]}" -- "${statuses[@]}" <<'PY'
+import json, sys
+path, house_id, rc, scene, config = sys.argv[1:6]
+rest = sys.argv[6:]
+a = rest.index("--"); b = rest.index("--", a + 1)
+storeys, bundles, statuses = rest[:a], rest[a+1:b], rest[b+1:]
+json.dump({
+    "house_id": house_id,
+    "scene": scene,
+    "config": config,
+    "policy": "rule 73: one run, one map, one bundle, per storey",
+    "exit_status": int(rc),
+    "complete": int(rc) == 0,
+    "storeys": [{"floor": s, "bundle": bu, "exit_status": int(st)}
+                for s, bu, st in zip(storeys, bundles, statuses)],
+    "note": "N bundles, not one. Anything that spans the house -- total coverage, an object seen "
+            "on two storeys, the duplicate rate -- is a post-hoc join across these bundles. Each "
+            "bundle's map has its own SLAM origin and they are NOT in a common frame.",
+}, open(path, "w"), indent=2)
+print(f"wrote {path}")
+PY
+
+echo ""
+echo ">>> RUN $HOUSE_ID ${storeys_done[*]} — $( [ "$house_rc" -eq 0 ] && echo COMPLETE || echo "INCOMPLETE (exit $house_rc)")"
+echo "    manifest: $HOUSE_DIR/manifest.json"
+exit "$house_rc"
