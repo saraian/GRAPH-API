@@ -1227,9 +1227,20 @@ except Exception:
     echo "   Generate the navmesh beside the scene mesh, or name another scene."
     exit 1
   fi
+  # THE MULTIPLE-STOP TOUR, from the config so a run can ask for it without a flag. The route
+  # re-enters a parent waypoint every time it leaves a branch and used to walk through without
+  # turning; this is the angle it turns on re-entry. 0 is the single-stop tour. The value is part
+  # of the settings digest, so changing it rebuilds the schedule rather than reusing a stale one.
+  _revisit=$(python3 -c "
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    print(float((c.get('habitat') or {}).get('revisit_scan_deg', 0) or 0))
+except Exception:
+    print(0.0)" "$HERE/$CFG_NAME" 2>/dev/null || echo 0.0)
   _sched_out=$("${SCHEDULE_PY:-$HOME/miniconda3/envs/habitat_env/bin/python}" \
     "$HERE/schedule_batch.py" --navmesh "$_navmesh" --scene-id "$SCENE_ARG" \
-    --ensure --out-dir "$SCHEDULE_DIR" \
+    --ensure --out-dir "$SCHEDULE_DIR" --revisit-scan-deg "$_revisit" \
     $([ "$_regen" = "1" ] && echo --regenerate) 2>&1) || {
       echo "!! schedule generation FAILED for $SCENE_ARG:"; echo "$_sched_out" | tail -15
       echo "   A schedule is the only motion policy, so there is nothing to fall back to."

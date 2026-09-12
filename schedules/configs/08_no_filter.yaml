@@ -18,8 +18,8 @@
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
-# generated_at:   2026-09-12T10:49:01
-# generated_from: lost3dsg/src/perception_module/config.yaml sha256 8533c66cf3695915
+# generated_at:   2026-09-12T11:01:43
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 f8caeb88828a5d71
 #
 # A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
 # code then takes its module fallback instead. If a bundle's config is missing a key
@@ -195,6 +195,7 @@ rooms:
   gvd_fill_cloud_nonwall_direct: true
   gvd_min_robot_component_ratio: 0.15
 habitat:
+  revisit_scan_deg: 180.0
   localization_mode: rtabmap
   single_floor: true
   floor_tolerance_m: 0.5

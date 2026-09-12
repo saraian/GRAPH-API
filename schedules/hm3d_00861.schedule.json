@@ -11,9 +11,24 @@
   "laps": 3,
   "seed": 7,
   "min_area": 5.0,
-  "coverage_radius": 3.0
+  "coverage_radius": 3.0,
+  "coverage_model": "los",
+  "coverage_range": 8.0,
+  "coverage_target": 1.0,
+  "covering": false,
+  "turn_step_deg": 10.0,
+  "route_order": "2opt",
+  "smooth_path": true,
+  "adaptive_scan": false,
+  "min_scan_cycles": 2.0,
+  "cycle_seconds": 4.3,
+  "fps_budget": 3.0,
+  "stepped_scan": false,
+  "scan_hold_frames": 0,
+  "scan_tilts": "0",
+  "revisit_scan_deg": 180.0
  },
- "settings_sha256_16": "0b918c2d2e9492a3",
+ "settings_sha256_16": "4a8c42edeb1434b1",
  "storeys_detected": [
   {
    "z": -1.59,
@@ -37,8 +52,29 @@
    "ridge_bridges": 3,
    "room_seeds": 0,
    "room_seeds_joined": 0,
-   "coverage_share": 1.0,
-   "coverage_radius_m": 3.0,
+   "coverage_share": 0.996,
+   "coverage_model": "los",
+   "coverage_share_before_topup": 0.995995376104368,
+   "coverage_stops_added": 0,
+   "coverage_target": null,
+   "coverage_radius_m": null,
+   "coverage_range_m": null,
+   "route_order": "2opt",
+   "turn_step_deg": 10.0,
+   "scan_plan": {
+    "mode": "continuous",
+    "tilts_deg": [
+     0.0
+    ],
+    "hold_frames": 1,
+    "turn_step_deg": 10.0,
+    "min_scan_frames": 26,
+    "note": "one turn action per frame; a heading is held for one frame"
+   },
+   "revisit_scan_deg": 180.0,
+   "scan_frames_min": 26,
+   "smooth_path": true,
+   "adaptive_scan": false,
    "height": -1.59,
    "navigable_m2": 60.6,
    "waypoints": 36,
@@ -61,25 +97,31 @@
    ],
    "unreached": [],
    "budget": {
-    "drive_m": 366.27,
-    "drive_frames": 2442,
-    "corner_turn_deg": 23778,
-    "corner_turn_frames": 2379,
-    "scan_stops": 108,
-    "scan_frames": 3888,
-    "trajectory_points": 315,
+    "drive_m": 291.33,
+    "drive_frames": 1941,
+    "corner_turn_deg": 15081,
+    "corner_turn_frames": 1509,
+    "scan_stops": 177,
+    "first_visit_stops": 108,
+    "revisit_stops": 69,
+    "scan_deg_total": 51300,
+    "scan_frames": 5682,
+    "trajectory_points": 195,
     "legs_kept_unsimplified": 0,
-    "total_frames": 8709,
+    "total_frames": 9132,
     "per_lap": {
-     "drive_m": 122.09,
-     "drive_frames": 814,
-     "corner_turn_deg": 7926,
-     "corner_turn_frames": 793,
-     "scan_stops": 36,
-     "scan_frames": 1296,
-     "trajectory_points": 105,
+     "drive_m": 97.11,
+     "drive_frames": 647,
+     "corner_turn_deg": 5027,
+     "corner_turn_frames": 503,
+     "scan_stops": 59,
+     "first_visit_stops": 36,
+     "revisit_stops": 23,
+     "scan_deg_total": 17100,
+     "scan_frames": 1894,
+     "trajectory_points": 65,
      "legs_kept_unsimplified": 0,
-     "total_frames": 2903
+     "total_frames": 3044
     },
     "laps": 3
    },
@@ -145,67 +187,47 @@
      2.15
     ],
     [
-     -5.386,
+     -9.836,
      -1.59,
-     2.15
+     1.85
     ],
     [
-     -3.586,
+     -10.836,
      -1.59,
-     1.8
+     0.9
     ],
     [
-     -3.286,
+     -9.386,
      -1.59,
-     0.5
+     0.2
     ],
     [
-     -4.036,
+     -7.436,
      -1.59,
-     0.25
+     0.05
     ],
     [
-     -1.436,
+     1.414,
      -1.59,
-     0.3
+     4.4
     ],
     [
-     0.164,
-     -1.59,
-     0.1
-    ],
-    [
-     0.714,
-     -1.59,
-     -0.75
-    ],
-    [
-     1.214,
-     -1.59,
-     1.05
-    ],
-    [
-     -1.586,
-     -1.59,
-     2.35
-    ],
-    [
-     -0.086,
-     -1.59,
-     2.4
-    ],
-    [
-     -1.586,
+     0.414,
      -1.59,
      4.55
     ],
     [
-     -1.686,
+     -3.336,
      -1.59,
-     5.5
+     8.55
     ],
     [
-     -1.486,
+     -4.586,
+     -1.59,
+     7.1
+    ],
+    [
+     -3.536,
      -1.59,
      7.25
     ],
@@ -215,49 +237,69 @@
      8.55
     ],
     [
-     -3.536,
+     -1.486,
      -1.59,
      7.25
     ],
     [
-     -4.586,
+     -1.686,
      -1.59,
-     7.1
+     5.5
     ],
     [
-     -3.336,
-     -1.59,
-     8.55
-    ],
-    [
-     0.414,
+     -1.586,
      -1.59,
      4.55
     ],
     [
-     1.414,
+     -0.086,
      -1.59,
-     4.4
+     2.4
     ],
     [
-     -7.436,
+     -1.586,
      -1.59,
-     0.05
+     2.35
     ],
     [
-     -9.386,
+     1.214,
      -1.59,
-     0.2
+     1.05
     ],
     [
-     -10.836,
+     0.714,
      -1.59,
-     0.9
+     -0.75
     ],
     [
-     -9.836,
+     0.164,
      -1.59,
-     1.85
+     0.1
+    ],
+    [
+     -1.436,
+     -1.59,
+     0.3
+    ],
+    [
+     -4.036,
+     -1.59,
+     0.25
+    ],
+    [
+     -3.286,
+     -1.59,
+     0.5
+    ],
+    [
+     -3.586,
+     -1.59,
+     1.8
+    ],
+    [
+     -5.386,
+     -1.59,
+     2.15
     ],
     [
      -5.586,
@@ -292,9 +334,10 @@
       -1.59,
       7.2
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 1
+     "scan_deg": 180.0,
+     "stop": 0,
+     "leg": 1,
+     "revisit": true
     },
     {
      "xyz": [
@@ -308,16 +351,6 @@
     },
     {
      "xyz": [
-      -10.036,
-      -1.59,
-      7.85
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 3
-    },
-    {
-     "xyz": [
       -10.936,
       -1.59,
       7.55
@@ -325,16 +358,6 @@
      "scan_deg": 360.0,
      "stop": 3,
      "leg": 3
-    },
-    {
-     "xyz": [
-      -11.036,
-      -1.59,
-      6.25
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 4
     },
     {
      "xyz": [
@@ -348,33 +371,14 @@
     },
     {
      "xyz": [
-      -11.036,
-      -1.59,
-      6.25
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 5
-    },
-    {
-     "xyz": [
       -10.936,
       -1.59,
       7.55
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 5
-    },
-    {
-     "xyz": [
-      -10.036,
-      -1.59,
-      7.85
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 6
+     "scan_deg": 180.0,
+     "stop": 3,
+     "leg": 5,
+     "revisit": true
     },
     {
      "xyz": [
@@ -382,9 +386,10 @@
       -1.59,
       7.7
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 6
+     "scan_deg": 180.0,
+     "stop": 2,
+     "leg": 6,
+     "revisit": true
     },
     {
      "xyz": [
@@ -392,19 +397,10 @@
       -1.59,
       7.2
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 7
-    },
-    {
-     "xyz": [
-      -7.736,
-      -1.59,
-      7.6
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 8
+     "scan_deg": 180.0,
+     "stop": 0,
+     "leg": 7,
+     "revisit": true
     },
     {
      "xyz": [
@@ -418,26 +414,6 @@
     },
     {
      "xyz": [
-      -7.686,
-      -1.59,
-      7.6
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 9
-    },
-    {
-     "xyz": [
-      -7.336,
-      -1.59,
-      8.65
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 9
-    },
-    {
-     "xyz": [
       -7.586,
       -1.59,
       8.95
@@ -445,16 +421,6 @@
      "scan_deg": 360.0,
      "stop": 6,
      "leg": 9
-    },
-    {
-     "xyz": [
-      -7.336,
-      -1.59,
-      8.7
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 10
     },
     {
      "xyz": [
@@ -468,73 +434,14 @@
     },
     {
      "xyz": [
-      -7.186,
-      -1.59,
-      8.7
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 11
-    },
-    {
-     "xyz": [
-      -7.586,
-      -1.59,
-      8.95
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 11
-    },
-    {
-     "xyz": [
-      -7.336,
-      -1.59,
-      8.65
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 12
-    },
-    {
-     "xyz": [
-      -7.686,
-      -1.59,
-      7.6
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 12
-    },
-    {
-     "xyz": [
-      -6.786,
-      -1.59,
-      7.7
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 12
-    },
-    {
-     "xyz": [
-      -7.736,
-      -1.59,
-      7.6
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 13
-    },
-    {
-     "xyz": [
       -8.136,
       -1.59,
       7.2
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 13
+     "scan_deg": 180.0,
+     "stop": 0,
+     "leg": 11,
+     "revisit": true
     },
     {
      "xyz": [
@@ -544,17 +451,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 8,
-     "leg": 14
-    },
-    {
-     "xyz": [
-      -8.136,
-      -1.59,
-      7.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 15
+     "leg": 12
     },
     {
      "xyz": [
@@ -564,17 +461,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 9,
-     "leg": 15
-    },
-    {
-     "xyz": [
-      -6.836,
-      -1.59,
-      4.4
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 16
+     "leg": 13
     },
     {
      "xyz": [
@@ -584,7 +471,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 10,
-     "leg": 16
+     "leg": 14
     },
     {
      "xyz": [
@@ -594,7 +481,67 @@
      ],
      "scan_deg": 360.0,
      "stop": 11,
+     "leg": 15
+    },
+    {
+     "xyz": [
+      -9.836,
+      -1.59,
+      1.85
+     ],
+     "scan_deg": 360.0,
+     "stop": 12,
+     "leg": 16
+    },
+    {
+     "xyz": [
+      -10.836,
+      -1.59,
+      0.9
+     ],
+     "scan_deg": 360.0,
+     "stop": 13,
      "leg": 17
+    },
+    {
+     "xyz": [
+      -10.336,
+      -1.59,
+      0.2
+     ],
+     "scan_deg": 0,
+     "stop": null,
+     "leg": 18
+    },
+    {
+     "xyz": [
+      -9.386,
+      -1.59,
+      0.2
+     ],
+     "scan_deg": 360.0,
+     "stop": 14,
+     "leg": 18
+    },
+    {
+     "xyz": [
+      -7.436,
+      -1.59,
+      0.05
+     ],
+     "scan_deg": 360.0,
+     "stop": 15,
+     "leg": 19
+    },
+    {
+     "xyz": [
+      -7.336,
+      -1.59,
+      2.15
+     ],
+     "scan_deg": 0,
+     "stop": null,
+     "leg": 20
     },
     {
      "xyz": [
@@ -603,18 +550,8 @@
       2.15
      ],
      "scan_deg": 360.0,
-     "stop": 12,
-     "leg": 18
-    },
-    {
-     "xyz": [
-      -4.086,
-      -1.59,
-      2.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 19
+     "stop": 34,
+     "leg": 20
     },
     {
      "xyz": [
@@ -623,27 +560,7 @@
       1.8
      ],
      "scan_deg": 360.0,
-     "stop": 13,
-     "leg": 19
-    },
-    {
-     "xyz": [
-      -3.286,
-      -1.59,
-      0.5
-     ],
-     "scan_deg": 360.0,
-     "stop": 14,
-     "leg": 20
-    },
-    {
-     "xyz": [
-      -4.036,
-      -1.59,
-      0.25
-     ],
-     "scan_deg": 360.0,
-     "stop": 15,
+     "stop": 33,
      "leg": 21
     },
     {
@@ -652,99 +569,9 @@
       -1.59,
       0.5
      ],
-     "scan_deg": 0,
-     "stop": null,
+     "scan_deg": 360.0,
+     "stop": 32,
      "leg": 22
-    },
-    {
-     "xyz": [
-      -1.436,
-      -1.59,
-      0.3
-     ],
-     "scan_deg": 360.0,
-     "stop": 16,
-     "leg": 23
-    },
-    {
-     "xyz": [
-      0.164,
-      -1.59,
-      0.1
-     ],
-     "scan_deg": 360.0,
-     "stop": 17,
-     "leg": 24
-    },
-    {
-     "xyz": [
-      0.664,
-      -1.59,
-      -0.3
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 25
-    },
-    {
-     "xyz": [
-      0.714,
-      -1.59,
-      -0.75
-     ],
-     "scan_deg": 360.0,
-     "stop": 18,
-     "leg": 25
-    },
-    {
-     "xyz": [
-      0.664,
-      -1.59,
-      -0.3
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 26
-    },
-    {
-     "xyz": [
-      0.164,
-      -1.59,
-      0.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 26
-    },
-    {
-     "xyz": [
-      1.214,
-      -1.59,
-      1.05
-     ],
-     "scan_deg": 360.0,
-     "stop": 19,
-     "leg": 27
-    },
-    {
-     "xyz": [
-      0.164,
-      -1.59,
-      0.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 28
-    },
-    {
-     "xyz": [
-      -1.436,
-      -1.59,
-      0.3
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 29
     },
     {
      "xyz": [
@@ -754,7 +581,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 30
+     "leg": 23
     },
     {
      "xyz": [
@@ -763,28 +590,8 @@
       2.35
      ],
      "scan_deg": 360.0,
-     "stop": 20,
-     "leg": 30
-    },
-    {
-     "xyz": [
-      -0.086,
-      -1.59,
-      2.4
-     ],
-     "scan_deg": 360.0,
-     "stop": 21,
-     "leg": 31
-    },
-    {
-     "xyz": [
-      -1.586,
-      -1.59,
-      2.35
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 32
+     "stop": 26,
+     "leg": 23
     },
     {
      "xyz": [
@@ -793,8 +600,50 @@
       4.55
      ],
      "scan_deg": 360.0,
-     "stop": 22,
-     "leg": 33
+     "stop": 24,
+     "leg": 24
+    },
+    {
+     "xyz": [
+      0.414,
+      -1.59,
+      4.55
+     ],
+     "scan_deg": 360.0,
+     "stop": 17,
+     "leg": 25
+    },
+    {
+     "xyz": [
+      1.414,
+      -1.59,
+      4.4
+     ],
+     "scan_deg": 360.0,
+     "stop": 16,
+     "leg": 26
+    },
+    {
+     "xyz": [
+      0.414,
+      -1.59,
+      4.55
+     ],
+     "scan_deg": 180.0,
+     "stop": 17,
+     "leg": 27,
+     "revisit": true
+    },
+    {
+     "xyz": [
+      -1.586,
+      -1.59,
+      4.55
+     ],
+     "scan_deg": 180.0,
+     "stop": 24,
+     "leg": 28,
+     "revisit": true
     },
     {
      "xyz": [
@@ -804,7 +653,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 23,
-     "leg": 34
+     "leg": 29
     },
     {
      "xyz": [
@@ -813,28 +662,8 @@
       7.25
      ],
      "scan_deg": 360.0,
-     "stop": 24,
-     "leg": 35
-    },
-    {
-     "xyz": [
-      -0.786,
-      -1.59,
-      8.55
-     ],
-     "scan_deg": 360.0,
-     "stop": 25,
-     "leg": 36
-    },
-    {
-     "xyz": [
-      -1.486,
-      -1.59,
-      7.25
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 37
+     "stop": 22,
+     "leg": 30
     },
     {
      "xyz": [
@@ -843,28 +672,8 @@
       7.25
      ],
      "scan_deg": 360.0,
-     "stop": 26,
-     "leg": 38
-    },
-    {
-     "xyz": [
-      -4.586,
-      -1.59,
-      7.1
-     ],
-     "scan_deg": 360.0,
-     "stop": 27,
-     "leg": 39
-    },
-    {
-     "xyz": [
-      -3.536,
-      -1.59,
-      7.25
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 40
+     "stop": 20,
+     "leg": 31
     },
     {
      "xyz": [
@@ -874,7 +683,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 41
+     "leg": 32
     },
     {
      "xyz": [
@@ -883,8 +692,8 @@
       8.55
      ],
      "scan_deg": 360.0,
-     "stop": 28,
-     "leg": 41
+     "stop": 18,
+     "leg": 32
     },
     {
      "xyz": [
@@ -894,7 +703,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 42
+     "leg": 33
     },
     {
      "xyz": [
@@ -902,9 +711,31 @@
       -1.59,
       7.25
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 42
+     "scan_deg": 180.0,
+     "stop": 20,
+     "leg": 33,
+     "revisit": true
+    },
+    {
+     "xyz": [
+      -4.586,
+      -1.59,
+      7.1
+     ],
+     "scan_deg": 360.0,
+     "stop": 19,
+     "leg": 34
+    },
+    {
+     "xyz": [
+      -3.536,
+      -1.59,
+      7.25
+     ],
+     "scan_deg": 180.0,
+     "stop": 20,
+     "leg": 35,
+     "revisit": true
     },
     {
      "xyz": [
@@ -912,9 +743,31 @@
       -1.59,
       7.25
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 43
+     "scan_deg": 180.0,
+     "stop": 22,
+     "leg": 36,
+     "revisit": true
+    },
+    {
+     "xyz": [
+      -0.786,
+      -1.59,
+      8.55
+     ],
+     "scan_deg": 360.0,
+     "stop": 21,
+     "leg": 37
+    },
+    {
+     "xyz": [
+      -1.486,
+      -1.59,
+      7.25
+     ],
+     "scan_deg": 180.0,
+     "stop": 22,
+     "leg": 38,
+     "revisit": true
     },
     {
      "xyz": [
@@ -922,9 +775,10 @@
       -1.59,
       5.5
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 44
+     "scan_deg": 180.0,
+     "stop": 23,
+     "leg": 39,
+     "revisit": true
     },
     {
      "xyz": [
@@ -932,49 +786,10 @@
       -1.59,
       4.55
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 45
-    },
-    {
-     "xyz": [
-      0.414,
-      -1.59,
-      4.55
-     ],
-     "scan_deg": 360.0,
-     "stop": 29,
-     "leg": 46
-    },
-    {
-     "xyz": [
-      1.414,
-      -1.59,
-      4.4
-     ],
-     "scan_deg": 360.0,
-     "stop": 30,
-     "leg": 47
-    },
-    {
-     "xyz": [
-      0.414,
-      -1.59,
-      4.55
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 48
-    },
-    {
-     "xyz": [
-      -1.586,
-      -1.59,
-      4.55
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 49
+     "scan_deg": 180.0,
+     "stop": 24,
+     "leg": 40,
+     "revisit": true
     },
     {
      "xyz": [
@@ -982,19 +797,31 @@
       -1.59,
       2.35
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 50
+     "scan_deg": 180.0,
+     "stop": 26,
+     "leg": 41,
+     "revisit": true
     },
     {
      "xyz": [
-      -1.686,
+      -0.086,
       -1.59,
-      0.45
+      2.4
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 51
+     "scan_deg": 360.0,
+     "stop": 25,
+     "leg": 42
+    },
+    {
+     "xyz": [
+      -1.586,
+      -1.59,
+      2.35
+     ],
+     "scan_deg": 180.0,
+     "stop": 26,
+     "leg": 43,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1002,9 +829,72 @@
       -1.59,
       0.3
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 51
+     "scan_deg": 360.0,
+     "stop": 30,
+     "leg": 44
+    },
+    {
+     "xyz": [
+      0.164,
+      -1.59,
+      0.1
+     ],
+     "scan_deg": 360.0,
+     "stop": 29,
+     "leg": 45
+    },
+    {
+     "xyz": [
+      1.214,
+      -1.59,
+      1.05
+     ],
+     "scan_deg": 360.0,
+     "stop": 27,
+     "leg": 46
+    },
+    {
+     "xyz": [
+      0.164,
+      -1.59,
+      0.1
+     ],
+     "scan_deg": 180.0,
+     "stop": 29,
+     "leg": 47,
+     "revisit": true
+    },
+    {
+     "xyz": [
+      0.714,
+      -1.59,
+      -0.75
+     ],
+     "scan_deg": 360.0,
+     "stop": 28,
+     "leg": 48
+    },
+    {
+     "xyz": [
+      0.164,
+      -1.59,
+      0.1
+     ],
+     "scan_deg": 180.0,
+     "stop": 29,
+     "leg": 49,
+     "revisit": true
+    },
+    {
+     "xyz": [
+      -1.436,
+      -1.59,
+      0.3
+     ],
+     "scan_deg": 180.0,
+     "stop": 30,
+     "leg": 50,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1012,9 +902,31 @@
       -1.59,
       0.5
      ],
-     "scan_deg": 0,
-     "stop": null,
+     "scan_deg": 180.0,
+     "stop": 32,
+     "leg": 51,
+     "revisit": true
+    },
+    {
+     "xyz": [
+      -4.036,
+      -1.59,
+      0.25
+     ],
+     "scan_deg": 360.0,
+     "stop": 31,
      "leg": 52
+    },
+    {
+     "xyz": [
+      -3.286,
+      -1.59,
+      0.5
+     ],
+     "scan_deg": 180.0,
+     "stop": 32,
+     "leg": 53,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1022,19 +934,10 @@
       -1.59,
       1.8
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 53
-    },
-    {
-     "xyz": [
-      -4.086,
-      -1.59,
-      2.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 54
+     "scan_deg": 180.0,
+     "stop": 33,
+     "leg": 54,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1042,9 +945,10 @@
       -1.59,
       2.15
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 54
+     "scan_deg": 180.0,
+     "stop": 34,
+     "leg": 55,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1054,147 +958,18 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 55
-    },
-    {
-     "xyz": [
-      -7.436,
-      -1.59,
-      0.05
-     ],
-     "scan_deg": 360.0,
-     "stop": 31,
-     "leg": 55
-    },
-    {
-     "xyz": [
-      -9.386,
-      -1.59,
-      0.2
-     ],
-     "scan_deg": 360.0,
-     "stop": 32,
      "leg": 56
     },
     {
      "xyz": [
-      -10.336,
-      -1.59,
-      0.2
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 57
-    },
-    {
-     "xyz": [
-      -10.836,
-      -1.59,
-      0.5
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 57
-    },
-    {
-     "xyz": [
-      -10.836,
-      -1.59,
-      0.9
-     ],
-     "scan_deg": 360.0,
-     "stop": 33,
-     "leg": 57
-    },
-    {
-     "xyz": [
-      -10.886,
-      -1.59,
-      1.55
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 58
-    },
-    {
-     "xyz": [
-      -9.836,
-      -1.59,
-      1.85
-     ],
-     "scan_deg": 360.0,
-     "stop": 34,
-     "leg": 58
-    },
-    {
-     "xyz": [
-      -10.886,
-      -1.59,
-      1.55
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 59
-    },
-    {
-     "xyz": [
-      -10.836,
-      -1.59,
-      0.9
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 59
-    },
-    {
-     "xyz": [
-      -10.836,
-      -1.59,
-      0.5
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 60
-    },
-    {
-     "xyz": [
-      -10.336,
-      -1.59,
-      0.2
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 60
-    },
-    {
-     "xyz": [
-      -9.386,
-      -1.59,
-      0.2
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 60
-    },
-    {
-     "xyz": [
       -7.436,
       -1.59,
       0.05
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 61
-    },
-    {
-     "xyz": [
-      -6.836,
-      -1.59,
-      -0.3
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 62
+     "scan_deg": 180.0,
+     "stop": 15,
+     "leg": 56,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1204,117 +979,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 35,
-     "leg": 62
-    },
-    {
-     "xyz": [
-      -6.836,
-      -1.59,
-      -0.3
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 63
-    },
-    {
-     "xyz": [
-      -7.436,
-      -1.59,
-      0.05
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 63
-    },
-    {
-     "xyz": [
-      -7.336,
-      -1.59,
-      2.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 64
-    },
-    {
-     "xyz": [
-      -5.386,
-      -1.59,
-      2.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 64
-    },
-    {
-     "xyz": [
-      -7.386,
-      -1.59,
-      2.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 65
-    },
-    {
-     "xyz": [
-      -7.286,
-      -1.59,
-      3.95
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 66
-    },
-    {
-     "xyz": [
-      -6.836,
-      -1.59,
-      4.4
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 67
-    },
-    {
-     "xyz": [
-      -7.186,
-      -1.59,
-      5.4
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 67
-    },
-    {
-     "xyz": [
-      -8.136,
-      -1.59,
-      7.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 68
-    },
-    {
-     "xyz": [
-      -9.336,
-      -1.59,
-      6.3
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 68
-    },
-    {
-     "xyz": [
-      -8.136,
-      -1.59,
-      7.2
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 69
+     "leg": 57
     }
    ],
    "share": 0.4953
@@ -1325,8 +990,29 @@
    "ridge_bridges": 3,
    "room_seeds": 0,
    "room_seeds_joined": 0,
-   "coverage_share": 1.0,
-   "coverage_radius_m": 3.0,
+   "coverage_share": 0.959,
+   "coverage_model": "los",
+   "coverage_share_before_topup": 0.9586752136752137,
+   "coverage_stops_added": 0,
+   "coverage_target": null,
+   "coverage_radius_m": null,
+   "coverage_range_m": null,
+   "route_order": "2opt",
+   "turn_step_deg": 10.0,
+   "scan_plan": {
+    "mode": "continuous",
+    "tilts_deg": [
+     0.0
+    ],
+    "hold_frames": 1,
+    "turn_step_deg": 10.0,
+    "min_scan_frames": 26,
+    "note": "one turn action per frame; a heading is held for one frame"
+   },
+   "revisit_scan_deg": 180.0,
+   "scan_frames_min": 26,
+   "smooth_path": true,
+   "adaptive_scan": false,
    "height": 1.21,
    "navigable_m2": 58.5,
    "waypoints": 33,
@@ -1359,25 +1045,31 @@
    ],
    "unreached": [],
    "budget": {
-    "drive_m": 312.87,
-    "drive_frames": 2085,
-    "corner_turn_deg": 19143,
-    "corner_turn_frames": 1914,
-    "scan_stops": 99,
-    "scan_frames": 3564,
-    "trajectory_points": 297,
+    "drive_m": 275.16,
+    "drive_frames": 1833,
+    "corner_turn_deg": 14730,
+    "corner_turn_frames": 1473,
+    "scan_stops": 171,
+    "first_visit_stops": 99,
+    "revisit_stops": 72,
+    "scan_deg_total": 48600,
+    "scan_frames": 5436,
+    "trajectory_points": 210,
     "legs_kept_unsimplified": 0,
-    "total_frames": 7563,
+    "total_frames": 8742,
     "per_lap": {
-     "drive_m": 104.29,
-     "drive_frames": 695,
-     "corner_turn_deg": 6381,
-     "corner_turn_frames": 638,
-     "scan_stops": 33,
-     "scan_frames": 1188,
-     "trajectory_points": 99,
+     "drive_m": 91.72,
+     "drive_frames": 611,
+     "corner_turn_deg": 4910,
+     "corner_turn_frames": 491,
+     "scan_stops": 57,
+     "first_visit_stops": 33,
+     "revisit_stops": 24,
+     "scan_deg_total": 16200,
+     "scan_frames": 1812,
+     "trajectory_points": 70,
      "legs_kept_unsimplified": 0,
-     "total_frames": 2521
+     "total_frames": 2914
     },
     "laps": 3
    },
@@ -1406,6 +1098,11 @@
      -6.036,
      1.21,
      4.15
+    ],
+    [
+     -5.986,
+     1.21,
+     5.15
     ],
     [
      -6.936,
@@ -1483,11 +1180,6 @@
      3.95
     ],
     [
-     -5.986,
-     1.21,
-     5.15
-    ],
-    [
      -3.786,
      1.21,
      7.3
@@ -1508,14 +1200,14 @@
      0.15
     ],
     [
-     0.814,
-     1.21,
-     0.75
-    ],
-    [
      1.914,
      1.21,
      0.25
+    ],
+    [
+     0.814,
+     1.21,
+     0.75
     ],
     [
      1.564,
@@ -1571,16 +1263,6 @@
     },
     {
      "xyz": [
-      -2.886,
-      1.21,
-      5.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 1
-    },
-    {
-     "xyz": [
       -4.036,
       1.21,
       5.65
@@ -1588,16 +1270,6 @@
      "scan_deg": 360.0,
      "stop": 2,
      "leg": 1
-    },
-    {
-     "xyz": [
-      -4.886,
-      1.21,
-      5.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 2
     },
     {
      "xyz": [
@@ -1611,16 +1283,6 @@
     },
     {
      "xyz": [
-      -5.236,
-      1.21,
-      4.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 3
-    },
-    {
-     "xyz": [
       -6.036,
       1.21,
       4.15
@@ -1631,9 +1293,9 @@
     },
     {
      "xyz": [
-      -6.936,
+      -5.986,
       1.21,
-      4.0
+      5.15
      ],
      "scan_deg": 360.0,
      "stop": 5,
@@ -1641,22 +1303,23 @@
     },
     {
      "xyz": [
-      -6.786,
+      -6.036,
       1.21,
-      2.65
+      4.15
      ],
-     "scan_deg": 360.0,
-     "stop": 6,
-     "leg": 5
+     "scan_deg": 180.0,
+     "stop": 4,
+     "leg": 5,
+     "revisit": true
     },
     {
      "xyz": [
-      -5.486,
+      -6.936,
       1.21,
-      2.6
+      4.0
      ],
      "scan_deg": 360.0,
-     "stop": 7,
+     "stop": 6,
      "leg": 6
     },
     {
@@ -1665,9 +1328,30 @@
       1.21,
       2.65
      ],
-     "scan_deg": 0,
-     "stop": null,
+     "scan_deg": 360.0,
+     "stop": 7,
      "leg": 7
+    },
+    {
+     "xyz": [
+      -5.486,
+      1.21,
+      2.6
+     ],
+     "scan_deg": 360.0,
+     "stop": 8,
+     "leg": 8
+    },
+    {
+     "xyz": [
+      -6.786,
+      1.21,
+      2.65
+     ],
+     "scan_deg": 180.0,
+     "stop": 7,
+     "leg": 9,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1677,7 +1361,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 8
+     "leg": 10
     },
     {
      "xyz": [
@@ -1686,27 +1370,7 @@
       0.9
      ],
      "scan_deg": 360.0,
-     "stop": 8,
-     "leg": 8
-    },
-    {
-     "xyz": [
-      -8.636,
-      1.21,
-      1.8
-     ],
-     "scan_deg": 360.0,
      "stop": 9,
-     "leg": 9
-    },
-    {
-     "xyz": [
-      -10.036,
-      1.21,
-      2.0
-     ],
-     "scan_deg": 360.0,
-     "stop": 10,
      "leg": 10
     },
     {
@@ -1715,9 +1379,30 @@
       1.21,
       1.8
      ],
-     "scan_deg": 0,
-     "stop": null,
+     "scan_deg": 360.0,
+     "stop": 10,
      "leg": 11
+    },
+    {
+     "xyz": [
+      -10.036,
+      1.21,
+      2.0
+     ],
+     "scan_deg": 360.0,
+     "stop": 11,
+     "leg": 12
+    },
+    {
+     "xyz": [
+      -8.636,
+      1.21,
+      1.8
+     ],
+     "scan_deg": 180.0,
+     "stop": 10,
+     "leg": 13,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1725,9 +1410,10 @@
       1.21,
       0.9
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 12
+     "scan_deg": 180.0,
+     "stop": 9,
+     "leg": 14,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1736,8 +1422,8 @@
       -0.3
      ],
      "scan_deg": 360.0,
-     "stop": 11,
-     "leg": 13
+     "stop": 12,
+     "leg": 15
     },
     {
      "xyz": [
@@ -1747,7 +1433,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 14
+     "leg": 16
     },
     {
      "xyz": [
@@ -1756,18 +1442,8 @@
       -0.65
      ],
      "scan_deg": 360.0,
-     "stop": 12,
-     "leg": 14
-    },
-    {
-     "xyz": [
-      -5.436,
-      1.21,
-      -0.65
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 15
+     "stop": 13,
+     "leg": 16
     },
     {
      "xyz": [
@@ -1776,27 +1452,7 @@
       -0.15
      ],
      "scan_deg": 360.0,
-     "stop": 13,
-     "leg": 15
-    },
-    {
-     "xyz": [
-      -3.936,
-      1.21,
-      0.75
-     ],
-     "scan_deg": 360.0,
      "stop": 14,
-     "leg": 16
-    },
-    {
-     "xyz": [
-      -3.736,
-      1.21,
-      1.65
-     ],
-     "scan_deg": 360.0,
-     "stop": 15,
      "leg": 17
     },
     {
@@ -1805,9 +1461,30 @@
       1.21,
       0.75
      ],
-     "scan_deg": 0,
-     "stop": null,
+     "scan_deg": 360.0,
+     "stop": 15,
      "leg": 18
+    },
+    {
+     "xyz": [
+      -3.736,
+      1.21,
+      1.65
+     ],
+     "scan_deg": 360.0,
+     "stop": 16,
+     "leg": 19
+    },
+    {
+     "xyz": [
+      -3.936,
+      1.21,
+      0.75
+     ],
+     "scan_deg": 180.0,
+     "stop": 15,
+     "leg": 20,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1815,19 +1492,10 @@
       1.21,
       -0.15
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 19
-    },
-    {
-     "xyz": [
-      -5.436,
-      1.21,
-      -0.65
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 20
+     "scan_deg": 180.0,
+     "stop": 14,
+     "leg": 21,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1835,29 +1503,10 @@
       1.21,
       -0.65
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 20
-    },
-    {
-     "xyz": [
-      -7.936,
-      1.21,
-      0.55
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 21
-    },
-    {
-     "xyz": [
-      -8.236,
-      1.21,
-      -0.3
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 21
+     "scan_deg": 180.0,
+     "stop": 13,
+     "leg": 22,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1865,9 +1514,10 @@
       1.21,
       0.9
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 22
+     "scan_deg": 180.0,
+     "stop": 9,
+     "leg": 23,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1877,7 +1527,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 23
+     "leg": 24
     },
     {
      "xyz": [
@@ -1885,9 +1535,10 @@
       1.21,
       2.65
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 23
+     "scan_deg": 180.0,
+     "stop": 7,
+     "leg": 24,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1895,9 +1546,10 @@
       1.21,
       4.0
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 24
+     "scan_deg": 180.0,
+     "stop": 6,
+     "leg": 25,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1907,7 +1559,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 25
+     "leg": 26
     },
     {
      "xyz": [
@@ -1916,8 +1568,8 @@
       4.75
      ],
      "scan_deg": 360.0,
-     "stop": 16,
-     "leg": 25
+     "stop": 17,
+     "leg": 26
     },
     {
      "xyz": [
@@ -1927,7 +1579,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 26
+     "leg": 27
     },
     {
      "xyz": [
@@ -1936,17 +1588,7 @@
       5.1
      ],
      "scan_deg": 360.0,
-     "stop": 17,
-     "leg": 26
-    },
-    {
-     "xyz": [
-      -10.886,
-      1.21,
-      5.2
-     ],
-     "scan_deg": 0,
-     "stop": null,
+     "stop": 18,
      "leg": 27
     },
     {
@@ -1956,17 +1598,7 @@
       6.65
      ],
      "scan_deg": 360.0,
-     "stop": 18,
-     "leg": 27
-    },
-    {
-     "xyz": [
-      -10.886,
-      1.21,
-      5.2
-     ],
-     "scan_deg": 0,
-     "stop": null,
+     "stop": 19,
      "leg": 28
     },
     {
@@ -1975,9 +1607,10 @@
       1.21,
       5.1
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 28
+     "scan_deg": 180.0,
+     "stop": 18,
+     "leg": 29,
+     "revisit": true
     },
     {
      "xyz": [
@@ -1987,7 +1620,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 29
+     "leg": 30
     },
     {
      "xyz": [
@@ -1996,8 +1629,8 @@
       3.95
      ],
      "scan_deg": 360.0,
-     "stop": 19,
-     "leg": 29
+     "stop": 20,
+     "leg": 30
     },
     {
      "xyz": [
@@ -2007,7 +1640,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 30
+     "leg": 31
     },
     {
      "xyz": [
@@ -2015,9 +1648,10 @@
       1.21,
       5.1
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 30
+     "scan_deg": 180.0,
+     "stop": 18,
+     "leg": 31,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2027,7 +1661,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 31
+     "leg": 32
     },
     {
      "xyz": [
@@ -2035,9 +1669,10 @@
       1.21,
       4.75
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 31
+     "scan_deg": 180.0,
+     "stop": 17,
+     "leg": 32,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2047,7 +1682,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 32
+     "leg": 33
     },
     {
      "xyz": [
@@ -2055,9 +1690,10 @@
       1.21,
       4.0
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 32
+     "scan_deg": 180.0,
+     "stop": 6,
+     "leg": 33,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2065,39 +1701,10 @@
       1.21,
       4.15
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 33
-    },
-    {
-     "xyz": [
-      -5.986,
-      1.21,
-      5.15
-     ],
-     "scan_deg": 360.0,
-     "stop": 20,
-     "leg": 34
-    },
-    {
-     "xyz": [
-      -6.036,
-      1.21,
-      4.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 35
-    },
-    {
-     "xyz": [
-      -5.236,
-      1.21,
-      4.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 36
+     "scan_deg": 180.0,
+     "stop": 4,
+     "leg": 34,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2105,19 +1712,10 @@
       1.21,
       4.55
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 36
-    },
-    {
-     "xyz": [
-      -4.886,
-      1.21,
-      5.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 37
+     "scan_deg": 180.0,
+     "stop": 3,
+     "leg": 35,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2125,9 +1723,10 @@
       1.21,
       5.65
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 37
+     "scan_deg": 180.0,
+     "stop": 2,
+     "leg": 36,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2137,7 +1736,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 21,
-     "leg": 38
+     "leg": 37
     },
     {
      "xyz": [
@@ -2145,19 +1744,10 @@
       1.21,
       5.65
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 39
-    },
-    {
-     "xyz": [
-      -2.886,
-      1.21,
-      5.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 40
+     "scan_deg": 180.0,
+     "stop": 2,
+     "leg": 38,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2165,9 +1755,10 @@
       1.21,
       5.15
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 40
+     "scan_deg": 180.0,
+     "stop": 1,
+     "leg": 39,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2177,7 +1768,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 41
+     "leg": 40
     },
     {
      "xyz": [
@@ -2187,17 +1778,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 22,
-     "leg": 41
-    },
-    {
-     "xyz": [
-      -1.636,
-      1.21,
-      1.9
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 42
+     "leg": 40
     },
     {
      "xyz": [
@@ -2207,17 +1788,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 23,
-     "leg": 42
-    },
-    {
-     "xyz": [
-      -1.186,
-      1.21,
-      0.2
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 43
+     "leg": 41
     },
     {
      "xyz": [
@@ -2227,37 +1798,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 24,
-     "leg": 43
-    },
-    {
-     "xyz": [
-      0.414,
-      1.21,
-      0.3
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 44
-    },
-    {
-     "xyz": [
-      0.814,
-      1.21,
-      0.75
-     ],
-     "scan_deg": 360.0,
-     "stop": 25,
-     "leg": 44
-    },
-    {
-     "xyz": [
-      1.414,
-      1.21,
-      0.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 45
+     "leg": 42
     },
     {
      "xyz": [
@@ -2266,18 +1807,8 @@
       0.25
      ],
      "scan_deg": 360.0,
-     "stop": 26,
-     "leg": 45
-    },
-    {
-     "xyz": [
-      1.414,
-      1.21,
-      0.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 46
+     "stop": 25,
+     "leg": 43
     },
     {
      "xyz": [
@@ -2285,9 +1816,9 @@
       1.21,
       0.75
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 46
+     "scan_deg": 360.0,
+     "stop": 26,
+     "leg": 44
     },
     {
      "xyz": [
@@ -2297,7 +1828,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 47
+     "leg": 45
     },
     {
      "xyz": [
@@ -2307,7 +1838,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 27,
-     "leg": 47
+     "leg": 45
     },
     {
      "xyz": [
@@ -2317,7 +1848,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 28,
-     "leg": 48
+     "leg": 46
     },
     {
      "xyz": [
@@ -2325,9 +1856,10 @@
       1.21,
       2.65
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 49
+     "scan_deg": 180.0,
+     "stop": 27,
+     "leg": 47,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2337,7 +1869,7 @@
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 50
+     "leg": 48
     },
     {
      "xyz": [
@@ -2345,39 +1877,20 @@
       1.21,
       0.75
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 50
+     "scan_deg": 180.0,
+     "stop": 26,
+     "leg": 48,
+     "revisit": true
     },
     {
      "xyz": [
-      0.414,
+      -0.186,
       1.21,
-      0.3
+      1.5
      ],
      "scan_deg": 0,
      "stop": null,
-     "leg": 51
-    },
-    {
-     "xyz": [
-      -0.786,
-      1.21,
-      0.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 51
-    },
-    {
-     "xyz": [
-      -1.186,
-      1.21,
-      0.2
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 52
+     "leg": 49
     },
     {
      "xyz": [
@@ -2385,19 +1898,10 @@
       1.21,
       1.25
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 52
-    },
-    {
-     "xyz": [
-      -1.636,
-      1.21,
-      1.9
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 53
+     "scan_deg": 180.0,
+     "stop": 23,
+     "leg": 49,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2405,29 +1909,10 @@
       1.21,
       3.25
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 53
-    },
-    {
-     "xyz": [
-      -1.436,
-      1.21,
-      5.1
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 54
-    },
-    {
-     "xyz": [
-      -2.286,
-      1.21,
-      5.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 54
+     "scan_deg": 180.0,
+     "stop": 22,
+     "leg": 50,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2435,9 +1920,10 @@
       1.21,
       5.15
      ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 55
+     "scan_deg": 180.0,
+     "stop": 0,
+     "leg": 51,
+     "revisit": true
     },
     {
      "xyz": [
@@ -2447,17 +1933,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 29,
-     "leg": 56
-    },
-    {
-     "xyz": [
-      0.714,
-      1.21,
-      6.45
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 57
+     "leg": 52
     },
     {
      "xyz": [
@@ -2467,7 +1943,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 30,
-     "leg": 57
+     "leg": 53
     },
     {
      "xyz": [
@@ -2477,7 +1953,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 31,
-     "leg": 58
+     "leg": 54
     },
     {
      "xyz": [
@@ -2487,57 +1963,7 @@
      ],
      "scan_deg": 360.0,
      "stop": 32,
-     "leg": 59
-    },
-    {
-     "xyz": [
-      -0.436,
-      1.21,
-      7.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 60
-    },
-    {
-     "xyz": [
-      0.364,
-      1.21,
-      6.95
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 61
-    },
-    {
-     "xyz": [
-      0.714,
-      1.21,
-      6.45
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 62
-    },
-    {
-     "xyz": [
-      0.714,
-      1.21,
-      5.2
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 62
-    },
-    {
-     "xyz": [
-      -0.986,
-      1.21,
-      5.15
-     ],
-     "scan_deg": 0,
-     "stop": null,
-     "leg": 63
+     "leg": 55
     }
    ],
    "share": 0.4887

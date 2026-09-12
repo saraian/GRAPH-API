@@ -467,6 +467,12 @@ _DEFAULTS = {
         "exploration_laps": 3,      # identical laps; a difference between two is a difference in
         #                             the WORLD, not in the route
         "navigation_mode": "navigate",   # or "teleport": no travel frames, only the scans
+        # THE MULTIPLE-STOP TOUR. Degrees the agent turns when the route RE-ENTERS a waypoint it
+        # already scanned, which happens every time it leaves a branch -- 23 and 24 times on the
+        # two storeys of hm3d_00861. It is already standing there, so the second look costs scan
+        # frames and NO travel, and it is the second sighting merge_min_consecutive is short of.
+        # 0 is the single-stop tour every schedule before 2026-09-12 used.
+        "revisit_scan_deg": 0.0,
         # Degrees per turn action. ONE number for the agent, the schedule's frame budget and the
         # scan counter; schedule_batch.py --turn-step-deg must match it. It is a MERGE parameter:
         # a full 360 scan is 360/step frames, and a merge needs merge_min_consecutive cycles at

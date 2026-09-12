@@ -299,7 +299,8 @@ def schedule_for(navmesh, height, args):
 
     one, lap_budget = V.build_trajectory(edges, order, walk, world, args.simplify, args.step,
                                          args.turn_step_deg, 360.0, clear_world,
-                                         scan_for=scan_for, smooth=args.smooth_path)
+                                         scan_for=scan_for, smooth=args.smooth_path,
+                                         revisit_scan_deg=args.revisit_scan_deg)
     # RE-PRICE THE SCANS UNDER THE PLAN. build_trajectory charges one frame per turn action, which
     # is the continuous scan. A stepped scan holds each heading for hold_frames and repeats the
     # rotation once per tilt, and the floor lifts any stop the adaptive angle cut too short. The
@@ -375,6 +376,7 @@ def schedule_for(navmesh, height, args):
         "turn_step_deg": args.turn_step_deg,
         # HOW A STOP SCANS, as data the feed host executes rather than a number it has to infer.
         "scan_plan": plan,
+        "revisit_scan_deg": args.revisit_scan_deg,
         "scan_frames_min": min((scan_cost_frames(t["scan_deg"], args)
                                 for t in one if t["scan_deg"]), default=0),
         "smooth_path": args.smooth_path,
@@ -402,7 +404,7 @@ def settings_of(a):
              "min_area", "coverage_radius", "coverage_model", "coverage_range", "coverage_target",
              "covering", "turn_step_deg", "route_order", "smooth_path", "adaptive_scan",
              "min_scan_cycles", "cycle_seconds", "fps_budget", "stepped_scan",
-             "scan_hold_frames", "scan_tilts")}
+             "scan_hold_frames", "scan_tilts", "revisit_scan_deg")}
 
 
 def settings_sha(settings):
@@ -742,6 +744,14 @@ def main():
     ap.add_argument("--scan-hold-frames", type=int, default=0,
                     help="frames to hold each heading under --stepped-scan. 0 derives it from "
                          "--cycle-seconds so each heading gets one whole detection cycle")
+    # THE MULTIPLE-STOP TOUR (owner 2026-09-12). The route re-enters a parent waypoint every time
+    # it leaves a branch -- 26 and 25 times on the two storeys of hm3d_00861 -- and until now the
+    # agent walked through without turning. It is already standing there, so the second look costs
+    # scan frames and NO travel, and it is exactly the second sighting merge_min_consecutive wants.
+    ap.add_argument("--revisit-scan-deg", type=float, default=0.0,
+                    help="degrees to turn when the route RE-ENTERS a waypoint it already scanned. "
+                         "0 keeps the single-stop tour. 360 scans it again in full; a smaller "
+                         "angle buys the second sighting for fewer frames")
     ap.add_argument("--scan-tilts", default="0",
                     help="comma-separated camera tilts in degrees, one full rotation each. "
                          "\"30,0\" is the owner's two-rotation ask and doubles the scan bill")

@@ -656,12 +656,21 @@ def rdp(pts, eps):
 
 
 def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan_deg,
-                     clear_world=None, scan_for=None, smooth=True):
+                     clear_world=None, scan_for=None, smooth=True, revisit_scan_deg=0.0):
     """-> (trajectory, budget). The path the robot drives, and what it costs in frames.
 
-    A STOP IS SCANNED ONCE, ON FIRST ARRIVAL. Depth-first search comes back through a waypoint every
-    time it backtracks out of a branch; scanning again would spend 36 frames looking at a place the
-    run has already seen. `order` is where it scans, `walk` is what it drives.
+    A STOP IS SCANNED ON FIRST ARRIVAL, AND AGAIN ON EVERY RE-ENTRY IF `revisit_scan_deg` > 0.
+    The route comes back through a parent waypoint every time it leaves a branch -- 51 times over
+    the two storeys of hm3d_00861, measured -- and the agent is ALREADY STANDING THERE, so a second
+    look costs scan frames and no travel at all.
+
+    IT WAS SKIPPED, AND THE REASON WAS WRONG. The rule here used to say that rescanning "would spend
+    36 frames looking at a place the run has already seen". Two things that misses. A merge commits
+    only after `merge_min_consecutive` cycles have seen the same pair, so a second visit to the
+    parent is exactly the second look the merge rule is short of. And the second arrival comes from
+    a DIFFERENT branch, so the parent is seen from a different approach with different occlusions.
+
+    0 keeps the old behaviour. `order` is where it scans first, `walk` is what it drives.
     """
     # scan_for(waypoint) -> the degrees to turn at that stop, or None to use scan_deg everywhere.
     # A full circle is what a stop in a room needs; a stop in a corridor whose walls the run has
@@ -718,6 +727,14 @@ def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan
                 entry["scan_deg"] = _scan(v)
                 entry["stop"] = first_visit[v]
                 seen.add(v)
+            elif last and revisit_scan_deg > 0:
+                # A RE-ENTRY. Marked so a reader can tell a second look at a waypoint from the
+                # first: `stop` still names which waypoint it is, `revisit` says it is not the
+                # first time. The angle is its own setting because a re-entry usually wants less
+                # than a full circle -- the place is known, what is wanted is a second sighting.
+                entry["scan_deg"] = float(revisit_scan_deg)
+                entry["stop"] = first_visit[v]
+                entry["revisit"] = True
             traj.append(entry)
 
     # Turning to face each segment is a real cost, not a rounding error: at 20 degrees per action a
@@ -736,9 +753,12 @@ def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan
         "drive_frames": int(round(drive_m / step_m)),
         "corner_turn_deg": int(round(turn_total)),
         "corner_turn_frames": int(round(turn_total / turn_deg)),
-        "scan_stops": len(order),
-        "scan_deg_total": int(round(sum(_scan(w) for w in order))),
-        "scan_frames": sum(max(1, int(round(_scan(w) / turn_deg))) for w in order),
+        "scan_stops": sum(1 for t in traj if t["scan_deg"]),
+        "first_visit_stops": len(order),
+        "revisit_stops": sum(1 for t in traj if t.get("revisit")),
+        "scan_deg_total": int(round(sum(t["scan_deg"] for t in traj if t["scan_deg"]))),
+        "scan_frames": sum(max(1, int(round(t["scan_deg"] / turn_deg)))
+                           for t in traj if t["scan_deg"]),
         "trajectory_points": len(traj),
         "legs_kept_unsimplified": unsafe[0],
     }
