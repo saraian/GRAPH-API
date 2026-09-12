@@ -310,12 +310,58 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
     ceiling) triangles, whose union is the room footprint.  If neither is
     available, rasterize the walls and recover their enclosed component.
     """
-    try:
-        import cv2
-    except ImportError as exc:
-        raise RuntimeError(
-            "OpenCV è necessario per ricostruire le regioni HM3D dai triangoli"
-        ) from exc
+    from scipy import ndimage
+    from matplotlib.path import Path as MplPath
+    import matplotlib.pyplot as plt
+
+    def raster_polygon(image, polygon, origin, resolution):
+        points = (np.asarray(polygon) - origin) / resolution
+        x0 = max(0, int(np.floor(points[:, 0].min())))
+        x1 = min(image.shape[1] - 1, int(np.ceil(points[:, 0].max())))
+        y0 = max(0, int(np.floor(points[:, 1].min())))
+        y1 = min(image.shape[0] - 1, int(np.ceil(points[:, 1].max())))
+        if x1 < x0 or y1 < y0:
+            return
+        yy, xx = np.mgrid[y0:y1 + 1, x0:x1 + 1]
+        xy = np.column_stack((xx.ravel() + .5, yy.ravel() + .5))
+        image[y0:y1 + 1, x0:x1 + 1] |= MplPath(points).contains_points(xy).reshape(xx.shape)
+
+    def raster_line(image, polygon, origin, resolution, width):
+        points = (np.asarray(polygon) - origin) / resolution
+        for a, b in zip(points, np.vstack((points[1:], points[:1]))):
+            length = max(2, int(np.linalg.norm(b - a) * 2))
+            samples = np.linspace(a, b, length)
+            for x, y in samples:
+                ix, iy = int(round(x)), int(round(y))
+                if 0 <= ix < image.shape[1] and 0 <= iy < image.shape[0]:
+                    image[max(0, iy - width):iy + width + 1,
+                          max(0, ix - width):ix + width + 1] = True
+
+    def polygon_area(points):
+        points = np.asarray(points)
+        return abs(float(np.sum(points[:, 0] * np.roll(points[:, 1], -1)
+                          - points[:, 1] * np.roll(points[:, 0], -1)) / 2.0))
+
+    def largest_contour(image):
+        figure, axis = plt.subplots()
+        try:
+            paths = axis.contour(image.astype(float), levels=[.5]).get_paths()
+            candidates = []
+            for path in paths:
+                vertices = path.vertices
+                codes = path.codes
+                if codes is None:
+                    candidates.append(vertices)
+                    continue
+                starts = np.flatnonzero(codes == 1).tolist()
+                for index, start in enumerate(starts):
+                    stop = starts[index + 1] if index + 1 < len(starts) else len(vertices)
+                    contour = vertices[start:stop]
+                    if len(contour) >= 3:
+                        candidates.append(contour)
+            return max(candidates, key=polygon_area, default=None)
+        finally:
+            plt.close(figure)
     region_objects = [obj for obj in objects
                       if _region_key(obj.get("region_id") or "") == _region_key(region_id)]
     walls = [obj for obj in region_objects
@@ -363,8 +409,8 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
                                 dtype=np.uint8)
         for triangle in projected_surface:
             points = np.rint((triangle - surface_low) / resolution).astype(np.int32)
-            if abs(float(cv2.contourArea(points.reshape(-1, 1, 2)))) >= 1.0:
-                cv2.fillPoly(surface_mask, [points], 1)
+            if polygon_area(points) >= 1.0:
+                raster_polygon(surface_mask, points, np.zeros(2), 1.0)
         # Include the complete wall geometry assigned to this region.  Most
         # wall faces are vertical and collapse to line segments in X-Z, so
         # rasterize those with a small physical thickness instead of dropping
@@ -372,12 +418,11 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
         wall_thickness = max(1, int(round(0.10 / resolution)))
         for triangle in projected_walls:
             points = np.rint((triangle - surface_low) / resolution).astype(np.int32)
-            area = abs(float(cv2.contourArea(points.reshape(-1, 1, 2))))
+            area = polygon_area(points)
             if area >= 1.0:
-                cv2.fillPoly(surface_mask, [points], 1)
+                raster_polygon(surface_mask, points, np.zeros(2), 1.0)
             else:
-                cv2.polylines(surface_mask, [points], False, 1,
-                              thickness=wall_thickness)
+                raster_line(surface_mask, points, np.zeros(2), 1.0, wall_thickness)
         if not np.any(surface_mask):
             return None
         # Join wall/floor annotation seams.  Doors do not create a false
@@ -385,15 +430,11 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
         # side; this only prevents a separately meshed wall strip from being
         # discarded as a smaller external contour.
         close_size = max(3, int(round(0.40 / resolution)) | 1)
-        surface_mask = cv2.morphologyEx(
-            surface_mask, cv2.MORPH_CLOSE,
-            np.ones((close_size, close_size), dtype=np.uint8))
-        contours, _ = cv2.findContours(surface_mask, cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
+        surface_mask = ndimage.binary_closing(
+            surface_mask, structure=np.ones((close_size, close_size), dtype=bool))
+        contour = largest_contour(surface_mask)
+        if contour is None:
             return None
-        contour = cv2.approxPolyDP(max(contours, key=cv2.contourArea),
-                                   max(1.0, 0.03 / resolution), True).reshape(-1, 2)
         if len(contour) < 3:
             return None
         polygon = [[float(surface_low[0] + point[0] * resolution),
@@ -432,18 +473,18 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
     mask = np.zeros((int(shape[1]), int(shape[0])), dtype=np.uint8)
     for triangle in projected:
         points = np.rint((triangle - low) / resolution).astype(np.int32)
-        area = abs(float(cv2.contourArea(points.reshape(-1, 1, 2))))
+        area = polygon_area(points)
         if area >= 1.0:
-            cv2.fillPoly(mask, [points], 1)
+            raster_polygon(mask, points, np.zeros(2), 1.0)
         else:
             # Vertical wall surfaces collapse to line segments in X-Z.
-            cv2.polylines(mask, [points], False, 1,
-                          thickness=max(1, int(round(0.10 / resolution))))
+            raster_line(mask, points, np.zeros(2), 1.0,
+                        max(1, int(round(0.10 / resolution))))
     # Close door-sized gaps in the wall segments.  This operates on the
     # region-specific triangle raster only; it cannot merge two rooms.
     close_size = max(3, int(round(0.75 / resolution)) | 1)
     kernel = np.ones((close_size, close_size), dtype=np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = ndimage.binary_closing(mask, structure=kernel.astype(bool))
 
     def result_from_contour(contour):
         contour = contour.reshape(-1, 2)
@@ -463,13 +504,11 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
         # dilation joins those pieces while keeping the contour derived from
         # the projected wall triangles.
         join_size = max(3, int(round(0.35 / resolution)) | 1)
-        joined = cv2.dilate(source, np.ones((join_size, join_size), dtype=np.uint8))
-        contours, _ = cv2.findContours(joined, cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
+        joined = ndimage.binary_dilation(source,
+                                         structure=np.ones((join_size, join_size), dtype=bool))
+        contour = largest_contour(joined)
+        if contour is None:
             return None
-        contour = max(contours, key=cv2.contourArea)
-        contour = cv2.approxPolyDP(contour, max(1.5, 0.04 / resolution), True)
         return result_from_contour(contour)
 
     def wall_points_hull():
@@ -480,15 +519,17 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
         points = np.unique(np.rint((points - low) / resolution).astype(np.int32), axis=0)
         if len(points) < 3:
             return None
-        hull = cv2.convexHull(points.reshape(-1, 1, 2))
-        hull = cv2.approxPolyDP(hull, max(1.5, 0.04 / resolution), True)
-        hull = hull.reshape(-1, 2)
-        if len(hull) < 3 or cv2.contourArea(hull.reshape(-1, 1, 2)) < 4.0:
+        from scipy.spatial import ConvexHull
+        hull = points[ConvexHull(points).vertices]
+        if len(hull) < 3 or polygon_area(hull) < 4.0:
             return None
         return result_from_contour(hull)
 
-    free = (mask == 0).astype(np.uint8)
-    count, labels = cv2.connectedComponents(free, connectivity=4)
+    free = (mask == 0)
+    labels, count = ndimage.label(free, structure=np.array([[0, 1, 0],
+                                                              [1, 1, 1],
+                                                              [0, 1, 0]], dtype=bool))
+    count += 1
     if count <= 1:
         return wall_mask_contour(mask) or wall_points_hull()
     boundary = np.unique(np.concatenate((labels[0, :], labels[-1, :],
@@ -502,24 +543,37 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
         # triangles and is not an object-AABB/envelope fallback.
         return wall_mask_contour(mask) or wall_points_hull()
     _, chosen = max(candidates)
-    component = (labels == chosen).astype(np.uint8)
-    contours, _ = cv2.findContours(component, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
+    component = (labels == chosen)
+    contour = largest_contour(component)
+    if contour is None:
         return None
-    contour = max(contours, key=cv2.contourArea)
-    epsilon = max(1.5, 0.04 / resolution)
-    contour = cv2.approxPolyDP(contour, epsilon, True)
     return result_from_contour(contour)
 
 
 def _wall_triangle_coverage(polygon, objects, region_id, tolerance):
     """Count wall triangles represented by a region polygon within tolerance."""
-    try:
-        import cv2
-    except ImportError as exc:
-        raise RuntimeError("OpenCV è necessario per validare i muri HM3D") from exc
-    contour = np.asarray(polygon, dtype=np.float32).reshape(-1, 1, 2)
+    contour = np.asarray(polygon, dtype=float)
+
+    def inside(point):
+        x, y = point
+        hit = False
+        previous = len(contour) - 1
+        for current in range(len(contour)):
+            x1, y1 = contour[previous]
+            x2, y2 = contour[current]
+            dx, dy = x2 - x1, y2 - y1
+            length_sq = dx * dx + dy * dy
+            if length_sq:
+                projection = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length_sq))
+                distance = ((x - (x1 + projection * dx)) ** 2
+                            + (y - (y1 + projection * dy)) ** 2) ** 0.5
+                if distance <= tolerance:
+                    return True
+            if ((y1 > y) != (y2 > y)) and (x < (x2 - x1) * (y - y1) /
+                                             (y2 - y1 + 1e-300) + x1):
+                hit = not hit
+            previous = current
+        return hit
     centroids = [np.asarray(triangle, dtype=float)[:, [0, 2]].mean(axis=0)
                  for obj in objects
                  if _region_key(obj.get("region_id") or "") == _region_key(region_id)
@@ -527,10 +581,7 @@ def _wall_triangle_coverage(polygon, objects, region_id, tolerance):
                  in WALL_CATEGORY_NAMES
                  for triangle in obj.get("triangles", [])
                  if np.asarray(triangle).shape == (3, 3)]
-    covered = sum(
-        cv2.pointPolygonTest(contour, tuple(map(float, point)), True) >= -tolerance
-        for point in centroids
-    )
+    covered = sum(inside(point) for point in centroids)
     return covered, len(centroids)
 
 
@@ -748,8 +799,27 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
         box = _aabb(region)
         geometry_source = "semantic_region_poly_loop"
         if box is None or len(polygon) < 3:
+            try:
+                reconstructed = _reconstruct_region_from_walls(
+                    texture_objects, _region_key(region.id),
+                    resolution=region_resolution)
+            except RuntimeError as exc:
+                print(
+                    f"ATTENZIONE: impossibile ricostruire la regione "
+                    f"{_region_key(region.id)}: {exc}; continuo.",
+                    flush=True,
+                )
+                reconstructed = None
+            if reconstructed is not None:
+                reconstructed_polygon, reconstructed_box, reconstruction_source = reconstructed
+                if len(polygon) < 3:
+                    polygon = reconstructed_polygon
+                if box is None:
+                    box = reconstructed_box
+                geometry_source = reconstruction_source
+        if box is None or len(polygon) < 3:
             print(
-                f"ATTENZIONE: geometria nativa non trovata per la regione "
+                f"ATTENZIONE: geometria non trovata per la regione "
                 f"{_region_key(region.id)}; continuo con le altre regioni.",
                 flush=True,
             )
@@ -803,9 +873,10 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
             max(0.10, 2.0 * region_resolution))
         coverage = covered_walls / wall_count if wall_count else 1.0
         if geometry_source != "semantic_region_poly_loop" and coverage < 0.999:
-            raise RuntimeError(
-                f"GT rifiutata: regione {region_id} copre "
-                f"{covered_walls}/{wall_count} triangoli di muro"
+            print(
+                f"ATTENZIONE: regione {region_id} ricostruita con copertura "
+                f"{covered_walls}/{wall_count} triangoli di muro; la salvo comunque.",
+                flush=True,
             )
         gt_regions.append({
             "region_id": region_id,

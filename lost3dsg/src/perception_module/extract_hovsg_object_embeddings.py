@@ -178,9 +178,14 @@ def enrich_persistent(objects: list[dict[str, Any]],
         if isinstance(bbox, dict):
             bbox = dict(bbox)
             bbox.pop("clip_embedding", None)
+            bbox.pop("clip_embedding_model", None)
             vector = vectors.get(str(row.get("object_id")))
             if vector is not None:
                 bbox["clip_embedding"] = vector
+                bbox["clip_embedding_model"] = {
+                    "architecture": MODEL_NAME, "pretrained": PRETRAINED,
+                    "library": "open_clip", "dimension": 1024,
+                }
                 attached += 1
             row["bbox"] = bbox
         enriched.append(row)

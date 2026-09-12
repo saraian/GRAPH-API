@@ -72,7 +72,13 @@ def _predicted_aabb(bbox):
 
 
 def _habitat_aabb_to_ros(row):
-    """Convert a Habitat (x,y,z), Y-up AABB to ROS (x,y,z), Z-up."""
+    """Keep the canonical GT AABB in the manifest coordinate frame.
+
+    The canonical GT object boxes are Habitat Y-up AABBs and need one
+    conversion to the run's ROS Z-up frame.  Region polygons are handled
+    separately because the canonical manifests already store their projected
+    world coordinates.
+    """
     try:
         low = np.asarray(row["aabb_min_m"], dtype=float)
         high = np.asarray(row["aabb_max_m"], dtype=float)
@@ -87,7 +93,7 @@ def _habitat_aabb_to_ros(row):
 
 
 def _habitat_polygon_to_ros(row):
-    """Convert a Habitat X-Z polygon to ROS X-Y."""
+    """Convert canonical Habitat (x,z) region points to ROS (x,y)."""
     polygon = row.get("polygon_xz_m") if isinstance(row, dict) else None
     if not isinstance(polygon, list):
         return row
@@ -126,6 +132,11 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
     objects = _load(persistent_path or run_dir / "persistent_perception.json", [],
                     required=True)
     embeddings = _load(run_dir / "clip_embeddings.json", {})
+    # Older capture runs used ``[]`` for an empty room snapshot.  Treat that
+    # representation as an empty snapshot while still rejecting malformed
+    # non-container JSON.
+    if isinstance(room_doc, list) and not room_doc:
+        room_doc = {"rooms": []}
     if not isinstance(room_doc, dict):
         raise RuntimeError("room.json deve contenere un oggetto JSON")
     if not isinstance(bev, dict):
@@ -158,13 +169,21 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
         floor_for_rooms = int(np.argmin(np.abs(np.asarray(gt_floors) - float(bev["agent"]["z"]))))
     predicted_regions = []
     predicted_room_by_index = []
-    for room in room_doc.get("rooms", []) if isinstance(room_doc, dict) else []:
+    # This is the persisted source corresponding to the RViz room-area
+    # MarkerArray.  ``rooms`` at the document root is only a compatibility
+    # duplicate and must not be used as an independent source.
+    room_source = room_doc.get("building", {}).get("rooms")
+    if room_source is None:
+        raise RuntimeError("room.json non contiene building.rooms, cioè room areas")
+    for room in room_source:
         if not isinstance(room, dict) or room.get("active", True) is False:
             continue
         polygon = room.get("polygon", [])
         if not isinstance(polygon, list) or len(polygon) < 3:
             continue
-        predicted_regions.append({"polygon_xz_m": [[-float(p[1]), -float(p[0])] for p in polygon],
+        # room.json is the JSON serialization of /room_areas_array in ROS
+        # (x,y). The runtime prediction is copied verbatim.
+        predicted_regions.append({"polygon_xz_m": [[float(p[0]), float(p[1])] for p in polygon],
                                   "room_id": room.get("room_id"),
                                   # room.json is an active-run snapshot; all
                                   # retained rooms belong to the observed
@@ -177,7 +196,10 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
 
     # Le etichette stanza vengono confrontate dopo l'associazione geometrica.
     room_trials = []
-    gt_regions = gt.get("ground_truth_regions", [])
+    # Use the already converted copy.  ``gt`` is still in Habitat X-Z here;
+    # comparing it with the ROS room polygons silently associates unrelated
+    # rooms and makes the room table disagree with the metric calculation.
+    gt_regions = result.get("ground_truth_regions", [])
     # A top-down polygon alone cannot distinguish vertically stacked rooms.
     # Restrict candidates to the active floor before the Hungarian matching.
     gt_region_candidates = [
@@ -252,7 +274,7 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
         str(path.resolve()) for path in representation_candidates if path.is_file()
     ))
     result["adapter_notes"] = {
-        "coordinates": "ROS (x,y,z), Z-up; GT converted from Habitat (-hab_z,-hab_x,hab_y)",
+        "coordinates": "ROS (x,y,z), Z-up; GT boxes and region polygons converted once",
         "prediction_yaw_deg": float(prediction_yaw_deg),
         "active_floor_index": floor_for_rooms,
         "category_embeddings_complete": bool(category_vectors),

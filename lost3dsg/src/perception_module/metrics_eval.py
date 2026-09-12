@@ -209,15 +209,76 @@ def geometry_iou(a,b):
 def assignment(pred, gt, threshold):
     if not pred or not gt: return []
     scores = np.asarray([[geometry_iou(p, g) for g in gt] for p in pred])
+    # When a threshold is supplied, maximize the number of *valid* pairs
+    # first, then their total score.  A plain Hungarian assignment followed by
+    # filtering can choose one excellent pair and discard several valid ones.
+    weights = -scores
+    if threshold is not None:
+        valid = scores > threshold
+        bonus = float(max(scores.size, 1) + 1)
+        weights = np.where(valid, -(scores + bonus), bonus)
     try:
         from scipy.optimize import linear_sum_assignment
-        ii, jj = linear_sum_assignment(-scores)
+        ii, jj = linear_sum_assignment(weights)
     except ImportError:
         ii, jj = [], []
-        for i, j in sorted(np.ndindex(scores.shape), key=lambda z: -scores[z]):
+        pairs = sorted(np.ndindex(scores.shape), key=lambda z: (-int(threshold is not None and scores[z] > threshold), -scores[z]))
+        for i, j in pairs:
             if i not in ii and j not in jj: ii.append(i); jj.append(j)
     return [(int(i), int(j), float(scores[i, j])) for i, j in zip(ii, jj)
             if threshold is None or scores[i, j] > threshold]
+
+
+def _centre(row):
+    try:
+        explicit = np.asarray(row["center_m"], dtype=float)
+        if explicit.shape == (3,) and np.all(np.isfinite(explicit)):
+            return explicit
+    except (KeyError, TypeError, ValueError):
+        pass
+    try:
+        low = np.asarray(row["aabb_min_m"], dtype=float)
+        high = np.asarray(row["aabb_max_m"], dtype=float)
+        if low.shape == high.shape == (3,) and np.all(np.isfinite(low + high)):
+            return (low + high) / 2.0
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
+def object_assignment(pred, gt, threshold):
+    """Associate objects spatially by 3-D centre distance.
+
+    The HOV-SG object metric uses the centre tolerance for detection.  AABB
+    IoU is reported as a quality diagnostic, but must not turn two nearby
+    detections into a false negative merely because their boxes do not overlap.
+    """
+    if not pred or not gt:
+        return []
+    centres_p, centres_g = [_centre(row) for row in pred], [_centre(row) for row in gt]
+    if any(value is None for value in centres_p + centres_g):
+        # Legacy manifests may contain masks only.  Preserve their geometric
+        # association rather than silently reporting zero object matches.
+        return assignment(pred, gt, threshold)
+    distances = np.asarray([[float(np.linalg.norm(p - g)) if p is not None and g is not None else np.inf
+                             for g in centres_g] for p in centres_p])
+    valid = np.isfinite(distances) if threshold is None else distances <= threshold
+    weights = distances.copy()
+    finite = distances[np.isfinite(distances)]
+    limit = float(finite.max() + 1.0) if finite.size else 1.0
+    weights[~np.isfinite(weights)] = limit
+    if threshold is not None:
+        weights = np.where(valid, distances, limit + distances.clip(max=limit))
+    try:
+        from scipy.optimize import linear_sum_assignment
+        ii, jj = linear_sum_assignment(weights)
+    except ImportError:
+        ii, jj = [], []
+        for i, j in sorted(np.ndindex(distances.shape), key=lambda z: distances[z]):
+            if valid[i, j] and i not in ii and j not in jj:
+                ii.append(i); jj.append(j)
+    return [(int(i), int(j), float(geometry_iou(pred[i], gt[j])))
+            for i, j in zip(ii, jj) if valid[i, j]]
 
 def _entity_id(row, index, kind):
     keys = ("room_id", "region_id") if kind == "region" else ("object_id", "id", "label")
@@ -241,7 +302,9 @@ def match_details(scenes, region_threshold, object_threshold, include_all_pairs=
             else:
                 pred, gt = scene.get(pred_key, []), scene.get(gt_key, [])
             rows = []
-            for pi, gi, score in assignment(pred, gt, None):
+            associations = (object_assignment(pred, gt, None)
+                            if name == "objects" else assignment(pred, gt, None))
+            for pi, gi, score in associations:
                 rows.append({
                     "predicted_index": pi,
                     "predicted_id": _entity_id(pred[pi], pi, name[:-1]),
@@ -254,6 +317,8 @@ def match_details(scenes, region_threshold, object_threshold, include_all_pairs=
                 })
             block = {"threshold": threshold, "assigned_matches": rows,
                      "predicted_count": len(pred), "ground_truth_count": len(gt)}
+            if name == "objects":
+                block["threshold_unit"] = "metres_3d"
             if include_all_pairs:
                 block["all_candidate_pairs"] = [
                     {"predicted_index": pi,
@@ -274,8 +339,26 @@ def floor_regions(scenes, threshold):
     for s in scenes:
         ps, gs = s.get("predicted_floors_m", []), s.get("ground_truth_floors_m", [])
         used_p, used_g = set(), set()
-        for d, pi, gi in sorted((abs(float(p)-float(g)), pi, gi) for pi,p in enumerate(ps) for gi,g in enumerate(gs)):
-            if d <= .5 and pi not in used_p and gi not in used_g: used_p.add(pi); used_g.add(gi)
+        candidates = [(abs(float(p)-float(g)), pi, gi)
+                      for pi, p in enumerate(ps) for gi, g in enumerate(gs)]
+        if candidates:
+            distances = np.asarray([[d for d, p, g in candidates
+                                     if p == pi and g == gi][0]
+                                    for pi in range(len(ps)) for gi in range(len(gs))]
+                                   ).reshape(len(ps), len(gs))
+            valid = distances <= .5
+            bonus = float(distances.size + distances.max() + 1.0)
+            weights = np.where(valid, distances, bonus)
+            try:
+                from scipy.optimize import linear_sum_assignment
+                ii, jj = linear_sum_assignment(weights)
+            except ImportError:
+                ii, jj = [], []
+                for pi, gi in sorted(np.ndindex(distances.shape), key=lambda z: distances[z]):
+                    if valid[pi, gi] and pi not in ii and gi not in jj:
+                        ii.append(pi); jj.append(gi)
+            for pi, gi in zip(ii, jj):
+                if valid[pi, gi]: used_p.add(int(pi)); used_g.add(int(gi))
         fh += len(used_g); ft += len(gs)
         region_scene = filtered_scene(s, include_regions=True)
         pr = region_scene.get("predicted_regions", [])
@@ -406,22 +489,31 @@ def objects(scenes, threshold=.5):
         s = filtered_scene(s)
         pred, gt = s.get("predicted_objects", []), s.get("ground_truth_objects", [])
         predicted_total += len(pred); ground_truth_total += len(gt)
-        matches = assignment(pred, gt, threshold)
+        matches = object_assignment(pred, gt, threshold)
         geometric_matches.extend(score for _, _, score in matches)
         # HOV-SG evaluates against the complete HM3DSEM label vocabulary, not
         # a scene-local closed set. Prefer the same precomputed 1,624 text
         # features used by HOV-SG; the manifest matrix is only a fallback for
         # environments where that asset is unavailable.
-        has_named_gt = all(str(row.get("category_name", "")).strip() for row in gt)
-        categories = hm3d_text_features() if has_named_gt else None
-        if categories is None:
-            categories = s.get("category_embeddings", [])
+        # Prefer an explicitly serialized scene vocabulary: its ordering is
+        # authoritative for small test/legacy manifests.  Fall back to the
+        # canonical HM3D matrix only when the scene does not carry one.
+        categories = s.get("category_embeddings") or None
+        if categories is None and all(str(row.get("category_name", "")).strip() for row in gt):
+            categories = hm3d_text_features()
         if categories is None:
             categories = []
         class_names = _semantic_classes(s, len(categories))
         # top_k.py evaluates the Hungarian object associations themselves;
         # its semantic curve is not additionally filtered by the IoU threshold.
-        semantic_matches = assignment(pred, gt, None)
+        incompatible = (s.get("category_embedding_model") and
+                        s.get("object_embedding_model") and
+                        s["category_embedding_model"] != s["object_embedding_model"])
+        # HOV-SG classification uses Hungarian AABB-IoU associations and
+        # applies IoU > 0.5 after assignment; it is independent of the
+        # centre-distance operating point used by the spatial table.
+        semantic_matches = [] if incompatible else [
+            pair for pair in assignment(pred, gt, None) if pair[2] > .5]
         semantic_match_total += len(semantic_matches)
         accuracy, auc, classified = _top_k_semantics(
             semantic_matches, pred, gt, categories, class_names)
@@ -444,11 +536,48 @@ def objects(scenes, threshold=.5):
     out["top_k_auc"] = (round(auc_total / semantic_match_total, 6)
                         if semantic_match_total and classified_matches else None)
     out["auc_top_k"] = out["top_k_auc"]
-    out["object_precision_pct"] = round(100*len(geometric_matches)/predicted_total,4) if predicted_total else None
-    out["object_recall_pct"] = round(100*len(geometric_matches)/ground_truth_total,4) if ground_truth_total else None
+    out["matched_objects"] = len(geometric_matches)
+    out["predicted_objects"] = predicted_total
+    out["ground_truth_objects"] = ground_truth_total
+    out["precision_pct"] = round(100*len(geometric_matches)/predicted_total,4) if predicted_total else None
+    out["recall_pct"] = round(100*len(geometric_matches)/ground_truth_total,4) if ground_truth_total else None
+    out["object_precision_pct"] = out["precision_pct"]
+    out["object_recall_pct"] = out["recall_pct"]
     out["matched_object_iou_mean"] = round(sum(geometric_matches)/len(geometric_matches),4) if geometric_matches else None
+    out["box_quality_mean"] = {"iou_3d": out["matched_object_iou_mean"]}
     out["matched_objects_iou_gt_0.5"] = len(geometric_matches)
     out["classified_matched_objects"] = classified_matches
+    out["top_k_eligible_pairs"] = sum(
+        len([pair for pair in assignment(filtered_scene(s).get("predicted_objects", []),
+                                          filtered_scene(s).get("ground_truth_objects", []), None)
+             if pair[2] > .5]) for s in scenes)
+    out["top_k_unclassified_pairs"] = semantic_match_total - classified_matches
+    out["top_k_embedding_coverage_pct"] = (round(100 * classified_matches / semantic_match_total, 4)
+                                            if semantic_match_total else None)
+    out["top_k_incompatible_model_pairs"] = sum(
+        1 for s in scenes
+        if s.get("category_embedding_model") and s.get("object_embedding_model")
+        and s["category_embedding_model"] != s["object_embedding_model"])
+    out["top_k_association_details"] = [{"scene": str(s.get("scene", "unknown")),
+                                          "associations": [{"predicted_index": pi,
+                                                             "ground_truth_index": gi,
+                                                             "iou": round(score, 6)}
+                                                            for pi, gi, score in assignment(
+                                                                filtered_scene(s).get("predicted_objects", []),
+                                                                filtered_scene(s).get("ground_truth_objects", []), None)
+                                                            if score > .5]}
+                                         for s in scenes]
+    semantic_labels = []
+    for s in scenes:
+        fs = filtered_scene(s)
+        for pi, gi, _ in assignment(fs.get("predicted_objects", []), fs.get("ground_truth_objects", []), None):
+            semantic_labels.append(str(fs["predicted_objects"][pi].get("label", "")).casefold() ==
+                                   str(fs["ground_truth_objects"][gi].get("category_name", "")).casefold())
+    out["semantic_accuracy_pct"] = round(100 * sum(semantic_labels) / len(semantic_labels), 4) if semantic_labels else 0
+    out["distance_sweep"] = {str(distance): {"matched_objects": sum(
+        len(object_assignment(filtered_scene(s).get("predicted_objects", []),
+                              filtered_scene(s).get("ground_truth_objects", []), distance))
+        for s in scenes)} for distance in (.1, .25, .5, 1.0)}
     return out
 
 def room_objects(scenes, threshold=.5, region_threshold=.5):
@@ -478,7 +607,7 @@ def room_objects(scenes, threshold=.5, region_threshold=.5):
             room_map[str(predicted_id)] = str(ground_truth_id)
             room_iou[str(ground_truth_id)] = float(trial.get("region_iou", 0.0))
 
-        matches = assignment(pred, gt, threshold)
+        matches = object_assignment(pred, gt, threshold)
         matched_by_room = {}
         matched_pred_ids = set()
         matched_gt_ids = set()
@@ -565,9 +694,12 @@ def sizes(scenes, base):
         found = False
         for value in paths:
             p = Path(value); p = p if p.is_absolute() else base/p
-            if p.is_file(): total += p.stat().st_size; found = True
-            elif p.is_dir(): total += sum(x.stat().st_size for x in p.rglob("*") if x.is_file()); found = True
-            else: missing.append(str(p))
+            try:
+                if p.is_file(): total += p.stat().st_size; found = True
+                elif p.is_dir(): total += sum(x.stat().st_size for x in p.rglob("*") if x.is_file()); found = True
+                else: missing.append(str(p))
+            except (OSError, PermissionError):
+                missing.append(str(p))
         if paths and found: per[str(s.get("scene", "unknown"))] = round(total/1e6, 6)
     return {"size_mb_total": round(sum(per.values()),6) if per else None,
             "size_mb_per_scene": per, "missing_files": missing}
@@ -596,6 +728,20 @@ def evaluate(scenes, base=Path.cwd(), region_iou=.5, object_iou=.5,
     if report["table_vii_representation"]["size_mb_total"] is None:
         missing.append("Table VII: representation files")
     report["missing_inputs"] = missing
+    obj = report["table_iv_objects"]
+    regions = report["table_ii_floor_regions"]
+    report["summary"] = {
+        **{f"top{k}": obj.get(f"top{k}_pct") / 100 if obj.get(f"top{k}_pct") is not None else None for k in TOP_K},
+        "AUC_top_k_pct": obj.get("top_k_auc"),
+        "Time_s": report.get("construction_time_s"),
+        # AP is the association precision, independent of the optional
+        # centre-distance operating point used for the detection table.
+        "AP": (obj.get("top_k_eligible_pairs") / obj.get("predicted_objects")
+               if obj.get("predicted_objects") else None),
+        "Acc_F_pct": regions.get("acc_f_pct"),
+        "Precision_regions_pct": regions.get("region_precision_pct"),
+        "Recall_regions_pct": regions.get("region_recall_pct"),
+    }
     return report
 
 EXAMPLE={"scene":"00824","construction_time_s":118,"predicted_floors_m":[0],"ground_truth_floors_m":[.1],"predicted_regions":[{"mask":[0,1,2]}],"ground_truth_regions":[{"mask":[0,1,2,3]}],"rooms":[{"predicted_label":"bedroom","ground_truth_label":"bedroom","approximately_correct":True}],"category_embeddings":[[1,0],[0,1]],"predicted_objects":[{"mask":[0,1],"embedding":[1,0]}],"ground_truth_objects":[{"mask":[0,1],"category_id":0}],"retrieval_trials":[{"gt_rank":3,"retrieved_iou":.4,"final_distance_m":.8}],"representation_files":["persistent_perception.json","room.json"]}
