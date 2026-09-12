@@ -28,6 +28,20 @@ assert cv_utils.vlm_call("p", "img") == '{"description": "d", "color": "c", "mat
 cv_utils.vlm_call("p", "img", timeout=15.0)
 assert seen == ["absent", 15.0], seen
 
+trace_events = []
+assert cv_utils.vlm_call(
+    "p",
+    "img",
+    trace_fn=trace_events.append,
+    request_kind="unified_scene",
+) == '{"description": "d", "color": "c", "material": "m", "shape": "s"}'
+assert len(trace_events) == 1, trace_events
+trace = trace_events[0]
+assert trace["request_kind"] == "unified_scene", trace
+assert trace["status"] == "ok", trace
+assert trace["attempt"] == 1 and trace["attempts_total"] == CFG["vlm"]["retries"] + 1, trace
+assert trace["request_ms"] >= 0 and trace["call_ms"] >= 0, trace
+
 calls = []
 client = VlmClient(vlm_call_fn=lambda p, i: calls.append("general") or '["chair"]',
                    image_encoder_fn=lambda im: "",
@@ -40,6 +54,6 @@ assert calls == ["crop", "crop"], calls
 assert VlmClient(vlm_call_fn=lambda p, i: "x", image_encoder_fn=lambda im: "")._crop_call("p", "i") == "x"
 
 src = open(os.path.join(SRC, "perception_2.py")).read()
-assert 'crop_call_fn=partial(vlm_call, timeout=CFG["vlm"]["crop_timeout"])' in src
+assert 'timeout=CFG["vlm"]["crop_timeout"]' in src
 assert CFG["vlm"]["crop_timeout"] == 15.0, CFG["vlm"]["crop_timeout"]
 print("test_ga303_crop_timeout: ok")

@@ -292,8 +292,20 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.vitsam = None
             self.clip_embedder = None
             self.file_logger.info(f"Using Cloud Perception Backend: {backend_type}")
-        self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=_encode_for_vlm,
-                             crop_call_fn=partial(vlm_call, timeout=CFG["vlm"]["crop_timeout"]))
+        self.vlm = VlmClient(
+            vlm_call_fn=partial(
+                vlm_call,
+                trace_fn=self._trace_vlm_request,
+                request_kind="unified_scene",
+            ),
+            image_encoder_fn=_encode_for_vlm,
+            crop_call_fn=partial(
+                vlm_call,
+                timeout=CFG["vlm"]["crop_timeout"],
+                trace_fn=self._trace_vlm_request,
+                request_kind="crop",
+            ),
+        )
         # GA-215. DEBUG OVERLAY: publish the annotated frame at every perception stage, as
         # each result appears, rather than once at the end of the cycle. Off by default --
         # it costs an encode and a publish per stage, and a measured run should not pay for
@@ -397,6 +409,44 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         except Exception as exc:
             self.get_logger().warn(f"[DEBUG] cloud decode failed: {exc}")
             self._latest_cloud = None
+
+    def _trace_vlm_request(self, event):
+        """Log per-request VLM telemetry in the ROS and per-run perception logs.
+
+        ``request_ms`` is the client-observed HTTP round trip for one attempt. ``call_ms``
+        includes any retry backoff and earlier failed attempts. The provider currently does
+        not return a separate server-compute duration, so the wording deliberately says
+        round trip rather than pretending this is pure GPU inference time.
+        """
+        kind = event.get("request_kind", "vlm")
+        attempt = event.get("attempt", "?")
+        attempts_total = event.get("attempts_total", "?")
+        request_s = float(event.get("request_ms", 0.0)) / 1000.0
+        call_s = float(event.get("call_ms", 0.0)) / 1000.0
+        payload_kib = float(event.get("image_b64_chars", 0)) * 3.0 / 4.0 / 1024.0
+        prefix = (
+            f"[VLM] {kind} attempt {attempt}/{attempts_total}: "
+            f"round_trip={request_s:.3f}s call_total={call_s:.3f}s "
+            f"model={event.get('model', CFG.get('vlm', {}).get('model', 'unknown'))} "
+            f"image≈{payload_kib:.1f}KiB prompt={event.get('prompt_chars', '?')}chars"
+        )
+        if event.get("status") == "ok":
+            tokens = event.get("total_tokens")
+            token_text = f" total_tokens={tokens}" if tokens is not None else ""
+            request_id = event.get("request_id")
+            request_text = f" request_id={request_id}" if request_id else ""
+            self.log_both("info", f"{prefix} result=ok{token_text}{request_text}")
+            return
+
+        status = event.get("http_status")
+        status_text = f" http_status={status}" if status is not None else ""
+        retry_after = event.get("retry_after")
+        retry_text = f" retry_after={retry_after}" if retry_after is not None else ""
+        self.log_both(
+            "warn",
+            f"{prefix} result=error error_type={event.get('error_type', 'unknown')}"
+            f"{status_text}{retry_text} detail={event.get('error', '')}",
+        )
 
     def _init_publishers(self):
         qos_latched = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -1986,7 +2036,8 @@ def main(args=None):
     try:
         node = DetectObjectsNode()
     except Exception:
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
         raise
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
@@ -1997,7 +2048,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

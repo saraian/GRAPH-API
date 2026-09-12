@@ -859,7 +859,38 @@ def _vlm_client():
     return _client
 
 
-def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_detail=None):
+def _emit_vlm_trace(trace_fn, event):
+    """Send request telemetry to the owning node without making logging fatal.
+
+    ``cv_utils`` is also used by small offline tests and by the legacy perception node, so
+    telemetry is an optional callback rather than a hard dependency on an rclpy logger.
+    A broken logger must never turn a successful model response into a failed perception
+    cycle.
+    """
+    if trace_fn is None:
+        return
+    try:
+        trace_fn(event)
+    except Exception:
+        pass
+
+
+def _header_value(headers, name):
+    """Read an HTTP header from both dicts and case-insensitive header mappings."""
+    if not headers:
+        return None
+    wanted = name.lower()
+    try:
+        for key, value in headers.items():
+            if str(key).lower() == wanted:
+                return value
+    except Exception:
+        return None
+    return None
+
+
+def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_detail=None,
+             trace_fn=None, request_kind="vlm"):
     """One VLM round-trip. Transport failures (timeout, malformed envelope)
     retry up to cfg vlm.retries times, then raise — never silently degraded.
     A well-formed response is returned as-is (may be empty: a semantic outcome
@@ -874,14 +905,18 @@ def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_de
     the boxes and attributes for the entire frame.
     """
     last_err = None
+    attempts_total = CFG["vlm"]["retries"] + 1
+    call_started = time.perf_counter()
     for attempt in range(CFG["vlm"]["retries"] + 1):
         # GA-288. BACKOFF, because there was none. Run 20260903_135823 died at 18 cycles on
         # a DNS blip ("Temporary failure in name resolution") that lasted under a second:
         # three attempts fired back-to-back inside that second, all failed, and the raise
         # below propagated through the timer callback into executor.spin(). 1 s / 2 s / 4 s
         # lets a transient fault pass; a real outage still exhausts the attempts and raises.
-        if attempt:
-            time.sleep(min(2 ** (attempt - 1), 8))
+        backoff_s = min(2 ** (attempt - 1), 8) if attempt else 0.0
+        if backoff_s:
+            time.sleep(backoff_s)
+        attempt_started = time.perf_counter()
         try:
             image_url = {"url": f"data:image/png;base64,{encoded_image}"}
             if image_detail is not None:
@@ -914,10 +949,58 @@ def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_de
                 raise RuntimeError(f"VLM refused the image request: {refusal}")
             if not message.content:
                 raise RuntimeError("VLM returned an empty response")
+
+            attempt_ms = (time.perf_counter() - attempt_started) * 1000.0
+            usage = getattr(agent, "usage", None)
+            _emit_vlm_trace(trace_fn, {
+                "request_kind": request_kind,
+                "status": "ok",
+                "attempt": attempt + 1,
+                "attempts_total": attempts_total,
+                # This is the client-observed request/response round trip. Regolo does not
+                # currently expose a separate server-compute duration in the response.
+                "request_ms": round(attempt_ms, 1),
+                "call_ms": round((time.perf_counter() - call_started) * 1000.0, 1),
+                "backoff_ms": round(backoff_s * 1000.0, 1),
+                "model": CFG["vlm"]["model"],
+                "prompt_chars": len(prompt),
+                "image_b64_chars": len(encoded_image),
+                "image_detail": image_detail,
+                "structured_response": response_format is not None,
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+                "request_id": getattr(agent, "_request_id", None),
+            })
             return message.content
         except Exception as e:
+            attempt_ms = (time.perf_counter() - attempt_started) * 1000.0
+            response = getattr(e, "response", None)
+            headers = getattr(response, "headers", None)
+            _emit_vlm_trace(trace_fn, {
+                "request_kind": request_kind,
+                "status": "error",
+                "attempt": attempt + 1,
+                "attempts_total": attempts_total,
+                "request_ms": round(attempt_ms, 1),
+                "call_ms": round((time.perf_counter() - call_started) * 1000.0, 1),
+                "backoff_ms": round(backoff_s * 1000.0, 1),
+                "model": CFG["vlm"]["model"],
+                "prompt_chars": len(prompt),
+                "image_b64_chars": len(encoded_image),
+                "image_detail": image_detail,
+                "structured_response": response_format is not None,
+                "http_status": getattr(e, "status_code", None),
+                "retry_after": _header_value(headers, "retry-after"),
+                "request_id": _header_value(headers, "x-request-id"),
+                "error_type": type(e).__name__,
+                "error": str(e)[:300],
+            })
             last_err = e
-    raise RuntimeError(f"VLM unreachable after {CFG['vlm']['retries'] + 1} attempts") from last_err
+    last_detail = f"{type(last_err).__name__}: {str(last_err)[:240]}" if last_err else "unknown"
+    raise RuntimeError(
+        f"VLM unreachable after {attempts_total} attempts; last_error={last_detail}"
+    ) from last_err
 
 def numpy_to_base64(img, fmt='.png'):
     _, buf = cv2.imencode(fmt, img)

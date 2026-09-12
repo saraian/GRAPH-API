@@ -284,10 +284,13 @@ class DetectionPipelineMixin:
             os.path.dirname(__file__), "prompts", "scene_analysis_prompt.txt")
         try:
             scene_objects = self.vlm.call_scene(prompt_path, rgb_image)
+            scene_latency_ms = round((time.time() - t0) * 1000.0, 1)
             self._vlm_status = {
                 "status": "ok",
                 "model": CFG.get("vlm", {}).get("model", "unknown"),
-                "latency_ms": round((time.time() - t0) * 1000.0, 1),
+                # This outer value includes local prompt/image preparation and response
+                # parsing. The per-attempt HTTP round trip is logged by vlm_call itself.
+                "latency_ms": scene_latency_ms,
             }
         except Exception as exc:
             # Match the current label-call outage policy: a transient failure skips
@@ -298,6 +301,7 @@ class DetectionPipelineMixin:
             self._vlm_status = {
                 "status": "unreachable",
                 "model": CFG.get("vlm", {}).get("model", "unknown"),
+                "latency_ms": round((time.time() - t0) * 1000.0, 1),
                 "error": str(exc)[:300],
                 "consecutive_failures": self._vlm_strikes,
                 "strikes_max": strikes_max,
