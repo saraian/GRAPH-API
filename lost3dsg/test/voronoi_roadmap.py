@@ -580,6 +580,37 @@ def two_opt(order, dist, rounds=40):
     return tour
 
 
+def observation_offsets(free_world, x, z, radius_m, count, seed_i=0, tries=12):
+    """-> `count` nearby standing points for RE-OBSERVING the objects around (x, z).
+
+    WHY OFFSET AT ALL. Standing on the same spot twice gives the same parallax, the same occlusions
+    and very nearly the same image; a second sighting from there confirms little that the first did
+    not already say. A metre to the side changes which edge of an object is visible and what hides
+    behind what, while keeping the same objects in view -- which is what a re-observation is for.
+
+    SPREAD AROUND THE WAYPOINT, NOT RANDOM. The offsets are equally spaced on a circle, started at
+    an angle derived from the waypoint's own index, so two waypoints do not shift the same way and
+    the whole schedule stays reproducible from the seed. A candidate that is not free space is
+    rotated away from until one is; if none is free the waypoint itself is returned, because a
+    re-observation from the exact spot is worth more than one from inside a wall.
+    """
+    out = []
+    if radius_m <= 0 or count <= 0:
+        return out
+    base = (seed_i * 137.508) % 360.0          # the golden angle: consecutive waypoints diverge
+    for k in range(int(count)):
+        want = base + (360.0 / max(1, count)) * k
+        placed = None
+        for t in range(int(tries)):
+            ang = math.radians(want + t * (360.0 / tries))
+            cx, cz = x + radius_m * math.cos(ang), z + radius_m * math.sin(ang)
+            if free_world(cx, cz):
+                placed = (round(cx, 3), round(cz, 3))
+                break
+        out.append(placed if placed is not None else (round(x, 3), round(z, 3)))
+    return out
+
+
 def dfs_route(edges, root):
     """-> (visit order, full walk of waypoints). Depth-first, nearest branch first.
 
@@ -656,7 +687,8 @@ def rdp(pts, eps):
 
 
 def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan_deg,
-                     clear_world=None, scan_for=None, smooth=True, revisit_scan_deg=0.0):
+                     clear_world=None, scan_for=None, smooth=True, revisit_scan_deg=0.0,
+                     offset_m=0.0, offsets_needed=0):
     """-> (trajectory, budget). The path the robot drives, and what it costs in frames.
 
     A STOP IS SCANNED ON FIRST ARRIVAL, AND AGAIN ON EVERY RE-ENTRY IF `revisit_scan_deg` > 0.
@@ -669,6 +701,13 @@ def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan
     only after `merge_min_consecutive` cycles have seen the same pair, so a second visit to the
     parent is exactly the second look the merge rule is short of. And the second arrival comes from
     a DIFFERENT branch, so the parent is seen from a different approach with different occlusions.
+
+    EVERY RE-OBSERVATION STANDS SOMEWHERE ELSE (owner 2026-09-12). `offset_m` > 0 attaches a list
+    of nearby standing points to each scanned waypoint; a revisit drives to the next one instead of
+    to the waypoint itself. It covers BOTH kinds of return -- the backtrack through a parent inside
+    one lap, and the same waypoint again on the next lap -- because the feed counts visits per
+    waypoint and indexes the same list. `offsets_needed` is how many to generate: revisits within a
+    lap, plus one per extra lap.
 
     0 keeps the old behaviour. `order` is where it scans first, `walk` is what it drives.
     """
@@ -683,7 +722,19 @@ def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan
     unsafe = [0]
     traj, seen = [], set()
     start = walk[0]
-    traj.append({"xyz": to_world(start), "scan_deg": _scan(start), "stop": 0, "leg": None})
+    def _offsets(node, world_xyz, idx):
+        if offset_m <= 0 or offsets_needed <= 0 or clear_world is None:
+            return None
+        pts = observation_offsets(clear_world, world_xyz[0], world_xyz[2], offset_m,
+                                  offsets_needed, seed_i=idx)
+        return [[x, world_xyz[1], z] for x, z in pts]
+
+    _start_world = to_world(start)
+    _e = {"xyz": _start_world, "scan_deg": _scan(start), "stop": 0, "leg": None}
+    _o = _offsets(start, _start_world, 0)
+    if _o:
+        _e["offsets"] = _o
+    traj.append(_e)
     seen.add(start)
     drive_m = 0.0
     for leg, (u, v) in enumerate(zip(walk, walk[1:])):
@@ -726,6 +777,9 @@ def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan
             if last and v not in seen:
                 entry["scan_deg"] = _scan(v)
                 entry["stop"] = first_visit[v]
+                _o = _offsets(v, entry["xyz"], first_visit[v])
+                if _o:
+                    entry["offsets"] = _o
                 seen.add(v)
             elif last and revisit_scan_deg > 0:
                 # A RE-ENTRY. Marked so a reader can tell a second look at a waypoint from the
@@ -735,6 +789,9 @@ def build_trajectory(edges, order, walk, to_world, eps_m, step_m, turn_deg, scan
                 entry["scan_deg"] = float(revisit_scan_deg)
                 entry["stop"] = first_visit[v]
                 entry["revisit"] = True
+                _o = _offsets(v, entry["xyz"], first_visit[v])
+                if _o:
+                    entry["offsets"] = _o
             traj.append(entry)
 
     # Turning to face each segment is a real cost, not a rounding error: at 20 degrees per action a

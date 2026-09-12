@@ -473,6 +473,12 @@ _DEFAULTS = {
         # frames and NO travel, and it is the second sighting merge_min_consecutive is short of.
         # 0 is the single-stop tour every schedule before 2026-09-12 used.
         "revisit_scan_deg": 0.0,
+        # How far from the waypoint a RE-OBSERVATION stands, in metres. Standing on the same spot
+        # twice gives the same parallax and the same occlusions; a metre to the side keeps the same
+        # objects in view and changes which edge of each is visible and what hides behind what.
+        # Applies to BOTH returns: the backtrack through a parent, and the same waypoint next lap.
+        # 0 stands on the waypoint every time, which is what every schedule before 2026-09-12 did.
+        "revisit_offset_m": 0.0,
         # Degrees per turn action. ONE number for the agent, the schedule's frame budget and the
         # scan counter; schedule_batch.py --turn-step-deg must match it. It is a MERGE parameter:
         # a full 360 scan is 360/step frames, and a merge needs merge_min_consecutive cycles at

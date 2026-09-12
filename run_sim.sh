@@ -1238,9 +1238,18 @@ try:
     print(float((c.get('habitat') or {}).get('revisit_scan_deg', 0) or 0))
 except Exception:
     print(0.0)" "$HERE/$CFG_NAME" 2>/dev/null || echo 0.0)
+  # How far from the waypoint a re-observation stands. Same objects, different parallax.
+  _revisit_off=$(python3 -c "
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    print(float((c.get('habitat') or {}).get('revisit_offset_m', 0) or 0))
+except Exception:
+    print(0.0)" "$HERE/$CFG_NAME" 2>/dev/null || echo 0.0)
   _sched_out=$("${SCHEDULE_PY:-$HOME/miniconda3/envs/habitat_env/bin/python}" \
     "$HERE/schedule_batch.py" --navmesh "$_navmesh" --scene-id "$SCENE_ARG" \
     --ensure --out-dir "$SCHEDULE_DIR" --revisit-scan-deg "$_revisit" \
+    --revisit-offset-m "$_revisit_off" \
     $([ "$_regen" = "1" ] && echo --regenerate) 2>&1) || {
       echo "!! schedule generation FAILED for $SCENE_ARG:"; echo "$_sched_out" | tail -15
       echo "   A schedule is the only motion policy, so there is nothing to fall back to."

@@ -196,6 +196,10 @@ rooms:
   gvd_min_robot_component_ratio: 0.15
 habitat:
   revisit_scan_deg: 180.0
+  # Every re-observation stands about a metre off the waypoint, on a spread of points
+  # that is the same for a given waypoint every run. Same objects, different parallax
+  # and different occlusions -- which is the point of looking twice.
+  revisit_offset_m: 1.0
   localization_mode: rtabmap
   single_floor: true
   floor_tolerance_m: 0.5

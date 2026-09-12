@@ -300,7 +300,11 @@ def schedule_for(navmesh, height, args):
     one, lap_budget = V.build_trajectory(edges, order, walk, world, args.simplify, args.step,
                                          args.turn_step_deg, 360.0, clear_world,
                                          scan_for=scan_for, smooth=args.smooth_path,
-                                         revisit_scan_deg=args.revisit_scan_deg)
+                                         revisit_scan_deg=args.revisit_scan_deg,
+                                         offset_m=args.revisit_offset_m,
+                                         # Enough for every return: the backtracks inside one lap
+                                         # (at most one per waypoint) plus one per extra lap.
+                                         offsets_needed=(args.laps if args.revisit_offset_m > 0 else 0))
     # RE-PRICE THE SCANS UNDER THE PLAN. build_trajectory charges one frame per turn action, which
     # is the continuous scan. A stepped scan holds each heading for hold_frames and repeats the
     # rotation once per tilt, and the floor lifts any stop the adaptive angle cut too short. The
@@ -377,6 +381,7 @@ def schedule_for(navmesh, height, args):
         # HOW A STOP SCANS, as data the feed host executes rather than a number it has to infer.
         "scan_plan": plan,
         "revisit_scan_deg": args.revisit_scan_deg,
+        "revisit_offset_m": args.revisit_offset_m,
         "scan_frames_min": min((scan_cost_frames(t["scan_deg"], args)
                                 for t in one if t["scan_deg"]), default=0),
         "smooth_path": args.smooth_path,
@@ -404,7 +409,7 @@ def settings_of(a):
              "min_area", "coverage_radius", "coverage_model", "coverage_range", "coverage_target",
              "covering", "turn_step_deg", "route_order", "smooth_path", "adaptive_scan",
              "min_scan_cycles", "cycle_seconds", "fps_budget", "stepped_scan",
-             "scan_hold_frames", "scan_tilts", "revisit_scan_deg")}
+             "scan_hold_frames", "scan_tilts", "revisit_scan_deg", "revisit_offset_m")}
 
 
 def settings_sha(settings):
@@ -752,6 +757,13 @@ def main():
                     help="degrees to turn when the route RE-ENTERS a waypoint it already scanned. "
                          "0 keeps the single-stop tour. 360 scans it again in full; a smaller "
                          "angle buys the second sighting for fewer frames")
+    # EVERY RE-OBSERVATION STANDS SOMEWHERE ELSE (owner 2026-09-12). Standing on the same spot
+    # twice gives the same parallax and the same occlusions, so the second sighting confirms little
+    # the first did not. A metre to the side keeps the same objects in view and changes which edge
+    # of each is visible. Applies to BOTH returns: the backtrack through a parent, and the next lap.
+    ap.add_argument("--revisit-offset-m", type=float, default=0.0,
+                    help="m: how far from the waypoint a RE-OBSERVATION stands. 0 stands on the "
+                         "waypoint every time, which is what every schedule before 2026-09-12 did")
     ap.add_argument("--scan-tilts", default="0",
                     help="comma-separated camera tilts in degrees, one full rotation each. "
                          "\"30,0\" is the owner's two-rotation ask and doubles the scan bill")

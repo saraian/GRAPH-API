@@ -214,6 +214,48 @@ def test_the_feed_host_reads_the_plan_rather_than_assuming_one():
         assert name in host, f"ScheduledTour ignores {name}, so the schedule's plan is not executed"
 
 
+def test_every_re_observation_stands_somewhere_else():
+    """Owner 2026-09-12: a revisit must not stand on the same spot as the first visit.
+
+    Standing twice on one point gives the same parallax and the same occlusions, so the second
+    sighting confirms little the first did not already say. The offsets are equally spaced on a
+    circle and every one of them must be in free space.
+    """
+    import math as _m
+    free = {(round(x * 0.1, 1), round(z * 0.1, 1)) for x in range(-40, 41) for z in range(-40, 41)}
+
+    def clear(x, z):
+        return (round(x, 1), round(z, 1)) in free or abs(x) < 3.9 and abs(z) < 3.9
+
+    offs = V.observation_offsets(clear, 0.0, 0.0, 1.0, 3, seed_i=0)
+    assert len(offs) == 3, f"asked for 3 offsets, got {len(offs)}"
+    for x, z in offs:
+        assert clear(x, z), f"offset ({x}, {z}) is not in free space"
+        d = _m.dist((x, z), (0.0, 0.0))
+        assert 0.5 < d < 1.5, f"offset is {d:.2f} m from the waypoint, not about 1.0"
+    assert len({(x, z) for x, z in offs}) == 3, "two re-observations share a standing point"
+
+
+def test_offsets_are_deterministic_and_differ_between_waypoints():
+    def clear(x, z):
+        return True
+
+    a1 = V.observation_offsets(clear, 0.0, 0.0, 1.0, 3, seed_i=0)
+    a2 = V.observation_offsets(clear, 0.0, 0.0, 1.0, 3, seed_i=0)
+    b = V.observation_offsets(clear, 0.0, 0.0, 1.0, 3, seed_i=1)
+    assert a1 == a2, "the same waypoint gave two different offset sets; the schedule is not reproducible"
+    assert a1 != b, "two waypoints shifted the same way, so the whole schedule slides in one direction"
+
+
+def test_an_offset_inside_a_wall_falls_back_to_the_waypoint():
+    """A re-observation from the exact spot is worth more than one from inside a wall."""
+    def blocked(x, z):
+        return False
+
+    offs = V.observation_offsets(blocked, 2.0, 3.0, 1.0, 2, seed_i=0)
+    assert offs == [(2.0, 3.0), (2.0, 3.0)], f"expected the waypoint back, got {offs}"
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(list(globals().items())):

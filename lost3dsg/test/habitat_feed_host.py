@@ -1538,6 +1538,13 @@ class ScheduledTour:
         self.scan_mode = str(self.plan.get("mode", "continuous"))
         self.hold_frames = max(1, int(self.plan.get("hold_frames", 1)))
         self.tilts = [float(t) for t in (self.plan.get("tilts_deg") or [CAMERA_PITCH_DEG])]
+        # HOW MANY TIMES EACH WAYPOINT HAS BEEN SCANNED, counted across backtracks AND laps.
+        # A schedule holds ONE lap and the run repeats it, so the lap number alone cannot say how
+        # often a waypoint has been observed: a parent visited twice inside lap 1 has been seen
+        # twice before lap 2 starts. One counter answers both, and it is what indexes the offsets.
+        self.visits = {}
+        self.offsets_used = 0
+        self.scan_from = None        # where the agent actually stood for the scan in progress
         self._hold_left = 0          # frames still to hold on THIS heading
         self._tilt_i = 0
         self._tilt_now = None
@@ -1579,6 +1586,21 @@ class ScheduledTour:
         print("[feed] goto refused: a schedule is driving this run; stop it or run without "
               "FEED_SCHEDULE", flush=True)
         return None
+
+    def target_of(self, idx):
+        """-> where to STAND for trajectory point `idx`, given how often it has been observed.
+
+        The first observation is the waypoint. Every later one is a nearby standing point from the
+        schedule's own list, so the same objects are seen with a different parallax and different
+        occlusions. The list is indexed by the visit count and wraps, so a run with more laps than
+        offsets reuses them in order rather than running out.
+        """
+        pt = self.points[idx]
+        offs = pt.get("offsets") or []
+        k = self.visits.get(idx, 0)
+        if k == 0 or not offs:
+            return pt["xyz"]
+        return offs[(k - 1) % len(offs)]
 
     def _scan_frames(self, deg):
         """-> turn actions for one rotation of `deg`, floored at what a merge needs.
@@ -1650,7 +1672,13 @@ class ScheduledTour:
                                  "scan_id": f"schedule-{self.lap}-{self.scans_done}",
                                  "lap": self.lap,
                                  "stop": pt.get("stop"), "point_index": self.i,
-                                 "xyz": pt["xyz"], "scan_deg": pt["scan_deg"],
+                                 # WHICH WAYPOINT is `xyz`; WHERE THE AGENT STOOD is
+                                 # `observed_from`. They differ on every re-observation and a
+                                 # reader that conflates them cannot tell two sightings apart.
+                                 "xyz": pt["xyz"],
+                                 "observed_from": self.scan_from,
+                                 "visit": self.visits.get(self.i, 0),
+                                 "scan_deg": pt["scan_deg"],
                                  "scans_done": self.scans_done,
                                  "stops_total": sum(1 for p in self.points if p["scan_deg"]),
                                  "laps_total": self.laps})
@@ -1658,7 +1686,11 @@ class ScheduledTour:
             return
 
         pt = self.points[self.i]
-        verdict = self.move(self.sim, agent, pt["xyz"], self.follower, self.leg)
+        # WHERE TO STAND, not simply where the waypoint is: a re-observation is offset so the same
+        # objects are seen from a different angle. The first visit returns the waypoint itself.
+        target = self.target_of(self.i)
+        self.scan_from = target
+        verdict = self.move(self.sim, agent, target, self.follower, self.leg)
         if verdict is None:
             return                       # still travelling
         if verdict != "arrived":
@@ -1667,7 +1699,7 @@ class ScheduledTour:
             # bundle -- a lap that skipped nine stops is not the same lap as one that skipped none.
             self.skipped.append({"point_index": self.i, "stop": pt.get("stop"), "lap": self.lap,
                                  "verdict": verdict, "why": self.leg.get("why", ""),
-                                 "frames": self.leg["frames"], "xyz": pt["xyz"]})
+                                 "frames": self.leg["frames"], "xyz": target})
             print(f"[feed] SCHEDULE: point {self.i} {verdict}"
                   f"{' — ' + self.leg['why'] if self.leg.get('why') else ''}, skipping", flush=True)
             self._advance()
@@ -1675,6 +1707,10 @@ class ScheduledTour:
         self.travel_frames += self.leg["frames"]
         if pt["scan_deg"]:
             self._tour_reached += 1
+            # Counted AFTER arrival, so the count is observations made and not attempts.
+            if target != pt["xyz"]:
+                self.offsets_used += 1
+            self.visits[self.i] = self.visits.get(self.i, 0) + 1
             # Back to the first tilt for every new stop, so stop N+1 does not inherit stop N's.
             self._tilt_i = 0
             if len(self.tilts) > 1:
