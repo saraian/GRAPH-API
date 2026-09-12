@@ -894,6 +894,24 @@ export FEED_MOVE_FN="${FEED_MOVE_FN:-$(_cfg_hab navigation_mode navigate)}"
 # and the switch below was 0 in every one of the first 12 bundles, so not one row was ever
 # labelled ("no semantic frame" on 100% of rows). The cost is a third render per frame on the
 # host; the archive refuses on any shape mismatch rather than guessing. Set 0 to opt out.
+# THE WALL DETECTOR, FROM THE CONFIG. live_stack_container.sh reads ${WALL_DETECTOR:-0} and
+# nothing exported it, so `run.wall_detector` in the config was INERT -- a key a reader would
+# take for the setting while the stack always ran with the detector off. That is how a whole
+# storey stayed one room: no walls, so no doorway candidate had support, so no cut was proposed.
+# An explicit WALL_DETECTOR in the environment still wins, as with every other knob here.
+_cfg_run() {   # $1 = key under `run:`, $2 = fallback
+  python3 -c "
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    v = (c.get('run') or {}).get(sys.argv[2])
+    print(sys.argv[3] if v is None else ('1' if v is True else ('0' if v is False else v)))
+except Exception:
+    print(sys.argv[3])" "${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" "$1" "$2" 2>/dev/null || echo "$2"
+}
+export WALL_DETECTOR="${WALL_DETECTOR:-$(_cfg_run wall_detector 0)}"
+echo "    wall detector: $WALL_DETECTOR (config run.wall_detector)"
+
 export FEED_GT_SEMANTIC="${FEED_GT_SEMANTIC:-1}"
 # MAPPING_ONLY builds a localization map and runs no detector. 900 s is a STARTING POINT AND
 # NOT A MEASUREMENT: the only dwell=0 coverage figure that exists is run A's 7.5 m in 636 s, and

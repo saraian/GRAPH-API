@@ -47,6 +47,7 @@ from object_services import (
     synchronized_world_model,
 )
 from perception_utils import room_frame_due
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy
 from room_manager import RoomManager
@@ -291,6 +292,11 @@ SCAN_COMPLETE_TOPIC = os.environ.get(
     "SCAN_COMPLETE_TOPIC", _ASSOC.get("scan_complete_topic", "/habitat/scan_complete"))
 SCAN_MERGE_SETTLE_S = float(os.environ.get(
     "SCAN_MERGE_SETTLE_S", _ASSOC.get("scan_merge_settle_s", 1.0)))
+# The FLOOR is the configured value; this is the ceiling, so one pathological VLM round trip
+# cannot stall every later sweep. A scan takes ~12 s at 36 frames and 3 fps, so a settle
+# longer than this would start eating the next stop.
+SCAN_MERGE_SETTLE_MAX_S = float(os.environ.get(
+    "SCAN_MERGE_SETTLE_MAX_S", _ASSOC.get("scan_merge_settle_max_s", 10.0)))
 
 def _launch_graph_api_bridge():
     bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph_api_bridge.py")
@@ -516,6 +522,23 @@ def _stamp_key(stamp_msg):
     return (int(stamp_msg.sec), int(stamp_msg.nanosec))
 
 
+def _join_key(msg, stamp):
+    """The key the two streams are paired on.
+
+    `cycle_id` when the publisher supplies one, the header stamp otherwise. The stamp held
+    while boxes and descriptions were produced inside one synchronous cycle; under the frame
+    queue the box is published as soon as geometry is computed and the description waits on a
+    VLM round trip, so the two drift. MEASURED on 20260911_193627: boxes ran two minutes ahead
+    of descriptions and the keys never met -- 50 detections, 0 admissions, a full overlay and
+    an empty object table.
+    FALLS BACK rather than requiring the field, so a bundle recorded before the interface
+    changed still joins the way it did, and a mixed pair cannot silently half-match: a message
+    with no cycle_id keys on its stamp, and one with a cycle_id keys on that.
+    """
+    cid = getattr(msg, "cycle_id", "") or ""
+    return ("cycle", cid) if cid else ("stamp",) + _stamp_key(stamp)
+
+
 def _stamp_key_str(stamp_msg):
     sec, nanosec = _stamp_key(stamp_msg)
     return f"{sec}.{nanosec:09d}"
@@ -687,6 +710,10 @@ class ObjectManagerService(Node):
         # arrived" produced identical evidence -- which is the pair of possibilities three
         # lanes could not separate on runs 7 and 8. These make the next run state which.
         self._n_desc_msgs = 0
+        # A bounded window, so the settle delay follows the CURRENT arm rather than the
+        # whole run: the online and offline VLMs differ by seconds, and a run that
+        # switches or recovers should not be held to its worst minute forever.
+        self._desc_lag_s = deque(maxlen=64)
         self._n_bbox_msgs = 0
         self._n_desc_no_stamp = 0
         self._n_bbox_no_stamp = 0
@@ -807,7 +834,26 @@ class ObjectManagerService(Node):
         self.get_logger().info('Object Tracking Service ready')
 
         # Subscribers
-        self.create_subscription(Bool, "/robot_movement_detected", self.movement_callback, qos_poly)
+        # THE MOVEMENT LATCH GETS ITS OWN GROUP. It is a one-line callback that flips a boolean,
+        # and it decides whether ANY observation reaches the object store: `_dropped_moving_pairs`
+        # counts pairs discarded while the latch says "moving", and the latch only opens on the
+        # STOP edge of this topic.
+        #
+        # MEASURED on 20260911_184539, with perception_2's own motion-watch group already fixed:
+        # perception_2 published 10 movement events including "Robot stopped", and this node saw
+        # ZERO of them while discarding 118 pairs as observed during motion. 792 detections over
+        # 217 cycles produced 0 admissions and no persistent_perception.json at all -- the feed
+        # overlay was full of boxes and the object table was empty, because a detection is not an
+        # object and nothing was ever admitted.
+        #
+        # Sharing the node's DEFAULT group put this behind `_descriptions_callback`, the bbox
+        # timer and the room RGB path; a MultiThreadedExecutor does not help, because a default
+        # group is mutually exclusive. Its own group, and mutually exclusive rather than
+        # reentrant: the callback writes the latch and two concurrent runs could interleave a
+        # stale edge over a fresh one.
+        self.movement_cb_group = MutuallyExclusiveCallbackGroup()
+        self.create_subscription(Bool, "/robot_movement_detected", self.movement_callback, qos_poly,
+                                 callback_group=self.movement_cb_group)
 
         self.create_subscription(ObjectDescriptionArray, '/object_descriptions', self._descriptions_callback, qos_standard)
         # GA-108: describer answers that arrived after their cycle, addressed by the crop's
@@ -1042,14 +1088,16 @@ class ObjectManagerService(Node):
                     self._scan_merge_timer.cancel()
                 except Exception:
                     pass
+            _settle = self._scan_settle_s()
             self._scan_merge_timer = self.create_timer(
-                max(0.0, SCAN_MERGE_SETTLE_S),
+                _settle,
                 self._run_pending_scan_merge,
             )
         self.object_services.log_both(
             'info',
             f"[SCAN] completed full-turn hook received ({scan_id}); "
-            f"merge scheduled in {SCAN_MERGE_SETTLE_S:.2f}s",
+            f"merge scheduled in {_settle:.2f}s "
+            f"(measured description lag, {len(self._desc_lag_s)} samples)",
         )
 
     def _run_pending_scan_merge(self):
@@ -2290,10 +2338,42 @@ class ObjectManagerService(Node):
                 'warn', f"[SYNC] /object_descriptions message with no usable stamp "
                         f"({self._n_desc_no_stamp} of {self._n_desc_msgs})")
             return
-        self._pending_descriptions[_stamp_key(stamp)] = msg
+        # THE OBSERVED DESCRIPTION LAG, measured here rather than assumed anywhere.
+        #
+        # A description is published with the stamp of the frame it describes, so the gap
+        # between that stamp and now IS the round trip the settle delay has to cover. It is
+        # not a constant: on the online VLM it measured a 2.4 s median with a 7.9 s p95, and
+        # it moves with the model, the arm and the network.
+        try:
+            age = self.get_clock().now().nanoseconds * 1e-9 - (stamp.sec + stamp.nanosec * 1e-9)
+            if 0.0 <= age < 120.0:          # a negative or absurd age is a clock artefact, not a lag
+                self._desc_lag_s.append(age)
+        except Exception:
+            pass
+        self._pending_descriptions[_join_key(msg, stamp)] = msg
         while len(self._pending_descriptions) > SYNC_BUFFER_LIMIT:
             self._pending_descriptions.pop(next(iter(self._pending_descriptions)))
         self._try_process()
+
+    def _scan_settle_s(self):
+        """How long to wait after a scan before merging: the MEASURED description lag.
+
+        SCAN_MERGE_SETTLE_S was a constant 1.0 s whose own docstring says it exists to let
+        the last frame of a turn finish its VLM round trip. MEASURED on the online arm, that
+        round trip has a 2.4 s median and a 7.9 s p95 -- so the constant covered neither, and
+        a description that lands after the sweep leaves its object uncomparable until the
+        next one.
+        RETURNS THE p90 OF WHAT THIS RUN HAS ACTUALLY SEEN, not a mean: the tail is the whole
+        point, and a mean sits under it by construction. Falls back to the configured constant
+        until there are enough samples to have a tail at all, and is clamped so a single
+        pathological round trip cannot stall every later sweep.
+        """
+        lags = list(self._desc_lag_s)
+        if len(lags) < 5:
+            return max(0.0, SCAN_MERGE_SETTLE_S)
+        lags.sort()
+        p90 = lags[min(len(lags) - 1, int(0.9 * (len(lags) - 1)))]
+        return float(min(SCAN_MERGE_SETTLE_MAX_S, max(SCAN_MERGE_SETTLE_S, p90)))
 
     def _check_input_silence(self):
         """No detections for a while: say so once, then END THE RUN if it persists.
@@ -2405,7 +2485,7 @@ class ObjectManagerService(Node):
                 'warn', f"[SYNC] /bbox_3d message with no usable stamp "
                         f"({self._n_bbox_no_stamp} of {self._n_bbox_msgs})")
             return
-        self._pending_bboxes[_stamp_key(stamp)] = msg
+        self._pending_bboxes[_join_key(msg, stamp)] = msg
         while len(self._pending_bboxes) > SYNC_BUFFER_LIMIT:
             self._pending_bboxes.pop(next(iter(self._pending_bboxes)))
         self._try_process()
@@ -2440,8 +2520,31 @@ class ObjectManagerService(Node):
 
         for stamp_key in common_keys:
             bboxes_msg = self._pending_bboxes[stamp_key]
-            if self._moving_since is not None:
-                observed_at = stamp_key[0] + stamp_key[1] * 1e-9
+            # THE MOTION LATCH IS OFF WHEN THE FRAME QUEUE IS ON. Owner 2026-09-11.
+            #
+            # This gate predates the frame queue. It drops any pair whose frame was captured
+            # while the robot was moving, on the reasoning that such a pair "can never become
+            # valid". The queue makes that reasoning false: a queued frame is processed on the
+            # transform CAPTURED WITH IT, so motion afterwards cannot invalidate its geometry --
+            # which is the whole argument the queue was built on.
+            #
+            # MEASURED on 20260911_191655: perception_2 published ONE movement edge and ZERO
+            # stop edges all run -- the motion score adds metres to radians against a 0.05
+            # threshold and a tour that drives and spins never falls below it (0 of 436 samples
+            # on 20260911_133641). So `_moving_since` was set once at second one and never
+            # cleared, and this gate discarded EVERY pair: 53 cycles, 233 detections, 0
+            # admissions, no belief file, while the feed overlay was full of boxes.
+            #
+            # Gated on frame_queue_max rather than deleted: with the queue OFF a frame really is
+            # processed live and the old reasoning still holds, so that path keeps its guard.
+            _queue_on = int(CFG.get("perception", {}).get("frame_queue_max", 0) or 0) > 0
+            if self._moving_since is not None and not _queue_on:
+                # THE KEY IS NO LONGER ALWAYS A STAMP. _join_key returns ("cycle", id) when the
+                # publisher supplies a cycle_id and ("stamp", sec, nanosec) otherwise, so the
+                # observation time comes from the MESSAGE rather than from the key. Indexing
+                # the key here would read a uuid as a number the moment the queue is on.
+                _bs = bboxes_msg.header.stamp
+                observed_at = _bs.sec + _bs.nanosec * 1e-9
                 if observed_at >= self._moving_since:
                     # Taken during this motion, so it can never become valid -- the stamp
                     # does not change when the robot stops. Drop it once, here, rather than

@@ -5,6 +5,7 @@ import math
 import os
 import sys
 import time
+import uuid
 import urllib.request
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -996,8 +997,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         vlm_results = self._unified_scene_description_results(detections)
         descriptions = self._build_descriptions(detections, vlm_results, crops_data)
         _mark("describer_queue")
-        self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp)
-        self._publish_description_array(detections, descriptions, cycle_stamp)
+        # ONE ID FOR THIS CYCLE, carried by BOTH arrays. object_manager_6 joins on it instead
+        # of the header stamp: the box is published as soon as geometry is computed and the
+        # description waits on a VLM round trip, so their stamps drift apart under the frame
+        # queue and the exact-stamp join stopped matching entirely (20260911_193627: boxes two
+        # minutes ahead of descriptions, 50 detections, 0 admissions).
+        cycle_id = uuid.uuid4().hex[:16]
+        self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp, cycle_id)
+        self._publish_description_array(detections, descriptions, cycle_stamp, cycle_id)
         self._publish_late_descriptions(cycle_stamp)
         self._update_world_model(detections, centroids_3d, bboxes_3d, descriptions)
         self._queue_perceptions_json()
@@ -1567,8 +1574,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 room_id=getattr(self, "current_room_id", None),
                 semantic_frame=semantic)
 
-    def _publish_bbox_array(self, detections, bboxes_3d, fov_volume, cycle_stamp):
+    def _publish_bbox_array(self, detections, bboxes_3d, fov_volume, cycle_stamp, cycle_id=""):
         msg = self.make_header_msg(Bbox3dArray, stamp=cycle_stamp, frame_id=world_frame())
+        msg.cycle_id = cycle_id
         if fov_volume:
             for key, value in fov_volume.items():
                 setattr(msg, f"fov_{key}", value)
@@ -1624,8 +1632,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             msg.boxes.append(box_msg)
         self.bbox_pub.publish(msg)
 
-    def _publish_description_array(self, detections, descriptions, cycle_stamp):
+    def _publish_description_array(self, detections, descriptions, cycle_stamp, cycle_id=""):
         desc_array = self.make_header_msg(ObjectDescriptionArray, stamp=cycle_stamp, frame_id=world_frame())
+        desc_array.cycle_id = cycle_id
         for det, desc in zip(detections, descriptions):
             obj_msg = ObjectDescription()
             obj_msg.label = det.instance_label

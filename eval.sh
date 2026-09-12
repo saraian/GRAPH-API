@@ -45,6 +45,17 @@ OUT="$BUNDLE/eval"; mkdir -p "$OUT"
 echo "bundle: $BUNDLE"
 echo "output: $OUT"
 
+# HM3D_ROOT, THE SAME WAY install.sh FINDS IT. The scene of record in a bundle is a NAME
+# (run_metadata.json's `scene`), and resolving it to a path needs the scene library. Without this
+# the resolver answers "the name 'hm3d_00861', but HM3D_ROOT is not set" and the evaluation stops
+# on a machine that has the library sitting in its usual place. Set only when the caller has not.
+if [ -z "${HM3D_ROOT:-}" ]; then
+  for _d in "$HOME/Musumeci/habitat_matterport/hm3d_example" /DATA/habitat_matterport/hm3d_example; do
+    [ -d "$_d" ] && { export HM3D_ROOT="$_d"; break; }
+  done
+  [ -n "${HM3D_ROOT:-}" ] && echo ">>> HM3D_ROOT=$HM3D_ROOT (discovered; export it to override)"
+fi
+
 # THE SCENE COMES FROM THE BUNDLE, resolved by lost3dsg/test/eval_scene_of_bundle.py, which has its
 # own self-check. A scene resolved wrongly evaluates a DIFFERENT HOUSE and nobody can spot that
 # afterwards, so it is a file with tests rather than a line in this script.

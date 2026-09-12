@@ -1253,6 +1253,14 @@ A12_ALLOWED_FILES = {
     # "ground-truth room labels". A reporter that may not say "ground truth" cannot label a column.
     "test/eval_report.py": "offline PDF reporter; imported by nothing, installed nowhere",
 
+    # Added 2026-09-11, and VERIFIED before listing rather than waved through because the gate was
+    # in the way: `run_metrics.py` arrived with e3130f8 "Metrics bugs fixed". Nothing imports it
+    # (grep: 0), it is NOT in CMakeLists' install list (line 85 installs habitat_run_metrics.py, a
+    # different file), and it drives the offline HM3D evaluation through subprocess. Its tokens are
+    # FILE NAMES -- `manifest_gt_00824.json` -- not a read of the semantic sensor. An evaluation
+    # driver that may not say "gt" cannot name the manifest it was given.
+    "src/perception_module/run_metrics.py": "offline metrics driver; imported by nothing, installed nowhere",
+
     "test/test_preflight_gate.py": "the negative test names the tokens",
     "src/perception_module/habitat_feed_node.py": "relays the blob to /gt/semantic_instance (transport)",
     "src/perception_module/gt_codec.py": "the run-length codec",

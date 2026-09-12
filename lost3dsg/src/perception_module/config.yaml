@@ -47,6 +47,17 @@ association:
                               # before confirmation is lost. Override with MERGE_MIN_CONSECUTIVE.
   merge_max_distance_m: 0.8   # centre distance beyond which a pair is never merged
   merge_aabb_margin_m: 0.8    # AABB broad-phase margin; must be >= merge_max_distance_m
+  # HOW MANY of the three optional terms (colour, material, description) must have been
+  # COMPARABLE before two objects may be fused. At 0 a pair with nothing measurable scores
+  # 1.0000 on label agreement alone and merges -- and adding evidence LOWERS the score, so
+  # the least-informed pair in the map is the highest-scoring one (nlp_utils.py:340).
+  # Declared here, not left to config.py's fallback: a config passed as GRAPH_API_CONFIG
+  # REPLACES this file, so an arm that does not name the key carries no trace of it and a
+  # reader of the bundle cannot tell what guarded the merge. That is how frame_queue_max
+  # sat silently at 0 on 2026-09-11.
+  # It is what makes a LATE description safe: an undescribed pair is refused rather than
+  # fused, and the next post-scan sweep merges it once the description lands.
+  merge_min_evidence: 1
   merge_min_similarity: 0.925 # MUST stay strictly above sim_threshold above, or a merge fuses
                               # pairs the association loop has just refused. object_services
                               # asserts this at load and the merge service refuses a request
@@ -75,6 +86,12 @@ association:
   # list, so the settle could not be changed for a run at all.
   scan_complete_topic: "/habitat/scan_complete"
   scan_merge_settle_s: 1.0
+  # The CEILING on the settle above, which is now a floor rather than the value used: the
+  # merge after a scan waits for the p90 of the description round trips this run has
+  # actually seen, because that round trip is 2.4 s median and 7.9 s p95 on the online VLM
+  # and moves with the arm. This bounds it so one pathological call cannot stall every
+  # later sweep -- a scan is about 12 s at 36 frames and 3 fps.
+  scan_merge_settle_max_s: 10.0
 
 frames:
   # OPTICAL frame (x right, y down, z forward) the perception back-projects
@@ -242,12 +259,14 @@ rooms:
   gvd_min_robot_component_ratio: 0.15
 
 habitat:
+  # NO scene KEYS HERE. The launcher owns the scene: run_sim.sh picks it from its own
+  # argument (DEF_SCENE) and never reads these. Leaving them made every bundle's config
+  # claim 00824-Dd4bFSTQ8gi while the run drove hm3d_00861, and the evaluation resolver
+  # refused outright rather than score against the wrong house -- correctly, but it
+  # blocked eval on 20260911_173938. config.py still carries them as module defaults for
+  # habitat_nav.py and habitat_camera_objects_node.py, neither of which the live stack
+  # launches (checked: 0 references in live_stack_container.sh).
   localization_mode: rtabmap  # rtabmap | ground_truth
-  scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
-  scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_scene: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
-  nav_scene_dataset: /root/exchange/lost3dsg/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json
-  nav_navmesh: /root/exchange/lost3dsg/habitat/hm3d-val-habitat-v0.2/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.navmesh
   # keep the simulated agent on the floor it starts on: the 2D grid cannot separate
   # storeys and HM3D navmeshes join them through the stairs (goal filter on height)
   single_floor: true
@@ -315,7 +334,11 @@ run:
                             # Only one may publish map->odom, so this also decides which
                             # component owns that transform. Override: FEED_POSE_SOURCE.
   # --- what the perception side runs --------------------------------------------------------
-  wall_detector: false      # run the wall detector node. Override: WALL_DETECTOR.
+  # ON since 2026-09-11. With it off the wall detector never runs, `detected_walls` is [],
+  # `max_wall_support` is 0.0, and all 12 accepted doorway candidates fail the wall-support
+  # test -- cut_validation proposed 0, so a whole storey stays ONE room against 12 in ground
+  # truth and Table VI cannot score. The door code was never given walls to anchor to.
+  wall_detector: true       # run the wall detector node. Override: WALL_DETECTOR.
   gt_semantic: true         # render the simulator's semantic frame so archived detections can
                             # be joined to ground truth offline. It never reaches the runtime
                             # decision path; a preflight probe refuses a reader that tries.

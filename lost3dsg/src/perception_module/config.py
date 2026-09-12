@@ -500,7 +500,12 @@ _DEFAULTS = {
         "rtabmap_grid_args": "",
         "localize_db_copy": True,   # work on a COPY so a run cannot modify the shared map
         "pose_source": "simulator",  # simulator | rtabmap; also decides who owns map->odom
-        "wall_detector": False,
+        # ON since 2026-09-11. The MODULE default matters because a config passed as
+        # GRAPH_API_CONFIG REPLACES config.yaml rather than layering on it, so a config that
+        # does not mention this key -- the colleague's regolo_config.yaml does not -- lands
+        # here. With it False the wall detector never runs, detected_walls is [], every
+        # doorway candidate fails its wall-support test, and a storey stays ONE room.
+        "wall_detector": True,
         "gt_semantic": True,        # archived for the offline join only; never on the
         #                             decision path, and a preflight probe enforces that
         "gt_scene_instance": "",
