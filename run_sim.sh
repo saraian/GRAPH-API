@@ -1557,7 +1557,8 @@ echo ">>> ROS stack in container (web viewer -> http://localhost:${BRIDGE_PORT:-
 # bundle holds, rather than whatever the host tree says afterwards.
 cp "$HERE/live_stack_container.sh" "$RUN_DIR/live_stack_container.sh"
 rm -f "$RUN_DIR/NOT_STARTED"   # GA-381: past every check; from here the directory is a real attempt
-# FRAME_QUEUE_MAX, SCAN_COMPLETE_TOPIC and SCAN_MERGE_SETTLE_S are config-backed knobs whose
+# FRAME_QUEUE_MAX, SCAN_COMPLETE_TOPIC, SCAN_MERGE_SETTLE_S and MOTION_POSITION_THRESHOLD
+# are config-backed knobs whose
 # ENVIRONMENT OVERRIDE needs this passthrough. Each has a home in the config, so the knob
 # works without the -e line; without it the documented per-run override is a lever that looks
 # connected and is not. check_env_passthrough.py found all three by reading them inside the
@@ -1602,7 +1603,7 @@ fi
 # `bash -n` accepts it, because it is valid syntax; only the run fails. Done once, 2026-09-11.
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
   -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
-  -e FRAME_QUEUE_MAX -e SCAN_COMPLETE_TOPIC -e SCAN_MERGE_SETTLE_S \
+  -e FRAME_QUEUE_MAX -e SCAN_COMPLETE_TOPIC -e SCAN_MERGE_SETTLE_S -e MOTION_POSITION_THRESHOLD \
   -e MERGE_MIN_CONSECUTIVE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
   -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \

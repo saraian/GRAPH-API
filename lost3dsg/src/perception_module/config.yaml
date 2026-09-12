@@ -111,7 +111,14 @@ frames:
   # second, the same length as the sampling period.
   # Raising the threshold is NOT a fix: metres and radians are summed, so a turn on the spot
   # scores 6.28 without moving, and a threshold that admits it admits six metres of driving.
-  motion_position_threshold: 4.0
+  # LEAVE THIS ABSENT unless you mean to override. The default is DERIVED from
+  # perception.frame_queue_max: 4.0 with the queue on (the gate has no job -- a queued
+  # frame carries its own transform), 0.05 with it off (stop-and-look, where the gate is
+  # load-bearing and object_manager_6's "observed during motion" discard is correct).
+  # Setting a high value here WITH the queue off is refused at startup: that pair detects
+  # everything and keeps nothing, and it is the failure that cost 2026-09-11.
+  # So the key is DELIBERATELY ABSENT. Uncomment it only to pin the gate against the queue.
+  #   motion_position_threshold: 4.0
   motion_min_stationary_s: 0.5
 
 paths:

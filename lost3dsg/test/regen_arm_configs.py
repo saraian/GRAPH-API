@@ -86,7 +86,8 @@ ARMS = [
         "because a key in a tracked config is GA-319 and was committed once already.",
     ]),
     ("08_no_filter", {"vlm.base_url": "https://api.regolo.ai/v1", "vlm.model": "gemma4-31b",
-                      "hooks.filter": ""}, [
+                      "hooks.filter": "",
+                      "habitat.revisit_scan_deg": 180.0, "habitat.revisit_offset_m": 1.0}, [
         "NO ADMISSION FILTER. Owner 2026-09-11. Identical to 06_vlm_online except that nothing",
         "judges a proposal: hooks.Filter's pass-through admits everything, so every new-object",
         "proposal becomes an object.",
@@ -95,6 +96,10 @@ ARMS = [
         "admissible by this seam's definition, so those 16 entered anyway; what the filter changed",
         "was the annotation, not the map. This arm is the control that shows whether that holds.",
         "The admission rows are still written, so the two arms are compared on the same log.",
+        "THE MULTI-STOP TOUR IS ARMED HERE. habitat.revisit_scan_deg 180 and revisit_offset_m 1.0",
+        "(simulator lane, 71620ec and 0416f55): the agent turns 180 degrees again every time the",
+        "route re-enters a waypoint, standing a metre to the side. Their module defaults are 0,",
+        "which is the single-stop tour, so an arm that omits them does NOT test the tour.",
     ]),
     ("07_vlm_offline", {"vlm.base_url": "http://localhost:11434/v1", "vlm.model": "gemma3:27b"}, [
         "THE SAME RUN WITH NOTHING LEAVING THE MACHINE. The labelling VLM is served by ollama on",
@@ -121,6 +126,12 @@ def _set_dotted(tree: dict, dotted: str, value):
 
 def _sha16(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _mask_stamp(text: str) -> str:
+    """Drop the generated_at line. Every other byte of a snapshot is reproducible from the
+    tracked config and the ARMS table, so a remaining difference is a hand edit."""
+    return "\n".join(ln for ln in text.splitlines() if not ln.startswith("# generated_at:"))
 
 
 def header(name: str, diff: dict, note: list[str], base_sha: str, stamp: str) -> str:
@@ -182,15 +193,19 @@ def main() -> int:
             if not p.is_file():
                 stale.append((name, "absent"))
                 continue
-            # Compare the RECORDED base sha, not the file bodies: a body differs on the stamp
-            # alone, and a stamp is not staleness.
+            on_disk = p.read_text()
             recorded = ""
-            for line in p.read_text().splitlines():
+            for line in on_disk.splitlines():
                 if line.startswith("# generated_from:"):
                     recorded = line.rsplit(" ", 1)[-1]
                     break
             if recorded != base_sha:
                 stale.append((name, f"generated from {recorded or 'an unrecorded config'}"))
+            elif _mask_stamp(on_disk) != _mask_stamp(files[name]):
+                # The sha matches, so the snapshot is not stale -- the BODY has diverged, which is
+                # a hand edit. A regen would silently delete it, so name it here instead.
+                stale.append((name, "hand-edited: a regen would overwrite it. Move the change "
+                                    "into the ARMS table, or into the tracked config"))
         if stale:
             print(f"{len(stale)} of {len(files)} snapshots are stale "
                   f"(tracked config sha256 {base_sha}):")
@@ -233,6 +248,16 @@ def _selfcheck():
     # A changed base changes the sha, which is what makes --check work at all.
     _, sha2 = build(base + "extra: 1\n", "2026-01-01T00:00:00")
     assert sha2 != sha
+    # ARM 08 CARRIES THE MULTI-STOP TOUR. Exercised because the two keys reached the file by hand
+    # on 2026-09-12 and a regen that did not know them would have deleted both, turning the tour
+    # off in the one arm whose purpose is to run it.
+    eight = yaml.safe_load(files["08_no_filter"])
+    assert eight["habitat"]["revisit_scan_deg"] == 180.0, eight["habitat"]
+    assert eight["habitat"]["revisit_offset_m"] == 1.0, eight["habitat"]
+    # THE HAND-EDIT DETECTOR. A new stamp is not a difference; an added key is.
+    a = files["01_reference"]
+    assert _mask_stamp(a) == _mask_stamp(a.replace("2026-01-01T00:00:00", "2027-02-02T00:00:00"))
+    assert _mask_stamp(a) != _mask_stamp(a + "hand_added: 1\n")
     # dotted assignment does not destroy siblings
     t = {"a": {"b": 1}}
     _set_dotted(t, "a.c", 2)

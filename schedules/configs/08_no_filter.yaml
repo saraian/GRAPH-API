@@ -10,16 +10,22 @@
 # admissible by this seam's definition, so those 16 entered anyway; what the filter changed
 # was the annotation, not the map. This arm is the control that shows whether that holds.
 # The admission rows are still written, so the two arms are compared on the same log.
+# THE MULTI-STOP TOUR IS ARMED HERE. habitat.revisit_scan_deg 180 and revisit_offset_m 1.0
+# (simulator lane, 71620ec and 0416f55): the agent turns 180 degrees again every time the
+# route re-enters a waypoint, standing a metre to the side. Their module defaults are 0,
+# which is the single-stop tour, so an arm that omits them does NOT test the tour.
 #
 # WHAT DIFFERS FROM THE TRACKED config.yaml:
+#   habitat.revisit_offset_m: 1.0
+#   habitat.revisit_scan_deg: 180.0
 #   hooks.filter: ''
 #   vlm.base_url: 'https://api.regolo.ai/v1'
 #   vlm.model: 'gemma4-31b'
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
-# generated_at:   2026-09-12T11:01:43
-# generated_from: lost3dsg/src/perception_module/config.yaml sha256 f8caeb88828a5d71
+# generated_at:   2026-09-12T16:49:23
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 905e51d3c3913e27
 #
 # A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
 # code then takes its module fallback instead. If a bundle's config is missing a key
@@ -74,7 +80,6 @@ association:
 frames:
   camera: habitat_camera_optical
   agent_pose: habitat_camera
-  motion_position_threshold: 4.0
   motion_min_stationary_s: 0.5
 paths:
   operations_log: /root/exchange/output/operations.txt
@@ -195,11 +200,6 @@ rooms:
   gvd_fill_cloud_nonwall_direct: true
   gvd_min_robot_component_ratio: 0.15
 habitat:
-  revisit_scan_deg: 180.0
-  # Every re-observation stands about a metre off the waypoint, on a spread of points
-  # that is the same for a given waypoint every run. Same objects, different parallax
-  # and different occlusions -- which is the point of looking twice.
-  revisit_offset_m: 1.0
   localization_mode: rtabmap
   single_floor: true
   floor_tolerance_m: 0.5
@@ -210,6 +210,8 @@ habitat:
   tour_end_settle_s: 90.0
   min_floor_share: 0.1
   dataset_root: /root/exchange/lost3dsg/habitat
+  revisit_scan_deg: 180.0
+  revisit_offset_m: 1.0
 run:
   cap_min: null
   start_after_stack: true

@@ -37,7 +37,7 @@ import numpy as np  # noqa: E402
 import rclpy  # noqa: E402
 import tf2_ros  # noqa: E402
 import torch  # noqa: E402
-from config import CFG, world_frame  # noqa: E402
+from config import CFG, motion_gate, world_frame  # noqa: E402
 from detection_archive import (  # noqa: E402
     DetectionArchive, frame_id_from_stamp, resolve_archive_dir)
 from config import visibility as visibility_cfg  # noqa: E402
@@ -463,22 +463,21 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.head_joints = list(_frames_cfg.get("motion_watch") or ["habitat_camera"])
         self.base_joints = list(_frames_cfg.get("motion_watch_base") or [])
         self._motion_absent_logged = False
-        # Config first, environment override second. Both were hardcoded here, so no run
-        # could change the gate that decides whether perception runs at all.
-        #
-        # THE DEFAULT IS 4.0, WHICH IS UPSTREAM'S VALUE AND NOT OURS. The merge of 2026-09-12
-        # met two fixes for one fault: ours made this configurable at the old 0.05, theirs
-        # raised it to a hardcoded 4.0. Both halves are kept -- the plumbing from ours, the
-        # NUMBER from theirs, because theirs is the one that was measured against a run.
-        #
-        # What 4.0 means: the score adds metres of translation to radians of rotation, so one
-        # 10-degree turn action scores about 0.175 and a metre of travel scores 1.0. At 4.0 the
-        # gate is effectively open, which is the intent under the frame queue -- a queued frame
-        # carries its own transform, so motion cannot invalidate it. Set it low again to get
-        # the old stop-and-look behaviour back.
-        self.position_threshold = float(os.environ.get(
-            "MOTION_POSITION_THRESHOLD",
-            _frames_cfg.get("motion_position_threshold", 4.0)))
+        # THE MOTION GATE IS DERIVED FROM THE FRAME QUEUE, because the two are one decision.
+        # config.motion_gate() holds the reasoning and the refusal, next to the defaults it reads,
+        # and is exercised by `python3 config.py` -- this module needs cv2 and torch to import.
+        _explicit = os.environ.get("MOTION_POSITION_THRESHOLD")
+        if _explicit is None:
+            _explicit = _frames_cfg.get("motion_position_threshold")
+        self.position_threshold, _gate_src, _gate_refusal = motion_gate(self.frame_queue_max,
+                                                                        _explicit)
+        if _gate_refusal:
+            # REFUSED RATHER THAN RUN: the incoherent pair produces a run that detects everything
+            # and keeps nothing, and says nothing about why. A restart costs minutes; that cost a
+            # night on 2026-09-11.
+            raise SystemExit(_gate_refusal)
+        self.log_both('info', f"motion gate {self.position_threshold} ({_gate_src}; "
+                              f"frame_queue_max={self.frame_queue_max})")
         # GA-359. The pose source, and the gate that refuses to place a box on a stale
         # localisation. Under `rtabmap` the localiser publishes /localization_pose ONLY while
         # localised; a cycle with no pose newer than `localization_max_age_s` is SKIPPED and

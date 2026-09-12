@@ -265,7 +265,11 @@ _DEFAULTS = {
         # standing still, and any threshold that admits a scan rotation admits six metres of
         # driving. These keys make the gate tunable and record what it costs; they do not make
         # the quantity it compares physically meaningful.
-        "motion_position_threshold": 4.0,
+        # None MEANS DERIVE IT, and it must stay None. config.py merges _DEFAULTS UNDER the yaml
+        # (_merge below), so a concrete number here reaches `frames` even when no config mentions
+        # the key -- and perception_2.py's "no explicit value" branch then never runs. The derived
+        # default follows perception.frame_queue_max: 4.0 with the queue on, 0.05 with it off.
+        "motion_position_threshold": None,
         "motion_min_stationary_s": 0.5,
         # The frame the perception back-projects into. Must be an OPTICAL frame
         # (x right, y down, z forward). Publishing a body pose under this name
@@ -742,8 +746,53 @@ def visibility(live=None):
             _num("depth_tol_rel", float, 0.05))
 
 
+MOTION_GATE_OPEN = 4.0
+MOTION_GATE_STOP_AND_LOOK = 0.05
+
+
+def motion_gate(frame_queue_max: int, explicit=None):
+    """-> (threshold, source, refusal). The motion gate tied to the frame queue.
+
+    `frames.motion_position_threshold` decides whether perception_2 calls itself MOVING, which
+    gates whether a detection cycle runs. `perception.frame_queue_max` decides whether a frame is
+    processed live or from a queue on the transform captured with it. They answer one question
+    from two ends, and on 2026-09-12 two people set them independently while fixing one fault.
+
+    LEFT INDEPENDENT THEY HAVE A SILENT BAD CORNER: queue OFF with the threshold still 4.0 fires
+    cycles while driving, and object_manager_6 discards every resulting pair as "observed during
+    motion" -- zero objects, from a configuration that reads as the old conservative setting.
+
+    `explicit` is the config value or MOTION_POSITION_THRESHOLD, and None means "derive it".
+    `refusal` is a message when the pair is incoherent, else None; the caller decides to exit.
+    """
+    if explicit is None:
+        return ((MOTION_GATE_OPEN if frame_queue_max > 0 else MOTION_GATE_STOP_AND_LOOK),
+                "derived", None)
+    value = float(explicit)
+    refusal = None
+    if frame_queue_max == 0 and value > MOTION_GATE_STOP_AND_LOOK * 4:
+        refusal = (f"perception.frame_queue_max is 0 (frames processed live) but the motion gate "
+                   f"is {value} -- cycles would fire while moving and object_manager_6 would "
+                   f"discard every pair as 'observed during motion'. Set "
+                   f"frames.motion_position_threshold to about {MOTION_GATE_STOP_AND_LOOK} for "
+                   f"stop-and-look, or turn the frame queue on.")
+    return value, "explicit", refusal
+
+
 if __name__ == "__main__":
     assert CFG["vlm"]["model"], CFG
+    # THE MOTION GATE FOLLOWS THE QUEUE when nothing sets it, and the tracked config sets nothing.
+    assert CFG["frames"]["motion_position_threshold"] is None, CFG["frames"]
+    assert motion_gate(8, None) == (MOTION_GATE_OPEN, "derived", None)
+    assert motion_gate(0, None) == (MOTION_GATE_STOP_AND_LOOK, "derived", None)
+    # An explicit value wins in BOTH directions -- this ties the defaults, it does not take the
+    # knob away.
+    assert motion_gate(8, 0.05)[:2] == (0.05, "explicit")
+    assert motion_gate(8, "1.5")[:2] == (1.5, "explicit")      # env vars arrive as strings
+    # ... but the incoherent pair is named rather than run.
+    assert motion_gate(0, 4.0)[2] is not None
+    assert motion_gate(0, 0.05)[2] is None
+    assert motion_gate(8, 4.0)[2] is None                      # high gate WITH the queue is fine
     assert abs(sum(CFG["similarity"].values()) - 1.0) < 1e-6, CFG["similarity"]
     assert _merge({"a": {"b": 1, "c": 2}}, {"a": {"b": 9}}) == {"a": {"b": 9, "c": 2}}
     # visibility(): the host sends query STRINGS, and they must win over the yaml

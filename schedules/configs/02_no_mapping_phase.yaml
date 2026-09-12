@@ -14,8 +14,8 @@
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
-# generated_at:   2026-09-12T10:49:01
-# generated_from: lost3dsg/src/perception_module/config.yaml sha256 8533c66cf3695915
+# generated_at:   2026-09-12T16:49:23
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 905e51d3c3913e27
 #
 # A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
 # code then takes its module fallback instead. If a bundle's config is missing a key
@@ -70,7 +70,6 @@ association:
 frames:
   camera: habitat_camera_optical
   agent_pose: habitat_camera
-  motion_position_threshold: 4.0
   motion_min_stationary_s: 0.5
 paths:
   operations_log: /root/exchange/output/operations.txt
