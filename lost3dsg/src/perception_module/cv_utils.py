@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import os
 import urllib.parse
 import re
@@ -688,21 +689,55 @@ def _stamp_from_seconds(timestamp_sec):
     return stamp
 
 
+def _stable_marker_id(obj, fallback_index):
+    """Return a repeatable RViz id for a persistent object.
+
+    The object-manager and merge paths can enumerate the same world-model list in
+    different orders.  Using the list index therefore makes RViz associate a
+    label with the wrong box for one update (and makes a moving label look late).
+    Persistent objects have a stable ``object_id``; the bbox fallback keeps legacy
+    objects renderable when an old run did not store one.
+    """
+    object_id = getattr(obj, "object_id", None)
+    if object_id is None or not str(object_id).strip():
+        bbox = getattr(obj, "bbox", None) or {}
+        identity = [getattr(obj, "label", "")]
+        identity.extend(bbox.get(key) for key in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max"))
+        object_id = "|".join(str(value) for value in identity)
+
+    digest = hashlib.sha1(str(object_id).encode("utf-8")).digest()
+    marker_id = int.from_bytes(digest[:4], byteorder="big") & 0x7FFFFFFF
+    return marker_id or (fallback_index + 1)
+
+
 def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix=""):
     if not pub:
         return
     ma = MarkerArray()
+    clear = Marker()
+    clear.header.frame_id = world_frame()
+    clear.header.stamp = node.get_clock().now().to_msg()
+    clear.action = Marker.DELETEALL
+    ma.markers.append(clear)
+    used_ids = set()
     for i, obj in enumerate(objects):
         if obj.bbox is None:
             continue
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
         cx, cy, cz = _centroid_from_bbox(obj.bbox)
-        ma.markers.append(_make_marker(world_frame(), stamp, ns, i, Marker.SPHERE, 0.08, color, (cx, cy, cz)))
-        ma.markers.append(_make_text_marker(world_frame(), stamp, ns+"_labels", i+10000,
-                                            obj.label.replace(' ', '') + label_suffix, (cx, cy, cz)))
-    if ma.markers:
-        pub.publish(ma)
+        marker_id = _stable_marker_id(obj, i)
+        while marker_id in used_ids:
+            marker_id = (marker_id + 1) & 0x7FFFFFFF or 1
+        used_ids.add(marker_id)
+        ma.markers.append(_make_marker(world_frame(), stamp, ns, marker_id,
+                                       Marker.SPHERE, 0.08, color, (cx, cy, cz)))
+        ma.markers.append(_make_text_marker(world_frame(), stamp, ns+"_labels", marker_id,
+                                            str(obj.label).replace(' ', '') + label_suffix,
+                                            (cx, cy, cz)))
+    # Publish even when the list is empty: DELETEALL removes labels belonging to
+    # objects deleted or merged since the previous update.
+    pub.publish(ma)
 
 
 def publish_pov_volume(node, pov_volume, considered_volume_pub=None):

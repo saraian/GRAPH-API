@@ -29,7 +29,10 @@ from association import AssocObject, Observation, search_radius
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
 from cv_bridge import CvBridge
-from cv_utils import publish_persistent_bboxes
+from cv_utils import (
+    publish_persistent_bboxes,
+    publish_persistent_centroids as _publish_cv_persistent_centroids,
+)
 from detection_index import bounds as spatial_bounds
 from geometry_msgs.msg import PoseStamped
 from hooks import DecisionLog, load_hooks
@@ -55,12 +58,10 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformListener
 
-# Explicit, not `import *`. Only the names this file does NOT define itself:
-# publish_persistent_centroids, publish_pov_volume and publish_uncertain_* are defined
-# BELOW and also in cv_utils with different bodies, so importing them here would swap a
-# local implementation for a five-line wrapper (GA-77). While the star imports stood,
-# ruff's F family was blind on this file -- which is why GA-22's two crashes read as
-# `F405 may be undefined` instead of `F821 undefined name`.
+# Explicit, not `import *`. The persistent bbox/centroid publishers are shared with
+# object_services through cv_utils so every update path emits the same RViz markers.
+# The uncertain-marker helpers and POV publisher below remain local because their
+# object-manager filtering/ownership is intentionally different.
 from utils import compute_iou_3d
 from visualization_msgs.msg import Marker, MarkerArray
 from world_model import wm
@@ -579,27 +580,8 @@ def publish_agent_path(node, agent_poses, pub):
     pub.publish(path_msg)
 
 def publish_persistent_centroids(node, wm, pub):
-    marker_array = MarkerArray()
-    for i, obj in enumerate(wm.persistent_perceptions):
-        if obj.bbox is None or "door" in obj.label.lower():
-             continue
-        marker = Marker()
-        marker.header.frame_id = world_frame()
-        marker.header.stamp = _stamp_from_seconds(
-            getattr(obj, "last_perception_time", None)
-        ) if getattr(obj, "last_perception_time", None) else node.get_clock().now().to_msg()
-        marker.id = i
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.pose.orientation.w = 1.0
-        marker.pose.position.x = (obj.bbox['x_min'] + obj.bbox['x_max']) / 2.0
-        marker.pose.position.y = (obj.bbox['y_min'] + obj.bbox['y_max']) / 2.0
-        marker.pose.position.z = (obj.bbox['z_min'] + obj.bbox['z_max']) / 2.0
-        marker.scale.x = marker.scale.y = marker.scale.z = 0.1
-        marker.color.a = 1.0
-        marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
-        marker_array.markers.append(marker)
-    pub.publish(marker_array)
+    """Publish the shared sphere+text representation used by every run mode."""
+    return _publish_cv_persistent_centroids(node, wm, pub)
 
 def publish_uncertain_bboxes(node, uncertain_objects, pub):
     marker_array = MarkerArray()
