@@ -1502,6 +1502,19 @@ MOVERS = {"navigate": _move_navigate, "teleport": _move_teleport,
           "follower": _move_navigate, "straight": _move_navigate}
 
 
+def _tour_activity(tour):
+    """-> "scan", "travel" or "done": what the agent is doing in THIS frame.
+
+    Read off the tour's own state rather than inferred from the pose, because a pose delta cannot
+    separate a turn on the spot from a tight corner, and the two are different things to a detector.
+    """
+    if tour is None:
+        return None
+    if getattr(tour, "house_done", False):
+        return "done"
+    return "scan" if getattr(tour, "scan_left", 0) > 0 else "travel"
+
+
 def _fire_post_scan(ctx):
     """Called once per completed 360 degree scan. -> what the hook returned, or None.
 
@@ -2544,6 +2557,17 @@ def main():
                     "x": float(_cp[0]), "y": float(_cp[1]), "z": float(_cp[2]), "yaw": float(_yaw),
                     "qx": float(_cq[0]), "qy": float(_cq[1]), "qz": float(_cq[2]), "qw": float(_cq[3]),
                     "base_z": float(ros_agent_pos[2]), "phase": label,
+                    # WHAT THE AGENT WAS DOING WHEN THIS FRAME WAS TAKEN. `phase` says SCHEDULE for
+                    # every frame of a scheduled run -- it distinguishes the motion POLICY, not the
+                    # activity -- so no bundle could tell a frame taken while turning on the spot
+                    # from one taken while walking a corridor. That question decides whether a
+                    # detection had a fixed viewpoint, how many VLM calls a scan is worth, and
+                    # whether two consecutive cycles saw the same place. ScheduledTour knew the
+                    # answer all along and never wrote it down.
+                    "activity": _tour_activity(tour),
+                    "stop_index": getattr(tour, "i", None),
+                    "lap": getattr(tour, "lap", None),
+                    "scan_left": getattr(tour, "scan_left", None),
                 }) + "\n")
         except (BrokenPipeError, ConnectionResetError, socket.error, OSError) as exc:
             frames_send_failed += 1
