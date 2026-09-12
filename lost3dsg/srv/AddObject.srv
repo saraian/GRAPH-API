@@ -34,6 +34,10 @@ float32[] description_embedding
 # indistinguishable from one whose embedding genuinely came back empty, and absence read
 # as a measurement is the defect class this review keeps finding.
 bool has_description_embedding
+# Runtime image appearance vector from CLIP ViT-B/32. This is distinct from the
+# text/description embedding above and from the offline HOV-SG evaluation vector.
+bool has_clip_embedding
+float32[] clip_embedding
 bool in_exploration
 ---
 # RESPONSE

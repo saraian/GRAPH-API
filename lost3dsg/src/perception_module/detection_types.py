@@ -19,3 +19,6 @@ class Detection:
     instance_label: Optional[str] = field(default=None)
     is_confirmed: bool = field(default=True)
     clip_embedding: Optional[List[float]] = field(default=None)
+    # Explicit calibration join key. It is assigned by perception_2 once the exact
+    # frame stamp is known and is carried through the archive and both ROS arrays.
+    detection_id: Optional[str] = field(default=None)

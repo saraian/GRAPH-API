@@ -1567,9 +1567,10 @@ class ObjectManagerService(Node):
             # GA-190: same rule, third field. Only when the publisher says it carried one.
             if getattr(box, "has_clip_embedding", False):
                 bbox_data["clip_embedding"] = [float(v) for v in box.clip_embedding]
-            temp_key = create_object_key(box.label, "", "", "")
+            detection_id = str(getattr(box, "detection_id", "") or "").strip() or None
+            temp_key = detection_id or create_object_key(box.label, "", "", "")
             self.latest_bboxes[temp_key] = {
-                "bbox": bbox_data, "label": box.label,
+                "bbox": bbox_data, "label": box.label, "detection_id": detection_id,
                 "color": "", "material": "", "description": ""
             }
 
@@ -1619,19 +1620,21 @@ class ObjectManagerService(Node):
             # (ok / model_abstained / parse_failed / call_failed / unanswered) from the log.
             status = getattr(description, "status", "") or "unanswered"
             self._vlm_status_counts[status] = self._vlm_status_counts.get(status, 0) + 1
+            detection_id = str(getattr(description, "detection_id", "") or "").strip() or None
 
             description_embedding = get_embedding(world2vec, description_text)
 
             old_key = create_object_key(label, "", "", "")
-            if old_key not in self.latest_bboxes:
+            bbox_key = detection_id if detection_id in self.latest_bboxes else old_key
+            if bbox_key not in self.latest_bboxes:
                 continue
 
-            bbox = self.latest_bboxes[old_key]["bbox"]
+            bbox = self.latest_bboxes[bbox_key]["bbox"]
             new_key = create_object_key(label, material, color, description_text)
 
-            del self.latest_bboxes[old_key]
+            del self.latest_bboxes[bbox_key]
             self.latest_bboxes[new_key] = {
-                "bbox": bbox, "label": label,
+                "bbox": bbox, "label": label, "detection_id": detection_id,
                 "color": color, "material": material, "description": description_text,
                 "status": status
             }
@@ -2071,6 +2074,23 @@ class ObjectManagerService(Node):
             return embedding.tolist()
         return [float(x) for x in embedding]
 
+    def _serialize_clip_embedding(self, embedding):
+        """Return a finite appearance vector for the Graph API, or ``None``.
+
+        Unlike the text embedding, an absent CLIP vector must be omitted from an update:
+        an update without an appearance measurement must preserve the object's previous
+        appearance rather than replace it with an empty array.
+        """
+        if embedding is None:
+            return None
+        try:
+            values = np.asarray(embedding, dtype=np.float32).flatten()
+        except (TypeError, ValueError):
+            return None
+        if values.size == 0 or not np.all(np.isfinite(values)):
+            return None
+        return values.tolist()
+
     def _call_graph_api(self, method, path, json_body=None, expected_status=None):
         url = self._graph_api_url(path)
         try:
@@ -2189,6 +2209,9 @@ class ObjectManagerService(Node):
                        description_embedding=None, in_exploration=False, room_id=None):
 
         serialized_embedding=self._serialize_embedding(description_embedding)
+        serialized_clip_embedding = self._serialize_clip_embedding(
+            bbox.get("clip_embedding") if isinstance(bbox, dict) else None
+        )
         assigned_room = str(room_id) if room_id is not None else self.room_manager.current_room_id
         self.room_manager.init_room_node(assigned_room)
         payload = {
@@ -2208,6 +2231,8 @@ class ObjectManagerService(Node):
                if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "in_exploration": in_exploration,
             "description_embedding": serialized_embedding,
+            **({"clip_embedding": serialized_clip_embedding}
+               if serialized_clip_embedding is not None else {}),
         }
 
         try:
@@ -2230,6 +2255,9 @@ class ObjectManagerService(Node):
         return None
 
     def modify_existing_object(self, best_match, bbox, description_embedding=None):
+        serialized_clip_embedding = self._serialize_clip_embedding(
+            bbox.get("clip_embedding") if isinstance(bbox, dict) else None
+        )
         payload = {
             "description": best_match.description,
             "color": best_match.color,
@@ -2244,6 +2272,8 @@ class ObjectManagerService(Node):
                 "oriented_extents": list(bbox["oriented_extents"])}
                if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "description_embedding": self._serialize_embedding(description_embedding),
+            **({"clip_embedding": serialized_clip_embedding}
+               if serialized_clip_embedding is not None else {}),
         }
 
         response = UpdateObject.Response()

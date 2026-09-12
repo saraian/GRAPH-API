@@ -359,6 +359,22 @@ def _set_description_embedding(req, body):
     return req.has_description_embedding
 
 
+def _set_clip_embedding(req, body):
+    """Carry the per-detection CLIP image vector across the HTTP/ROS seam.
+
+    ``float32[]`` cannot represent JSON ``null``.  The explicit flag therefore has
+    the same meaning as ``has_description_embedding``: false means "do not change or
+    use appearance evidence", while a non-empty finite vector is a measurement.
+    """
+    raw = body.get("clip_embedding")
+    values = [] if raw is None else [float(value) for value in raw]
+    if not all(math.isfinite(value) for value in values):
+        raise HTTPException(status_code=400, detail="clip_embedding contains a non-finite value")
+    req.clip_embedding = values
+    req.has_clip_embedding = bool(values)
+    return req.has_clip_embedding
+
+
 def _set_orientation(req, body: dict):
     """GA-312. Carry the oriented box across the service boundary when the caller sent one.
     `has_orientation` is set from the presence of ALL THREE keys, never from a default, so an
@@ -389,6 +405,7 @@ def add_object(body: dict):
     req.z_max = float(body.get("z_max", 0.0))
     _set_orientation(req, body)
     _set_description_embedding(req, body)
+    _set_clip_embedding(req, body)
     res = require_node().call('add', req)
     if not res.success:
         raise HTTPException(status_code=400, detail=res.message)
@@ -453,6 +470,7 @@ def update_object(object_id: str, body: dict):
         _set_orientation(req, body)
 
     _set_description_embedding(req, body)
+    _set_clip_embedding(req, body)
 
     res = require_node().call('update', req)
     if not res.success:

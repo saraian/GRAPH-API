@@ -345,31 +345,28 @@ def a3_policy_reached_container(expect_policy):
     return (not mismatches), {"checked": seen, "mismatches": mismatches}
 
 
-# GA-438 (2026-09-10). THE HUB MODELS A RUN LOADS, enumerated from the source because no list
-# existed anywhere. Owner policy, 2026-09-10: "models should be already downloaded and cached
-# beforehand", so a download DURING a run is a fault and a4 asserts these instead of recording them.
-# The previous note here -- "a cache miss is a first-run download and not a fault" -- was right when
-# it was written and is not right now.
-#
-# THREE OF THE FOUR LOAD ON EVERY RUN, WHATEVER THE BACKEND, and that is the part the old check
-# missed: it sat inside `if backend == "local"`, so a cloud-backend run could pass a4 and then
-# download three models. visual_reid picks dinov2-base over dinov2-small on MEASURED VRAM, so both
-# must be present or the run downloads whichever one it chooses.
+# GA-438 (2026-09-10), corrected 2026-09-12. The gate asserts only models on the active runtime
+# path. The unified Regolo VLM supplies the 2-D detections, VitSAM supplies the local masks, and
+# the local path computes its per-detection appearance vector with CLIP. The visual-reid module is
+# disabled and unimported, so its DINOv2 checkpoints are not run dependencies. MiniLM remains the
+# first-choice semantic embedder in nlp_utils.py and must be cached before an offline run;
+# Word2Vec is its fallback.
 HF_MODELS_EVERY_RUN = (
     ("sentence-transformers/all-MiniLM-L6-v2", "nlp_utils.py, semantic matching"),
-    ("facebook/dinov2-small", "visual_reid.py, crop embedder (ViT-S/14)"),
-    ("facebook/dinov2-base", "visual_reid.py, chosen over -small on measured VRAM"),
 )
+# Kept as a named tuple for callers/tests that distinguish common and backend-specific models.
+# The current local backend uses the unified VLM plus VitSAM ONNX files and a local CLIP appearance
+# encoder; it does not use a separate HF detector.
 HF_MODELS_LOCAL_BACKEND = (
-    ("google/owlv2-base-patch16-ensemble", "models.py, the in-line detector"),
+    ("openai/clip-vit-base-patch32", "clip_embedder.py, runtime appearance embeddings"),
 )
 
 
-def _hf_models_present(local_backend):
+def _hf_models_present(local_backend, local_models=None):
     """-> (cache root, [missing model ids], {present model id: snapshot path}).
 
-    FILES ON DISK, never a load: a4 runs before the stack and loading OWLv2 plus the SAM pair would
-    cost minutes and a lot of memory in the one probe whose job is to be cheap.
+    FILES ON DISK, never a load: a4 runs before the stack and verifies the cache the node will use
+    without starting another model instance.
 
     A DIRECTORY IS NOT A CACHED MODEL. huggingface creates models--<org>--<name> before it has
     finished fetching, and an interrupted download leaves the directory with an empty snapshots/.
@@ -383,7 +380,8 @@ def _hf_models_present(local_backend):
     # catch, and a probe that reads the wrong cache becomes the defect it was written for. Same
     # shape as a8's install-tree test: outside the container, assert nothing rather than assert
     # about the wrong machine. PREFLIGHT_HF_CACHE names the cache explicitly when it is known.
-    wanted = list(HF_MODELS_EVERY_RUN) + (list(HF_MODELS_LOCAL_BACKEND) if local_backend else [])
+    backend_models = HF_MODELS_LOCAL_BACKEND if local_models is None else tuple(local_models)
+    wanted = list(HF_MODELS_EVERY_RUN) + (list(backend_models) if local_backend else [])
     missing, seen = [], {}
     # THE LOADER READS $HF_HOME/hub, SO ONLY THAT COUNTS. A recursive search found a stale
     # sentence-transformers directory at the cache ROOT -- blobs and refs, no snapshots dir the
@@ -404,8 +402,9 @@ def _hf_models_present(local_backend):
     return hf, missing, seen
 
 
-def _hub_why(missing, hf):
-    why = {m: w for m, w in list(HF_MODELS_EVERY_RUN) + list(HF_MODELS_LOCAL_BACKEND)}
+def _hub_why(missing, hf, local_models=None):
+    backend_models = HF_MODELS_LOCAL_BACKEND if local_models is None else tuple(local_models)
+    why = {m: w for m, w in list(HF_MODELS_EVERY_RUN) + list(backend_models)}
     return ("these hub models are NOT cached under " + hf + ": "
             + "; ".join(f"{m} ({why.get(m, 'loaded by this stack')})" for m in missing)
             + ". Owner policy 2026-09-10: models are cached beforehand, so a download inside a run "
@@ -429,11 +428,8 @@ def a4_perception_twice(frame=None):
     backend = get_perception_backend(cfgmod.CFG)
     name = type(backend).__name__
 
-    # GA-438. THE ALWAYS-LOADED MODELS ARE ASSERTED FOR EVERY BACKEND, above the local/cloud split.
-    # The cache check used to sit INSIDE `backend == "local"`, so a cloud run asserted nothing about
-    # models it loads regardless: nlp_utils loads MiniLM on every run and visual_reid loads one of
-    # the two dinov2 sizes on every run. A cloud-backend run could pass a4 and then download three
-    # models inside its first perception cycle.
+    # GA-438. MiniLM is the only always-loaded hub model. Local perception additionally loads the
+    # configured CLIP appearance encoder; no disabled visual-reid model is part of the active path.
     _hf_root, _always_missing, _always_seen = _hf_models_present(local_backend=False)
     _in_container = os.path.isdir(INSTALL_TREE)
     if _always_missing and _in_container:
@@ -454,26 +450,38 @@ def a4_perception_twice(frame=None):
     # GA-434 (finding: experiment lane, 2026-09-09; verified in the source here). THE NAME CHECK
     # BELOW WOULD REFUSE A LEGITIMATE LOCAL RUN. On `perception.backend: "local"` the factory returns
     # LocalPerceptionBackend, but the pipeline NEVER ASKS IT ANYTHING: detection_pipeline gates the
-    # backend call on `backend_type != "local"`, and perception_2 builds OWLv2() and VitSam() in-line
-    # instead. So the stub's empty return is not on the detection path, and a4's premise is true of
-    # the OBJECT it inspects and false of the CODE that runs (rule 51).
+    # backend call on `backend_type != "local"`, and perception_2 uses the unified VLM plus VitSAM
+    # in-line instead. So the stub's empty return is not on the detection path, and a4's premise is
+    # true of the OBJECT it inspects and false of the CODE that runs (rule 51).
     #
     # What the local path actually depends on is FILES, so that is what is asserted. Deliberately NOT
-    # by loading the models: a4 runs before the stack, and loading OWLv2 and the SAM pair here would
-    # cost minutes and a lot of memory in the one probe whose job is to be cheap.
+    # by loading the models: a4 runs before the stack, and loading the semantic model and SAM pair
+    # here would cost time and memory in the one probe whose job is to be cheap.
     local_cfg = (getattr(cfgmod, "CFG", {}) or {}).get("perception", {}).get("backend", "local")
     if str(local_cfg).lower() == "local":
         paths = (cfgmod.CFG.get("paths") or {})
         want = {"vitsam_encoder": paths.get("vitsam_encoder"), "vitsam_decoder": paths.get("vitsam_decoder")}
         missing = {k: v for k, v in want.items() if not (v and os.path.isfile(v) and os.path.getsize(v) > 0)}
-        hf, hub_missing, hub_seen = _hf_models_present(local_backend=True)
-        cached = "google/owlv2-base-patch16-ensemble" not in hub_missing
-        detail = {"backend": name, "path": "in-line (OWLv2 + VitSam), the stub is never called",
+        appearance = (getattr(cfgmod, "CFG", {}) or {}).get("appearance") or {}
+        appearance_enabled = str(appearance.get("enabled", True)).strip().lower() not in (
+            "0", "false", "off", "no"
+        )
+        appearance_model = str(
+            appearance.get("model_id", "openai/clip-vit-base-patch32")
+        )
+        local_models = (
+            ((appearance_model, "clip_embedder.py, runtime appearance embeddings"),)
+            if appearance_enabled else ()
+        )
+        hf, hub_missing, hub_seen = _hf_models_present(
+            local_backend=True, local_models=local_models
+        )
+        detail = {"backend": name, "path": "in-line (unified VLM + VitSAM + CLIP), the stub is never called",
                   "vitsam": {k: (v, os.path.getsize(v) if v and os.path.isfile(v) else None)
                              for k, v in want.items()},
-                  "owlv2_weights_cached": cached, "hf_cache_root": hf,
+                  "appearance": {"enabled": appearance_enabled, "model_id": appearance_model},
                   "hub_models_present": hub_seen, "hub_models_missing": hub_missing,
-                  "note": "the segmenter's files and the hub models are ASSERTED, both from disk and "
+                  "note": "the segmenter's files and the required hub models are ASSERTED, both from disk and "
                           "never by loading them. Whether the models actually detect is the first "
                           "cycle's answer, not this probe's."}
         if missing:
@@ -485,7 +493,7 @@ def a4_perception_twice(frame=None):
         # path can start at all, and it was a4's contract before today; putting the hub check first
         # would change which reason a4 gives for a fault it already caught.
         if hub_missing and _in_container:
-            detail["why"] = _hub_why(hub_missing, hf)
+            detail["why"] = _hub_why(hub_missing, hf, local_models=local_models)
             return False, detail
         return True, detail
 

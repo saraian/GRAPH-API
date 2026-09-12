@@ -36,7 +36,6 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 import rclpy  # noqa: E402
 import tf2_ros  # noqa: E402
-import torch  # noqa: E402
 from config import CFG, world_frame  # noqa: E402
 from detection_archive import (  # noqa: E402
     DetectionArchive, frame_id_from_stamp, resolve_archive_dir)
@@ -59,6 +58,7 @@ if not hasattr(np, "float"):
 
 import utils  # noqa: E402
 from cloud import get_perception_backend  # noqa: E402
+from clip_embedder import ClipEmbedder  # noqa: E402
 from cv_utils import (  # noqa: E402
     _clear_markers,
     draw_boxes_3d,
@@ -83,13 +83,18 @@ from world_model import wm  # noqa: E402
 
 from lost3dsg.msg import Bbox3d, Bbox3dArray, ObjectDescription, ObjectDescriptionArray  # noqa: E402
 
-# Do not probe torch CUDA during module import. The local VitSAM path is ONNX-based and
-# selects its provider in models.VitSam; probing here used to emit a misleading CUDA warning
-# before the node had even selected its backend. The optional OWLv2 path configures its own
-# device when it is instantiated.
+# The local VitSAM path is ONNX-based and selects its provider in models.VitSam. The unified
+# Regolo VLM supplies the 2-D boxes; there is no separate OWLv2 detector in this node.
 
 PROJECT_ROOT = get_project_root(__file__)
 LOG_DIR = os.environ.get("GRAPH_API_OUTPUT_DIR") or os.path.join(PROJECT_ROOT, "output")
+
+
+def _detection_id_for(frame_id, index):
+    """Return the stable per-frame identity used by the runtime CLIP sidecar."""
+    if frame_id is None:
+        return None
+    return f"{frame_id}:{int(index)}"
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
 except OSError:
@@ -252,6 +257,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # position against one this same callback had just replaced.
         self.motion_cb_group = MutuallyExclusiveCallbackGroup()
         self._perception_lock = Lock()
+        self._clip_sidecar_lock = Lock()
 
         self.file_logger = module_logger
         self.file_logger.info("=== DetectObjectsNode initialized ===")
@@ -261,13 +267,30 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
         if backend_type == "local":
             # The unified VLM response supplies the 2D boxes, so this path does
-            # not need to load a separate OWLv2 detector.
+            # not need a separate detector; VitSAM only lifts those boxes to masks.
             self.detector = None
             self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
-            self.file_logger.info("Using unified whole-scene VLM boxes with local VitSAM")
+            # The cloud backend has always returned CLIP image features.  Instantiate the
+            # identical local image encoder for the unified-VLM + VitSAM path, otherwise
+            # `Detection.clip_embedding` remains None and appearance evidence silently
+            # disappears before it reaches the graph.
+            self.clip_embedder = ClipEmbedder.from_config(CFG)
+            if self.clip_embedder is None:
+                self.file_logger.info(
+                    "Using unified whole-scene VLM boxes with local VitSAM; "
+                    "appearance embeddings disabled"
+                )
+            else:
+                self.file_logger.info(
+                    "Using unified whole-scene VLM boxes with local VitSAM and "
+                    f"CLIP appearance ({self.clip_embedder.model_id}, "
+                    f"device={self.clip_embedder.device}, "
+                    f"dim={self.clip_embedder.dimension})"
+                )
         else:
             self.detector = None
             self.vitsam = None
+            self.clip_embedder = None
             self.file_logger.info(f"Using Cloud Perception Backend: {backend_type}")
         self.vlm = VlmClient(vlm_call_fn=vlm_call, image_encoder_fn=_encode_for_vlm,
                              crop_call_fn=partial(vlm_call, timeout=CFG["vlm"]["crop_timeout"]))
@@ -946,6 +969,15 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.publish_empty_state(depth, camera_info, cycle_stamp, fov_volume=fov_volume)
             return
 
+        # Give every detector output a stable identity before any downstream stage can
+        # reorder, label, archive, or publish it. The same id is carried by the archive,
+        # /bbox_3d, and /object_descriptions, allowing ObjectManager to join a graph object
+        # to the exact archived detection and its Habitat GT instance without a centroid
+        # or label heuristic.
+        _frame_id = frame_id_from_stamp(cycle_stamp)
+        for _index, _det in enumerate(detections):
+            _det.detection_id = _detection_id_for(_frame_id, _index)
+
         # H12: save_visualizations no longer takes the root — it resolves the same
         # bundle root the crops and the per-cycle JSON use.
         self._io_executor.submit(self.save_visualizations, image_raw.copy(), depth.copy(), list(detections))
@@ -1247,58 +1279,110 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         return centroids_3d, bboxes_3d
 
     def _attach_crop_embeddings(self, detections, crops_data):
-        """CLIP image embedding per object, reusing the OWLv2 backbone already on
-        the GPU (OWLv2 is CLIP-based) — no extra model load. Sets det.clip_embedding
-        and queues the per-cycle sidecar dump (output/clip_embeddings.json)."""
-        # If detections already have clip_embedding from cloud backend, dump and return
-        if any(getattr(d, "clip_embedding", None) is not None for d in detections):
-            snapshot = {det.instance_label: det.clip_embedding for det in detections if getattr(det, "clip_embedding", None)}
-            if snapshot:
-                self._io_executor.submit(self.write_clip_embeddings, snapshot)
-            return
+        """Persist one runtime CLIP vector per detection, preserving detection identity.
 
-        if not self.detector:
-            return
-
-        valid = [c for c in crops_data if c is not None]
-        embeddings = {}
-        if valid:
+        The old sidecar was keyed by ``instance_label``.  That is not unique when a frame
+        contains two chairs, and the local path never populated it at all.  The ROS arrays
+        and the archive already carry ``detection_id``; use that as the key and keep labels
+        only as metadata for inspection.
+        """
+        del crops_data
+        entries = []
+        for det in detections:
+            raw = getattr(det, "clip_embedding", None)
+            if raw is None:
+                continue
             try:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                images = [cv2.cvtColor(c["cropped"], cv2.COLOR_BGR2RGB) for c in valid]
-                inputs = self.detector.processor(images=images, return_tensors="pt")
-                pixel_values = inputs["pixel_values"].to(self.detector.device)
-                with torch.inference_mode():
-                    feats = self.detector.model.owlv2.get_image_features(pixel_values=pixel_values)
-                # transformers returns a tensor or BaseModelOutputWithPooling depending on version
-                if not torch.is_tensor(feats):
-                    feats = feats.pooler_output
-                feats = torch.nn.functional.normalize(feats, dim=-1).cpu().numpy()
-                embeddings = {c["idx"]: [round(float(v), 5) for v in feats[i]] for i, c in enumerate(valid)}
-            except Exception as exc:
-                self.log_both("warn", f"Crop embedding computation failed: {exc}")
-            finally:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                vector = [float(value) for value in raw]
+            except (TypeError, ValueError):
+                continue
+            if not vector or not np.all(np.isfinite(np.asarray(vector, dtype=float))):
+                continue
+            detection_id = (
+                getattr(det, "detection_id", None)
+                or getattr(det, "instance_label", None)
+                or getattr(det, "label", None)
+            )
+            if not detection_id:
+                continue
+            entries.append({
+                "detection_id": str(detection_id),
+                "label": getattr(det, "label", ""),
+                "instance_label": getattr(det, "instance_label", "") or "",
+                "embedding": vector,
+            })
+        if entries:
+            self._io_executor.submit(self.write_clip_embeddings, entries)
 
-        for idx, det in enumerate(detections):
-            det.clip_embedding = embeddings.get(idx)
-
-        snapshot = {det.instance_label: det.clip_embedding for det in detections if det.clip_embedding}
-        if snapshot:
-            self._io_executor.submit(self.write_clip_embeddings, snapshot)
-
-    def write_clip_embeddings(self, embeddings):
+    def write_clip_embeddings(self, entries):
         # H12: the same root every other writer in this seam uses — the bundle, when set.
         from input_output import resolve_output_root
+        import tempfile
+
         path = os.path.join(resolve_output_root(), "clip_embeddings.json")
+        temporary = None
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
-                json.dump(embeddings, f)
+            directory = os.path.dirname(path)
+            os.makedirs(directory, exist_ok=True)
+            with self._clip_sidecar_lock:
+                existing = {}
+                if os.path.isfile(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            existing = json.load(f)
+                    except (OSError, ValueError):
+                        existing = {}
+
+                # Migrate the pre-existing label-keyed dictionary without treating it as
+                # category embeddings.  New readers can distinguish this document by its
+                # schema and by the detection-keyed `detections` member.
+                document = {
+                    "schema": "lost3dsg.runtime_clip_embeddings.v1",
+                    "model": {
+                        "id": getattr(
+                            getattr(self, "clip_embedder", None),
+                            "model_id", "openai/clip-vit-base-patch32",
+                        ),
+                        "dimension": None,
+                        "normalized": True,
+                    },
+                    "detections": {},
+                }
+                if isinstance(existing, dict):
+                    if isinstance(existing.get("model"), dict):
+                        document["model"].update(existing["model"])
+                    if isinstance(existing.get("detections"), dict):
+                        document["detections"].update(existing["detections"])
+                    else:
+                        for key, value in existing.items():
+                            if isinstance(value, list):
+                                document["detections"][str(key)] = {
+                                    "detection_id": str(key),
+                                    "label": str(key),
+                                    "instance_label": str(key),
+                                    "embedding": value,
+                                }
+                for entry in entries:
+                    document["detections"][entry["detection_id"]] = entry
+                    document["model"]["dimension"] = len(entry["embedding"])
+
+                fd, temporary = tempfile.mkstemp(
+                    dir=directory, prefix=".clip_embeddings.", suffix=".tmp"
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(document, f, allow_nan=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary, path)
+                temporary = None
         except Exception as exc:
             self.log_both("error", f"CLIP embedding dump failed: {exc}")
+        finally:
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     def _run_crop_vlm_batch(self, crops_data):
         """Submit this cycle's crops, return the ones that have ALREADY finished. GA-210.
@@ -1594,7 +1678,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                            if crops_data is not None and i < len(crops_data) else None),
                 stamp=frame_id,
                 room_id=getattr(self, "current_room_id", None),
-                semantic_frame=semantic)
+                semantic_frame=semantic,
+                detection_id=getattr(det, "detection_id", None) or _detection_id_for(frame_id, i))
 
     def _publish_bbox_array(self, detections, bboxes_3d, fov_volume, cycle_stamp, cycle_id=""):
         msg = self.make_header_msg(Bbox3dArray, stamp=cycle_stamp, frame_id=world_frame())
@@ -1603,11 +1688,15 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             for key, value in fov_volume.items():
                 setattr(msg, f"fov_{key}", value)
 
-        for det, bbox_3d in zip(detections, bboxes_3d):
+        for index, (det, bbox_3d) in enumerate(zip(detections, bboxes_3d)):
             if not bbox_3d:
                 continue
             box_msg = Bbox3d()
             box_msg.label = det.instance_label
+            if hasattr(box_msg, "detection_id"):
+                box_msg.detection_id = (getattr(det, "detection_id", None)
+                                        or _detection_id_for(frame_id_from_stamp(cycle_stamp), index)
+                                        or "")
             for key, value in bbox_3d.items():
                 # Only copy keys the msg actually has: bbox dicts may carry
                 # extra fields (added before the msg grows a matching one) and
@@ -1646,9 +1735,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # that crop -- a degenerate mask, for instance -- and None must stay absent
             # rather than become a zero vector.
             det_embed = getattr(det, "clip_embedding", None)
-            if det_embed:
+            try:
+                det_embed_values = np.asarray(det_embed, dtype=np.float32).flatten()
+            except (TypeError, ValueError):
+                det_embed_values = np.asarray([])
+            if (det_embed_values.size > 0
+                    and np.all(np.isfinite(det_embed_values))):
                 box_msg.has_clip_embedding = True
-                box_msg.clip_embedding = [float(v) for v in det_embed]
+                box_msg.clip_embedding = [float(v) for v in det_embed_values]
             else:
                 box_msg.has_clip_embedding = False
             msg.boxes.append(box_msg)
@@ -1657,9 +1751,13 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
     def _publish_description_array(self, detections, descriptions, cycle_stamp, cycle_id=""):
         desc_array = self.make_header_msg(ObjectDescriptionArray, stamp=cycle_stamp, frame_id=world_frame())
         desc_array.cycle_id = cycle_id
-        for det, desc in zip(detections, descriptions):
+        for index, (det, desc) in enumerate(zip(detections, descriptions)):
             obj_msg = ObjectDescription()
             obj_msg.label = det.instance_label
+            if hasattr(obj_msg, "detection_id"):
+                obj_msg.detection_id = (getattr(det, "detection_id", None)
+                                        or _detection_id_for(frame_id_from_stamp(cycle_stamp), index)
+                                        or "")
             # Only copy keys the msg actually has -- the same guard _publish_bbox_array
             # already carries, and for the same reason. `_build_descriptions` adds
             # `confirmed` (always) and `provenance` (sometimes), and ObjectDescription.msg
@@ -1742,6 +1840,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 "centroid": obj.centroid.tolist() if hasattr(obj.centroid, "tolist") else list(obj.centroid or []),
                 "bbox": obj.bbox,
                 "status": getattr(obj, "status", ""),
+                # Keep the runtime appearance channel in the per-cycle artifact as
+                # well as in persistent_perception.json.  It is the same normalized
+                # CLIP vector carried by Bbox3d, not the text embedding used by the
+                # semantic matcher or the offline HOV-SG vector.
+                "clip_embedding": getattr(obj, "clip_embedding", None),
                 **{field: getattr(obj, field) for field in DESCRIPTION_FIELDS},
             }
             for obj in wm.actual_perceptions

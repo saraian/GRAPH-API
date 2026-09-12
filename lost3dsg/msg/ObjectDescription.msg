@@ -1,4 +1,6 @@
 string label
+# Stable per-frame detector identity, shared with Bbox3d and detections.jsonl.
+string detection_id
 string description
 string color 
 string material

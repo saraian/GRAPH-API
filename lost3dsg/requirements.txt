@@ -25,15 +25,14 @@ ultralytics>=8.0.0
 segment-anything>=1.0
 Pillow>=10.0.0
 
-# ONNX Runtime (choose CPU or GPU version)
+# ONNX Runtime (GPU is required by the live VitSAM path)
 onnx>=1.14.0
-onnxruntime>=1.15.0
-# Uncomment the following line if you have CUDA GPU support:
-# onnxruntime-gpu>=1.15.0
+onnxruntime-gpu==1.18.1
 onnxsim>=0.4.0
 
 # NLP & Language Models
 gensim>=4.3.0
+sentence-transformers>=3.0.1,<4.0
 openai>=1.40.0
 
 

@@ -541,6 +541,24 @@ def normalise_embedding(raw):
     return arr
 
 
+def normalise_clip_embedding(raw):
+    """-> a finite runtime CLIP image vector as a list, or ``None``.
+
+    Runtime appearance vectors cross two typed boundaries (HTTP JSON and a ROS
+    ``float32[]``).  Keep their validation separate from the 300-D text embedding:
+    the two spaces have different dimensions and different consumers.
+    """
+    if raw is None:
+        return None
+    try:
+        arr = np.asarray(raw, dtype=np.float32).flatten()
+    except (TypeError, ValueError):
+        return None
+    if arr.size == 0 or not np.all(np.isfinite(arr)):
+        return None
+    return [float(value) for value in arr]
+
+
 def inside_area(o, bounds):
     """Is this object's box wholly inside `bounds` = (xmin, xmax, ymin, ymax, zmin, zmax)?
 
@@ -685,16 +703,43 @@ def save_persistent_perceptions(node):
         obj_id = obj.object_id
         current_ids.add(obj_id)
 
-        # Keep the HOV-SG appearance vector with the object's bbox.  The
+        # Keep the runtime CLIP appearance vector with the object's bbox.  The
         # evaluator works per instance; a label-keyed sidecar can associate
-        # the wrong vector when two objects share a label.
+        # the wrong vector when two objects share a label.  The offline HOV-SG
+        # vector is added later as `hovsg_embedding` by the evaluation tool.
         bbox = dict(obj.bbox) if isinstance(obj.bbox, dict) else obj.bbox
         clip_embedding = getattr(obj, "clip_embedding", None)
-        if isinstance(bbox, dict) and clip_embedding is not None:
+        clip_values = None
+        if clip_embedding is not None:
             try:
-                bbox["clip_embedding"] = [float(value) for value in clip_embedding]
+                candidate = np.asarray(clip_embedding, dtype=np.float32).flatten()
             except (TypeError, ValueError):
-                pass
+                candidate = np.asarray([])
+            if candidate.size > 0 and np.all(np.isfinite(candidate)):
+                clip_values = [float(value) for value in candidate]
+                if isinstance(bbox, dict):
+                    bbox["clip_embedding"] = clip_values
+
+        # The graph's semantic matcher also maintains a text/description
+        # embedding on the persistent object.  It used to be kept only in
+        # memory, so the run bundle could not be replayed with the same
+        # semantic evidence.  Persist it under an explicit name: it is not
+        # the runtime image CLIP vector and it is not HOV-SG's offline vector.
+        description_embedding = getattr(obj, "embedding", None)
+        if description_embedding is not None:
+            try:
+                description_values = np.asarray(
+                    description_embedding, dtype=np.float32
+                ).flatten()
+            except (TypeError, ValueError):
+                description_values = np.asarray([])
+            if (description_values.size > 0
+                    and np.all(np.isfinite(description_values))):
+                description_embedding = [
+                    float(value) for value in description_values
+                ]
+            else:
+                description_embedding = None
 
         new_entry = {
             "object_id": obj_id,
@@ -723,6 +768,14 @@ def save_persistent_perceptions(node):
                 if getattr(obj, "last_perception_time", None) else None
             ),
         }
+        # Keep a top-level copy as well as the bbox copy.  The bbox copy is the
+        # association input used by the runtime; the top-level field makes the
+        # per-object appearance feature directly visible to offline consumers and
+        # preserves compatibility with cloud-backend archives.
+        if clip_values is not None:
+            new_entry["clip_embedding"] = clip_values
+        if description_embedding is not None:
+            new_entry["description_embedding"] = description_embedding
 
         old_entry = existing_by_id.get(obj_id)
         if old_entry != new_entry:
@@ -2101,7 +2154,17 @@ class ObjectServices(Node):
             color       = request.color
             material    = request.material
 
+            raw_clip_embedding = getattr(request, "clip_embedding", None)
+            sent_clip_embedding = bool(getattr(request, "has_clip_embedding", True))
+            clip_embedding = (
+                normalise_clip_embedding(raw_clip_embedding)
+                if sent_clip_embedding else None
+            )
+            if clip_embedding is not None:
+                bbox["clip_embedding"] = clip_embedding
+
             new_obj = Object(label, _centroid_from_bbox(bbox), bbox, description, color, material)
+            new_obj.clip_embedding = clip_embedding
             # Identity remains stable when visual attributes are refined.
             new_obj.object_id = f"obj_{uuid.uuid4().hex}"
             new_obj.creation_time = time.time()
@@ -2303,6 +2366,27 @@ class ObjectServices(Node):
             bbox, yaw_acc = fuse_orientation(best_match, raw_bbox)
 
             description_embedding = getattr(request, "description_embedding", None)
+            raw_clip_embedding = getattr(request, "clip_embedding", None)
+            sent_clip_embedding = bool(getattr(request, "has_clip_embedding", True))
+            incoming_clip_embedding = (
+                normalise_clip_embedding(raw_clip_embedding)
+                if sent_clip_embedding else None
+            )
+            previous_clip_embedding = normalise_clip_embedding(
+                getattr(best_match, "clip_embedding", None)
+            )
+            if previous_clip_embedding is None and isinstance(best_match.bbox, dict):
+                previous_clip_embedding = normalise_clip_embedding(
+                    best_match.bbox.get("clip_embedding")
+                )
+            clip_embedding = incoming_clip_embedding or previous_clip_embedding
+            if clip_embedding is not None:
+                # fuse_orientation returns a newly constructed geometry dict and therefore
+                # intentionally drops arbitrary metadata. Put the appearance measurement
+                # back on both the fused box and the raw move box before any update branch
+                # can store either one.
+                raw_bbox["clip_embedding"] = clip_embedding
+                bbox["clip_embedding"] = clip_embedding
 
             updated_obj = best_match
             updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
@@ -2314,6 +2398,8 @@ class ObjectServices(Node):
                 if old_bbox is None:
                     best_match.bbox = bbox
                     best_match._yaw_acc = yaw_acc   # GA-315 part 2
+                    if clip_embedding is not None:
+                        best_match.clip_embedding = clip_embedding
                     wm.refresh_spatial(best_match)
                     save_persistent_perceptions(self)
                     response.success = True
@@ -2509,6 +2595,8 @@ class ObjectServices(Node):
                 updated_obj.color = request.color
             if hasattr(request, "material") and request.material:
                 updated_obj.material = request.material
+            if clip_embedding is not None:
+                updated_obj.clip_embedding = clip_embedding
 
             # Several legacy update branches write ``best_match.bbox`` in place.  Keep the
             # derived AABB index synchronized before the next detection or scan-complete

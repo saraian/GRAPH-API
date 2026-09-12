@@ -34,7 +34,7 @@ ROLES = [
     ("sim_render", r"habitat_feed_host\.py", "Habitat sim render + control server (host GPU/EGL)"),
     ("ros_feed_node", r"habitat_feed_node", "ROS frame/TF relay from TCP feed"),
     ("rtabmap", r"rtabmap_slam/rtabmap", "RTAB-Map SLAM"),
-    ("perception", r"perception_2\.py", "OWLv2+CLIP & SAM inference, VLM client"),
+    ("perception", r"perception_2\.py", "Unified VLM + VitSAM inference"),
     ("object_manager", r"object_manager_6", "World model / object lifecycle / graph writer"),
     ("bridge", r"graph_api_bridge", "Dashboard HTTP bridge"),
 ]
@@ -135,11 +135,19 @@ def build_inventory():
     if w2v:
         models.append({"model": "word2vec", "role": "semantic embeddings",
                        "location": "local", "path": w2v, "runs_in": "perception"})
-    # OWLv2 CLIP backbone is loaded from the HF cache mount, not the config
-    hf = "/DATA/huggingface_cache"
-    models.append({"model": "OWLv2 (CLIP backbone)", "role": "detection + crop embeddings",
-                   "location": "local-hf-cache", "path": hf if os.path.isdir(hf) else "?",
-                   "runs_in": "perception"})
+    # The unified Regolo VLM supplies the detections and VitSAM performs local segmentation.
+    # The local path also computes one CLIP appearance vector per usable detection crop.
+    appearance = cfg.get("appearance", {}) or {}
+    if str(appearance.get("enabled", True)).strip().lower() not in ("0", "false", "off", "no"):
+        models.append({"model": appearance.get("model_id", "openai/clip-vit-base-patch32"),
+                       "role": "runtime image appearance embeddings",
+                       "location": "local-hf-cache",
+                       "path": os.environ.get("HF_HOME", "/models/hf"),
+                       "runs_in": "perception (one vector per detection crop)"})
+    models.append({"model": "sentence-transformers/all-MiniLM-L6-v2",
+                   "role": "semantic embeddings", "location": "local-hf-cache",
+                   "path": os.environ.get("HF_HOME", "/models/hf"),
+                   "runs_in": "object association (preferred; Word2Vec is the fallback)"})
     return models
 
 

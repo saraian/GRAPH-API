@@ -83,6 +83,8 @@ class DetectionPipelineMixin:
         # None on the local path, and None is the honest value there: a local backend makes
         # no request, so there is no wire time to report. 0.0 would read as "measured zero".
         client_timings = None
+        t_clip = 0.0
+        clip_reported = False
         backend = getattr(self, "perception_backend", None)
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
 
@@ -184,6 +186,19 @@ class DetectionPipelineMixin:
         if self._abort_if_moving("SAM segmentation"):
             return []
 
+        if backend_type == "local":
+            # Regolo supplies the boxes and local VitSAM supplies the masks.  The
+            # appearance channel must still be populated on this path, using the same
+            # CLIP ViT-B/32 crop contract as the cloud backend.  Do this before the
+            # detection is archived or published so every downstream representation sees
+            # the same per-detection vector.
+            t0 = time.time()
+            self._attach_local_clip_embeddings(
+                camera_data["rgb"], detections
+            )
+            t_clip = time.time() - t0
+            clip_reported = getattr(self, "clip_embedder", None) is not None
+
         t0 = time.time()
         self._publish_detection_pointclouds(detections, camera_data)
         t_proj = time.time() - t0
@@ -215,6 +230,8 @@ class DetectionPipelineMixin:
             # a 36.6 KiB body cannot take 42 s, and that was an inference until now.
             "client": client_timings,
             "sam_ms": round(t_sam * 1000.0, 1),
+            "clip_ms": round(t_clip * 1000.0, 1),
+            "clip_reported": clip_reported,
             "projection_ms": round(t_proj * 1000.0, 1),
             # WN1. This is the DETECTION sub-span only (entry of run_detection to here) --
             # NOT the cycle: `publish_objects` wraps it with FOV computation, 3D geometry,
@@ -321,6 +338,38 @@ class DetectionPipelineMixin:
             self.log_both("warn", "Unified VLM scene analysis returned no objects")
             return []
         return scene_objects
+
+    def _attach_local_clip_embeddings(self, rgb_image, detections):
+        """Attach one normalized appearance vector to each local detection.
+
+        The embedder returns a slot for every input box, including ``None`` for an invalid
+        or sub-pixel crop.  Keeping the positional contract here prevents a skipped crop
+        from shifting the next object's vector onto the wrong detection.
+        """
+        embedder = getattr(self, "clip_embedder", None)
+        if embedder is None:
+            # `appearance.enabled: false` is a deliberate ablation.  Do not invent a
+            # placeholder vector, because association must treat this as absent evidence.
+            return 0
+        vectors = embedder.embed_boxes(
+            rgb_image, [getattr(det, "bbox", None) for det in detections]
+        )
+        if len(vectors) != len(detections):
+            raise RuntimeError(
+                f"local CLIP returned {len(vectors)} vectors for "
+                f"{len(detections)} detections"
+            )
+        attached = 0
+        for detection, vector in zip(detections, vectors):
+            detection.clip_embedding = vector
+            if vector is not None:
+                attached += 1
+        self.log_both(
+            "info",
+            f"[PROFILE] Local CLIP appearance embeddings: "
+            f"{attached}/{len(detections)} attached",
+        )
+        return attached
 
     def _segment_scene_objects(self, rgb_image, scene_objects):
         """Run local VitSAM on VLM boxes and retain their same-call attributes."""

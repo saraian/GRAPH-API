@@ -126,13 +126,13 @@ fi
 
 step "3/5  models cached at $HF_SHARED_CACHE, and proved offline"
 mkdir -p "$HF_SHARED_CACHE"
-# BOTH dinov2 SIZES ON PURPOSE. visual_reid.py picks -base over -small on measured VRAM, so caching
-# the declared default alone leaves the run fetching the one it actually chooses. Measured
-# 2026-09-10: neither size was cached anywhere on this host while every run loaded one of them.
-HUB_MODELS="google/owlv2-base-patch16-ensemble sentence-transformers/all-MiniLM-L6-v2 facebook/dinov2-small facebook/dinov2-base"
+# The active stack uses MiniLM for semantic matching and CLIP for local per-detection appearance
+# embeddings. Unified Regolo VLM + VitSAM supplies the boxes and masks; the disabled visual-reid
+# module is not a runtime dependency, so DINOv2 does not belong in this offline cache check.
+HUB_MODELS="sentence-transformers/all-MiniLM-L6-v2 openai/clip-vit-base-patch32"
 # THE CONTAINER IS THE AUTHORITY, not this shell. Measured on Gin 2026-09-10: the host python has
-# no huggingface_hub, so a check run here reported every model missing on a machine where all four
-# load correctly at run time. The run loads them inside the container, from the mount at /models/hf,
+# no huggingface_hub, so a check run here reported models missing on a machine where they load
+# correctly at run time. The run loads them inside the container, from the mount at /models/hf,
 # so that is where the question must be asked. Same lesson as the /ext fault: ask what answers at
 # the path the run actually reads.
 if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
@@ -145,8 +145,7 @@ if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
       -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 "$IMAGE_TAG" \
       -c '
 import sys
-names = ["google/owlv2-base-patch16-ensemble", "sentence-transformers/all-MiniLM-L6-v2",
-         "facebook/dinov2-small", "facebook/dinov2-base"]
+names = ["sentence-transformers/all-MiniLM-L6-v2", "openai/clip-vit-base-patch32"]
 try:
     from huggingface_hub import snapshot_download
 except Exception as e:
@@ -164,7 +163,7 @@ if missing:
     print("   Fetch them into the cache, then run this again. A flat blobs-and-refs cache at the")
     print("   root is found by a file search and NOT by the loader, which reads $HF_HOME/hub.")
     sys.exit(4)
-print("   all four hub models resolve inside the container with the hub switched off")
+print("   the required hub model resolves inside the container with the hub switched off")
 ' || bad "the models do not load inside the container (see above)"
 else
   bad "cannot check the model cache without the image"

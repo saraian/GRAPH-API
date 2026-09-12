@@ -78,6 +78,7 @@ install(PROGRAMS
   src/perception_module/object_info.py
   src/perception_module/map_database.py
   src/perception_module/models.py
+  src/perception_module/clip_embedder.py
   src/perception_module/image_transport.py
   src/perception_module/query_map.py
   # Imported by habitat_metrics_collector.py / openai_habitat_assistant.py / run_habitat_script.py
@@ -149,6 +150,7 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
   ament_add_pytest_test(scan_merge_test test/test_scan_merge.py)
   ament_add_pytest_test(detection_index_test test/test_detection_index.py)
+  ament_add_pytest_test(bounding_box_path_test test/test_bounding_box_path.py)
 endif()
 
 ament_package()
