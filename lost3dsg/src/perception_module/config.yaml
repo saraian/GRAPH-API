@@ -74,6 +74,13 @@ association:
   delete_undetected: true           # remove an object that goes unseen inside its own view
   max_observations_per_object: 64   # sightings kept per object, oldest dropped. The co-visibility
                                     # channel walks these pairwise, so raising it is quadratic.
+  # Multi-observation object geometry. Each mask is already projected into the map frame.
+  # For 1-3 views the reconstructed box uses the voxel union. From the fourth view onward,
+  # a voxel must be present in at least two distinct views. These values were selected on
+  # 20260911_173938_hm3d_00861 and need confirmation on a second scene.
+  bbox_fusion_voxel_m: 0.03
+  bbox_fusion_min_views: 2
+  bbox_fusion_agreement_start_views: 4
   # A box larger than either of these is refused as implausible. Both entered as bare literals
   # with no measured basis; when a reference box exists they scale to the admitted size, so an
   # object legitimately larger than the cap can still absorb its own re-measurement (GA-365).
@@ -432,6 +439,16 @@ perception:
   # Structural surfaces and openings already come from room geometry. Set [] to let
   # the whole-scene VLM return them.
   excluded_labels: ["wall", "floor", "ceiling", "door", "doorway", "door frame", "doorframe"]
+
+# Used only when perception_parallel.py is selected as the executable. The normal
+# launch continues to use perception_2.py. cpu_processes gives actual CPU parallel
+# execution without requiring CUDA. Select cuda explicitly for the packed tensor arm.
+perception_parallel:
+  bbox_backend: "cpu_processes"  # "sequential" | "cpu_processes" | "cuda"
+  bbox_cpu_workers: 4
+  bbox_cpu_chunksize: 1
+  bbox_cuda_devices: [0]         # use [0, 1] only if calibration selects two GPUs
+  bbox_cuda_max_batch_points: 0  # 0 = all objects already in this frame in one tensor
 
 # THE FRAME ARCHIVE. The replay dashboard's timeline reads frames/ plus detections.jsonl, and only
 # this writes them (perception_2.py:327 -> detection_archive.py). The module default is False
