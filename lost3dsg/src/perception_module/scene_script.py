@@ -1976,7 +1976,55 @@ def fallback_plan(request, points, sim, objects_dir, template_catalog=None):
     }
 
 
-def ask_llm_for_plan(request, points, objects_dir, correction="", template_catalog=None):
+def load_schedule_info(schedule_path):
+    """Load the valid stop/lap domain from a schedule JSON."""
+    if not schedule_path:
+        return None
+    path = Path(schedule_path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    entries = [item for item in document.get("schedule", []) if "skipped" not in item]
+    stops = [
+        int(point["stop"])
+        for item in entries
+        for point in (item.get("trajectory") or [])
+        if point.get("scan_deg") and point.get("stop") is not None
+    ]
+    if not stops:
+        raise ValueError(f"la schedule non contiene waypoint di scansione: {path}")
+    laps = int(document.get("settings", {}).get("laps", 1))
+    if laps < 1:
+        raise ValueError(f"numero di lap non valido nella schedule: {path}")
+    return {
+        "path": str(path),
+        "stops": sorted(set(stops)),
+        "laps": laps,
+    }
+
+
+def validate_schedule_waypoints(plan, schedule_info):
+    """Reject missing or out-of-schedule triggers when a schedule is supplied."""
+    if schedule_info is None:
+        return
+    valid_stops = set(schedule_info["stops"])
+    max_lap = schedule_info["laps"] - 1
+    for index, step in enumerate(plan.get("steps", [])):
+        if step.get("action") not in {"spawn", "move", "remove"}:
+            continue
+        trigger = step.get("at_waypoint")
+        if not isinstance(trigger, dict):
+            raise ValueError(f"step {index}: at_waypoint obbligatorio con schedule")
+        stop = int(trigger.get("stop", -1))
+        lap = int(trigger.get("lap", 0))
+        if stop not in valid_stops:
+            raise ValueError(f"step {index}: stop {stop} non presente nella schedule")
+        if not 0 <= lap <= max_lap:
+            raise ValueError(f"step {index}: lap {lap} fuori range 0..{max_lap}")
+
+
+def ask_llm_for_plan(
+    request, points, objects_dir, correction="", template_catalog=None,
+    schedule_info=None,
+):
     """Chiede a Ollama un piano logico usando esclusivamente punti validi."""
 
     templates = available_template_names(objects_dir)
@@ -2029,6 +2077,16 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
         "required": ["stop"],
         "additionalProperties": False,
     }
+    schedule_description = ""
+    if schedule_info is not None:
+        schedule_description = (
+            "The effective schedule is loaded from " + schedule_info["path"] + ". "
+            "Every physical action MUST include at_waypoint. Valid schedule stops are "
+            + json.dumps(schedule_info["stops"]) + "; valid lap values are 0.."
+            + str(schedule_info["laps"] - 1) + ".\n"
+        )
+        waypoint_schema["properties"]["stop"]["enum"] = schedule_info["stops"]
+        waypoint_schema["properties"]["lap"]["maximum"] = schedule_info["laps"] - 1
     schema = {
         "type": "object",
         "properties": {
@@ -2053,7 +2111,9 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
                                 "template": {"type": "string", "enum": templates},
                                 "at_waypoint": waypoint_schema,
                             },
-                            "required": ["action", "name", "template"],
+                            "required": ["action", "name", "template"] + (
+                                ["at_waypoint"] if schedule_info is not None else []
+                            ),
                             "additionalProperties": False,
                         },
                         {
@@ -2066,7 +2126,9 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
                                 },
                                 "at_waypoint": waypoint_schema,
                             },
-                            "required": ["action", "object"],
+                            "required": ["action", "object"] + (
+                                ["at_waypoint"] if schedule_info is not None else []
+                            ),
                             "additionalProperties": False,
                         },
                         {
@@ -2079,7 +2141,9 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
                                 },
                                 "at_waypoint": waypoint_schema,
                             },
-                            "required": ["action", "object"],
+                            "required": ["action", "object"] + (
+                                ["at_waypoint"] if schedule_info is not None else []
+                            ),
                             "additionalProperties": False,
                         },
                         {
@@ -2112,7 +2176,8 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
         "never reuse a name and never use the literal name 'spawn'. For a "
         "singular request, create exactly one spawn.\n"
         "User request: " + request + "\n"
-        "Available templates: " + json.dumps(templates, ensure_ascii=False) + "\n"
+        + schedule_description
+        + "Available templates: " + json.dumps(templates, ensure_ascii=False) + "\n"
         "For every spawn, template must be copied EXACTLY from Available templates. "
         "Do not translate, abbreviate, simplify, or invent template names. "
         "For example, if the user says 'tazza', choose the matching available "
@@ -2300,6 +2365,10 @@ def main():
     )
     parser.add_argument("--navmesh", default=os.environ.get("HABITAT_NAVMESH", DEFAULT_NAVMESH))
     parser.add_argument("--objects-dir", default=os.environ.get("HABITAT_EXAMPLE_OBJECTS_DIR", DEFAULT_OBJECTS))
+    parser.add_argument(
+        "--schedule", default=None,
+        help="schedule JSON effettiva: limita stop/lap validi per at_waypoint",
+    )
     parser.add_argument("--step", type=float, default=0.25)
     parser.add_argument(
         "--object-scale", type=float, default=None,
@@ -2307,6 +2376,7 @@ def main():
     )
     parser.add_argument("--output", default=None, help="file JSON finale compilato")
     args = parser.parse_args()
+    schedule_info = load_schedule_info(args.schedule)
 
     if args.object_scale is not None:
         if not math.isfinite(args.object_scale) or args.object_scale <= 0:
@@ -2361,6 +2431,7 @@ def main():
                 plan = ask_llm_for_plan(
                     args.request, planning_points, args.objects_dir,
                     correction=correction, template_catalog=template_catalog,
+                    schedule_info=schedule_info,
                 )
                 if normalize_empty_support_constraints(plan):
                     print(
@@ -2376,6 +2447,7 @@ def main():
                 )
                 try:
                     validate_plan_intent(plan, args.request)
+                    validate_schedule_waypoints(plan, schedule_info)
                     assign_valid_placements(
                         plan, planning_points, sim, args.objects_dir
                     )
@@ -2409,6 +2481,7 @@ def main():
                             plan, planning_points, sim, args.objects_dir
                         )
                         validate_plan_intent(plan, args.request)
+                        validate_schedule_waypoints(plan, schedule_info)
                         compiled = compile_plan(
                             plan, planning_points, sim, args.objects_dir,
                             request_text=args.request, template_catalog=template_catalog,

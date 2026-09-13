@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse, json
 from pathlib import Path
+import numpy as np
 import build_hm3d_eval_manifest as adapter
 import extract_hovsg_object_embeddings as embedding_stage
 import metrics_eval
@@ -21,7 +22,15 @@ _ground_truth_path = _gt
 
 def _write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+    def json_default(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.generic):
+            return obj.item()
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False,
+                               allow_nan=False, default=json_default) + "\n",
+                    encoding="utf-8")
 
 
 def _rooms_from_rviz_snapshot(run_dir, active_floor_index):

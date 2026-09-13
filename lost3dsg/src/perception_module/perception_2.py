@@ -1007,7 +1007,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self._publish_late_descriptions(cycle_stamp)
         self._update_world_model(detections, centroids_3d, bboxes_3d, descriptions)
         self._queue_perceptions_json()
-        self._publish_agent_pose(cycle_stamp)
+        # Use the exact transform that produced these bounding boxes. A second
+        # lookup of map->habitat_camera can fail during an RTAB-Map correction even
+        # though the cached map->camera-optical transform used by the bbox cycle is
+        # valid.
+        self._publish_agent_pose_from_transform(camera_data["transform"], cycle_stamp)
         _mark("publish")
         self._record_cycle_ms(time.time() - t_cycle, stages=stages,
                               frame_id=frame_id_from_stamp(cycle_stamp),
@@ -1711,6 +1715,21 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             "debug",
             f"Camera pose ({self.agent_pose_frame}) published on /agent_camera_pose",
         )
+
+    def _publish_agent_pose_from_transform(self, transform, cycle_stamp):
+        """Publish the camera pose from the exact transform used by this bbox cycle."""
+        if transform is None:
+            self.log_both("warn", "Cannot publish agent pose: bbox transform is missing")
+            return
+        pose_msg = PoseStamped()
+        pose_msg.header.stamp = cycle_stamp
+        pose_msg.header.frame_id = world_frame()
+        pose_msg.pose.position.x = transform.transform.translation.x
+        pose_msg.pose.position.y = transform.transform.translation.y
+        pose_msg.pose.position.z = transform.transform.translation.z
+        pose_msg.pose.orientation = transform.transform.rotation
+        self.agent_pose_pub.publish(pose_msg)
+        self.log_both("debug", "Camera pose from bbox transform published on /agent_camera_pose")
 
     def _queue_perceptions_json(self):
         perceptions_snapshot = [

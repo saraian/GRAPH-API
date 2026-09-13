@@ -200,11 +200,74 @@ def _polygon_iou(a, b, resolution=.05):
     ma,mb=raster(pa),raster(pb); union=np.count_nonzero(ma|mb)
     return float(np.count_nonzero(ma&mb)/union) if union else 0.0
 
+
+def _region_overlap_shares(predicted, ground_truth, resolution=.05):
+    """Return HOV-SG/HyDRA directional overlaps (pred-covered, GT-covered).
+
+    HOV-SG calls ``find_intersection_share`` twice.  Its denominator is the
+    second point cloud, so the first value below is intersection/prediction
+    and the second is intersection/GT.  Region polygons are rasterized at the
+    same 5 cm resolution used by HOV-SG's BEV point clouds.
+    """
+    pa = np.asarray(predicted["polygon_xz_m"], dtype=float)
+    pb = np.asarray(ground_truth["polygon_xz_m"], dtype=float)
+    low = np.minimum(pa.min(axis=0), pb.min(axis=0))
+    high = np.maximum(pa.max(axis=0), pb.max(axis=0))
+    shape = np.maximum(1, np.ceil((high - low) / resolution).astype(int) + 3)
+    if int(np.prod(shape)) > 2_000_000:
+        resolution *= math.sqrt(float(np.prod(shape)) / 2_000_000)
+        shape = np.maximum(1, np.ceil((high - low) / resolution).astype(int) + 3)
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("opencv-python è necessario per l'overlap delle regioni") from exc
+
+    def raster(poly):
+        image = np.zeros((int(shape[1]), int(shape[0])), np.uint8)
+        points = np.rint((poly - low) / resolution).astype(np.int32)
+        cv2.fillPoly(image, [points], 1)
+        return image.astype(bool)
+
+    pred_mask, gt_mask = raster(pa), raster(pb)
+    intersection = np.count_nonzero(pred_mask & gt_mask)
+    pred_count, gt_count = np.count_nonzero(pred_mask), np.count_nonzero(gt_mask)
+    return (float(intersection / pred_count) if pred_count else 0.0,
+            float(intersection / gt_count) if gt_count else 0.0)
+
 def geometry_iou(a,b):
     if "mask" in a and "mask" in b: return iou(a["mask"],b["mask"])
     if all(k in a and k in b for k in ("aabb_min_m","aabb_max_m")): return _aabb_iou(a,b)
     if "polygon_xz_m" in a and "polygon_xz_m" in b: return _polygon_iou(a,b)
     return 0.0
+
+
+def _aabb_overlap(a, b):
+    """HOV-SG ``association_metric: overlap`` for serialized AABBs."""
+    try:
+        al, ah = np.asarray(a["aabb_min_m"], float), np.asarray(a["aabb_max_m"], float)
+        bl, bh = np.asarray(b["aabb_min_m"], float), np.asarray(b["aabb_max_m"], float)
+        if any(x.shape != (3,) for x in (al, ah, bl, bh)):
+            return 0.0
+        intersection = float(np.prod(np.maximum(0.0, np.minimum(ah, bh) - np.maximum(al, bl))))
+        av = float(np.prod(np.maximum(0.0, ah - al)))
+        bv = float(np.prod(np.maximum(0.0, bh - bl)))
+        return max(intersection / av if av else 0.0,
+                   intersection / bv if bv else 0.0)
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
+def hovsg_object_assignment(pred, gt):
+    """Hungarian associations used by HOV-SG's HM3D top-k evaluator."""
+    if not pred or not gt:
+        return []
+    scores = np.asarray([[_aabb_overlap(p, g) for g in gt] for p in pred])
+    try:
+        from scipy.optimize import linear_sum_assignment
+        ii, jj = linear_sum_assignment(scores, maximize=True)
+    except ImportError:
+        ii, jj = [], []
+    return [(int(i), int(j), float(scores[i, j])) for i, j in zip(ii, jj)]
 
 def assignment(pred, gt, threshold):
     if not pred or not gt: return []
@@ -336,6 +399,7 @@ def pct(values): return round(100 * sum(values) / len(values), 4) if values else
 
 def floor_regions(scenes, threshold):
     fh = ft = rh = pt = gt = 0
+    region_precision_total = region_recall_total = 0.0
     for s in scenes:
         ps, gs = s.get("predicted_floors_m", []), s.get("ground_truth_floors_m", [])
         used_p, used_g = set(), set()
@@ -363,10 +427,37 @@ def floor_regions(scenes, threshold):
         region_scene = filtered_scene(s, include_regions=True)
         pr = region_scene.get("predicted_regions", [])
         gr = region_scene.get("ground_truth_regions", [])
-        rh += len(assignment(pr, gr, threshold)); pt += len(pr); gt += len(gr)
+        pt += len(pr); gt += len(gr)
+        if pr and gr:
+            if not all("polygon_xz_m" in row for row in pr + gr):
+                # Compatibility for legacy mask-only fixtures.  HM3D/HOV-SG
+                # room evaluation always reaches the polygon branch above.
+                rh += len(assignment(pr, gr, threshold))
+                region_precision_total += len(assignment(pr, gr, threshold))
+                region_recall_total += len(assignment(pr, gr, threshold))
+                continue
+            # This is the region metric reported by HOV-SG (HyDRA), not
+            # polygon IoU: directional coverage is maximized independently
+            # for every prediction and every GT region.
+            overlap_pred = np.zeros((len(pr), len(gr)), dtype=float)
+            overlap_gt = np.zeros_like(overlap_pred)
+            for pi, predicted in enumerate(pr):
+                for gi, ground_truth in enumerate(gr):
+                    overlap_pred[pi, gi], overlap_gt[pi, gi] = _region_overlap_shares(
+                        predicted, ground_truth, resolution=.05)
+            region_precision_total += float(np.max(overlap_pred, axis=1).sum())
+            region_recall_total += float(np.max(overlap_gt, axis=0).sum())
+            # HOV-SG's acc@IoU=0.5 uses its symmetric overlap matrix and a
+            # one-to-one Hungarian assignment.
+            symmetric = np.maximum(overlap_pred, overlap_gt)
+            from scipy.optimize import linear_sum_assignment
+            ii, jj = linear_sum_assignment(symmetric, maximize=True)
+            rh += sum(symmetric[pi, gi] > threshold for pi, gi in zip(ii, jj))
+        else:
+            rh += 0
     return {"acc_f_pct": round(100*fh/ft,4) if ft else None,
-            "region_precision_pct": round(100*rh/pt,4) if pt else None,
-            "region_recall_pct": round(100*rh/gt,4) if gt else None,
+            "region_precision_pct": round(100*region_precision_total/pt,4) if pt else None,
+            "region_recall_pct": round(100*region_recall_total/gt,4) if gt else None,
             "floor_matches": fh, "floor_gt": ft, "region_matches": rh,
             "predicted_regions": pt, "ground_truth_regions": gt}
 
@@ -512,8 +603,7 @@ def objects(scenes, threshold=.5):
         # HOV-SG classification uses Hungarian AABB-IoU associations and
         # applies IoU > 0.5 after assignment; it is independent of the
         # centre-distance operating point used by the spatial table.
-        semantic_matches = [] if incompatible else [
-            pair for pair in assignment(pred, gt, None) if pair[2] > .5]
+        semantic_matches = [] if incompatible else hovsg_object_assignment(pred, gt)
         semantic_match_total += len(semantic_matches)
         accuracy, auc, classified = _top_k_semantics(
             semantic_matches, pred, gt, categories, class_names)
@@ -548,9 +638,9 @@ def objects(scenes, threshold=.5):
     out["matched_objects_iou_gt_0.5"] = len(geometric_matches)
     out["classified_matched_objects"] = classified_matches
     out["top_k_eligible_pairs"] = sum(
-        len([pair for pair in assignment(filtered_scene(s).get("predicted_objects", []),
-                                          filtered_scene(s).get("ground_truth_objects", []), None)
-             if pair[2] > .5]) for s in scenes)
+        len(hovsg_object_assignment(filtered_scene(s).get("predicted_objects", []),
+                                    filtered_scene(s).get("ground_truth_objects", [])))
+        for s in scenes)
     out["top_k_unclassified_pairs"] = semantic_match_total - classified_matches
     out["top_k_embedding_coverage_pct"] = (round(100 * classified_matches / semantic_match_total, 4)
                                             if semantic_match_total else None)
@@ -562,15 +652,14 @@ def objects(scenes, threshold=.5):
                                           "associations": [{"predicted_index": pi,
                                                              "ground_truth_index": gi,
                                                              "iou": round(score, 6)}
-                                                            for pi, gi, score in assignment(
+                                                            for pi, gi, score in hovsg_object_assignment(
                                                                 filtered_scene(s).get("predicted_objects", []),
-                                                                filtered_scene(s).get("ground_truth_objects", []), None)
-                                                            if score > .5]}
+                                                                filtered_scene(s).get("ground_truth_objects", []))]}
                                          for s in scenes]
     semantic_labels = []
     for s in scenes:
         fs = filtered_scene(s)
-        for pi, gi, _ in assignment(fs.get("predicted_objects", []), fs.get("ground_truth_objects", []), None):
+        for pi, gi, _ in hovsg_object_assignment(fs.get("predicted_objects", []), fs.get("ground_truth_objects", [])):
             semantic_labels.append(str(fs["predicted_objects"][pi].get("label", "")).casefold() ==
                                    str(fs["ground_truth_objects"][gi].get("category_name", "")).casefold())
     out["semantic_accuracy_pct"] = round(100 * sum(semantic_labels) / len(semantic_labels), 4) if semantic_labels else 0
