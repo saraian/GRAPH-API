@@ -938,7 +938,7 @@ try:
 except Exception:
     print(sys.argv[3])" "${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" "$1" "$2" 2>/dev/null || echo "$2"
 }
-export WALL_DETECTOR="${WALL_DETECTOR:-$(_cfg_run wall_detector 0)}"
+export WALL_DETECTOR="${WALL_DETECTOR:-$(_cfg_run wall_detector 1)}"
 echo "    wall detector: $WALL_DETECTOR (config run.wall_detector)"
 
 export FEED_GT_SEMANTIC="${FEED_GT_SEMANTIC:-1}"

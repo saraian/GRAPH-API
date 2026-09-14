@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from metrics_eval import assignment
+from metrics_eval import hovsg_region_assignment
 
 
 def _load(path, default, required=False):
@@ -268,7 +268,7 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
         or int(region["floor_index"]) == floor_for_rooms
     ]
     candidate_rows = [region for _, region in gt_region_candidates]
-    for pi, candidate_index, score in assignment(
+    for pi, candidate_index, score in hovsg_region_assignment(
             predicted_regions, candidate_rows, 0.0):
         gi, _ = gt_region_candidates[candidate_index]
         predicted_label = str(predicted_room_by_index[pi].get("semantic_label", ""))
@@ -279,7 +279,11 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
             "predicted_label": predicted_label,
             "ground_truth_label": ground_truth_label,
             "approximately_correct": predicted_label.strip().casefold() == ground_truth_label.strip().casefold(),
+            # Compatibility key consumed by room_objects().  The value is the
+            # HOV-SG room-association overlap, not polygon IoU.
             "region_iou": score,
+            "region_overlap": score,
+            "region_association_metric": "HOV-SG max directional overlap",
         })
     result["rooms"] = room_trials
 

@@ -1,0 +1,3443 @@
+{
+  "scene_id": "00839-zt1RVoi7PcG",
+  "navmesh": "/DATA/GRAPH-API/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00839-zt1RVoi7PcG/zt1RVoi7PcG.basis.navmesh",
+  "settings": {
+    "mpp": 0.05,
+    "robot_radius": 0.25,
+    "spacing": 2.0,
+    "merge_radius": 0.75,
+    "simplify": 0.2,
+    "step": 0.15,
+    "laps": 3,
+    "seed": 7,
+    "min_area": 5.0,
+    "coverage_radius": 3.0
+  },
+  "settings_sha256_16": "0b918c2d2e9492a3",
+  "storeys_detected": [
+    {
+      "z": -2.89,
+      "share": 0.5042,
+      "samples": 10085,
+      "peak_z": -2.96
+    },
+    {
+      "z": 0.11,
+      "share": 0.4667,
+      "samples": 9334,
+      "peak_z": 0.14
+    }
+  ],
+  "levels_not_toured": [],
+  "stairs_share": 0.029,
+  "schedule": [
+    {
+      "gt_rooms_without_a_stop": null,
+      "gt_room_stops_added": 0,
+      "ridge_bridges": 3,
+      "room_seeds": 0,
+      "room_seeds_joined": 0,
+      "coverage_share": 1.0,
+      "coverage_radius_m": 3.0,
+      "height": -2.89,
+      "navigable_m2": 65.6,
+      "waypoints": 36,
+      "waypoints_before_merge": 49,
+      "junctions": 18,
+      "junctions_without_a_stop": 0,
+      "stranded_junctions_recovered": 0,
+      "max_degree": 5,
+      "root_candidates": [
+        [
+          -0.413,
+          -2.89,
+          3.948
+        ],
+        [
+          -0.663,
+          -2.89,
+          10.148
+        ]
+      ],
+      "root": [
+        -0.663,
+        -2.89,
+        10.148
+      ],
+      "unreached": [],
+      "budget": {
+        "drive_m": 364.08,
+        "drive_frames": 2427,
+        "corner_turn_deg": 21279,
+        "corner_turn_frames": 2127,
+        "scan_stops": 108,
+        "scan_frames": 3888,
+        "trajectory_points": 303,
+        "legs_kept_unsimplified": 0,
+        "total_frames": 8442,
+        "per_lap": {
+          "drive_m": 121.36,
+          "drive_frames": 809,
+          "corner_turn_deg": 7093,
+          "corner_turn_frames": 709,
+          "scan_stops": 36,
+          "scan_frames": 1296,
+          "trajectory_points": 101,
+          "legs_kept_unsimplified": 0,
+          "total_frames": 2814
+        },
+        "laps": 3
+      },
+      "visit_order": [
+        [
+          -0.663,
+          -2.89,
+          10.148
+        ],
+        [
+          -1.563,
+          -2.89,
+          9.998
+        ],
+        [
+          -0.413,
+          -2.89,
+          8.698
+        ],
+        [
+          -1.113,
+          -2.89,
+          8.098
+        ],
+        [
+          -2.863,
+          -2.89,
+          7.848
+        ],
+        [
+          -3.663,
+          -2.89,
+          9.198
+        ],
+        [
+          -3.113,
+          -2.89,
+          10.648
+        ],
+        [
+          -0.213,
+          -2.89,
+          11.298
+        ],
+        [
+          -2.863,
+          -2.89,
+          5.198
+        ],
+        [
+          -4.113,
+          -2.89,
+          4.348
+        ],
+        [
+          -3.713,
+          -2.89,
+          3.048
+        ],
+        [
+          -0.413,
+          -2.89,
+          3.948
+        ],
+        [
+          0.037,
+          -2.89,
+          5.348
+        ],
+        [
+          0.087,
+          -2.89,
+          7.048
+        ],
+        [
+          1.437,
+          -2.89,
+          4.248
+        ],
+        [
+          2.487,
+          -2.89,
+          4.098
+        ],
+        [
+          -0.013,
+          -2.89,
+          1.898
+        ],
+        [
+          -0.263,
+          -2.89,
+          0.598
+        ],
+        [
+          0.687,
+          -2.89,
+          -0.602
+        ],
+        [
+          -1.813,
+          -2.89,
+          0.098
+        ],
+        [
+          -3.763,
+          -2.89,
+          0.198
+        ],
+        [
+          -4.613,
+          -2.89,
+          1.348
+        ],
+        [
+          -2.263,
+          -2.89,
+          2.848
+        ],
+        [
+          0.737,
+          -2.89,
+          10.648
+        ],
+        [
+          2.337,
+          -2.89,
+          11.048
+        ],
+        [
+          4.337,
+          -2.89,
+          10.148
+        ],
+        [
+          5.087,
+          -2.89,
+          9.848
+        ],
+        [
+          5.187,
+          -2.89,
+          8.998
+        ],
+        [
+          4.437,
+          -2.89,
+          8.648
+        ],
+        [
+          5.037,
+          -2.89,
+          7.698
+        ],
+        [
+          6.537,
+          -2.89,
+          7.698
+        ],
+        [
+          6.437,
+          -2.89,
+          5.848
+        ],
+        [
+          4.687,
+          -2.89,
+          5.948
+        ],
+        [
+          6.187,
+          -2.89,
+          10.748
+        ],
+        [
+          6.937,
+          -2.89,
+          10.698
+        ],
+        [
+          4.537,
+          -2.89,
+          10.948
+        ]
+      ],
+      "trajectory": [
+        {
+          "xyz": [
+            -0.6629999876022339,
+            -2.8870632648468018,
+            10.14799976348877
+          ],
+          "scan_deg": 360.0,
+          "stop": 0,
+          "leg": null
+        },
+        {
+          "xyz": [
+            -1.562999963760376,
+            -2.8870632648468018,
+            9.998000144958496
+          ],
+          "scan_deg": 360.0,
+          "stop": 1,
+          "leg": 0
+        },
+        {
+          "xyz": [
+            -0.6629999876022339,
+            -2.8870632648468018,
+            10.14799976348877
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 1
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            8.697999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 2,
+          "leg": 2
+        },
+        {
+          "xyz": [
+            -1.1130000352859497,
+            -2.8870632648468018,
+            8.097999572753906
+          ],
+          "scan_deg": 360.0,
+          "stop": 3,
+          "leg": 3
+        },
+        {
+          "xyz": [
+            -2.86299991607666,
+            -2.8870632648468018,
+            7.8480000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 4,
+          "leg": 4
+        },
+        {
+          "xyz": [
+            -3.36299991607666,
+            -2.8870632648468018,
+            7.8979997634887695
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 5
+        },
+        {
+          "xyz": [
+            -3.6630001068115234,
+            -2.8870632648468018,
+            9.197999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 5,
+          "leg": 5
+        },
+        {
+          "xyz": [
+            -3.61299991607666,
+            -2.8870632648468018,
+            10.498000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 6
+        },
+        {
+          "xyz": [
+            -3.11299991607666,
+            -2.8870632648468018,
+            10.64799976348877
+          ],
+          "scan_deg": 360.0,
+          "stop": 6,
+          "leg": 6
+        },
+        {
+          "xyz": [
+            -0.8629999756813049,
+            -2.8870632648468018,
+            10.697999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 7
+        },
+        {
+          "xyz": [
+            -0.21299999952316284,
+            -2.8870632648468018,
+            11.29800033569336
+          ],
+          "scan_deg": 360.0,
+          "stop": 7,
+          "leg": 7
+        },
+        {
+          "xyz": [
+            -0.8629999756813049,
+            -2.8870632648468018,
+            10.697999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 8
+        },
+        {
+          "xyz": [
+            -3.11299991607666,
+            -2.8870632648468018,
+            10.64799976348877
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 8
+        },
+        {
+          "xyz": [
+            -3.61299991607666,
+            -2.8870632648468018,
+            10.498000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 9
+        },
+        {
+          "xyz": [
+            -3.6630001068115234,
+            -2.8870632648468018,
+            9.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 9
+        },
+        {
+          "xyz": [
+            -3.36299991607666,
+            -2.8870632648468018,
+            7.8979997634887695
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 10
+        },
+        {
+          "xyz": [
+            -2.86299991607666,
+            -2.8870632648468018,
+            7.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 10
+        },
+        {
+          "xyz": [
+            -2.86299991607666,
+            -2.8870632648468018,
+            5.197999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 8,
+          "leg": 11
+        },
+        {
+          "xyz": [
+            -4.013000011444092,
+            -2.8870632648468018,
+            4.748000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 12
+        },
+        {
+          "xyz": [
+            -4.11299991607666,
+            -2.8870632648468018,
+            4.3480000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 9,
+          "leg": 12
+        },
+        {
+          "xyz": [
+            -4.163000106811523,
+            -2.8870632648468018,
+            3.247999906539917
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 13
+        },
+        {
+          "xyz": [
+            -3.7130000591278076,
+            -2.8085689544677734,
+            3.0480000972747803
+          ],
+          "scan_deg": 360.0,
+          "stop": 10,
+          "leg": 13
+        },
+        {
+          "xyz": [
+            -4.163000106811523,
+            -2.8870632648468018,
+            3.247999906539917
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 14
+        },
+        {
+          "xyz": [
+            -4.11299991607666,
+            -2.8870632648468018,
+            4.3480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 14
+        },
+        {
+          "xyz": [
+            -4.013000011444092,
+            -2.8870632648468018,
+            4.748000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 15
+        },
+        {
+          "xyz": [
+            -2.86299991607666,
+            -2.8870632648468018,
+            5.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 15
+        },
+        {
+          "xyz": [
+            -1.2630000114440918,
+            -2.8870632648468018,
+            5.047999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 16
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            3.947999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 11,
+          "leg": 16
+        },
+        {
+          "xyz": [
+            0.03700000047683716,
+            -2.8870632648468018,
+            5.3480000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 12,
+          "leg": 17
+        },
+        {
+          "xyz": [
+            -0.75,
+            -2.8870632648468018,
+            6.0483808517456055
+          ],
+          "scan_deg": 360.0,
+          "stop": 37,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            0.08699999749660492,
+            -2.8870632648468018,
+            7.047999858856201
+          ],
+          "scan_deg": 360.0,
+          "stop": 13,
+          "leg": 18
+        },
+        {
+          "xyz": [
+            0.03700000047683716,
+            -2.8870632648468018,
+            5.3480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 19
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            3.947999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 20
+        },
+        {
+          "xyz": [
+            1.437000036239624,
+            -2.8870632648468018,
+            4.248000144958496
+          ],
+          "scan_deg": 360.0,
+          "stop": 14,
+          "leg": 21
+        },
+        {
+          "xyz": [
+            2.486999988555908,
+            -2.8870632648468018,
+            4.0980000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 15,
+          "leg": 22
+        },
+        {
+          "xyz": [
+            1.437000036239624,
+            -2.8870632648468018,
+            4.248000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 23
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            3.947999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 24
+        },
+        {
+          "xyz": [
+            0.03700000047683716,
+            -2.8870632648468018,
+            2.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 25
+        },
+        {
+          "xyz": [
+            -0.013000000268220901,
+            -2.8870632648468018,
+            1.8980000019073486
+          ],
+          "scan_deg": 360.0,
+          "stop": 16,
+          "leg": 25
+        },
+        {
+          "xyz": [
+            -0.2630000114440918,
+            -2.8870632648468018,
+            0.5979999899864197
+          ],
+          "scan_deg": 360.0,
+          "stop": 17,
+          "leg": 26
+        },
+        {
+          "xyz": [
+            0.6869999766349792,
+            -2.8870632648468018,
+            -0.6019999980926514
+          ],
+          "scan_deg": 360.0,
+          "stop": 18,
+          "leg": 27
+        },
+        {
+          "xyz": [
+            -0.2630000114440918,
+            -2.8870632648468018,
+            0.5979999899864197
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 28
+        },
+        {
+          "xyz": [
+            -1.312999963760376,
+            -2.8870632648468018,
+            0.5979999899864197
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 29
+        },
+        {
+          "xyz": [
+            -1.812999963760376,
+            -2.8870632648468018,
+            0.09799999743700027
+          ],
+          "scan_deg": 360.0,
+          "stop": 19,
+          "leg": 29
+        },
+        {
+          "xyz": [
+            -3.763000011444092,
+            -2.8870632648468018,
+            0.1979999989271164
+          ],
+          "scan_deg": 360.0,
+          "stop": 20,
+          "leg": 30
+        },
+        {
+          "xyz": [
+            -4.513000011444092,
+            -2.8870632648468018,
+            0.6980000138282776
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 31
+        },
+        {
+          "xyz": [
+            -4.61299991607666,
+            -2.8870632648468018,
+            1.3480000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 21,
+          "leg": 31
+        },
+        {
+          "xyz": [
+            -4.513000011444092,
+            -2.8870632648468018,
+            0.6980000138282776
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 32
+        },
+        {
+          "xyz": [
+            -3.763000011444092,
+            -2.8870632648468018,
+            0.1979999989271164
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 32
+        },
+        {
+          "xyz": [
+            -1.812999963760376,
+            -2.8870632648468018,
+            0.09799999743700027
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 33
+        },
+        {
+          "xyz": [
+            -1.312999963760376,
+            -2.8870632648468018,
+            0.5979999899864197
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 34
+        },
+        {
+          "xyz": [
+            -0.2630000114440918,
+            -2.8870632648468018,
+            0.5979999899864197
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 34
+        },
+        {
+          "xyz": [
+            -0.013000000268220901,
+            -2.8870632648468018,
+            1.8980000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 35
+        },
+        {
+          "xyz": [
+            0.03700000047683716,
+            -2.8870632648468018,
+            2.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 36
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            3.697999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 36
+        },
+        {
+          "xyz": [
+            -1.2130000591278076,
+            -2.8870632648468018,
+            2.7980000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 36
+        },
+        {
+          "xyz": [
+            -2.263000011444092,
+            -2.9399282932281494,
+            2.8480000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 22,
+          "leg": 36
+        },
+        {
+          "xyz": [
+            -1.2130000591278076,
+            -2.8870632648468018,
+            2.7980000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 37
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            3.697999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 37
+        },
+        {
+          "xyz": [
+            0.03700000047683716,
+            -2.8870632648468018,
+            2.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 37
+        },
+        {
+          "xyz": [
+            -0.013000000268220901,
+            -2.8870632648468018,
+            1.8980000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 37
+        },
+        {
+          "xyz": [
+            0.03700000047683716,
+            -2.8870632648468018,
+            2.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 38
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            3.947999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 38
+        },
+        {
+          "xyz": [
+            -1.2630000114440918,
+            -2.8870632648468018,
+            5.047999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 39
+        },
+        {
+          "xyz": [
+            -2.86299991607666,
+            -2.8870632648468018,
+            5.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 39
+        },
+        {
+          "xyz": [
+            -2.86299991607666,
+            -2.8870632648468018,
+            7.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 40
+        },
+        {
+          "xyz": [
+            -1.1130000352859497,
+            -2.8870632648468018,
+            8.097999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 41
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            8.697999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 42
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            9.79800033569336
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 43
+        },
+        {
+          "xyz": [
+            0.7369999885559082,
+            -2.8870632648468018,
+            10.64799976348877
+          ],
+          "scan_deg": 360.0,
+          "stop": 23,
+          "leg": 43
+        },
+        {
+          "xyz": [
+            2.3369998931884766,
+            -2.8870632648468018,
+            11.04800033569336
+          ],
+          "scan_deg": 360.0,
+          "stop": 24,
+          "leg": 44
+        },
+        {
+          "xyz": [
+            4.336999893188477,
+            -2.8870632648468018,
+            10.14799976348877
+          ],
+          "scan_deg": 360.0,
+          "stop": 25,
+          "leg": 45
+        },
+        {
+          "xyz": [
+            5.086999893188477,
+            -2.8870632648468018,
+            9.847999572753906
+          ],
+          "scan_deg": 360.0,
+          "stop": 26,
+          "leg": 46
+        },
+        {
+          "xyz": [
+            5.186999797821045,
+            -2.8870632648468018,
+            8.998000144958496
+          ],
+          "scan_deg": 360.0,
+          "stop": 27,
+          "leg": 47
+        },
+        {
+          "xyz": [
+            4.436999797821045,
+            -2.8870632648468018,
+            8.64799976348877
+          ],
+          "scan_deg": 360.0,
+          "stop": 28,
+          "leg": 48
+        },
+        {
+          "xyz": [
+            5.186999797821045,
+            -2.8870632648468018,
+            8.998000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 49
+        },
+        {
+          "xyz": [
+            5.0370001792907715,
+            -2.8870632648468018,
+            7.697999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 29,
+          "leg": 50
+        },
+        {
+          "xyz": [
+            5.2870001792907715,
+            -2.8870632648468018,
+            8.597999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 51
+        },
+        {
+          "xyz": [
+            6.5370001792907715,
+            -2.8870632648468018,
+            7.697999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 30,
+          "leg": 51
+        },
+        {
+          "xyz": [
+            6.436999797821045,
+            -2.8870632648468018,
+            5.8480000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 31,
+          "leg": 52
+        },
+        {
+          "xyz": [
+            6.386704444885254,
+            -2.8870632648468018,
+            4.5483808517456055
+          ],
+          "scan_deg": 360.0,
+          "stop": 38,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            6.905895709991455,
+            -2.8870632648468018,
+            4.978675365447998
+          ],
+          "scan_deg": 360.0,
+          "stop": 36,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            4.686999797821045,
+            -2.8870632648468018,
+            5.947999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 32,
+          "leg": 53
+        },
+        {
+          "xyz": [
+            6.436999797821045,
+            -2.8870632648468018,
+            5.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 54
+        },
+        {
+          "xyz": [
+            6.5370001792907715,
+            -2.8870632648468018,
+            7.697999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 55
+        },
+        {
+          "xyz": [
+            5.38700008392334,
+            -2.8870632648468018,
+            8.597999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 56
+        },
+        {
+          "xyz": [
+            5.0370001792907715,
+            -2.8870632648468018,
+            7.697999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 56
+        },
+        {
+          "xyz": [
+            5.186999797821045,
+            -2.8870632648468018,
+            8.998000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 57
+        },
+        {
+          "xyz": [
+            5.086999893188477,
+            -2.8870632648468018,
+            9.847999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 58
+        },
+        {
+          "xyz": [
+            5.686999797821045,
+            -2.8870632648468018,
+            10.748000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 59
+        },
+        {
+          "xyz": [
+            6.186999797821045,
+            -2.8870632648468018,
+            10.748000144958496
+          ],
+          "scan_deg": 360.0,
+          "stop": 33,
+          "leg": 59
+        },
+        {
+          "xyz": [
+            6.936999797821045,
+            -2.8870632648468018,
+            10.697999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 34,
+          "leg": 60
+        },
+        {
+          "xyz": [
+            6.186999797821045,
+            -2.8870632648468018,
+            10.748000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 61
+        },
+        {
+          "xyz": [
+            5.686999797821045,
+            -2.8870632648468018,
+            10.748000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 62
+        },
+        {
+          "xyz": [
+            5.086999893188477,
+            -2.8870632648468018,
+            9.847999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 62
+        },
+        {
+          "xyz": [
+            4.336999893188477,
+            -2.8870632648468018,
+            10.14799976348877
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 63
+        },
+        {
+          "xyz": [
+            4.5370001792907715,
+            -2.8870632648468018,
+            10.947999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 35,
+          "leg": 64
+        },
+        {
+          "xyz": [
+            4.336999893188477,
+            -2.8870632648468018,
+            10.14799976348877
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 65
+        },
+        {
+          "xyz": [
+            2.3369998931884766,
+            -2.8870632648468018,
+            11.04800033569336
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 66
+        },
+        {
+          "xyz": [
+            0.7369999885559082,
+            -2.8870632648468018,
+            10.64799976348877
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 67
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            9.79800033569336
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 68
+        },
+        {
+          "xyz": [
+            -0.4129999876022339,
+            -2.8870632648468018,
+            8.697999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 68
+        },
+        {
+          "xyz": [
+            -0.6629999876022339,
+            -2.8870632648468018,
+            10.14799976348877
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 69
+        }
+      ],
+      "share": 0.5042,
+      "coverage": {
+        "schema": "graphapi.tour_coverage.v1",
+        "scope": "planned static-scene free-floor visibility at scan stops; not recorded observation coverage",
+        "domain": "native floor-height reference plus full-scene collision-supported floor cell centres with clear vertical body columns; no navmesh mask or robot-radius erosion",
+        "free_area_m2": 80.78,
+        "covered_area_m2": 80.27,
+        "uncovered_area_m2": 0.51,
+        "coverage_pct": 99.369,
+        "free_area_outside_navmesh_m2": 16.16,
+        "covered_area_outside_navmesh_m2": 15.65,
+        "free_cells": 8078,
+        "covered_cells": 8027,
+        "obstacle_cells": 1098,
+        "grid_resolution_m": 0.1,
+        "range_m": 3.0,
+        "range_source": "schedule coverage_radius_m (horizontal evaluation range)",
+        "camera_height_m": 1.5,
+        "clearance_height_m": 1.5,
+        "hfov_deg": 90.0,
+        "vfov_deg": 73.73979529168804,
+        "image_size": [
+          640,
+          480
+        ],
+        "tilts_deg": [
+          0.0,
+          -45.0
+        ],
+        "floor_band_m": 0.4,
+        "grid": {
+          "path": "00839-zt1RVoi7PcG/floor-0.coverage.npz",
+          "sha256": "b40a11df994e69bd735bcb9b3b350ffc99f7662b16a90ce682ddd6e1c43a39d6"
+        },
+        "per_stop": [
+          {
+            "stop": 0,
+            "new_area_m2": 16.11,
+            "cumulative_area_m2": 16.11
+          },
+          {
+            "stop": 1,
+            "new_area_m2": 0.82,
+            "cumulative_area_m2": 16.93
+          },
+          {
+            "stop": 2,
+            "new_area_m2": 3.29,
+            "cumulative_area_m2": 20.22
+          },
+          {
+            "stop": 3,
+            "new_area_m2": 1.29,
+            "cumulative_area_m2": 21.51
+          },
+          {
+            "stop": 4,
+            "new_area_m2": 3.91,
+            "cumulative_area_m2": 25.42
+          },
+          {
+            "stop": 5,
+            "new_area_m2": 0.29,
+            "cumulative_area_m2": 25.71
+          },
+          {
+            "stop": 6,
+            "new_area_m2": 0.03,
+            "cumulative_area_m2": 25.74
+          },
+          {
+            "stop": 7,
+            "new_area_m2": 0.93,
+            "cumulative_area_m2": 26.67
+          },
+          {
+            "stop": 8,
+            "new_area_m2": 5.93,
+            "cumulative_area_m2": 32.6
+          },
+          {
+            "stop": 9,
+            "new_area_m2": 1.26,
+            "cumulative_area_m2": 33.86
+          },
+          {
+            "stop": 10,
+            "new_area_m2": 2.04,
+            "cumulative_area_m2": 35.9
+          },
+          {
+            "stop": 11,
+            "new_area_m2": 8.01,
+            "cumulative_area_m2": 43.91
+          },
+          {
+            "stop": 12,
+            "new_area_m2": 0.66,
+            "cumulative_area_m2": 44.57
+          },
+          {
+            "stop": 37,
+            "new_area_m2": 0.36,
+            "cumulative_area_m2": 44.93
+          },
+          {
+            "stop": 13,
+            "new_area_m2": 0.06,
+            "cumulative_area_m2": 44.99
+          },
+          {
+            "stop": 14,
+            "new_area_m2": 0.23,
+            "cumulative_area_m2": 45.22
+          },
+          {
+            "stop": 15,
+            "new_area_m2": 0.0,
+            "cumulative_area_m2": 45.22
+          },
+          {
+            "stop": 16,
+            "new_area_m2": 4.65,
+            "cumulative_area_m2": 49.87
+          },
+          {
+            "stop": 17,
+            "new_area_m2": 3.64,
+            "cumulative_area_m2": 53.51
+          },
+          {
+            "stop": 18,
+            "new_area_m2": 0.0,
+            "cumulative_area_m2": 53.51
+          },
+          {
+            "stop": 19,
+            "new_area_m2": 2.94,
+            "cumulative_area_m2": 56.45
+          },
+          {
+            "stop": 20,
+            "new_area_m2": 0.71,
+            "cumulative_area_m2": 57.16
+          },
+          {
+            "stop": 21,
+            "new_area_m2": 0.17,
+            "cumulative_area_m2": 57.33
+          },
+          {
+            "stop": 22,
+            "new_area_m2": 0.04,
+            "cumulative_area_m2": 57.37
+          },
+          {
+            "stop": 23,
+            "new_area_m2": 1.65,
+            "cumulative_area_m2": 59.02
+          },
+          {
+            "stop": 24,
+            "new_area_m2": 4.74,
+            "cumulative_area_m2": 63.76
+          },
+          {
+            "stop": 25,
+            "new_area_m2": 8.91,
+            "cumulative_area_m2": 72.67
+          },
+          {
+            "stop": 26,
+            "new_area_m2": 1.54,
+            "cumulative_area_m2": 74.21
+          },
+          {
+            "stop": 27,
+            "new_area_m2": 0.94,
+            "cumulative_area_m2": 75.15
+          },
+          {
+            "stop": 28,
+            "new_area_m2": 0.18,
+            "cumulative_area_m2": 75.33
+          },
+          {
+            "stop": 29,
+            "new_area_m2": 0.07,
+            "cumulative_area_m2": 75.4
+          },
+          {
+            "stop": 30,
+            "new_area_m2": 1.55,
+            "cumulative_area_m2": 76.95
+          },
+          {
+            "stop": 31,
+            "new_area_m2": 2.28,
+            "cumulative_area_m2": 79.23
+          },
+          {
+            "stop": 38,
+            "new_area_m2": 0.52,
+            "cumulative_area_m2": 79.75
+          },
+          {
+            "stop": 36,
+            "new_area_m2": 0.18,
+            "cumulative_area_m2": 79.93
+          },
+          {
+            "stop": 32,
+            "new_area_m2": 0.27,
+            "cumulative_area_m2": 80.2
+          },
+          {
+            "stop": 33,
+            "new_area_m2": 0.05,
+            "cumulative_area_m2": 80.25
+          },
+          {
+            "stop": 34,
+            "new_area_m2": 0.01,
+            "cumulative_area_m2": 80.26
+          },
+          {
+            "stop": 35,
+            "new_area_m2": 0.01,
+            "cumulative_area_m2": 80.27
+          }
+        ],
+        "limitations": [
+          "Cell-centre grid approximation of physical floor area, not exact polygon area.",
+          "Static stage collisions only; planned dynamic objects are not yet instantiated.",
+          "Coverage includes the floor surface within the configured camera vertical FOV, not object detection quality.",
+          "Motion frames and cross-floor transitions are excluded; only scheduled 360-degree scans contribute.",
+          "Missing/open mesh surfaces cannot contribute a supported floor cell."
+        ],
+        "sources": {
+          "scene": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00839-zt1RVoi7PcG/zt1RVoi7PcG.basis.glb",
+            "sha256": "e731a0d3a5235e218938a1655ec763d63dea11d421c2e88d8139fc33b24026ca"
+          },
+          "native_floor_gt": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/packC/00839-zt1RVoi7PcG/00839-zt1RVoi7PcG.gt.json",
+            "sha256": "322ed9998a778a885f4105375d17f9cb7b6c7b9ce2635095e38c5425137eacf8"
+          },
+          "evaluator": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/tools/baselines/tour_coverage.py",
+            "sha256": "a4dafcfafed113e0bbdea999ce4f55cbee623fa555c6f3b90e74a635996c30ef"
+          },
+          "previous_grid": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/packC/00839-zt1RVoi7PcG/floor-0.coverage.npz",
+            "sha256": "034c732ae87138560ee8742731b127990237ce09e6db47a239e93623492a57e8"
+          },
+          "optimizer": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/tools/baselines/optimize_tours.py",
+            "sha256": "1efdd8734a49f139e1eee0920b90d1134383aa61e68f57e25969b72ba4eb6df7"
+          }
+        }
+      },
+      "scan_plan": {
+        "mode": "continuous",
+        "hold_frames": 1,
+        "tilts_deg": [
+          0.0,
+          -45.0
+        ],
+        "turn_step_deg": 10.0
+      },
+      "coverage_optimization": {
+        "method": "two camera tilts plus greedy visibility set cover; cheapest geodesic insertion preserving original order",
+        "previous_coverage_pct": 74.598,
+        "tilt_only_coverage_pct": 98.242,
+        "candidate_spacing_m": 0.5,
+        "candidate_count": 458,
+        "added_scan_stops": 3,
+        "candidate_visible_area_m2": 80.62,
+        "candidate_visibility_ceiling_pct": 99.802,
+        "candidate_union_target_fraction": 0.995,
+        "fraction_of_candidate_visible_area_covered": 0.995659,
+        "unseen_by_candidate_set_m2": 0.16,
+        "limitations": "Finite 0.5m candidate-grid ceiling, not proof of continuous global optimum. Coverage evaluated at planned target poses; native follower arrival tolerance can alter visibility."
+      },
+      "previous_duration": {
+        "scope": "nominal action clock from imported ScheduledTour with native sensorless navigation; not acquisition wall time",
+        "fps": 3.0,
+        "forward_step_m": 0.15,
+        "turn_step_deg": 10.0,
+        "first_lap_frames": 2705,
+        "three_lap_frames": 8117,
+        "first_lap_seconds": 901.667,
+        "three_lap_seconds": 2705.667,
+        "three_lap_driven_distance_m": 301.661,
+        "skipped": [],
+        "valid_complete_tour": true,
+        "executor": {
+          "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/test/habitat_feed_host.py",
+          "sha256": "971dfd6ef7817dc2114615cdb0d84b904c5780fe8b3bddcb93a0e504a7e6e8db"
+        },
+        "exclusions": [
+          "Rendering, image writing, IPC and native baseline inference.",
+          "Dynamic object script processing and extra waits.",
+          "Inter-floor transfer, localization/map reset and startup.",
+          "Sensorless action counting does not verify camera tilt application."
+        ]
+      },
+      "duration": {
+        "scope": "nominal action clock from imported ScheduledTour with native sensorless navigation; not acquisition wall time",
+        "fps": 3.0,
+        "forward_step_m": 0.15,
+        "turn_step_deg": 10.0,
+        "first_lap_frames": 4269,
+        "three_lap_frames": 12800,
+        "first_lap_seconds": 1423.0,
+        "three_lap_seconds": 4266.667,
+        "three_lap_driven_distance_m": 310.086,
+        "skipped": [],
+        "valid_complete_tour": true,
+        "executor": {
+          "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/test/habitat_feed_host.py",
+          "sha256": "971dfd6ef7817dc2114615cdb0d84b904c5780fe8b3bddcb93a0e504a7e6e8db"
+        },
+        "exclusions": [
+          "Rendering, image writing, IPC and native baseline inference.",
+          "Dynamic object script processing and extra waits.",
+          "Inter-floor transfer, localization/map reset and startup.",
+          "Sensorless action counting does not verify camera tilt application."
+        ],
+        "configured_laps": 3,
+        "configured_laps_seconds": 4269.0
+      }
+    },
+    {
+      "gt_rooms_without_a_stop": null,
+      "gt_room_stops_added": 0,
+      "ridge_bridges": 6,
+      "room_seeds": 0,
+      "room_seeds_joined": 0,
+      "coverage_share": 1.0,
+      "coverage_radius_m": 3.0,
+      "height": 0.11,
+      "navigable_m2": 62.5,
+      "waypoints": 35,
+      "waypoints_before_merge": 56,
+      "junctions": 22,
+      "junctions_without_a_stop": 0,
+      "stranded_junctions_recovered": 0,
+      "max_degree": 5,
+      "root_candidates": [
+        [
+          0.087,
+          0.11,
+          5.848
+        ]
+      ],
+      "root": [
+        0.087,
+        0.11,
+        5.848
+      ],
+      "unreached": [],
+      "budget": {
+        "drive_m": 371.4,
+        "drive_frames": 2475,
+        "corner_turn_deg": 23304,
+        "corner_turn_frames": 2331,
+        "scan_stops": 105,
+        "scan_frames": 3780,
+        "trajectory_points": 333,
+        "legs_kept_unsimplified": 0,
+        "total_frames": 8586,
+        "per_lap": {
+          "drive_m": 123.8,
+          "drive_frames": 825,
+          "corner_turn_deg": 7768,
+          "corner_turn_frames": 777,
+          "scan_stops": 35,
+          "scan_frames": 1260,
+          "trajectory_points": 111,
+          "legs_kept_unsimplified": 0,
+          "total_frames": 2862
+        },
+        "laps": 3
+      },
+      "visit_order": [
+        [
+          0.087,
+          0.11,
+          5.848
+        ],
+        [
+          1.487,
+          0.11,
+          6.448
+        ],
+        [
+          1.037,
+          0.11,
+          7.698
+        ],
+        [
+          1.937,
+          0.11,
+          8.798
+        ],
+        [
+          1.637,
+          0.11,
+          10.198
+        ],
+        [
+          1.487,
+          0.11,
+          11.398
+        ],
+        [
+          2.937,
+          0.11,
+          9.948
+        ],
+        [
+          -0.563,
+          0.11,
+          9.848
+        ],
+        [
+          -2.463,
+          0.11,
+          10.098
+        ],
+        [
+          -3.763,
+          0.11,
+          10.698
+        ],
+        [
+          3.637,
+          0.11,
+          8.098
+        ],
+        [
+          5.037,
+          0.11,
+          7.798
+        ],
+        [
+          5.037,
+          0.11,
+          6.098
+        ],
+        [
+          6.437,
+          0.11,
+          5.298
+        ],
+        [
+          6.887,
+          0.11,
+          7.948
+        ],
+        [
+          5.637,
+          0.11,
+          9.748
+        ],
+        [
+          6.487,
+          0.11,
+          10.848
+        ],
+        [
+          0.387,
+          0.11,
+          3.948
+        ],
+        [
+          0.787,
+          0.11,
+          2.148
+        ],
+        [
+          2.037,
+          0.11,
+          1.948
+        ],
+        [
+          3.437,
+          0.11,
+          2.548
+        ],
+        [
+          4.487,
+          0.11,
+          1.948
+        ],
+        [
+          6.037,
+          0.11,
+          1.998
+        ],
+        [
+          4.187,
+          0.11,
+          -0.002
+        ],
+        [
+          2.037,
+          0.11,
+          -0.452
+        ],
+        [
+          0.337,
+          0.11,
+          -0.052
+        ],
+        [
+          -0.563,
+          0.11,
+          2.548
+        ],
+        [
+          -2.263,
+          0.11,
+          2.298
+        ],
+        [
+          -2.013,
+          0.11,
+          0.548
+        ],
+        [
+          -3.913,
+          0.11,
+          1.948
+        ],
+        [
+          -0.713,
+          0.11,
+          7.548
+        ],
+        [
+          -1.813,
+          0.11,
+          6.098
+        ],
+        [
+          -3.613,
+          0.11,
+          6.348
+        ],
+        [
+          -4.513,
+          0.11,
+          6.548
+        ],
+        [
+          -1.813,
+          0.11,
+          4.148
+        ]
+      ],
+      "trajectory": [
+        {
+          "xyz": [
+            0.08699999749660492,
+            0.11293673515319824,
+            5.8480000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 0,
+          "leg": null
+        },
+        {
+          "xyz": [
+            0.5370000004768372,
+            0.11293673515319824,
+            6.297999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 0
+        },
+        {
+          "xyz": [
+            1.4869999885559082,
+            -0.1233503520488739,
+            6.447999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 1,
+          "leg": 0
+        },
+        {
+          "xyz": [
+            0.5870000123977661,
+            0.11293673515319824,
+            6.297999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 1
+        },
+        {
+          "xyz": [
+            0.5870000123977661,
+            0.11293673515319824,
+            7.248000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 1
+        },
+        {
+          "xyz": [
+            1.0369999408721924,
+            0.11293673515319824,
+            7.697999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 2,
+          "leg": 1
+        },
+        {
+          "xyz": [
+            1.937000036239624,
+            0.11293673515319824,
+            8.79800033569336
+          ],
+          "scan_deg": 360.0,
+          "stop": 3,
+          "leg": 2
+        },
+        {
+          "xyz": [
+            1.8869999647140503,
+            0.11293673515319824,
+            9.998000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 3
+        },
+        {
+          "xyz": [
+            1.6369999647140503,
+            0.11293673515319824,
+            10.197999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 4,
+          "leg": 3
+        },
+        {
+          "xyz": [
+            1.7869999408721924,
+            0.11293673515319824,
+            10.89799976348877
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 4
+        },
+        {
+          "xyz": [
+            1.4869999885559082,
+            0.11293673515319824,
+            11.39799976348877
+          ],
+          "scan_deg": 360.0,
+          "stop": 5,
+          "leg": 4
+        },
+        {
+          "xyz": [
+            1.7869999408721924,
+            0.11293673515319824,
+            10.89799976348877
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 5
+        },
+        {
+          "xyz": [
+            1.6369999647140503,
+            0.11293673515319824,
+            10.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 5
+        },
+        {
+          "xyz": [
+            2.937000036239624,
+            0.11293673515319824,
+            9.947999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 6,
+          "leg": 6
+        },
+        {
+          "xyz": [
+            1.6369999647140503,
+            0.11293673515319824,
+            10.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 7
+        },
+        {
+          "xyz": [
+            -0.5630000233650208,
+            0.11293673515319824,
+            9.847999572753906
+          ],
+          "scan_deg": 360.0,
+          "stop": 7,
+          "leg": 8
+        },
+        {
+          "xyz": [
+            -1.113295555114746,
+            0.11293673515319824,
+            10.598381042480469
+          ],
+          "scan_deg": 360.0,
+          "stop": 35,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            -2.4630000591278076,
+            0.11293673515319824,
+            10.097999572753906
+          ],
+          "scan_deg": 360.0,
+          "stop": 8,
+          "leg": 9
+        },
+        {
+          "xyz": [
+            -3.562999963760376,
+            0.11293673515319824,
+            10.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 10
+        },
+        {
+          "xyz": [
+            -3.86299991607666,
+            0.11293673515319824,
+            10.347999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 10
+        },
+        {
+          "xyz": [
+            -3.763000011444092,
+            0.11293673515319824,
+            10.697999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 9,
+          "leg": 10
+        },
+        {
+          "xyz": [
+            -3.86299991607666,
+            0.11293673515319824,
+            10.347999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 11
+        },
+        {
+          "xyz": [
+            -3.562999963760376,
+            0.11293673515319824,
+            10.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 11
+        },
+        {
+          "xyz": [
+            -2.4630000591278076,
+            0.11293673515319824,
+            10.097999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 11
+        },
+        {
+          "xyz": [
+            -0.5630000233650208,
+            0.11293673515319824,
+            9.847999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 12
+        },
+        {
+          "xyz": [
+            1.6369999647140503,
+            0.11293673515319824,
+            10.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 13
+        },
+        {
+          "xyz": [
+            1.8869999647140503,
+            0.11293673515319824,
+            9.998000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 14
+        },
+        {
+          "xyz": [
+            1.937000036239624,
+            0.11293673515319824,
+            8.79800033569336
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 14
+        },
+        {
+          "xyz": [
+            3.63700008392334,
+            0.11293673515319824,
+            8.097999572753906
+          ],
+          "scan_deg": 360.0,
+          "stop": 10,
+          "leg": 15
+        },
+        {
+          "xyz": [
+            5.0370001792907715,
+            0.11293673515319824,
+            7.797999858856201
+          ],
+          "scan_deg": 360.0,
+          "stop": 11,
+          "leg": 16
+        },
+        {
+          "xyz": [
+            5.0370001792907715,
+            0.11293673515319824,
+            6.0980000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 12,
+          "leg": 17
+        },
+        {
+          "xyz": [
+            5.2870001792907715,
+            0.11293673515319824,
+            5.447999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 18
+        },
+        {
+          "xyz": [
+            6.25,
+            0.11293673515319824,
+            4.449999809265137
+          ],
+          "scan_deg": 360.0,
+          "stop": 39,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            6.436999797821045,
+            0.11293673515319824,
+            5.297999858856201
+          ],
+          "scan_deg": 360.0,
+          "stop": 13,
+          "leg": 18
+        },
+        {
+          "xyz": [
+            5.2870001792907715,
+            0.11293673515319824,
+            5.447999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 19
+        },
+        {
+          "xyz": [
+            5.0370001792907715,
+            0.11293673515319824,
+            6.0980000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 19
+        },
+        {
+          "xyz": [
+            5.0370001792907715,
+            0.11293673515319824,
+            7.797999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 20
+        },
+        {
+          "xyz": [
+            6.2870001792907715,
+            0.11293673515319824,
+            8.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 21
+        },
+        {
+          "xyz": [
+            6.88700008392334,
+            0.11293673515319824,
+            7.947999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 14,
+          "leg": 21
+        },
+        {
+          "xyz": [
+            6.63700008392334,
+            0.11293673515319824,
+            8.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 22
+        },
+        {
+          "xyz": [
+            5.436999797821045,
+            0.11293673515319824,
+            7.947999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 22
+        },
+        {
+          "xyz": [
+            5.63700008392334,
+            0.11293673515319824,
+            9.748000144958496
+          ],
+          "scan_deg": 360.0,
+          "stop": 15,
+          "leg": 22
+        },
+        {
+          "xyz": [
+            5.63700008392334,
+            0.11293673515319824,
+            10.447999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 23
+        },
+        {
+          "xyz": [
+            6.486999988555908,
+            0.11293673515319824,
+            10.847999572753906
+          ],
+          "scan_deg": 360.0,
+          "stop": 16,
+          "leg": 23
+        },
+        {
+          "xyz": [
+            5.63700008392334,
+            0.11293673515319824,
+            10.447999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 24
+        },
+        {
+          "xyz": [
+            5.63700008392334,
+            0.11293673515319824,
+            9.748000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 24
+        },
+        {
+          "xyz": [
+            5.436999797821045,
+            0.11293673515319824,
+            7.947999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 25
+        },
+        {
+          "xyz": [
+            6.2870001792907715,
+            0.11293673515319824,
+            8.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 25
+        },
+        {
+          "xyz": [
+            6.88700008392334,
+            0.11293673515319824,
+            7.947999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 25
+        },
+        {
+          "xyz": [
+            6.2870001792907715,
+            0.11293673515319824,
+            8.197999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 26
+        },
+        {
+          "xyz": [
+            5.0370001792907715,
+            0.11293673515319824,
+            7.797999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 26
+        },
+        {
+          "xyz": [
+            3.63700008392334,
+            0.11293673515319824,
+            8.097999572753906
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 27
+        },
+        {
+          "xyz": [
+            1.937000036239624,
+            0.11293673515319824,
+            8.79800033569336
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 28
+        },
+        {
+          "xyz": [
+            1.0369999408721924,
+            0.11293673515319824,
+            7.697999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 29
+        },
+        {
+          "xyz": [
+            0.5870000123977661,
+            0.11293673515319824,
+            7.248000144958496
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 30
+        },
+        {
+          "xyz": [
+            0.5870000123977661,
+            0.11293673515319824,
+            6.297999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 30
+        },
+        {
+          "xyz": [
+            1.4869999885559082,
+            -0.1233503520488739,
+            6.447999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 30
+        },
+        {
+          "xyz": [
+            0.5370000004768372,
+            0.11293673515319824,
+            6.297999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 31
+        },
+        {
+          "xyz": [
+            0.08699999749660492,
+            0.11293673515319824,
+            5.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 31
+        },
+        {
+          "xyz": [
+            0.3869999945163727,
+            0.11293673515319824,
+            3.947999954223633
+          ],
+          "scan_deg": 360.0,
+          "stop": 17,
+          "leg": 32
+        },
+        {
+          "xyz": [
+            0.3370000123977661,
+            0.11293673515319824,
+            2.5480000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 33
+        },
+        {
+          "xyz": [
+            0.7870000004768372,
+            0.11293673515319824,
+            2.1480000019073486
+          ],
+          "scan_deg": 360.0,
+          "stop": 18,
+          "leg": 33
+        },
+        {
+          "xyz": [
+            2.0369999408721924,
+            0.11293673515319824,
+            1.9479999542236328
+          ],
+          "scan_deg": 360.0,
+          "stop": 19,
+          "leg": 34
+        },
+        {
+          "xyz": [
+            2.437000036239624,
+            0.11293673515319824,
+            2.497999906539917
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 35
+        },
+        {
+          "xyz": [
+            3.437000036239624,
+            0.11293673515319824,
+            2.5480000972747803
+          ],
+          "scan_deg": 360.0,
+          "stop": 20,
+          "leg": 35
+        },
+        {
+          "xyz": [
+            4.486999988555908,
+            0.11293673515319824,
+            1.9479999542236328
+          ],
+          "scan_deg": 360.0,
+          "stop": 21,
+          "leg": 36
+        },
+        {
+          "xyz": [
+            6.086999893188477,
+            0.11293673515319824,
+            1.7480000257492065
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 37
+        },
+        {
+          "xyz": [
+            6.0370001792907715,
+            0.11293673515319824,
+            1.9980000257492065
+          ],
+          "scan_deg": 360.0,
+          "stop": 22,
+          "leg": 37
+        },
+        {
+          "xyz": [
+            6.086999893188477,
+            0.11293673515319824,
+            1.7480000257492065
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 38
+        },
+        {
+          "xyz": [
+            4.486999988555908,
+            0.11293673515319824,
+            1.9479999542236328
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 38
+        },
+        {
+          "xyz": [
+            4.486999988555908,
+            0.11293673515319824,
+            0.09799999743700027
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 39
+        },
+        {
+          "xyz": [
+            4.186999797821045,
+            0.11293673515319824,
+            -0.0020000000949949026
+          ],
+          "scan_deg": 360.0,
+          "stop": 23,
+          "leg": 39
+        },
+        {
+          "xyz": [
+            4.486999988555908,
+            0.11293673515319824,
+            0.09799999743700027
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 40
+        },
+        {
+          "xyz": [
+            4.486999988555908,
+            0.11293673515319824,
+            1.9479999542236328
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 40
+        },
+        {
+          "xyz": [
+            3.437000036239624,
+            0.11293673515319824,
+            2.5480000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 41
+        },
+        {
+          "xyz": [
+            2.437000036239624,
+            0.11293673515319824,
+            2.497999906539917
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 42
+        },
+        {
+          "xyz": [
+            2.0369999408721924,
+            0.11293673515319824,
+            1.9479999542236328
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 42
+        },
+        {
+          "xyz": [
+            3.186703681945801,
+            0.11293673515319824,
+            -0.3516193628311157
+          ],
+          "scan_deg": 360.0,
+          "stop": 40,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            2.0369999408721924,
+            0.11293673515319824,
+            -0.4519999921321869
+          ],
+          "scan_deg": 360.0,
+          "stop": 24,
+          "leg": 43
+        },
+        {
+          "xyz": [
+            0.5870000123977661,
+            0.11293673515319824,
+            -0.5019999742507935
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 44
+        },
+        {
+          "xyz": [
+            0.3370000123977661,
+            0.11293673515319824,
+            -0.052000001072883606
+          ],
+          "scan_deg": 360.0,
+          "stop": 25,
+          "leg": 44
+        },
+        {
+          "xyz": [
+            0.5870000123977661,
+            0.11293673515319824,
+            -0.5019999742507935
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 45
+        },
+        {
+          "xyz": [
+            2.0369999408721924,
+            0.11293673515319824,
+            -0.4519999921321869
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 45
+        },
+        {
+          "xyz": [
+            2.0369999408721924,
+            0.11293673515319824,
+            1.9479999542236328
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 46
+        },
+        {
+          "xyz": [
+            0.7870000004768372,
+            0.11293673515319824,
+            2.1480000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 47
+        },
+        {
+          "xyz": [
+            0.3370000123977661,
+            0.11293673515319824,
+            2.5480000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 48
+        },
+        {
+          "xyz": [
+            -0.5630000233650208,
+            0.11293673515319824,
+            2.5480000972747803
+          ],
+          "scan_deg": 360.0,
+          "stop": 26,
+          "leg": 48
+        },
+        {
+          "xyz": [
+            -1.2630000114440918,
+            0.11293673515319824,
+            2.6480000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 49
+        },
+        {
+          "xyz": [
+            -2.263000011444092,
+            0.11293673515319824,
+            2.2980000972747803
+          ],
+          "scan_deg": 360.0,
+          "stop": 27,
+          "leg": 49
+        },
+        {
+          "xyz": [
+            -2.2132959365844727,
+            0.11293673515319824,
+            0.0983806848526001
+          ],
+          "scan_deg": 360.0,
+          "stop": 36,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            -2.013000011444092,
+            0.11293673515319824,
+            0.5479999780654907
+          ],
+          "scan_deg": 360.0,
+          "stop": 28,
+          "leg": 50
+        },
+        {
+          "xyz": [
+            -2.263000011444092,
+            0.11293673515319824,
+            2.2980000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 51
+        },
+        {
+          "xyz": [
+            -3.9130001068115234,
+            0.11293673515319824,
+            1.9479999542236328
+          ],
+          "scan_deg": 360.0,
+          "stop": 29,
+          "leg": 52
+        },
+        {
+          "xyz": [
+            -2.263000011444092,
+            0.11293673515319824,
+            2.2980000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 53
+        },
+        {
+          "xyz": [
+            -1.2630000114440918,
+            0.11293673515319824,
+            2.6480000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 54
+        },
+        {
+          "xyz": [
+            -0.5630000233650208,
+            0.11293673515319824,
+            2.5480000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 54
+        },
+        {
+          "xyz": [
+            0.3370000123977661,
+            0.11293673515319824,
+            2.5480000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 55
+        },
+        {
+          "xyz": [
+            0.7870000004768372,
+            0.11293673515319824,
+            2.1480000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 55
+        },
+        {
+          "xyz": [
+            0.3370000123977661,
+            0.11293673515319824,
+            2.5480000972747803
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 56
+        },
+        {
+          "xyz": [
+            0.3869999945163727,
+            0.11293673515319824,
+            3.947999954223633
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 56
+        },
+        {
+          "xyz": [
+            0.08699999749660492,
+            0.11293673515319824,
+            5.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 57
+        },
+        {
+          "xyz": [
+            -0.5130000114440918,
+            0.11293673515319824,
+            6.297999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 58
+        },
+        {
+          "xyz": [
+            -1.7283285856246948,
+            0.11293673515319824,
+            7.51230525970459
+          ],
+          "scan_deg": 360.0,
+          "stop": 38,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            -0.7129999995231628,
+            0.11293673515319824,
+            7.547999858856201
+          ],
+          "scan_deg": 360.0,
+          "stop": 30,
+          "leg": 58
+        },
+        {
+          "xyz": [
+            -0.5130000114440918,
+            0.11293673515319824,
+            6.297999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 59
+        },
+        {
+          "xyz": [
+            -1.812999963760376,
+            0.11293673515319824,
+            6.0980000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 31,
+          "leg": 59
+        },
+        {
+          "xyz": [
+            -3.61299991607666,
+            0.11293673515319824,
+            6.3480000495910645
+          ],
+          "scan_deg": 360.0,
+          "stop": 32,
+          "leg": 60
+        },
+        {
+          "xyz": [
+            -4.568603992462158,
+            0.11293673515319824,
+            5.4802327156066895
+          ],
+          "scan_deg": 360.0,
+          "stop": 37,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            -4.513000011444092,
+            0.11293673515319824,
+            6.547999858856201
+          ],
+          "scan_deg": 360.0,
+          "stop": 33,
+          "leg": 61
+        },
+        {
+          "xyz": [
+            -3.61299991607666,
+            0.11293673515319824,
+            6.3480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 62
+        },
+        {
+          "xyz": [
+            -1.812999963760376,
+            0.11293673515319824,
+            6.0980000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 63
+        },
+        {
+          "xyz": [
+            -1.812999963760376,
+            0.11293673515319824,
+            4.1479997634887695
+          ],
+          "scan_deg": 360.0,
+          "stop": 34,
+          "leg": 64
+        },
+        {
+          "xyz": [
+            -1.812999963760376,
+            0.11293673515319824,
+            6.0980000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 65
+        },
+        {
+          "xyz": [
+            -0.5130000114440918,
+            0.11293673515319824,
+            6.297999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 66
+        },
+        {
+          "xyz": [
+            -0.7129999995231628,
+            0.11293673515319824,
+            7.547999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 66
+        },
+        {
+          "xyz": [
+            -0.5130000114440918,
+            0.11293673515319824,
+            6.297999858856201
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 67
+        },
+        {
+          "xyz": [
+            0.08699999749660492,
+            0.11293673515319824,
+            5.8480000495910645
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 67
+        }
+      ],
+      "share": 0.4667,
+      "coverage": {
+        "schema": "graphapi.tour_coverage.v1",
+        "scope": "planned static-scene free-floor visibility at scan stops; not recorded observation coverage",
+        "domain": "native floor-height reference plus full-scene collision-supported floor cell centres with clear vertical body columns; no navmesh mask or robot-radius erosion",
+        "free_area_m2": 85.36,
+        "covered_area_m2": 83.79,
+        "uncovered_area_m2": 1.57,
+        "coverage_pct": 98.161,
+        "free_area_outside_navmesh_m2": 23.84,
+        "covered_area_outside_navmesh_m2": 22.33,
+        "free_cells": 8536,
+        "covered_cells": 8379,
+        "obstacle_cells": 1346,
+        "grid_resolution_m": 0.1,
+        "range_m": 3.0,
+        "range_source": "schedule coverage_radius_m (horizontal evaluation range)",
+        "camera_height_m": 1.5,
+        "clearance_height_m": 1.5,
+        "hfov_deg": 90.0,
+        "vfov_deg": 73.73979529168804,
+        "image_size": [
+          640,
+          480
+        ],
+        "tilts_deg": [
+          0.0,
+          -45.0
+        ],
+        "floor_band_m": 0.4,
+        "grid": {
+          "path": "00839-zt1RVoi7PcG/floor-1.coverage.npz",
+          "sha256": "eb2986a194e144dd1aaca38a3188c863e8821081021548af4a95e5c9b8c693c6"
+        },
+        "per_stop": [
+          {
+            "stop": 0,
+            "new_area_m2": 10.99,
+            "cumulative_area_m2": 10.99
+          },
+          {
+            "stop": 1,
+            "new_area_m2": 0.31,
+            "cumulative_area_m2": 11.3
+          },
+          {
+            "stop": 2,
+            "new_area_m2": 8.53,
+            "cumulative_area_m2": 19.83
+          },
+          {
+            "stop": 3,
+            "new_area_m2": 5.75,
+            "cumulative_area_m2": 25.58
+          },
+          {
+            "stop": 4,
+            "new_area_m2": 1.19,
+            "cumulative_area_m2": 26.77
+          },
+          {
+            "stop": 5,
+            "new_area_m2": 0.19,
+            "cumulative_area_m2": 26.96
+          },
+          {
+            "stop": 6,
+            "new_area_m2": 0.59,
+            "cumulative_area_m2": 27.55
+          },
+          {
+            "stop": 7,
+            "new_area_m2": 2.45,
+            "cumulative_area_m2": 30.0
+          },
+          {
+            "stop": 35,
+            "new_area_m2": 1.07,
+            "cumulative_area_m2": 31.07
+          },
+          {
+            "stop": 8,
+            "new_area_m2": 1.22,
+            "cumulative_area_m2": 32.29
+          },
+          {
+            "stop": 9,
+            "new_area_m2": 1.2,
+            "cumulative_area_m2": 33.49
+          },
+          {
+            "stop": 10,
+            "new_area_m2": 5.29,
+            "cumulative_area_m2": 38.78
+          },
+          {
+            "stop": 11,
+            "new_area_m2": 3.85,
+            "cumulative_area_m2": 42.63
+          },
+          {
+            "stop": 12,
+            "new_area_m2": 1.29,
+            "cumulative_area_m2": 43.92
+          },
+          {
+            "stop": 39,
+            "new_area_m2": 1.72,
+            "cumulative_area_m2": 45.64
+          },
+          {
+            "stop": 13,
+            "new_area_m2": 0.14,
+            "cumulative_area_m2": 45.78
+          },
+          {
+            "stop": 14,
+            "new_area_m2": 0.39,
+            "cumulative_area_m2": 46.17
+          },
+          {
+            "stop": 15,
+            "new_area_m2": 1.98,
+            "cumulative_area_m2": 48.15
+          },
+          {
+            "stop": 16,
+            "new_area_m2": 0.1,
+            "cumulative_area_m2": 48.25
+          },
+          {
+            "stop": 17,
+            "new_area_m2": 4.18,
+            "cumulative_area_m2": 52.43
+          },
+          {
+            "stop": 18,
+            "new_area_m2": 7.44,
+            "cumulative_area_m2": 59.87
+          },
+          {
+            "stop": 19,
+            "new_area_m2": 1.96,
+            "cumulative_area_m2": 61.83
+          },
+          {
+            "stop": 20,
+            "new_area_m2": 4.07,
+            "cumulative_area_m2": 65.9
+          },
+          {
+            "stop": 21,
+            "new_area_m2": 1.81,
+            "cumulative_area_m2": 67.71
+          },
+          {
+            "stop": 22,
+            "new_area_m2": 0.09,
+            "cumulative_area_m2": 67.8
+          },
+          {
+            "stop": 23,
+            "new_area_m2": 0.38,
+            "cumulative_area_m2": 68.18
+          },
+          {
+            "stop": 40,
+            "new_area_m2": 1.16,
+            "cumulative_area_m2": 69.34
+          },
+          {
+            "stop": 24,
+            "new_area_m2": 0.71,
+            "cumulative_area_m2": 70.05
+          },
+          {
+            "stop": 25,
+            "new_area_m2": 0.35,
+            "cumulative_area_m2": 70.4
+          },
+          {
+            "stop": 26,
+            "new_area_m2": 1.96,
+            "cumulative_area_m2": 72.36
+          },
+          {
+            "stop": 27,
+            "new_area_m2": 2.8,
+            "cumulative_area_m2": 75.16
+          },
+          {
+            "stop": 36,
+            "new_area_m2": 0.62,
+            "cumulative_area_m2": 75.78
+          },
+          {
+            "stop": 28,
+            "new_area_m2": 0.05,
+            "cumulative_area_m2": 75.83
+          },
+          {
+            "stop": 29,
+            "new_area_m2": 0.01,
+            "cumulative_area_m2": 75.84
+          },
+          {
+            "stop": 38,
+            "new_area_m2": 0.71,
+            "cumulative_area_m2": 76.55
+          },
+          {
+            "stop": 30,
+            "new_area_m2": 0.31,
+            "cumulative_area_m2": 76.86
+          },
+          {
+            "stop": 31,
+            "new_area_m2": 5.62,
+            "cumulative_area_m2": 82.48
+          },
+          {
+            "stop": 32,
+            "new_area_m2": 1.12,
+            "cumulative_area_m2": 83.6
+          },
+          {
+            "stop": 37,
+            "new_area_m2": 0.19,
+            "cumulative_area_m2": 83.79
+          },
+          {
+            "stop": 33,
+            "new_area_m2": 0.0,
+            "cumulative_area_m2": 83.79
+          },
+          {
+            "stop": 34,
+            "new_area_m2": 0.0,
+            "cumulative_area_m2": 83.79
+          }
+        ],
+        "limitations": [
+          "Cell-centre grid approximation of physical floor area, not exact polygon area.",
+          "Static stage collisions only; planned dynamic objects are not yet instantiated.",
+          "Coverage includes the floor surface within the configured camera vertical FOV, not object detection quality.",
+          "Motion frames and cross-floor transitions are excluded; only scheduled 360-degree scans contribute.",
+          "Missing/open mesh surfaces cannot contribute a supported floor cell."
+        ],
+        "sources": {
+          "scene": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00839-zt1RVoi7PcG/zt1RVoi7PcG.basis.glb",
+            "sha256": "e731a0d3a5235e218938a1655ec763d63dea11d421c2e88d8139fc33b24026ca"
+          },
+          "native_floor_gt": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/packC/00839-zt1RVoi7PcG/00839-zt1RVoi7PcG.gt.json",
+            "sha256": "322ed9998a778a885f4105375d17f9cb7b6c7b9ce2635095e38c5425137eacf8"
+          },
+          "evaluator": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/tools/baselines/tour_coverage.py",
+            "sha256": "a4dafcfafed113e0bbdea999ce4f55cbee623fa555c6f3b90e74a635996c30ef"
+          },
+          "previous_grid": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/packC/00839-zt1RVoi7PcG/floor-1.coverage.npz",
+            "sha256": "bc7e9a1ddfbcdf17ba4b21b47b8e9c8612484b85fc7d2b27367a272144221eb6"
+          },
+          "optimizer": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/tools/baselines/optimize_tours.py",
+            "sha256": "1efdd8734a49f139e1eee0920b90d1134383aa61e68f57e25969b72ba4eb6df7"
+          }
+        }
+      },
+      "scan_plan": {
+        "mode": "continuous",
+        "hold_frames": 1,
+        "tilts_deg": [
+          0.0,
+          -45.0
+        ],
+        "turn_step_deg": 10.0
+      },
+      "coverage_optimization": {
+        "method": "two camera tilts plus greedy visibility set cover; cheapest geodesic insertion preserving original order",
+        "previous_coverage_pct": 72.54,
+        "tilt_only_coverage_pct": 96.86,
+        "candidate_spacing_m": 0.5,
+        "candidate_count": 474,
+        "added_scan_stops": 6,
+        "candidate_visible_area_m2": 84.21,
+        "candidate_visibility_ceiling_pct": 98.653,
+        "candidate_union_target_fraction": 0.995,
+        "fraction_of_candidate_visible_area_covered": 0.995012,
+        "unseen_by_candidate_set_m2": 1.15,
+        "limitations": "Finite 0.5m candidate-grid ceiling, not proof of continuous global optimum. Coverage evaluated at planned target poses; native follower arrival tolerance can alter visibility."
+      },
+      "previous_duration": {
+        "scope": "nominal action clock from imported ScheduledTour with native sensorless navigation; not acquisition wall time",
+        "fps": 3.0,
+        "forward_step_m": 0.15,
+        "turn_step_deg": 10.0,
+        "first_lap_frames": 2714,
+        "three_lap_frames": 8120,
+        "first_lap_seconds": 904.667,
+        "three_lap_seconds": 2706.667,
+        "three_lap_driven_distance_m": 305.008,
+        "skipped": [],
+        "valid_complete_tour": true,
+        "executor": {
+          "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/test/habitat_feed_host.py",
+          "sha256": "971dfd6ef7817dc2114615cdb0d84b904c5780fe8b3bddcb93a0e504a7e6e8db"
+        },
+        "exclusions": [
+          "Rendering, image writing, IPC and native baseline inference.",
+          "Dynamic object script processing and extra waits.",
+          "Inter-floor transfer, localization/map reset and startup.",
+          "Sensorless action counting does not verify camera tilt application."
+        ]
+      },
+      "duration": {
+        "scope": "nominal action clock from imported ScheduledTour with native sensorless navigation; not acquisition wall time",
+        "fps": 3.0,
+        "forward_step_m": 0.15,
+        "turn_step_deg": 10.0,
+        "first_lap_frames": 4514,
+        "three_lap_frames": 13514,
+        "first_lap_seconds": 1504.667,
+        "three_lap_seconds": 4504.667,
+        "three_lap_driven_distance_m": 323.938,
+        "skipped": [],
+        "valid_complete_tour": true,
+        "executor": {
+          "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/test/habitat_feed_host.py",
+          "sha256": "971dfd6ef7817dc2114615cdb0d84b904c5780fe8b3bddcb93a0e504a7e6e8db"
+        },
+        "exclusions": [
+          "Rendering, image writing, IPC and native baseline inference.",
+          "Dynamic object script processing and extra waits.",
+          "Inter-floor transfer, localization/map reset and startup.",
+          "Sensorless action counting does not verify camera tilt application."
+        ],
+        "configured_laps": 3,
+        "configured_laps_seconds": 4514.001
+      }
+    }
+  ],
+  "navigation_projection": {
+    "source": {
+      "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/schedules/00839-zt1RVoi7PcG.schedule.json",
+      "sha256": "61456741392306d16da2da714336e659360fab0193641fcb164bf74e861ba74b"
+    },
+    "method": "native PathFinder.snap_point for every goal; all stops retained",
+    "max_displacement_m": 0.23335035204887866
+  },
+  "coverage": {
+    "schema": "graphapi.tour_coverage.v1",
+    "scope": "planned static-scene free-floor visibility at scan stops; not recorded observation coverage",
+    "free_area_m2": 166.14,
+    "covered_area_m2": 164.06,
+    "coverage_pct": 98.748,
+    "aggregation": "area-weighted across floors"
+  },
+  "coverage_optimization": {
+    "source_schedule": {
+      "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/packC/00839-zt1RVoi7PcG/00839-zt1RVoi7PcG.schedule.json",
+      "sha256": "7c618584a04156e73b7f7086077504d2a7c9d1480421370864efbc4a59214875"
+    },
+    "optimizer": {
+      "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/tools/baselines/optimize_tours.py",
+      "sha256": "1efdd8734a49f139e1eee0920b90d1134383aa61e68f57e25969b72ba4eb6df7"
+    }
+  },
+  "duration": {
+    "first_lap_seconds": 2927.667,
+    "three_lap_seconds": 8771.334,
+    "fps": 3.0,
+    "valid_complete_tour": true,
+    "scope": "sum of floor action clocks; excludes cross-floor transfer and acquisition overhead",
+    "configured_laps": 3,
+    "configured_laps_seconds": 8783.001
+  },
+  "previous_duration": {
+    "first_lap_seconds": 1806.334,
+    "three_lap_seconds": 5412.334,
+    "configured_laps": 3,
+    "configured_laps_seconds": 5419.002
+  }
+}

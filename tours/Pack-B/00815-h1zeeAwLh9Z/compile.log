@@ -1,0 +1,29 @@
+Renderer: NVIDIA GeForce RTX 4090/PCIe/SSE2 by NVIDIA Corporation
+OpenGL version: 4.6.0 NVIDIA 580.126.09
+Using optional features:
+    GL_ARB_vertex_array_object
+    GL_ARB_separate_shader_objects
+    GL_ARB_robustness
+    GL_ARB_texture_storage
+    GL_ARB_texture_view
+    GL_ARB_framebuffer_no_attachments
+    GL_ARB_invalidate_subdata
+    GL_ARB_texture_storage_multisample
+    GL_ARB_multi_bind
+    GL_ARB_direct_state_access
+    GL_ARB_get_texture_sub_image
+    GL_ARB_texture_filter_anisotropic
+    GL_KHR_debug
+    GL_KHR_parallel_shader_compile
+    GL_NV_depth_buffer_float
+Using driver workarounds:
+    no-forward-compatible-core-context
+    nv-egl-incorrect-gl11-function-pointers
+    no-layout-qualifiers-on-old-glsl
+    nv-zero-context-profile-mask
+    nv-implementation-color-read-format-dsa-broken
+    nv-cubemap-inconsistent-compressed-image-size
+    nv-cubemap-broken-full-compressed-image-query
+    nv-compressed-block-size-in-bits
+[00:27:57:236786]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00815-h1zeeAwLh9Z' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+Support diagnostic: {"counts": {"semantic_objects": 148, "support_categories": 148, "no_matching_collision_surface": 141, "points": 187, "height_filter": 3}, "source": "rendered semantic+depth", "support_categories": {"bonsai tree": 5, "kitchen top": 3, "kitchen island": 2, "stool": 2, "unknown": 4, "fireplace": 4, "cabinet": 6, "piano": 5, "piano stool": 2, "table": 2, "couch": 11, "side table": 2, "armchair": 6, "pillow": 10, "tv stand": 1, "appliance": 2, "box of tissues": 2, "nightstand": 8, "bed": 4, "basket": 2, "statue": 3, "bench": 5, "kitchen lower cabinet": 9, "dishwasher": 1, "bathroom cabinet": 1, "sink": 1, "flower stand": 1, "countertop": 1, "shower cabinet": 1, "sink cabinet": 1, "stonework": 3, "shelf": 1, "beam": 6, "stairs railing": 1, "desk": 2, "mat": 1, "chair": 2, "mirror": 1, "microwave": 1, "dining chair": 17, "dining table": 2, "lampshade": 1, "coaster": 1, "stairs": 1, "refrigerator": 1}, "categories_sample": {"dining chair": 17, "couch": 11, "pillow": 10, "kitchen lower cabinet": 9, "nightstand": 8, "cabinet": 6, "armchair": 6, "beam": 6, "bonsai tree": 5, "piano": 5, "bench": 5, "unknown": 4, "fireplace": 4, "bed": 4, "kitchen top": 3, "statue": 3, "stonework": 3, "kitchen island": 2, "stool": 2, "piano stool": 2, "table": 2, "side table": 2, "appliance": 2, "box of tissues": 2, "basket": 2, "desk": 2, "chair": 2, "dining table": 2, "tv stand": 1, "dishwasher": 1}, "aabb_samples": [{"category": "bonsai tree", "min": [3.924767255783081, 1.3203004598617554, -8.834341049194336], "max": [4.634887218475342, 1.3917711973190308, -8.314810752868652], "size": [0.7101199626922607, 0.07147073745727539, 0.5195302963256836]}, {"category": "bonsai tree", "min": [4.246654510498047, 1.284559726715088, -8.802217483520508], "max": [4.651767253875732, 1.3193304538726807, -8.682350158691406], "size": [0.40511274337768555, 0.03477072715759277, 0.11986732482910156]}, {"category": "bonsai tree", "min": [3.9989278316497803, 1.4026427268981934, -8.511252403259277], "max": [4.182082176208496, 1.4685022830963135, -8.400568962097168], "size": [0.18315434455871582, 0.06585955619812012, 0.11068344116210938]}, {"category": "kitchen top", "min": [6.231922626495361, 0.9404576420783997, -2.4603123664855957], "max": [8.144540786743164, 0.9554038047790527, -1.3948131799697876], "size": [1.9126181602478027, 0.014946162700653076, 1.065499186515808]}, {"category": "kitchen island", "min": [7.531100749969482, 0.8455888032913208, -2.1891629695892334], "max": [7.531100749969482, 0.8455888032913208, -2.1891629695892334], "size": [0.0, 0.0, 0.0]}, {"category": "kitchen island", "min": [7.206884384155273, 0.6888852715492249, -2.217233419418335], "max": [8.138067245483398, 0.7238372564315796, -1.882667064666748], "size": [0.931182861328125, 0.034951984882354736, 0.3345663547515869]}, {"category": "stool", "min": [6.5620646476745605, 0.6293939352035522, -1.7537003755569458], "max": [6.5620646476745605, 0.6293939352035522, -1.7537003755569458], "size": [0.0, 0.0, 0.0]}, {"category": "unknown", "min": [3.8728787899017334, 1.2920459508895874, -6.869967937469482], "max": [3.9723381996154785, 1.2960491180419922, -6.842718601226807], "size": [0.09945940971374512, 0.004003167152404785, 0.02724933624267578]}, {"category": "fireplace", "min": [6.49920129776001, 0.5938891172409058, -4.420296669006348], "max": [6.49920129776001, 0.5938891172409058, -4.420296669006348], "size": [0.0, 0.0, 0.0]}, {"category": "cabinet", "min": [4.388258934020996, 0.8617261648178101, -5.573985576629639], "max": [4.480129718780518, 0.8678902387619019, -5.573639392852783], "size": [0.09187078475952148, 0.006164073944091797, 0.00034618377685546875]}, {"category": "piano", "min": [4.222352504730225, 0.8607776165008545, -7.048073768615723], "max": [4.445082187652588, 0.893973171710968, -5.663511753082275], "size": [0.22272968292236328, 0.033195555210113525, 1.3845620155334473]}, {"category": "piano", "min": [4.418068885803223, 0.7433342337608337, -6.759578227996826], "max": [4.4820637702941895, 0.7597143054008484, -5.694991111755371], "size": [0.0639948844909668, 0.01638007164001465, 1.064587116241455]}]}

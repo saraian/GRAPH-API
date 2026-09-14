@@ -243,21 +243,21 @@ def generate_launch_description():
         package='lost3dsg',
         executable=perception_executable,
         name='perception_2',
-        output='screen',
+        output='both',
     )
 
     object_manager_node = Node(
         package='lost3dsg',
         executable='object_manager_6.py',
         name='object_manager_6',
-        output='screen',
+        output='both',
     )
 
     wall_detector_node = Node(
         package='lost3dsg',
         executable='wall_detector.py',
         name='wall_detector',
-        output='screen',
+        output='both',
         condition=IfCondition(use_wall_detector),
     )
 
@@ -313,7 +313,7 @@ def generate_launch_description():
         name='rviz2',
         # La vista resta nel riferimento globale anche quando SLAM corregge map->odom.
         arguments=_rviz_args,
-        output='screen',
+        output='both',
         condition=IfCondition(use_rviz),
     )
 

@@ -558,8 +558,21 @@ def _stamp_key_str(stamp_msg):
     return f"{sec}.{nanosec:09d}"
 
 
+def _camera_forward_arrow_quaternion(qx, qy, qz, qw):
+    """Rotate the optical pose so RViz Path arrows point along camera +Z."""
+    # RViz Path arrows point along pose +X; camera optical forward is +Z.
+    # A -90 degree local Y rotation maps +X onto +Z.
+    bx, by, bz, bw = 0.0, -2.0 ** -0.5, 0.0, 2.0 ** -0.5
+    return (
+        qw * bx + qx * bw + qy * bz - qz * by,
+        qw * by - qx * bz + qy * bw + qz * bx,
+        qw * bz + qx * by - qy * bx + qz * bw,
+        qw * bw - qx * bx - qy * by - qz * bz,
+    )
+
+
 def publish_agent_path(node, agent_poses, pub):
-    """Publish all accumulated agent poses together as a nav_msgs/Path (for RViz)."""
+    """Publish the camera path, with arrows pointing along optical +Z (for RViz)."""
     path_msg = Path()
     path_msg.header.frame_id = world_frame()
     if agent_poses:
@@ -576,10 +589,13 @@ def publish_agent_path(node, agent_poses, pub):
         pose_stamped.pose.position.x = entry["x"]
         pose_stamped.pose.position.y = entry["y"]
         pose_stamped.pose.position.z = entry["z"]
-        pose_stamped.pose.orientation.x = entry["qx"]
-        pose_stamped.pose.orientation.y = entry["qy"]
-        pose_stamped.pose.orientation.z = entry["qz"]
-        pose_stamped.pose.orientation.w = entry["qw"]
+        qx, qy, qz, qw = _camera_forward_arrow_quaternion(
+            entry["qx"], entry["qy"], entry["qz"], entry["qw"]
+        )
+        pose_stamped.pose.orientation.x = qx
+        pose_stamped.pose.orientation.y = qy
+        pose_stamped.pose.orientation.z = qz
+        pose_stamped.pose.orientation.w = qw
         path_msg.poses.append(pose_stamped)
 
     pub.publish(path_msg)

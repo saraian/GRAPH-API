@@ -1,0 +1,29 @@
+Renderer: NVIDIA GeForce RTX 4090/PCIe/SSE2 by NVIDIA Corporation
+OpenGL version: 4.6.0 NVIDIA 580.126.09
+Using optional features:
+    GL_ARB_vertex_array_object
+    GL_ARB_separate_shader_objects
+    GL_ARB_robustness
+    GL_ARB_texture_storage
+    GL_ARB_texture_view
+    GL_ARB_framebuffer_no_attachments
+    GL_ARB_invalidate_subdata
+    GL_ARB_texture_storage_multisample
+    GL_ARB_multi_bind
+    GL_ARB_direct_state_access
+    GL_ARB_get_texture_sub_image
+    GL_ARB_texture_filter_anisotropic
+    GL_KHR_debug
+    GL_KHR_parallel_shader_compile
+    GL_NV_depth_buffer_float
+Using driver workarounds:
+    no-forward-compatible-core-context
+    nv-egl-incorrect-gl11-function-pointers
+    no-layout-qualifiers-on-old-glsl
+    nv-zero-context-profile-mask
+    nv-implementation-color-read-format-dsa-broken
+    nv-cubemap-inconsistent-compressed-image-size
+    nv-cubemap-broken-full-compressed-image-query
+    nv-compressed-block-size-in-bits
+[00:28:18:310250]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00861-GLAQ4DNUx5U' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+Support diagnostic: {"counts": {"semantic_objects": 291, "support_categories": 291, "points": 318, "no_matching_collision_surface": 335, "height_filter": 11}, "source": "rendered semantic+depth", "support_categories": {"desk": 6, "storage cabinet": 13, "toy": 6, "stack of papers": 8, "desk chair": 8, "clutter": 10, "cardboard box": 10, "dresser": 1, "book": 28, "basket": 2, "art frame": 2, "bed stand": 5, "bed": 4, "chair": 4, "bag": 4, "plush toy": 11, "desk clutter": 5, "cabinet": 1, "mirror": 11, "pouffe": 2, "tv": 2, "bathroom shelf": 2, "sink": 6, "bath cabinet": 2, "wardrobe": 17, "basket of something": 6, "decoration": 1, "stairs railing": 4, "device": 3, "container": 4, "book rack": 13, "unknown": 5, "shelf": 5, "couch": 1, "bath towel": 3, "heater": 7, "bathroom utensil": 6, "shower hose/head": 1, "bottle": 2, "bathroom cabinet": 7, "box of tissues": 3, "bathroom accessory": 6, "laundry basket": 1, "clothes": 41, "table": 1, "closet area for hanging clothes": 1}, "categories_sample": {"clothes": 41, "book": 28, "wardrobe": 17, "storage cabinet": 13, "book rack": 13, "plush toy": 11, "mirror": 11, "clutter": 10, "cardboard box": 10, "stack of papers": 8, "desk chair": 8, "heater": 7, "bathroom cabinet": 7, "desk": 6, "toy": 6, "sink": 6, "basket of something": 6, "bathroom utensil": 6, "bathroom accessory": 6, "bed stand": 5, "desk clutter": 5, "unknown": 5, "shelf": 5, "bed": 4, "chair": 4, "bag": 4, "stairs railing": 4, "container": 4, "device": 3, "bath towel": 3}, "aabb_samples": [{"category": "desk", "min": [-8.85925579071045, 1.9097212553024292, 2.541498899459839], "max": [-7.49658727645874, 1.9233753681182861, 2.9414851665496826], "size": [1.362668514251709, 0.013654112815856934, 0.39998626708984375]}, {"category": "storage cabinet", "min": [-10.892566680908203, 1.9088939428329468, 2.5158851146698], "max": [-8.893996238708496, 1.925997257232666, 2.707609176635742], "size": [1.998570442199707, 0.01710331439971924, 0.19172406196594238]}, {"category": "toy", "min": [-10.231154441833496, 1.926379919052124, 2.587197780609131], "max": [-10.122982025146484, 1.9417436122894287, 2.650658130645752], "size": [0.10817241668701172, 0.015363693237304688, 0.0634603500366211]}, {"category": "stack of papers", "min": [-9.142123222351074, 1.725461483001709, 2.561906576156616], "max": [-9.04275131225586, 1.744028925895691, 2.6961731910705566], "size": [0.09937191009521484, 0.018567442893981934, 0.13426661491394043]}, {"category": "stack of papers", "min": [-9.321914672851562, 1.721849799156189, 2.5818958282470703], "max": [-9.250955581665039, 1.7356914281845093, 2.7131974697113037], "size": [0.07095909118652344, 0.013841629028320312, 0.1313016414642334]}, {"category": "desk chair", "min": [-8.102974891662598, 1.6771689653396606, 2.491591691970825], "max": [-7.838733196258545, 1.6873031854629517, 2.6155993938446045], "size": [0.26424169540405273, 0.010134220123291016, 0.1240077018737793]}, {"category": "clutter", "min": [-9.666328430175781, 1.6662997007369995, 2.5561904907226562], "max": [-9.505257606506348, 1.6997580528259277, 2.6548962593078613], "size": [0.1610708236694336, 0.03345835208892822, 0.09870576858520508]}, {"category": "stack of papers", "min": [-10.313802719116211, 1.6749099493026733, 2.5807695388793945], "max": [-10.154090881347656, 1.6824162006378174, 2.6806623935699463], "size": [0.1597118377685547, 0.007506251335144043, 0.09989285469055176]}, {"category": "stack of papers", "min": [-9.424429893493652, 1.574730396270752, 2.613924264907837], "max": [-9.24729061126709, 1.5838505029678345, 2.6291418075561523], "size": [0.1771392822265625, 0.00912010669708252, 0.01521754264831543]}, {"category": "storage cabinet", "min": [-10.105815887451172, 1.592926263809204, 2.5298237800598145], "max": [-9.931292533874512, 1.6073143482208252, 2.658020257949829], "size": [0.17452335357666016, 0.014388084411621094, 0.12819647789001465]}, {"category": "cardboard box", "min": [-11.103500366210938, 1.563401460647583, 2.368232488632202], "max": [-10.946459770202637, 1.5757596492767334, 2.477919340133667], "size": [0.15704059600830078, 0.01235818862915039, 0.10968685150146484]}, {"category": "dresser", "min": [-6.786734580993652, 1.896696925163269, 0.07818269729614258], "max": [-6.459259510040283, 1.9109957218170166, 0.8704831600189209], "size": [0.32747507095336914, 0.014298796653747559, 0.7923004627227783]}]}

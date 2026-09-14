@@ -1,0 +1,29 @@
+Renderer: NVIDIA GeForce RTX 4090/PCIe/SSE2 by NVIDIA Corporation
+OpenGL version: 4.6.0 NVIDIA 580.126.09
+Using optional features:
+    GL_ARB_vertex_array_object
+    GL_ARB_separate_shader_objects
+    GL_ARB_robustness
+    GL_ARB_texture_storage
+    GL_ARB_texture_view
+    GL_ARB_framebuffer_no_attachments
+    GL_ARB_invalidate_subdata
+    GL_ARB_texture_storage_multisample
+    GL_ARB_multi_bind
+    GL_ARB_direct_state_access
+    GL_ARB_get_texture_sub_image
+    GL_ARB_texture_filter_anisotropic
+    GL_KHR_debug
+    GL_KHR_parallel_shader_compile
+    GL_NV_depth_buffer_float
+Using driver workarounds:
+    no-forward-compatible-core-context
+    nv-egl-incorrect-gl11-function-pointers
+    no-layout-qualifiers-on-old-glsl
+    nv-zero-context-profile-mask
+    nv-implementation-color-read-format-dsa-broken
+    nv-cubemap-inconsistent-compressed-image-size
+    nv-cubemap-broken-full-compressed-image-query
+    nv-compressed-block-size-in-bits
+[00:11:22:468065]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00890-6s7QHgap2fW' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+Support diagnostic: {"counts": {"semantic_objects": 255, "support_categories": 255, "no_matching_collision_surface": 316, "points": 340, "height_filter": 5}, "source": "rendered semantic+depth", "support_categories": {"armchair": 3, "bedside cabinet": 4, "bed": 7, "parapet": 8, "unknown": 33, "drawer": 5, "photo mount": 4, "clock": 2, "box": 4, "chest of drawers": 9, "railing": 3, "wardrobe": 8, "radiator": 20, "shelf": 1, "book": 2, "plush toy": 9, "crib": 5, "baby changing table": 2, "desk": 5, "toy": 5, "chest": 1, "tv stand": 3, "sofa": 10, "table": 1, "dining table": 4, "chair": 21, "bookstand": 8, "blanket": 1, "pillow": 5, "notebook": 1, "bath mat": 2, "bath tub": 2, "backpack": 6, "rack": 3, "sink": 4, "kitchen counter": 2, "kitchen cabinet": 8, "kitchen cabinet drawer": 1, "trashcan": 3, "stove": 2, "wash cabinet": 2, "washbasin": 1, "stack of jackets": 2, "microwave": 3, "oven": 3, "paper": 1, "countertop": 2, "fridge": 5, "cabinet": 3, "toilet paper dispenser": 1, "jacket": 1, "iron board": 2, "washing machine": 1, "mirror": 1}, "categories_sample": {"unknown": 33, "chair": 21, "radiator": 20, "sofa": 10, "chest of drawers": 9, "plush toy": 9, "parapet": 8, "wardrobe": 8, "bookstand": 8, "kitchen cabinet": 8, "bed": 7, "backpack": 6, "drawer": 5, "crib": 5, "desk": 5, "toy": 5, "pillow": 5, "fridge": 5, "bedside cabinet": 4, "photo mount": 4, "box": 4, "dining table": 4, "sink": 4, "armchair": 3, "railing": 3, "tv stand": 3, "rack": 3, "trashcan": 3, "microwave": 3, "oven": 3}, "aabb_samples": [{"category": "armchair", "min": [0.010902087204158306, 3.4963948726654053, -1.1840794086456299], "max": [1.3374295234680176, 3.5296430587768555, 0.025636443868279457], "size": [1.3265274362638593, 0.033248186111450195, 1.2097158525139093]}, {"category": "bedside cabinet", "min": [3.2339024543762207, 3.4918065071105957, -1.3289216756820679], "max": [3.602048397064209, 3.5195162296295166, -0.8310043811798096], "size": [0.3681459426879883, 0.0277097225189209, 0.4979172945022583]}, {"category": "armchair", "min": [0.8138418793678284, 3.3232879638671875, -0.6213603615760803], "max": [1.0875872373580933, 3.3243563175201416, -0.17214736342430115], "size": [0.2737453579902649, 0.0010683536529541016, 0.4492129981517792]}, {"category": "armchair", "min": [0.7264235019683838, 3.264796733856201, -0.939636766910553], "max": [1.1910001039505005, 3.3199188709259033, -0.2469717264175415], "size": [0.4645766019821167, 0.05512213706970215, 0.6926650404930115]}, {"category": "bed", "min": [1.370589017868042, 3.4801249504089355, -3.4115333557128906], "max": [3.1209020614624023, 3.558137893676758, -1.5383381843566895], "size": [1.7503130435943604, 0.07801294326782227, 1.8731951713562012]}, {"category": "parapet", "min": [-0.36009153723716736, 3.6438260078430176, -4.34540319442749], "max": [-0.23621980845928192, 3.6789326667785645, -2.5583791732788086], "size": [0.12387172877788544, 0.035106658935546875, 1.7870240211486816]}, {"category": "bedside cabinet", "min": [3.268038749694824, 3.4883008003234863, -4.026884078979492], "max": [3.5813281536102295, 3.5518410205841064, -3.5389492511749268], "size": [0.3132894039154053, 0.06354022026062012, 0.48793482780456543]}, {"category": "unknown", "min": [3.5838351249694824, 3.55124568939209, -3.6873481273651123], "max": [3.5838351249694824, 3.55124568939209, -3.6873481273651123], "size": [0.0, 0.0, 0.0]}, {"category": "bed", "min": [2.860419511795044, 3.5618631839752197, -3.3260421752929688], "max": [3.111234188079834, 3.6091291904449463, -1.654860258102417], "size": [0.25081467628479004, 0.04726600646972656, 1.6711819171905518]}, {"category": "bedside cabinet", "min": [3.231375217437744, 3.4269368648529053, -1.3304718732833862], "max": [3.347308397293091, 3.4740114212036133, -1.308052897453308], "size": [0.11593317985534668, 0.04707455635070801, 0.022418975830078125]}, {"category": "drawer", "min": [3.229153633117676, 3.357828378677368, -1.1850955486297607], "max": [3.2302677631378174, 3.3942339420318604, -1.1716667413711548], "size": [0.0011141300201416016, 0.03640556335449219, 0.013428807258605957]}, {"category": "photo mount", "min": [2.1792266368865967, 3.8022425174713135, 0.3225155174732208], "max": [2.3249449729919434, 3.8312222957611084, 0.35367006063461304], "size": [0.14571833610534668, 0.028979778289794922, 0.031154543161392212]}]}

@@ -1,0 +1,29 @@
+Renderer: NVIDIA GeForce RTX 4090/PCIe/SSE2 by NVIDIA Corporation
+OpenGL version: 4.6.0 NVIDIA 580.126.09
+Using optional features:
+    GL_ARB_vertex_array_object
+    GL_ARB_separate_shader_objects
+    GL_ARB_robustness
+    GL_ARB_texture_storage
+    GL_ARB_texture_view
+    GL_ARB_framebuffer_no_attachments
+    GL_ARB_invalidate_subdata
+    GL_ARB_texture_storage_multisample
+    GL_ARB_multi_bind
+    GL_ARB_direct_state_access
+    GL_ARB_get_texture_sub_image
+    GL_ARB_texture_filter_anisotropic
+    GL_KHR_debug
+    GL_KHR_parallel_shader_compile
+    GL_NV_depth_buffer_float
+Using driver workarounds:
+    no-forward-compatible-core-context
+    nv-egl-incorrect-gl11-function-pointers
+    no-layout-qualifiers-on-old-glsl
+    nv-zero-context-profile-mask
+    nv-implementation-color-read-format-dsa-broken
+    nv-cubemap-inconsistent-compressed-image-size
+    nv-cubemap-broken-full-compressed-image-query
+    nv-compressed-block-size-in-bits
+[00:10:23:148549]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00829-QaLdnwvtxbs' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+Support diagnostic: {"counts": {"semantic_objects": 141, "support_categories": 141, "no_matching_collision_surface": 325, "points": 229, "height_filter": 23}, "source": "rendered semantic+depth", "support_categories": {"tv stand": 3, "sofa": 13, "table": 9, "mirror": 4, "decoration": 2, "washbasin counter": 2, "ottoman": 6, "tv": 2, "chair": 41, "toilet": 2, "kitchen cabinet": 2, "washbasin": 6, "toilet paper": 1, "desk": 7, "towel": 2, "bed": 4, "unknown": 8, "bathtub": 1, "bed table": 5, "towel bar": 1, "cabinet": 4, "magazine": 3, "clothes": 5, "panel": 4, "fire extinguisher": 2, "telephone": 2}, "categories_sample": {"chair": 41, "sofa": 13, "table": 9, "unknown": 8, "desk": 7, "ottoman": 6, "washbasin": 6, "bed table": 5, "clothes": 5, "mirror": 4, "bed": 4, "cabinet": 4, "panel": 4, "tv stand": 3, "magazine": 3, "decoration": 2, "washbasin counter": 2, "tv": 2, "toilet": 2, "kitchen cabinet": 2, "towel": 2, "fire extinguisher": 2, "telephone": 2, "toilet paper": 1, "bathtub": 1, "towel bar": 1}, "aabb_samples": [{"category": "tv stand", "min": [-6.221975803375244, 0.695483386516571, 0.40274760127067566], "max": [-5.899804592132568, 0.7170618176460266, 2.2205212116241455], "size": [0.3221712112426758, 0.021578431129455566, 1.8177736103534698]}, {"category": "sofa", "min": [-5.197901725769043, 0.46399861574172974, 0.6352748870849609], "max": [-3.288825035095215, 0.514933705329895, 2.549231767654419], "size": [1.9090766906738281, 0.05093508958816528, 1.913956880569458]}, {"category": "sofa", "min": [-4.686880111694336, 0.4367748498916626, 2.3053505420684814], "max": [-4.501653671264648, 0.437301903963089, 2.308593988418579], "size": [0.1852264404296875, 0.0005270540714263916, 0.0032434463500976562]}, {"category": "table", "min": [-4.866301536560059, 0.4407038986682892, 0.8927586078643799], "max": [-3.9842193126678467, 0.4482118785381317, 1.3728231191635132], "size": [0.8820822238922119, 0.007507979869842529, 0.4800645112991333]}, {"category": "mirror", "min": [-4.332688808441162, 1.5028249025344849, -4.849076747894287], "max": [-4.311707973480225, 1.5563358068466187, -4.464197635650635], "size": [0.0209808349609375, 0.05351090431213379, 0.38487911224365234]}, {"category": "mirror", "min": [-4.311789035797119, 1.4496568441390991, -4.7479376792907715], "max": [-4.311789035797119, 1.4496568441390991, -4.724066257476807], "size": [0.0, 0.0, 0.023871421813964844]}, {"category": "mirror", "min": [-4.333005905151367, 1.3988209962844849, -4.622241973876953], "max": [-4.332503795623779, 1.398877501487732, -4.474079132080078], "size": [0.0005021095275878906, 5.650520324707031e-05, 0.148162841796875]}, {"category": "decoration", "min": [-4.397075653076172, 1.3040169477462769, -4.43172025680542], "max": [-4.397075653076172, 1.3040169477462769, -4.43172025680542], "size": [0.0, 0.0, 0.0]}, {"category": "washbasin counter", "min": [-2.917938232421875, 0.858589231967926, -4.122396469116211], "max": [-2.3796420097351074, 0.8837738633155823, -2.588332176208496], "size": [0.5382962226867676, 0.02518463134765625, 1.5340642929077148]}, {"category": "table", "min": [-4.860309600830078, 0.8874664902687073, -5.228277206420898], "max": [-4.394638538360596, 0.9173278212547302, -3.887955665588379], "size": [0.4656710624694824, 0.02986133098602295, 1.3403215408325195]}, {"category": "sofa", "min": [-5.294529914855957, 0.9201692342758179, 0.5380145907402039], "max": [-2.624286651611328, 0.9352805018424988, 2.611354112625122], "size": [2.670243263244629, 0.015111267566680908, 2.073339521884918]}, {"category": "sofa", "min": [-5.331221580505371, 0.8568663597106934, 0.4807783365249634], "max": [-2.5587823390960693, 0.9193957448005676, 3.146003246307373], "size": [2.7724392414093018, 0.06252938508987427, 2.6652249097824097]}]}
