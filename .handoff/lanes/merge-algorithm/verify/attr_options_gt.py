@@ -55,7 +55,7 @@ def centre(a):
 
 
 gt = json.load(open(GT))
-assert str(gt.get('scene')) == '00824', gt.get('scene')
+assert str(gt.get("scene", "")).startswith("00824"), gt.get("scene")   # GT files name it "00824" or "00824-Dd4bFSTQ8gi"
 truth = []
 for o in gt['ground_truth_objects']:
     if str(o.get('category_name', '')).strip().lower() in STRUCTURAL:

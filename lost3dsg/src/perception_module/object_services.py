@@ -2323,6 +2323,24 @@ class ObjectServices(Node):
                         # this key cannot break on it.
                         "bbox_source": "keeper",
                         "bbox_from_object_id": getattr(keeper, "object_id", None) or keeper.label,
+                        # THE DISCARDED SIDE'S GEOMETRY, BECAUSE THE MERGE DESTROYS IT.
+                        # MEASURED by the DGX lane on the 144-stop tour 20260914_172628: of 51
+                        # applied merges, the keeper survives in persistent_perception.json 51
+                        # times and the DISCARD 0 times, so no assignment rule can score an
+                        # applied merge against ground truth from the bundle -- merge PRECISION
+                        # was uncomputable by construction, while every refusal was scoreable.
+                        # Recorded here, at the moment of the decision, so it survives the
+                        # removal (the same reason `_refused` records each side's terms).
+                        # Added keys only (working rule 6).
+                        "discarded_bbox": dict(discard.bbox) if discard.bbox else None,
+                        "discarded_fused_bbox": (dict(discard.fused_bbox)
+                                                 if getattr(discard, "fused_bbox", None) else None),
+                        "keeper_fused_bbox": (dict(keeper.fused_bbox)
+                                              if getattr(keeper, "fused_bbox", None) else None),
+                        "discarded_label_full": discard.label,
+                        "discarded_color": discard.color,
+                        "discarded_material": discard.material,
+                        "discarded_description": discard.description,
                     }
 
             # GA-197. THE MERGE RECORDS ARE WRITTEN WHETHER OR NOT THIS IS A DRY RUN, and
