@@ -241,12 +241,48 @@ iou_of = {pids[i]: float(M[i].max()) for i in range(len(pids))}
 rows = [json.loads(line) for line in open(os.path.join(RUN, 'hook_decisions.jsonl'))]
 merge_rows = [r for r in rows if r.get('kind') in ('merge_refused', 'merge')]
 applied_rows = [r for r in rows if r.get('kind') == 'merge']
+def _other_side(r):
+    """The pair's second object id.
+
+    A `merge_refused` row names it `candidate`; an APPLIED `merge` row names it
+    `merged_from`. Found 2026-09-15 on 20260915_003535, the first bundle on this machine
+    that ever applied a merge -- every earlier bundle had zero, so the tool had never met
+    the applied-row schema. A pair-keyed replay that cannot read the applied row is blind
+    to exactly the decisions it exists to score.
+    """
+    return r.get('candidate') or r.get('merged_from')
+
+
 by_pair = collections.defaultdict(list)
 for r in merge_rows:
-    by_pair[tuple(sorted((r['object'], r['candidate'])))].append(r)
+    other = _other_side(r)
+    if other is None:
+        continue
+    by_pair[tuple(sorted((r['object'], other)))].append(r)
 for v in by_pair.values():
-    # No bundle carries a sweep index; `t` is the only ordering the rows supply.
-    v.sort(key=lambda r: r['t'])
+    # Order by the sweep index when the row carries one (the evidence engine writes it),
+    # falling back to `t`. Legacy rows have no sweep number.
+    v.sort(key=lambda r: (r.get('sweep') if r.get('sweep') is not None else -1, r['t']))
+
+
+def _gc_resets(rs):
+    """Sweep numbers at which the node THREW THE HYPOTHESIS AWAY, so the replay must too.
+
+    `_hypothesis_gc` in object_services deletes every hypothesis whose pair is not offered
+    on the current sweep. So a pair that misses one sweep starts again from zero -- streak
+    and history both. The replay accumulated straight through, which was invisible while
+    the sweep ran twice per run and became 191 mismatches of 2164 the moment the periodic
+    timer made sweeps frequent. Found 2026-09-15 on 20260915_003535.
+
+    A gap in a pair's sweep numbers IS the GC firing: the pair was offered, then not, then
+    offered again.
+    """
+    seen = [r.get('sweep') for r in rs if r.get('sweep') is not None]
+    resets = set()
+    for prev, cur in zip(seen, seen[1:]):
+        if cur > prev + 1:
+            resets.add(cur)
+    return resets
 
 stale_epoch_rows = sum(1 for r in merge_rows
                        if STALE_EPOCH_ABSTAIN in str((r.get('abstentions') or {}).get('covisibility', '')))
@@ -286,14 +322,25 @@ def build_pair_score(r, opt, needs_3d):
 def replay(key, rs, opt, needs_3d):
     """-> (merged, reason, n_scored). ONE verdict per PAIR, from the engine's own class."""
     h = assoc.Hypothesis(key)
+    resets = _gc_resets(rs)
     why, n_scored = 'never scored', 0
     for r in rs:
+        if r.get('sweep') in resets:
+            h = assoc.Hypothesis(key)      # the node's _hypothesis_gc dropped it
         if r.get('kind') == 'merge':
             # The applied-merge row carries no channels, so it cannot be replayed. It is
             # still the node's own answer: honour it and say where it came from.
             return True, 'recorded as applied by the run', n_scored
         if r.get('reason') in ('room', 'geometry'):
-            h.interrupt(r['reason'], frame_id=r['t'])
+            # ONLY an EXISTING hypothesis can be interrupted. A gate refusal happens
+            # before the pair is ever scored, so on the node there is no hypothesis yet
+            # and nothing is appended to its history. MEASURED on 20260915_003535: one
+            # pair took three geometry refusals (sweeps 12-14) before its first score,
+            # and the node recorded updates=1 at sweep 15 while this replay had already
+            # counted 4 -- the exact offset the update-count assertion reported, 191
+            # times over. Invisible until the periodic sweep made gate refusals common.
+            if h.history:
+                h.interrupt(r['reason'], frame_id=r['t'])
             continue
         ps = build_pair_score(r, opt, needs_3d)
         if ps is None:
@@ -317,11 +364,22 @@ if SELFCHECK:
     checked = failed = skipped = checked_u = 0
     for key, rs in sorted(by_pair.items()):
         h = assoc.Hypothesis(key)
+        resets = _gc_resets(rs)
         for r in rs:
+            if r.get('sweep') in resets:
+                h = assoc.Hypothesis(key)  # the node's _hypothesis_gc dropped it
             if r.get('kind') == 'merge':
                 continue
             if r.get('reason') in ('room', 'geometry'):
-                h.interrupt(r['reason'], frame_id=r['t'])
+                # ONLY an EXISTING hypothesis can be interrupted. A gate refusal happens
+                # before the pair is ever scored, so on the node there is no hypothesis yet
+                # and nothing is appended to its history. MEASURED on 20260915_003535: one
+                # pair took three geometry refusals (sweeps 12-14) before its first score,
+                # and the node recorded updates=1 at sweep 15 while this replay had already
+                # counted 4 -- the exact offset the update-count assertion reported, 191
+                # times over. Invisible until the periodic sweep made gate refusals common.
+                if h.history:
+                    h.interrupt(r['reason'], frame_id=r['t'])
                 continue
             ps = build_pair_score(r, 'shipped', False)   # the recorded numbers, unaltered
             if ps is None:
