@@ -13,8 +13,8 @@
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
-# generated_at:   2026-09-14T15:08:37
-# generated_from: lost3dsg/src/perception_module/config.yaml sha256 591bef5ccd472f6b
+# generated_at:   2026-09-14T15:14:04
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 2cd0a53ca1f465f5
 #
 # A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
 # code then takes its module fallback instead. If a bundle's config is missing a key
@@ -23,10 +23,11 @@
 
 vlm:
   base_url: https://api.regolo.ai/v1
-  model: gemma4-31b
+  model: qwen3.8-27b
   api_key: ''
   timeout: 30.0
   retries: 2
+  enable_thinking: false
 embedding:
   word2vec_path: /root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz
   word2vec_limit: 200000
