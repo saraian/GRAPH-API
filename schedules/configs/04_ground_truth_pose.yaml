@@ -21,11 +21,14 @@
 # the arm set it deliberately: `regen_arm_configs.py --check` answers that.
 
 vlm:
-  base_url: https://api.regolo.ai/v1
-  model: gemma4-31b
+  provider: gemini
+  base_url: https://aiplatform.googleapis.com/v1
+  model: gemini-3.8-flash
   api_key: ''
   timeout: 30.0
   retries: 2
+  thinking_level: low
+  image_mime_type: image/png
 embedding:
   word2vec_path: /root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz
   word2vec_limit: 200000

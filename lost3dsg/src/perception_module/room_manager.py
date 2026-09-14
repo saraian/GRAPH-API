@@ -3826,12 +3826,8 @@ class RoomManager:
 
         try:
             from config import CFG
-            from openai import OpenAI
             model_name = os.environ.get("ROOM_VLM_MODEL", CFG["vlm"]["model"])
-            client = OpenAI(
-                base_url=CFG["vlm"]["base_url"],
-                api_key=CFG["vlm"]["api_key"] or os.environ.get("OPENAI_API_KEY", "ollama"),
-            )
+            from cv_utils import vlm_call
 
             text_prompt = (
                 f"Analyze these relevant objects: {labels_str}.\n"
@@ -3842,21 +3838,14 @@ class RoomManager:
                 "it can't just be something generic like \"room type\""
             )
 
-            content = [{"type": "text", "text": text_prompt}]
-
-            if encoded_image:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}
-                })
-
-            response = client.chat.completions.create(
+            raw_content = (vlm_call(
+                text_prompt,
+                encoded_image=encoded_image,
+                timeout=CFG["vlm"]["timeout"],
                 model=model_name,
-                messages=[{"role": "user", "content": content}],
-                timeout=CFG["vlm"]["timeout"]
-            )
-
-            raw_content = (response.choices[0].message.content or "").strip()
+                request_kind="room_semantics",
+                image_mime_type="image/jpeg",
+            ) or "").strip()
             clean_json = re.sub(r'^```json\s*|```$', '', raw_content, flags=re.MULTILINE).strip()
             data = json.loads(clean_json)
             semantic = str(data.get("label", "Unknown_Room")).strip() or "Unknown_Room"

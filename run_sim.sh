@@ -1709,7 +1709,7 @@ fi
 # a "#" line here is not a comment -- docker receives "#" and each following word as ARGUMENTS.
 # `bash -n` accepts it, because it is valid syntax; only the run fails. Done once, 2026-09-11.
 docker run --name "${GRAPH_API_CONTAINER_NAME:-graphapi_live}" --rm --entrypoint bash --gpus "${GRAPH_API_GPUS:-all}" --network=host \
-  -e OPENAI_API_KEY -e CFG_NAME -e PERCEPTION_EXECUTABLE -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
+  -e OPENAI_API_KEY -e GEMINI_API_KEY -e GOOGLE_API_KEY -e CFG_NAME -e PERCEPTION_EXECUTABLE -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
   -e GRAPH_API_RUN_ID -e FEED_GT_SEMANTIC -e ROS_DOMAIN_ID \
   -e GA493_REPLAY_CAPTURE_DIR -e GA493_REPLAY_CAPTURE_MAX_CYCLES -e GA493_REPLAY_CAPTURE_MAX_BYTES \
   -e FRAME_QUEUE_MAX -e SCAN_COMPLETE_TOPIC -e SCAN_MERGE_SETTLE_S -e MOTION_POSITION_THRESHOLD \

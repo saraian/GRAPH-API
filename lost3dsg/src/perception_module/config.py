@@ -35,13 +35,22 @@ _DEFAULTS = {
         "grid_cells": 0,
         "base_url": "https://api.regolo.ai/v1",
         "model": "qwen3.8-27b",          # owner ruling 2026-09-14 (was gemma4-31b)
+        # `auto` keeps the existing OpenAI-compatible transport. Set this to `gemini` for
+        # Google's generateContent API, or leave it unset and use a Vertex AI base_url: the
+        # transport also detects aiplatform.googleapis.com automatically.
+        "provider": "auto",               # auto | openai_compatible | gemini
+        # Gemini's thinking controls are provider-specific and inert for other VLMs. `low`
+        # matches the generateContent request used by the Gemini deployment.
+        "thinking_level": "low",
+        "image_mime_type": "image/png",
         # vlm_completion_kwargs() below is INERT unless this is exactly False, so a config
         # passed through GRAPH_API_CONFIG that omits the key would fall back to a default
         # without it and silently re-enable hidden reasoning, with nothing in the bundle to
         # show it. Ported from the merge-algorithm branch (522c5f1), which found the hole.
         "enable_thinking": False,
-        # empty -> use OPENAI_API_KEY env if set, else the legacy api.txt next
-        # to cv_utils.py if present, else "ollama" (local server ignores it)
+        # empty -> use GEMINI_API_KEY/GOOGLE_API_KEY for Gemini, OPENAI_API_KEY for an
+        # OpenAI-compatible endpoint, then the legacy api.txt next to cv_utils.py, else
+        # "ollama" (local server ignores it)
         "api_key": "",
         "timeout": 30.0,
         "retries": 2,
