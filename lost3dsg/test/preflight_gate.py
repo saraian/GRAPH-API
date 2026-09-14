@@ -1427,8 +1427,6 @@ A12_ALLOWED_FILES = {
     "src/perception_module/gt_codec.py": "the run-length codec",
     "src/perception_module/detection_archive.py": "the archive join: habitat_gt_* row keys, validation only",
     "src/perception_module/perception_2.py": "subscription + cache + hand-off to the archive; functions audited below",
-    "src/perception_module/perception_parallel.py":
-        "maintained perception_2.py mirror; the same archive functions are audited below",
     "src/perception_module/ga493_replay_capture.py":
         "opt-in replay recorder; reads only the GT enable switch to refuse capture and rejects GT-shaped keys",
     "src/perception_module/test_perception_smoke.py": "smoke test",
@@ -1514,7 +1512,10 @@ def a12_gt_isolation(root=None):
         files = sorted(files + ["../run_sim.sh"])
     not_allowed = [f for f in files if f not in A12_ALLOWED_FILES]
     bad_functions_by_file = {}
-    for filename in ("perception_2.py", "perception_parallel.py"):
+    # perception_parallel.py was folded into perception_2.py (one node, backend chosen by
+    # perception_parallel.enabled). Auditing a file that no longer exists would make half of
+    # this probe pass vacuously forever, which reads exactly like an earned pass.
+    for filename in ("perception_2.py",):
         path = os.path.join(root, "src", "perception_module", filename)
         bad_functions = {}
         if not os.path.isfile(path):
@@ -1531,19 +1532,16 @@ def a12_gt_isolation(root=None):
                     bad_functions[node.name] = node.lineno
         bad_functions_by_file[filename] = bad_functions
     p2_bad_functions = bad_functions_by_file["perception_2.py"]
-    parallel_bad_functions = bad_functions_by_file["perception_parallel.py"]
-    ok = not not_allowed and not p2_bad_functions and not parallel_bad_functions
+    ok = not not_allowed and not p2_bad_functions
     return ok, {
         "root": root,
         "files_with_gt_tokens": files,
         "not_allowed_files": not_allowed,
         "perception_2_functions_not_allowed": p2_bad_functions,
-        "perception_parallel_functions_not_allowed": parallel_bad_functions,
         "pose_source": "simulator odometry (habitat_feed_node /odom + TF) re-anchored by rtabmap map->odom; NOT asserted (design question 1)",
         "reason": "" if ok else (
             f"ground-truth tokens outside the allow-list: files {not_allowed}, "
-            f"perception_2 functions {p2_bad_functions}, "
-            f"perception_parallel functions {parallel_bad_functions}"),
+            f"perception_2 functions {p2_bad_functions}"),
     }
 
 

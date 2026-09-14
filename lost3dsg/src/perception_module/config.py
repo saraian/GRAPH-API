@@ -645,7 +645,8 @@ _DEFAULTS = {
         "excluded_labels": ["wall", "floor", "ceiling", "door", "doorway",
                             "door frame", "doorframe"],
     },
-    # Execution settings used only by perception_parallel.py. The existing launch
+    # Execution settings for the batched bbox-fusion encoder inside perception_2.py, selected by
+    # perception_parallel.enabled. The existing launch
     # still starts perception_2.py. Four spawned CPU processes are the portable
     # measured candidate; CUDA remains an explicit calibration arm.
     "perception_parallel": {

@@ -34,7 +34,8 @@ if docker ps --format '{{.Names}}' | grep -qx graphapi_live; then
 fi
 
 export CAP_MIN GA493_DEBUG_MODE=1 FEED_GT_SEMANTIC=0
-export PERCEPTION_EXECUTABLE=perception_parallel.py
+# perception_parallel.py was folded into perception_2.py; the backend is a config key.
+export GRAPH_API_PARALLEL_FUSION=1
 export GA493_REPLAY_CAPTURE_DIR="${GA493_REPLAY_CAPTURE_DIR:-/ws/output/ga493_replay}"
 export GA493_REPLAY_CAPTURE_MAX_CYCLES="${GA493_REPLAY_CAPTURE_MAX_CYCLES:-12}"
 export GA493_REPLAY_CAPTURE_MAX_BYTES="${GA493_REPLAY_CAPTURE_MAX_BYTES:-5368709120}"

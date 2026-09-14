@@ -48,7 +48,6 @@ install(PROGRAMS
   src/perception_module/metrics_eval_visualize.py
   src/perception_module/extract_hovsg_object_embeddings.py
   src/perception_module/perception_2.py
-  src/perception_module/perception_parallel.py
   src/perception_module/cv_utils.py
   src/perception_module/utils.py
   src/perception_module/detection_pipeline.py

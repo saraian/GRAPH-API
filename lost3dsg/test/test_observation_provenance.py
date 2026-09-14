@@ -113,7 +113,7 @@ class ObservationContractTest(unittest.TestCase):
         self.assertIn("builtin_interfaces", dependencies)
 
     def test_both_producers_assign_before_archive_and_publish(self):
-        for name in ("perception_2.py", "perception_parallel.py"):
+        for name in ("perception_2.py",):
             source = (MODULE / name).read_text()
             assigned = source.index("det.observation = make_observation_ref")
             archived = source.index("self.save_visualizations", assigned)
@@ -162,7 +162,7 @@ class ObservationContractTest(unittest.TestCase):
 
     def test_fast_discard_sites_have_machine_readable_events(self):
         manager = (MODULE / "object_manager_6.py").read_text()
-        for name in ("perception_2.py", "perception_parallel.py"):
+        for name in ("perception_2.py",):
             source = (MODULE / name).read_text()
             self.assertIn('"capture_queue_evicted"', source)
             self.assertIn('outcome="valid_empty"', source)

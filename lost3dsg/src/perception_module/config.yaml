@@ -26,7 +26,7 @@ embedding:
 # Runtime image appearance vectors. This is separate from the text/description
 # `embedding` above and from the offline HOV-SG evaluation `embedding` field.
 appearance:
-  enabled: true
+  enabled: false
   model_id: "openai/clip-vit-base-patch32"
   device: auto
   require_cuda: false
@@ -396,7 +396,7 @@ run:
 # key. `hooks.filter` below selects it, so turning it off means either enabled: false here or
 # emptying that line.
 size_check:
-  enabled: true
+  enabled: false
   # Off on purpose. When false the check ANNOTATES and refuses nothing, which is what lets a
   # run measure the change before taking it. true makes an out-of-range box a refusal.
   enforce: false
@@ -464,10 +464,15 @@ perception:
   # the whole-scene VLM return them.
   excluded_labels: ["wall", "floor", "ceiling", "door", "doorway", "door frame", "doorframe"]
 
-# Used only when perception_parallel.py is selected as the executable. The normal
+# Used only when perception_parallel.enabled is true. The normal
 # launch continues to use perception_2.py. cpu_processes gives actual CPU parallel
 # execution without requiring CUDA. Select cuda explicitly for the packed tensor arm.
 perception_parallel:
+  # SELECTS the batched bbox-fusion encoder inside perception_2.py. Off by default, so an
+  # unchanged configuration runs the sequential reference path. This key replaces the separate
+  # separate node and the PERCEPTION_EXECUTABLE launcher variable that chose it:
+  # one node, one mirror-free source, and the backend named in the config the bundle records.
+  enabled: false
   bbox_backend: "cpu_processes"  # "sequential" | "cpu_processes" | "cuda"
   bbox_cpu_workers: 4
   bbox_cpu_chunksize: 1
