@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Baseline replay</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#09111e;color:#edf4fc}
+body{margin:0}header{display:flex;align-items:center;gap:18px;padding:17px 24px;border-bottom:1px solid #25374d}
+h1{font-size:21px;margin:0}header span{color:#9baec4;font-size:14px}main{max-width:1600px;margin:auto;padding:14px}
+.controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 12px}button,select,a{font:inherit;color:#edf4fc;background:#172b40;border:1px solid #37516b;border-radius:7px;padding:8px 13px;text-decoration:none}
+button{cursor:pointer;min-width:90px}button:hover,a:hover{border-color:#4dd9ef}input{accent-color:#4dd9ef;flex:1;min-width:150px}
+.panels{display:grid;grid-template-columns:1fr 1fr;gap:16px}.quadrant{margin:0;min-width:0;aspect-ratio:772/440;background:#101d2d;border:1px solid #25374d;border-radius:12px;overflow:hidden}.quadrant canvas,.quadrant iframe{display:block;width:100%;height:100%;border:0}#scene-panel{position:relative}#scene-message{position:absolute;inset:0;display:grid;place-items:center;color:#ffcc70;padding:24px}#scene-message[hidden]{display:none}@media(max-width:850px){.panels{grid-template-columns:1fr;gap:10px}}
+#clock{font-variant-numeric:tabular-nums;color:#4dd9ef;min-width:90px}#view{display:block;width:100%;height:auto;border-radius:12px;background:#101d2d;aspect-ratio:1.6}
+.note{color:#9baec4;font-size:13px;line-height:1.6}.status{color:#ffcc70;min-height:20px;font-size:14px}details{margin-top:12px;color:#9baec4}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}a[hidden]{display:none}
+@media(max-width:700px){header{display:block}header span{display:block;margin-top:7px}main{padding:7px}.controls{gap:6px;font-size:13px}}
+</style></head><body>
+<header><h1>Baseline replay</h1><span>Shared observations · native results · synchronized schedule</span></header>
+<main><div class="controls">
+<label for="baseline">Baseline</label><select id="baseline"></select>
+<button id="play" disabled>Play</button><label for="speed">Speed</label>
+<select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+<input id="timeline" type="range" min="0" max="1" step="0.05" value="0" aria-label="Replay time">
+<span id="clock">0.0 s</span>
+</div><div id="status" class="status" role="status">Loading replay…</div>
+<div class="panels">
+<figure class="quadrant"><canvas id="camera-panel" width="772" height="440" aria-label="01 Camera with projected object boxes"></canvas></figure>
+<figure class="quadrant" id="scene-panel"><iframe id="scene" title="02 Native 3D reconstruction" hidden></iframe><div id="scene-message">Loading native 3D reconstruction…</div></figure>
+<figure class="quadrant"><canvas id="schedule-panel" width="772" height="440" aria-label="03 Dynamic schedule and robot movement"></canvas></figure>
+<figure class="quadrant"><canvas id="metrics-panel" width="772" height="440" aria-label="04 Recorded metrics"></canvas></figure>
+</div>
+<p class="note">The 3D panel follows the recorded camera pose and trail on the same timeline. Graph geometry in these bundles is the final reconstruction. The camera overlay projects those final boxes; it is not a recording of per-frame detections. Missing metrics state their reason. Final box precision/recall/F1, when evaluated, use whole-scene class-agnostic 3D overlap, including unseen rooms; they are not semantic accuracy or live detection scores. Model additions need native history; input-to-result latency needs paired timestamps. The minimap context cloud comes from the saved HOV-SG reconstruction and is used only for display. Native baseline algorithms are unchanged.</p>
+<details><summary>Current state and provenance</summary><pre id="state"></pre></details>
+</main><script>
+'use strict';
+const el=id=>document.getElementById(id);
+function syncScene(){if(current && lastState)el('scene').contentWindow?.postMessage({type:'baseline-replay-state',replay:current.id,state:lastState},location.origin);}
+window.addEventListener('message',event=>{if(event.origin!==location.origin||event.source!==el('scene').contentWindow||event.data?.replay!==current?.id)return;if(event.data.type==='baseline-scene-ready'){el('scene-message').hidden=true;syncScene();}if(event.data.type==='baseline-object-selected'){selectedObject=event.data.object_id||null;lastDrawn=-1;render();}});
+let runs=[], current=null, playing=false, cursor=0, last=performance.now(), inFlight=false, generation=0, lastDrawn=-1, lastState=null, selectedObject=null;
+function clock(){el('clock').textContent=cursor.toFixed(1)+' / '+Number(current?.duration_s||0).toFixed(1)+' s';el('timeline').value=cursor;}
+function pause(){playing=false;el('play').textContent='Play';}
+async function render(){
+ if(!current || inFlight)return;
+ inFlight=true;const gen=generation,id=current.id,t=cursor;
+ try{
+  const r=await fetch('api/panel/'+encodeURIComponent(id)+'.jpg?t='+t+(selectedObject?'&object_id='+encodeURIComponent(selectedObject):''),{cache:'no-store'});
+  if(!r.ok)throw Error('Frame request failed: HTTP '+r.status);
+  const blob=await r.blob();
+  const state=await fetch('api/state/'+encodeURIComponent(id)+'?t='+t,{cache:'no-store'});
+  if(!state.ok)throw Error('State request failed: HTTP '+state.status);
+  const data=await state.json();
+  if(gen!==generation)return;
+  const bitmap=await createImageBitmap(blob);if(gen!==generation){bitmap.close();return;}
+  for(const [name,x,y] of [['camera-panel',18,68],['schedule-panel',18,522],['metrics-panel',810,522]])el(name).getContext('2d').drawImage(bitmap,x,y,772,440,0,0,772,440);bitmap.close();lastState=data;syncScene();
+  el('state').textContent=JSON.stringify(data,null,2);
+  el('status').textContent='Frame '+(data.index+1)+' / '+data.frame_count+' · '+data.completed_scans+' scans · '+data.nodes+' graph nodes · '+data.graph_scope.replaceAll('_',' ');
+  lastDrawn=t;
+ }catch(e){if(gen===generation){pause();el('status').textContent=e.message;}}
+ finally{inFlight=false;}
+}
+async function select(){
+ generation++;pause();current=runs.find(r=>r.id===el('baseline').value);cursor=0;lastDrawn=-1;lastState=null;selectedObject=null;
+ el('timeline').max=current.duration_s;el('play').disabled=false;
+ el('scene').hidden=!current.scene_available;el('scene-message').hidden=false;el('scene-message').textContent=current.scene_available?'Loading native 3D reconstruction…':'Native 3D geometry has not been exported for this bundle';
+ el('scene').src=current.scene_available?'scene?embed=1&replay='+encodeURIComponent(current.id):'about:blank';
+ clock();await render();
+}
+el('baseline').addEventListener('change',select);
+el('play').addEventListener('click',()=>{if(cursor>=current.duration_s)cursor=0;playing=!playing;el('play').textContent=playing?'Pause':'Play';last=performance.now();});
+el('timeline').addEventListener('input',()=>{pause();cursor=Number(el('timeline').value);clock();render();});
+async function tick(now){
+ const dt=(now-last)/1000;last=now;
+ if(playing && current){cursor=Math.min(current.duration_s,cursor+dt*Number(el('speed').value));if(cursor>=current.duration_s)pause();clock();}
+ if(current && Math.abs(cursor-lastDrawn)>0.04 && !inFlight)render();
+ requestAnimationFrame(tick);
+}
+(async()=>{try{const r=await fetch('api/replays');if(!r.ok)throw Error('Cannot load replays');runs=await r.json();if(!runs.length)throw Error('No replay bundles configured');for(const run of runs){const o=document.createElement('option');o.value=run.id;o.textContent=run.baseline.toUpperCase()+' · '+run.scene;el('baseline').append(o);}await select();requestAnimationFrame(tick);}catch(e){el('status').textContent=e.message;}})();
+</script></body></html>
