@@ -90,10 +90,19 @@ def ground_truth_rows(ledger, default_extents=(0.2, 0.2, 0.2)):
         position = entry.get("position")
         if not isinstance(position, (list, tuple)) or len(position) != 3:
             continue
-        box = _aabb_from_position(position, entry.get("extents") or default_extents)
+        measured = entry.get("extents")
+        box = _aabb_from_position(position, measured or default_extents)
         if box is None:
             continue
         row = {
+            # WHERE THE SIZE CAME FROM. The ledger records a placement POINT; the object's real
+            # extent is known only to the simulator. When the runner did not report it we fall back
+            # to a fabricated cube, and that value must never be mistaken for a measurement
+            # (working rule 5). Centre-distance matching is unaffected either way -- but every
+            # volume metric is meaningless on a defaulted pose, so `box_quality_defaulted` in the
+            # scripted report refuses to let one be quoted silently.
+            "extents_source": "measured" if measured else "default",
+            "extents_m": [float(v) for v in (measured or default_extents)],
             "object_id": f"script:{oid}:{len(rows)}",
             "script_object_id": str(oid),
             "category_name": str(entry.get("template") or entry.get("target_category") or "object"),
@@ -152,6 +161,11 @@ def _self_check():
     ]}
     rows = ground_truth_rows(ledger)
     assert len(rows) == 2, f"a move is two poses, got {len(rows)}"
+    # the size the runner reported is marked measured; a fabricated one is marked default
+    assert all(r["extents_source"] == "measured" for r in rows), rows[0]
+    bare = {"steps": [{"step": 0, "action": "spawn", "object_id": "x", "at": 1.0,
+                       "position": [0.0, 0.0, 0.0]}]}          # no extents reported
+    assert ground_truth_rows(bare)[0]["extents_source"] == "default"
     first, second = rows
     assert (first["valid_from"], first["valid_to"]) == (spawn_at, move_at), first
     assert (second["valid_from"], second["valid_to"]) == (move_at, remove_at), second

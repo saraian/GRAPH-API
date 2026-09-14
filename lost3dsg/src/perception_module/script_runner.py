@@ -179,6 +179,16 @@ class HabitatScriptRunner:
         changed at an instant nobody measured.
         """
         ran = {entry.get("step") for entry in results if isinstance(entry, dict)}
+        # The simulator reports the object's REAL AABB with the command result. Without it the
+        # evaluator falls back to a fabricated cube and every volume metric on that pose is
+        # meaningless, so it is carried here rather than dropped (script_ledger marks a pose
+        # extents_source="measured" or "default" accordingly).
+        extents_by_step = {}
+        for entry in results:
+            if isinstance(entry, dict) and isinstance(entry.get("result"), dict):
+                size = entry["result"].get("extents")
+                if isinstance(size, (list, tuple)) and len(size) == 3:
+                    extents_by_step[entry.get("step")] = [float(v) for v in size]
         out = []
         for index, step in enumerate(steps):
             if index not in ran or not isinstance(step, dict):
@@ -201,6 +211,8 @@ class HabitatScriptRunner:
             position = step.get("position")
             if isinstance(position, (list, tuple)) and len(position) == 3:
                 entry["position"] = [float(v) for v in position]
+            if index in extents_by_step:
+                entry["extents"] = extents_by_step[index]
             out.append(entry)
         return {"steps": out,
                 "note": ("scene-script ground truth. Each entry is one executed step; a move is "

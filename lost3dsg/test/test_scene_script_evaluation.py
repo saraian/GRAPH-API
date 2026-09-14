@@ -182,6 +182,57 @@ def test_the_report_says_how_much_of_the_gate_it_applied():
     assert b_["scripted"]["gate_applied_to_pct"] == 0.0
 
 
+# --- the three the baseline review turned up ------------------------------------------------
+
+def test_pose_recall_has_a_ceiling_and_the_report_states_it():
+    """A perfectly tracked moved object CANNOT reach 100% pose recall, and that is not a failure.
+
+    A predicted object carries one observation time and the assignment is one-to-one, so it can
+    satisfy only ONE of two disjoint windows. Quoting pose recall alone would report an arithmetic
+    ceiling as a tracking failure.
+    """
+    pred = [dict(_box(OLD_POSE), object_id="p1", observed_at=150.0)]
+    out, _ = om.evaluate_geometry(_scene(pred))
+    sc = out["scripted"]
+    assert sc["poses"] == 2 and sc["poses_matched"] == 1
+    assert sc["recall_pct"] == 50.0, "the pose number a flawless tracker gets on one move"
+    assert sc["objects"] == 1 and sc["objects_found"] == 1
+    assert sc["object_recall_pct"] == 100.0, "the object WAS found; only one pose was reachable"
+    assert sc["pose_recall_ceiling_pct"] == 50.0, "the ceiling must be stated, not discovered"
+
+
+def test_a_fabricated_size_cannot_be_quoted_as_a_volume():
+    """script_ledger invents a 0.2 m cube when the runner reported no extent.
+
+    Centre matching is unaffected, but every volume metric on such a pose is meaningless. The
+    report must say so rather than degrade silently (working rule 5).
+    """
+    pred = [dict(_box(OLD_POSE), object_id="p1", observed_at=150.0)]
+    out, _ = om.evaluate_geometry(_scene(pred))          # the fixture reports no extents
+    assert out["scripted"]["box_quality_defaulted"] == 2
+    assert out["scripted"]["box_quality_quotable"] is False
+
+    measured = {"steps": [dict(st, extents=[0.18, 0.09, 0.05]) for st in _ledger()["steps"]]}
+    gt = _static_gt() + script_ledger.ground_truth_rows(measured)
+    out2, _ = om.evaluate_geometry([{"predicted_objects": pred, "ground_truth_objects": gt}])
+    assert out2["scripted"]["box_quality_defaulted"] == 0
+    assert out2["scripted"]["box_quality_quotable"] is True
+
+
+def test_the_report_names_which_protocol_produced_which_key():
+    """metrics_eval's table is IoU-based and time-blind; object_metrics' is time-gated.
+
+    They are merged into one dict, so without a provenance stamp a reader cannot tell a gated
+    number from an ungated one -- which matters exactly when a script ran.
+    """
+    import run_hm3d_metrics as r
+    src = open(r.__file__).read()
+    assert "protocol_provenance" in src
+    assert "v1_keys_not_meaningful_here" in src
+    i = src.index('report["table_iv_objects"].update(geometry)')
+    assert "v1_only = sorted(" in src[:i], "the v1 key set must be captured BEFORE the merge"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
