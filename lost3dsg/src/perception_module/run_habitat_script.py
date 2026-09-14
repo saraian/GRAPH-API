@@ -13,6 +13,7 @@ runner prima che il tour oltrepassi il waypoint richiesto; lap è zero-based.
 import argparse
 from datetime import datetime
 import json
+import sys
 import os
 from pathlib import Path
 from queue import Empty, Queue
@@ -284,6 +285,30 @@ class HabitatScriptNode(Node):
         }
 
 
+def _write_ledger(ledger):
+    """Put the scene-script ledger in the run bundle, where the evaluator looks for it.
+
+    Without this file a scripted run is scored against the static semantic mesh, which cannot
+    contain an object created at run time: every spawned object reads as a false positive and every
+    removed one as a false negative, and neither is a perception error. The evaluator reads it as
+    `scene_script_ledger.json` in the run directory (script_ledger.load_ledger).
+
+    OUT_DIR is the bundle and the launcher exports it. With no OUT_DIR there is no bundle to write
+    into and the ledger is skipped: an interactive script run is not an experiment.
+    """
+    if not ledger:
+        return
+    out_dir = os.environ.get("OUT_DIR") or os.environ.get("RUN_DIR")
+    if not out_dir or not os.path.isdir(out_dir):
+        print(f"[script] no run bundle (OUT_DIR={out_dir!r}); ledger not written", file=sys.stderr)
+        return
+    path = os.path.join(out_dir, "scene_script_ledger.json")
+    with open(path, "w") as handle:
+        json.dump(ledger, handle, indent=2)
+    print(f"[script] ledger written: {path} ({len(ledger.get('steps') or [])} steps)",
+          file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Esegue uno script Habitat JSON")
     parser.add_argument("script_id", nargs="?", help="nome o percorso del file JSON da eseguire")
@@ -318,6 +343,7 @@ def main():
     spin_thread.start()
     try:
         result = node.runner.run(args.script_id)
+        _write_ledger(result.get("ledger"))
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0 if result.get("success") else 1
     except Exception as exc:

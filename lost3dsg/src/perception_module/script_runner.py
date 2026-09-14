@@ -170,6 +170,42 @@ class HabitatScriptRunner:
             raise ValueError(f"Step {index}: stop/lap del waypoint devono essere >= 0")
         return trigger
 
+    def _build_ledger(self, steps, results, step_times):
+        """-> {"steps": [...]} -- what the script did, and when, for the evaluator.
+
+        One entry per EXECUTED step, carrying the object identity, the placement and the stamp.
+        A step that never ran is ABSENT rather than recorded with a null time: a step with no time
+        cannot be placed on the timeline, and writing one would let a reader believe the world
+        changed at an instant nobody measured.
+        """
+        ran = {entry.get("step") for entry in results if isinstance(entry, dict)}
+        out = []
+        for index, step in enumerate(steps):
+            if index not in ran or not isinstance(step, dict):
+                continue
+            action = str(step.get("action", "")).strip().lower()
+            name = step.get("name") or step.get("object")
+            entry = {
+                "step": index,
+                "action": action,
+                "at": step_times.get(index),
+                "stamp": "step_start; the effect lands before the next step's stamp",
+            }
+            if name is not None:
+                entry["name"] = str(name)
+                entry["object_id"] = str(name)
+            if step.get("template"):
+                entry["template"] = str(step["template"])
+            if step.get("target_category"):
+                entry["target_category"] = str(step["target_category"])
+            position = step.get("position")
+            if isinstance(position, (list, tuple)) and len(position) == 3:
+                entry["position"] = [float(v) for v in position]
+            out.append(entry)
+        return {"steps": out,
+                "note": ("scene-script ground truth. Each entry is one executed step; a move is "
+                         "read as closing the previous pose and opening a new one.")}
+
     def run(self, script_id: str, timeout: float = 8.0) -> Dict[str, Any]:
         data = self.select(script_id)
         if not isinstance(data.get("steps"), list) or not data["steps"]:
@@ -190,10 +226,17 @@ class HabitatScriptRunner:
         self.created_object_ids = {}
         results = []
 
+        step_times = {}
         for index, step in enumerate(data["steps"]):
             if not isinstance(step, dict):
                 raise ValueError(f"Step {index} non valido")
             action = str(step.get("action", "")).lower()
+            # WHEN this step took effect. A scripted object exists, moves or disappears at a
+            # moment, and the evaluator needs that moment to score a prediction against the world
+            # as it stood when the robot looked (see script_ledger.py). The stamp is taken as the
+            # step BEGINS: the command is published and acknowledged within it, so the true instant
+            # lies between this stamp and the next step's. That bound is recorded, not implied.
+            step_times[index] = time.time()
 
             if action not in {"spawn", "move", "remove", "wait"}:
                 raise ValueError(f"Azione non supportata nello step {index}: {action}")
@@ -369,7 +412,9 @@ class HabitatScriptRunner:
             }
             for entry in capture_entries if not entry["capture_success"]
         ]
+        self.last_ledger = self._build_ledger(data["steps"], results, step_times)
         return {
+            "ledger": self.last_ledger,
             "success": True,
             "dataset_complete": not capture_failures if self.capture_frame is not None else None,
             "script_id": str(script_id),
