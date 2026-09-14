@@ -137,6 +137,21 @@ class WorldModel:
         key = getattr(obj, "object_id", None)
         return key if isinstance(key, str) and key else None
 
+    @staticmethod
+    def _locality_box(obj):
+        """The box the AABB index holds for an object: the multi-view fused box when it is
+        present and well-formed, else the measured one. 2026-09-14 (review): the exact
+        locality gates read the fused box, so the broad phase must index the same box or a
+        detection the gate would accept is never offered as a candidate."""
+        fused = getattr(obj, "fused_bbox", None)
+        if fused:
+            try:
+                bounds(fused)
+                return fused
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass
+        return obj.bbox
+
     def _index_key(self, obj):
         """Return the stable key assigned during the current index build."""
         key = self._object_keys.get(id(obj))
@@ -173,7 +188,7 @@ class WorldModel:
                     by_id[object_id] = obj
 
                 try:
-                    spatial.upsert(key, obj.bbox)
+                    spatial.upsert(key, self._locality_box(obj))
                 except ValueError as exc:
                     logging.getLogger("world_model").warning(
                         "Object %s excluded from spatial lookup: %s",
@@ -197,7 +212,7 @@ class WorldModel:
     def _index_object(self, obj):
         key = self._index_key(obj)
         try:
-            self._spatial.upsert(key, obj.bbox)
+            self._spatial.upsert(key, self._locality_box(obj))
         except ValueError as exc:
             self._spatial.remove(key)
             logging.getLogger("world_model").warning(

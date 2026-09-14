@@ -15,8 +15,8 @@
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
-# generated_at:   2026-09-12T16:49:23
-# generated_from: lost3dsg/src/perception_module/config.yaml sha256 905e51d3c3913e27
+# generated_at:   2026-09-14T14:27:26
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 095ad1c2a773caef
 #
 # A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
 # code then takes its module fallback instead. If a bundle's config is missing a key
@@ -34,9 +34,9 @@ embedding:
   word2vec_limit: 200000
 similarity:
   label: 0.05
-  color: 0.3
-  material: 0.15
-  description: 0.5
+  color: 0.45
+  material: 0.3
+  description: 0.2
 association:
   exploration_iou_threshold: 0.1
   sim_threshold: 0.85
@@ -49,7 +49,9 @@ association:
   bbox_reduction_ratio: 0.3
   reevaluation_radius_m: 2.0
   association_margin_m: 0.3
-  merge_engine: legacy
+  merge_engine: evidence
+  merge_ontology_channel: false
+  merge_attribute_max_log_odds: 2.0
   merge_cost_ratio: 20.0
   merge_min_consecutive: 2
   merge_max_distance_m: 0.8
@@ -63,6 +65,9 @@ association:
   max_misses_before_delete: 5
   delete_undetected: true
   max_observations_per_object: 64
+  bbox_fusion_voxel_m: 0.03
+  bbox_fusion_min_views: 2
+  bbox_fusion_agreement_start_views: 4
   suspicious_max_extent_m: 3.0
   suspicious_max_volume_m3: 1.5
   scan_complete_topic: /habitat/scan_complete
@@ -250,5 +255,12 @@ perception:
   - doorway
   - door frame
   - doorframe
+perception_parallel:
+  bbox_backend: cpu_processes
+  bbox_cpu_workers: 4
+  bbox_cpu_chunksize: 1
+  bbox_cuda_devices:
+  - 0
+  bbox_cuda_max_batch_points: 0
 archive:
   per_detection: true

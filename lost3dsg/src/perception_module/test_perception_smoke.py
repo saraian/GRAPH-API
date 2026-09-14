@@ -243,7 +243,7 @@ def merge_request_below_match_gate_refused():
     svc.room_manager.room_at_bbox = lambda bbox: None
     svc.decision_log = rosstub.Any()
     # the configured (evidence) engine keeps per-pair hypotheses across sweeps
-    svc._hypotheses, svc._merge_sweep = {}, 0
+    svc._hypotheses, svc._dry_hypotheses, svc._merge_sweep = {}, {}, 0
     wm.persistent_perceptions.clear()
 
     req, resp = rosstub.Any(), rosstub.Any()
@@ -445,6 +445,8 @@ def merge_lock_covers_writes_only():
             osv.PROJECT_ROOT = tmp
             osv.ObjectServices._cb_merge_objects(svc, req, resp2)
         assert resp2.merged_count == 0, f"a stale pair was counted as a merge: {resp2.merged_count}"
+        assert resp2.merge_log_json == "[]", ("a stale pair must not reach merge_log (review 2026-09-14): "
+                                              f"{resp2.merge_log_json}")
         assert [o.object_id for o in osv.wm.persistent_perceptions] == ["obj_keep"]
     finally:
         osv.lost_similarity_detailed = real_sim
@@ -468,7 +470,7 @@ def merge_path_evidence():
     svc.room_manager.scene_graph = {}
     svc.room_manager.current_room_id = "room_1"
     svc.room_manager.room_at_bbox = lambda bbox: None
-    svc._hypotheses, svc._merge_sweep = {}, 0
+    svc._hypotheses, svc._dry_hypotheses, svc._merge_sweep = {}, {}, 0
     rows = []
 
     class _Log:
@@ -514,12 +516,39 @@ def merge_path_evidence():
     r2 = sweep([a, b, anchor])
     assert r2.merged_count == 1, ("second consecutive sweep must MERGE",
                                   [(k, kw.get("reason"), kw.get("decision_reason")) for k, _, kw in rows])
+    # review 2026-09-14: these were DRY runs; the live store must be untouched by them
+    assert not svc._hypotheses and svc._dry_hypotheses, "dry runs accumulate in their own store"
+
+    # a gate refusal between two passing sweeps breaks the streak: hold 1/2 -> geometry refusal
+    # (gap pinned below zero refuses even overlapping boxes) -> the next pass is 1/2 again
+    svc._dry_hypotheses.clear()
+    assert sweep([a, b, anchor]).merged_count == 0
+    old_gap = object_services.LOCALITY_GAP_M
+    object_services.LOCALITY_GAP_M = -1.0
+    try:
+        sweep([a, b, anchor])
+        assert refusals("geometry", ("obj_a", "obj_b")), "the pinned gap must refuse the pair on geometry"
+    finally:
+        object_services.LOCALITY_GAP_M = old_gap
+    assert sweep([a, b, anchor]).merged_count == 0, "one passing sweep after a gate refusal is not two consecutive"
+    assert sweep([a, b, anchor]).merged_count == 1
 
     lamp = obj("lamp", BOX, "a lamp", "blue", "metal", "obj_l", 1.0)
     table = obj("table", SHIFT, "a table", "red", "wood", "obj_t", 2.0)
-    svc._hypotheses.clear()
+    svc._dry_hypotheses.clear()
     for _ in range(3):
         assert sweep([lamp, table, anchor]).merged_count == 0, "different kinds at one spot must not merge"
+    # a cross-kind pair whose attributes AGREE (same colour and material words, identical
+    # sentence) still never merges: the unwitnessed-overlap rule holds it, and the attribute
+    # and room channels cannot dilute that hold any more (review 2026-09-14)
+    lamp2 = obj("lamp", BOX, "a red wooden thing", "red", "wood", "obj_l2", 1.0)
+    table2 = obj("table", SHIFT, "a red wooden thing", "red", "wood", "obj_t2", 2.0)
+    svc._dry_hypotheses.clear()
+    for _ in range(3):
+        assert sweep([lamp2, table2, anchor]).merged_count == 0, "cross-kind with agreeing attributes must hold"
+    held2 = refusals("hold", ("obj_l2", "obj_t2"))
+    assert held2 and held2[0]["channels"]["attributes"]["log_odds"] > 0, held2
+    assert str(held2[0].get("decision_reason", "")).startswith("containment carries"), held2[0].get("decision_reason")
 
     svc.room_manager.room_at_bbox = lambda bbox: "r_left" if bbox["x_min"] < 0.1 else "r_right"
     svc._hypotheses.clear()

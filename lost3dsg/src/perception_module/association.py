@@ -345,16 +345,29 @@ def geometry_compatible(bounds_a, bounds_b, gap_m):
     """
     if bounds_a is None or bounds_b is None:
         return None
+    if any(v != v for v in bounds_a) or any(v != v for v in bounds_b):
+        return None   # a NaN coordinate is not a box (review 2026-09-14)
     return box_gap(bounds_a, bounds_b) <= float(gap_m)
 
 
 def locality_bounds(obj):
     """The box a locality test reads for a world-model object: the multi-view fused box when
     one exists, else the last measured view. Two views of one object overlap far more on the
-    fused box (chair pairs on GA-493: 0.78-0.91 fused against 0.44-0.61 measured)."""
+    fused box (chair pairs on GA-493: 0.78-0.91 fused against 0.44-0.61 measured).
+    A malformed fused box falls back to the measured one rather than refusing everything."""
     if obj is None:
         return None
-    return _as_bounds(getattr(obj, "fused_bbox", None) or getattr(obj, "bbox", None))
+    return (_as_bounds(getattr(obj, "fused_bbox", None))
+            or _as_bounds(getattr(obj, "bbox", None)))
+
+
+def locality_box(obj):
+    """The bbox DICT the locality test reads (fused when present and well-formed, else
+    measured), for callers that index or query by dict rather than by bounds."""
+    fused = getattr(obj, "fused_bbox", None)
+    if _as_bounds(fused) is not None:
+        return fused
+    return getattr(obj, "bbox", None)
 
 
 # ---------------------------------------------------------------------------------------
@@ -851,17 +864,10 @@ class PairScore:
             # holding here would refuse exactly the merges this module exists to make.
             # Only an UNCOLLECTED co-visibility leaves overlap unsupported.
             return False
-        attrs = self.channels.get("attributes", {})
-        if attrs.get("log_odds", 0.0) > 0 and attrs.get("same_kind") is True:
-            # 2026-09-14 owner ruling: the attribute channel is the SECOND WITNESS. Two views
-            # of one object are never in one frame together, so co-visibility is uncollected
-            # for every genuine re-observation and this guard held all of them (GA-493: the
-            # chair pairs at fused IoU 0.78-0.91). What the guard protects against is the
-            # CROSS-KIND containment merge (pillow in bed, vanity + bath mat, GA-328); a pair
-            # whose base labels are the same string and whose attributes agree is not that
-            # case. Synonyms (painting/picture) and different kinds stay held: the reversible
-            # failure (rule 11).
-            return False
+        # The same-kind exception (owner ruling 2026-09-14) lives in Hypothesis.decide, which
+        # also holds a total the attribute and room channels could otherwise carry PAST this
+        # ratio test (review 2026-09-14: +2.0 attributes and +1.4 room dilute the overlap
+        # share below 50 % and a cross-kind containment pair escaped the guard).
         ov = self.channels.get("overlap", {}).get("log_odds")
         if ov is None or ov <= 0 or self.total <= 0:
             return False
@@ -1090,21 +1096,57 @@ class Hypothesis:
             self._streak = 0
             self.history.append({"frame": frame_id, "veto": list(pair_score.vetoed_by)})
             return self
-        # REPLACE, never accumulate: each channel reports on the current state.
+        # REPLACE, never accumulate: each channel reports on the current state. A channel
+        # that ABSTAINED this time is removed from the state too (review 2026-09-14: a stale
+        # attributes log-odds otherwise outlived the evidence that produced it).
+        for name in pair_score.abstentions:
+            self.state.pop(name, None)
         for name, ch in pair_score.channels.items():
             if "log_odds" in ch:
                 self.state[name] = ch["log_odds"]
+        attrs = pair_score.channels.get("attributes")
         self.history.append({"frame": frame_id,
                              "total": round(self.total, 4),
                              "containment_unchecked": pair_score.containment_unchecked,
                              "evidence_count": pair_score.evidence_count,
                              "channels": {k: v.get("log_odds")
                                           for k, v in pair_score.channels.items()},
-                             "abstentions": dict(pair_score.abstentions)})
+                             "abstentions": dict(pair_score.abstentions),
+                             # for the unwitnessed-overlap rule in decide()
+                             "overlap_log_odds": pair_score.channels.get("overlap", {}).get("log_odds"),
+                             "covis_witnessed": ("covisibility" in pair_score.channels
+                                                 or "covisibility" in pair_score._measured_abstentions),
+                             "same_kind": (bool(attrs.get("same_kind")) if attrs else False),
+                             "attributes_measured": attrs is not None})
+        return self
+
+    def interrupt(self, reason, frame_id=None):
+        """A sweep offered the pair but a gate refused it before scoring: the streak is broken.
+        Review 2026-09-14: without this a room/geometry refusal left `_streak` untouched, and
+        the next passing sweep committed as "2 consecutive" after one."""
+        self._streak = 0
+        self.history.append({"frame": frame_id, "interrupted": reason})
         return self
 
     def decide(self, threshold, min_evidence=1, min_consecutive=1):
-        """-> (decision, reason). Never merges on zero measured evidence."""
+        """-> (decision, reason). Never merges on zero measured evidence.
+
+        THE UNWITNESSED-OVERLAP RULE (GA-328, restated 2026-09-14 after the owner's ruling).
+        When co-visibility was never collected for the pair -- true of every two views of one
+        object, which are never in one frame together -- nothing can refute a containment
+        merge, so:
+          - no positive overlap evidence -> HOLD. Attributes (+2.0 cap) and room (+log n_rooms)
+            can add up past the threshold on their own; measured on GA-493 that merged two
+            cushions on one bench with no box intersection.
+          - overlap positive and the two base labels are the same string and attributes were
+            measured -> the pair is decided by the total. This is the ruling "geometry filters
+            boxes out" + "still use the LSF metric" made explicit: SAME LABEL + OVERLAP EVIDENCE
+            ABOVE THE THRESHOLD => MERGE. It is NOT a witness of identity: attributes cannot
+            tell two objects of one kind apart (report, C sweep), so two nested same-label
+            objects will merge. The owner accepts or narrows this; it is documented, not hidden.
+          - otherwise (cross-kind, unknown kind, attributes unmeasured) -> HOLD: the guard as
+            shipped, no longer diluted by the other channels' share of the total.
+        """
         if self.vetoed_by:
             return "reject", f"vetoed by {', '.join(self.vetoed_by)}"
         measured = [h for h in self.history if h.get("evidence_count", 0) >= min_evidence]
@@ -1113,7 +1155,18 @@ class Hypothesis:
             # answer, it is the absence of one.
             return "abstain", "no update contributed a measured channel"
         last = self.history[-1] if self.history else {}
-        if last.get("containment_unchecked") and self.total >= threshold:
+        if "covis_witnessed" in last and not last["covis_witnessed"] and self.total >= threshold:
+            ov = last.get("overlap_log_odds")
+            if ov is None or ov <= 0:
+                self._streak = 0
+                return "hold", ("no positive overlap evidence and co-visibility was never "
+                                "recorded — attributes and room alone do not commit a merge")
+            if not (last.get("same_kind") and last.get("attributes_measured")):
+                self._streak = 0
+                return "hold", ("containment carries the decision and co-visibility was never "
+                                "recorded — the hard negative that would refute it is uncollected")
+        elif last.get("containment_unchecked") and self.total >= threshold:
+            # history written by an older build without the fields above
             self._streak = 0
             return "hold", ("containment carries the decision and co-visibility was never "
                             "recorded — the hard negative that would refute it is uncollected")
@@ -1448,9 +1501,10 @@ def demo():
     assert s8.channels["overlap"]["log_odds"] > 0 and s8.total < thr8, s8.as_record()
     print(f"  attributes : agree {agree:+.1f} (cap), same kind {same_kind:+.2f}, other kind "
           f"{other_kind:+.1f}; lamp-on-table total {s8.total:+.2f} < {thr8:+.2f} -> no merge")
-    # the second witness: overlap carries the decision, co-visibility is uncollected (two views
-    # are never in one frame), and the GA-328 guard held every such pair. Same-kind agreeing
-    # attributes lift it; a cross-kind pair with the same score stays held.
+    # the unwitnessed-overlap rule: overlap carries the decision and co-visibility is
+    # uncollected (two views are never in one frame). Same label + measured attributes lets
+    # the total decide; a cross-kind pair with the same score stays held; attributes + room
+    # with NO positive overlap stay held.
     v1 = AssocObject("v1", bbox=_box(0, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
     v2 = AssocObject("v2", bbox=_box(0.2, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
     same = AssocContext(map_volume_m3=300.0, n_rooms=1, cost_ratio=20.0, use_ontology=False,
@@ -1465,6 +1519,26 @@ def demo():
         d_cross = h_cross.decide(thr8, min_consecutive=2)
     assert d_same[0] == "merge", d_same
     assert d_cross[0] == "hold" and d_cross[1].startswith("containment carries"), d_cross
+    # attributes + room alone (boxes apart, one sighting each so separation is measured) must
+    # not commit: no positive overlap evidence and no witness
+    apart = AssocContext(map_volume_m3=300.0, n_rooms=6, cost_ratio=20.0, use_ontology=False,
+                         attribute_score_fn=lambda x, y: (1.0, 3, True))
+    w1 = AssocObject("w1", bbox=_box(0, 0, 0.5, 0.4, 0.4, 0.4), room_id="r")
+    w2 = AssocObject("w2", bbox=_box(0.6, 0, 0.5, 0.4, 0.4, 0.4), room_id="r")
+    h_apart = Hypothesis(("w1", "w2"))
+    for f in (1, 2):
+        h_apart.update(score_pair(w1, w2, apart), frame_id=f)
+        d_apart2 = h_apart.decide(thr8, min_consecutive=2)
+    assert d_apart2[0] == "hold" and d_apart2[1].startswith("no positive overlap"), d_apart2
+    # a gate refusal between two passing sweeps breaks the streak
+    h_gap = Hypothesis(("v1", "v2"))
+    h_gap.update(score_pair(v1, v2, same), frame_id=1)
+    assert h_gap.decide(thr8, min_consecutive=2)[0] == "hold"
+    h_gap.interrupt("geometry", frame_id=2)
+    h_gap.update(score_pair(v1, v2, same), frame_id=3)
+    assert h_gap.decide(thr8, min_consecutive=2)[0] == "hold", "one passing sweep after an interrupt is not two consecutive"
+    h_gap.update(score_pair(v1, v2, same), frame_id=4)
+    assert h_gap.decide(thr8, min_consecutive=2)[0] == "merge"
     print(f"  second witness : same kind + agreeing attributes -> {d_same[0]}; "
           f"cross kind, same score -> {d_cross[0]} (GA-328 guard kept)")
 

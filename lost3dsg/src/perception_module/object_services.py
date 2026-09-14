@@ -137,6 +137,13 @@ MERGE_COST_RATIO = float(CFG["association"].get("merge_cost_ratio", 20.0))
 # config.yaml beside merge_engine.
 MERGE_ONTOLOGY_CHANNEL = bool(CFG["association"].get("merge_ontology_channel", True))
 MERGE_ATTRIBUTE_MAX_LOG_ODDS = float(CFG["association"].get("merge_attribute_max_log_odds", 2.0))
+# Asserted at load, not trusted (review 2026-09-14): "attributes alone can never commit a merge"
+# holds only while the cap is below log(cost_ratio), and two config values that must stay
+# ordered will not by themselves.
+if MERGE_ATTRIBUTE_MAX_LOG_ODDS >= math.log(MERGE_COST_RATIO):
+    raise ValueError(
+        f"association.merge_attribute_max_log_odds ({MERGE_ATTRIBUTE_MAX_LOG_ODDS}) must be below "
+        f"log(merge_cost_ratio) = {math.log(MERGE_COST_RATIO):.3f}: attributes alone must not commit")
 # The one locality test both stages apply: boxes intersect or their largest per-axis gap is at
 # most this. It is the association broad-phase margin, not a new constant.
 LOCALITY_GAP_M = float(CFG["association"].get("association_margin_m", 0.3))
@@ -845,6 +852,7 @@ class ObjectServices(Node):
         # garbage-collected each sweep so it cannot grow for the life of the process.
         # Unused by the legacy engine, which decides from a single scoring and keeps nothing.
         self._hypotheses = {}
+        self._dry_hypotheses = {}   # dry runs never touch the live store (review 2026-09-14)
         self._merge_sweep = 0
         self._mutation_sequence = 0
         self._provenance_incomplete = False
@@ -1199,6 +1207,16 @@ class ObjectServices(Node):
             # `except Exception`, which made the feed hold to cap at every stop with no trace.
             self.get_logger().warn(f"[ASSOC] could not publish merge_pending: {exc}")
 
+    def _interrupt_hypothesis(self, a, b, reason, dry_run=False):
+        """A gate refused an OFFERED pair before scoring: break its streak (review 2026-09-14).
+        The pair stays live for `_hypothesis_gc` (it was offered), so without this the next
+        passing sweep would commit as "2 consecutive" after only one."""
+        key = tuple(sorted((str(getattr(a, "object_id", None) or a.label),
+                            str(getattr(b, "object_id", None) or b.label))))
+        h = (self._dry_hypotheses if dry_run else self._hypotheses).get(key)
+        if h is not None:
+            h.interrupt(reason, frame_id=self._merge_sweep)
+
     def _hypothesis_gc(self, live_keys):
         """Drop hypotheses whose pair no longer exists. GA-188.
 
@@ -1285,7 +1303,11 @@ class ObjectServices(Node):
                 built[id(o)] = assoc.AssocObject(
                     object_id=getattr(o, "object_id", None) or o.label,
                     label=o.label,
-                    bbox=o.bbox,
+                    # Review 2026-09-14: ONE box for candidate generation, the overlap
+                    # channel and the gates -- the fused box when there is one. Before, the
+                    # shell and the gap test read the measured box while the gates read the
+                    # fused one, so a pair the gate would accept could never be offered.
+                    bbox=assoc.locality_box(o),
                     centroid=getattr(o, "centroid", None),
                     observations=getattr(o, "observations", None) or [],
                     room_id=getattr(o, "room_id", None),
@@ -1510,8 +1532,7 @@ class ObjectServices(Node):
             # too -- each widening touching four unpack sites, any one of which could be
             # missed for a ValueError inside a service callback that neither py_compile nor
             # ruff can see. A dict ends that: adding a field never breaks a reader.
-            to_remove_pairs = []
-            merge_log       = []
+            to_remove_pairs = []   # each carries its own "log" entry for merge_log_json
 
             def _pair_similarity(a, b, a_label, b_label):
                 """-> (score, evidence). Embeddings cache on the object, so once per object.
@@ -1657,6 +1678,7 @@ class ObjectServices(Node):
                             _refused(a, b, "room", _room_sim,
                                      evidence_count=_room_ev["optional_count"],
                                      room_a=room_a, room_b=room_b)
+                            self._interrupt_hypothesis(a, b, "room", dry_run)
                             continue
                         if assoc.geometry_compatible(ba, bb_, LOCALITY_GAP_M) is False:
                             # The one locality test both stages apply: intersect, or a largest
@@ -1664,7 +1686,9 @@ class ObjectServices(Node):
                             # never scored on attributes (GA-25's order, kept).
                             _refused(a, b, "geometry", None,
                                      gap_m=round(assoc.box_gap(ba, bb_), 3),
-                                     threshold_gap_m=LOCALITY_GAP_M, room_a=room_a, room_b=room_b)
+                                     threshold_gap_m=LOCALITY_GAP_M, room_a=room_a, room_b=room_b,
+                                     offered_by=pair_meta.get("offered_by"))
+                            self._interrupt_hypothesis(a, b, "geometry", dry_run)
                             continue
                         # GA-186. No gate cascade and no similarity constant: every channel
                         # runs, the log-odds are fused, and the pair commits only if the
@@ -1693,10 +1717,15 @@ class ObjectServices(Node):
                         # PERMANENT for the pair (co-visibility is a fact, not evidence to
                         # be outweighed later), and the full per-frame history is kept, so
                         # the merge is explainable and reversible afterwards.
-                        h = self._hypotheses.get(hyp_key)
+                        # A dry run must not advance a LIVE pair's streak (review 2026-09-14),
+                        # but it must still be able to say "would merge on the second look":
+                        # dry runs accumulate in their own store. ponytail: that store is not
+                        # garbage-collected; it grows with the pairs dry runs ever scored.
+                        store = self._hypotheses if not dry_run else self._dry_hypotheses
+                        h = store.get(hyp_key)
                         if h is None:
                             h = assoc.Hypothesis(hyp_key)
-                            self._hypotheses[hyp_key] = h
+                            store[hyp_key] = h
                         h.update(ps, frame_id=self._merge_sweep)
                         decision, why = h.decide(threshold,
                                                  min_evidence=MERGE_MIN_EVIDENCE,
@@ -1705,6 +1734,7 @@ class ObjectServices(Node):
                         rec = ps.as_record()
                         rec.update(distance=pair_meta.get("distance_m"),
                                    reach_m=pair_meta.get("reach_m"),
+                                   offered_by=pair_meta.get("offered_by"),
                                    room_a=room_a, room_b=room_b, engine="evidence",
                                    # The THIRD unit of a key called `threshold`: log-odds,
                                    # not the similarity or the metres the 2026-09-06 rename
@@ -1887,7 +1917,7 @@ class ObjectServices(Node):
                         "keeper_room": room_a if keeper is a else room_b,
                         "discard_room": room_b if keeper is a else room_a,
                     })
-                    merge_log.append({
+                    to_remove_pairs[-1]["log"] = {
                         "keeper":      keeper.label,
                         "keeper_id":   getattr(keeper, "object_id", None),
                         "discarded":   discard.label,
@@ -1907,7 +1937,7 @@ class ObjectServices(Node):
                         # this key cannot break on it.
                         "bbox_source": "keeper",
                         "bbox_from_object_id": getattr(keeper, "object_id", None) or keeper.label,
-                    })
+                    }
 
             # GA-197. THE MERGE RECORDS ARE WRITTEN WHETHER OR NOT THIS IS A DRY RUN, and
             # they used to sit inside the `not dry_run` guard below. A dry run therefore
@@ -1919,22 +1949,15 @@ class ObjectServices(Node):
             # by construction -- it could only ever be written as False.
             #
             # A dry run exists to say what the gate WOULD do. Its decisions are the output.
-            for pair in to_remove_pairs:
-                keeper, discard = pair["keeper"], pair["discard"]
-                try:
-                    self.decision_log.write(
-                        "merge", getattr(keeper, "object_id", keeper.label),
-                        merged_from=getattr(discard, "object_id", discard.label),
-                        keeper_label=keeper.label, discarded_label=discard.label,
-                        keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
-                        similarity=pair["similarity"], dry_run=bool(dry_run))
-                except Exception as e:
-                    self.get_logger().error(f"decision_log merge failed: {e}")
+            # (Review 2026-09-14: the rows are written AFTER the locked apply below, over
+            # `applied_pairs`, so a live pair skipped as stale leaves no `merge` row, no
+            # merge_log entry and no operations.txt line. A dry run records every decided
+            # pair, as before.)
 
-            # `merged_count` reports APPLIED merges. A dry run applies nothing and its
-            # decisions ARE its output, so it keeps the decided count; the live path
-            # overwrites this with what actually survived the locked re-check below.
-            applied = len(to_remove_pairs)
+            # `merged_count` and the merge records report APPLIED merges. A dry run applies
+            # nothing and its decisions ARE its output, so it keeps the decided pairs; the
+            # live path replaces this with what survived the locked re-check below.
+            applied_pairs = list(to_remove_pairs)
             if to_remove_pairs and not dry_run:
                 print(f"\n🗑️ REMOVING: {len(to_remove_pairs)} duplicate objects:")
 
@@ -1951,7 +1974,7 @@ class ObjectServices(Node):
                 # inside the lock -- the keeper was never checked before -- and a stale pair is
                 # skipped and COUNTED, never applied to an object that has left the map.
                 stale = 0
-                applied = 0
+                applied_pairs = []
                 with wm.lock:
                     for pair in to_remove_pairs:
                         keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
@@ -1969,7 +1992,7 @@ class ObjectServices(Node):
                             # update and was still reported as a merge.
                             stale += 1
                             continue
-                        applied += 1
+                        applied_pairs.append(pair)
                         # Merge geometry while both tracks still exist. The
                         # operation preserves distinct view IDs, so two
                         # tracks containing the same cycle do not count it twice.
@@ -2008,7 +2031,7 @@ class ObjectServices(Node):
                 try:
                     with open(OPERATIONS_LOG, 'a') as f:
                         timestamp = datetime.now().strftime('%H:%M:%S')
-                        for pair in to_remove_pairs:
+                        for pair in applied_pairs:
                             keeper, discard = pair["keeper"], pair["discard"]
                             f.write(f"[{timestamp}] 🔗 MERGE: '{discard.label}' → '{keeper.label}'\n")
                 except Exception as e:
@@ -2022,15 +2045,29 @@ class ObjectServices(Node):
             elif not to_remove_pairs:
                 print("\n✅ NO duplicates found.")
 
+            # GA-197 + review 2026-09-14: one `merge` row per RECORDED pair -- every decided
+            # pair on a dry run, every APPLIED pair on a live run.
+            for pair in applied_pairs:
+                keeper, discard = pair["keeper"], pair["discard"]
+                try:
+                    self.decision_log.write(
+                        "merge", getattr(keeper, "object_id", keeper.label),
+                        merged_from=getattr(discard, "object_id", discard.label),
+                        keeper_label=keeper.label, discarded_label=discard.label,
+                        keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
+                        similarity=pair["similarity"], dry_run=bool(dry_run))
+                except Exception as e:
+                    self.get_logger().error(f"decision_log merge failed: {e}")
+
             print("══════════════════════════════════════════════\n")
 
             # ── Risposta ──────────────────────────────────────────────────────
             response.success        = True
-            response.merged_count   = applied
-            response.merge_log_json = json.dumps(merge_log)
+            response.merged_count   = len(applied_pairs)
+            response.merge_log_json = json.dumps([p["log"] for p in applied_pairs])
             response.message        = (
                 f"{'[DRY RUN] ' if dry_run else ''}"
-                f"{applied} merge(s) "
+                f"{len(applied_pairs)} merge(s) "
                 f"{'simulati' if dry_run else 'eseguiti'}"
             )
 
@@ -2366,7 +2403,15 @@ class ObjectServices(Node):
                         response, mutation_event_id, "refused", best_match)
                     return response
 
-                elif distance < UPDATE_IN_PLACE_DISTANCE_M or iou >= TRACKING_IOU_THRESHOLD:
+                elif (distance < UPDATE_IN_PLACE_DISTANCE_M or iou >= TRACKING_IOU_THRESHOLD
+                      # 2026-09-14: the SAME locality test that admitted the detection. A view
+                      # the association loop accepted because it intersects (or lies within
+                      # LOCALITY_GAP_M of) the object's fused box is a re-observation, not a
+                      # move. Review measured 33 of 205 tracking detections falling into the
+                      # rebuild branch below under the new gate with the old rule here.
+                      or assoc.geometry_compatible(assoc._as_bounds(bbox),
+                                                   assoc.locality_bounds(best_match),
+                                                   LOCALITY_GAP_M) is True):
                     best_match.bbox = bbox
                     best_match._yaw_acc = yaw_acc   # GA-315 part 2
                     self.room_manager.update_room_geometry(
