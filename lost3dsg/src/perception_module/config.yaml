@@ -13,31 +13,36 @@ vlm:
   retries: 2           # extra attempts on timeout/malformed response, then raise
   # REQUIRED WITH A QWEN MODEL, and it is the half that makes the reasoning fix bite.
   # `vlm_completion_kwargs()` (config.py) returns {} unless this key is exactly False, so
-  # the fix above -- which passes those kwargs into the completion request -- would be inert
-  # without it. A Qwen-style endpoint otherwise ignores the setting and can spend most of the
-  # request budget on hidden reasoning before returning the structured scene result, against
-  # a 30 s timeout.
+  # upstream b85a9e6 -- which passes those kwargs into the completion request -- would be
+  # inert without it. A Qwen-style endpoint otherwise ignores the setting and can spend most
+  # of the request budget on hidden reasoning before returning the structured scene result,
+  # against a 30 s timeout.
   enable_thinking: false
 
 embedding:
   word2vec_path: "/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz"
   word2vec_limit: 200000   # vocabulary cap; keeps RAM bounded
 
+# Runtime image appearance vectors. This is separate from the text/description
+# `embedding` above and from the offline HOV-SG evaluation `embedding` field.
+appearance:
+  enabled: false
+  model_id: "openai/clip-vit-base-patch32"
+  device: auto
+  require_cuda: false
+  min_crop_px: 4
+  batch_size: 8
+
 similarity:            # lost_similarity weights, must sum to 1.0
   # 2026-09-14, owner ruling "C is needed", form chosen from the data (merge-algorithm lane,
   # tools/sweep_c.py, real MiniLM, GA-493 bundle). Was 0.05/0.30/0.15/0.50. The description
   # cosine of two VLM sentences about ONE object seen from two views is 0.36-0.83 (median
-  # 0.685, n=21 exact), so at weight 0.50 no genuine re-observation could reach the merge gate
-  # (needs >= 0.85 on that term) and the median one failed the association gate too. At 0.20
-  # true re-observations score a median 0.89-0.94 and a different KIND at the same spot (lamp
-  # on a table) stays at 0.44. Attributes still cannot separate two objects of the same kind
-  # (same-label pairs > 1.5 m apart also score ~0.91): that is geometry's job, not this score's.
+  # 0.685, n=21 exact), so at weight 0.50 no genuine re-observation could reach the merge gate.
   # Owner 2026-09-14 (second ruling): "label weight should be well higher". MEASURED on the same
-  # bundle (tools/../verify/assoc_arms.py, real MiniLM, 119 adds replayed): at label 0.05 the new
-  # gate associated 36 same-label detections and 8 cross-label ones, 5 of them wrong-kind
-  # (pillow->seat, stove->oven, table->object...); at label 0.25 it associated 41 same-label and
-  # 1 cross-label (artwork->painting, a synonym); at 0.40, 44 and 1. 0.25 is the smaller measured
-  # value that removes every wrong-kind absorption; the other three keep their .45/.30/.20 ratio.
+  # bundle (verify/assoc_arms.py, real MiniLM, 119 adds replayed): at label 0.05 the new gate
+  # associated 36 same-label detections and 8 cross-label ones, 5 of them wrong-kind; at label
+  # 0.25 it associated 41 same-label and 1 cross-label (a synonym); at 0.40, 44 and 1. 0.25 is
+  # the smaller measured value that removes every wrong-kind absorption.
   label: 0.25
   color: 0.36
   material: 0.24
@@ -80,6 +85,11 @@ association:
                               # and fewer wrong merges commit, but a pair that leaves view
                               # before confirmation is lost. Override with MERGE_MIN_CONSECUTIVE.
   merge_max_distance_m: 0.8   # centre distance beyond which a pair is never merged
+  # Geometry dominates the VLM similarity score for a very close duplicate observation.
+  # The override also requires the same base label and sufficient 3D AABB overlap; the
+  # normal optional-evidence requirement still applies.
+  merge_near_distance_m: 0.02    # 2 cm centre distance, configurable for sensor noise
+  merge_near_iou_threshold: 0.25 # minimum 3D AABB IoU for the geometry override
   merge_aabb_margin_m: 0.8    # AABB broad-phase margin; must be >= merge_max_distance_m
   # HOW MANY of the three optional terms (colour, material, description) must have been
   # COMPARABLE before two objects may be fused. At 0 a pair with nothing measurable scores
@@ -406,7 +416,7 @@ run:
 # key. `hooks.filter` below selects it, so turning it off means either enabled: false here or
 # emptying that line.
 size_check:
-  enabled: true
+  enabled: false
   # Off on purpose. When false the check ANNOTATES and refuses nothing, which is what lets a
   # run measure the change before taking it. true makes an out-of-range box a refusal.
   enforce: false
@@ -474,10 +484,15 @@ perception:
   # the whole-scene VLM return them.
   excluded_labels: ["wall", "floor", "ceiling", "door", "doorway", "door frame", "doorframe"]
 
-# Used only when perception_parallel.py is selected as the executable. The normal
+# Used only when perception_parallel.enabled is true. The normal
 # launch continues to use perception_2.py. cpu_processes gives actual CPU parallel
 # execution without requiring CUDA. Select cuda explicitly for the packed tensor arm.
 perception_parallel:
+  # SELECTS the batched bbox-fusion encoder inside perception_2.py. Off by default, so an
+  # unchanged configuration runs the sequential reference path. This key replaces the separate
+  # separate node and the PERCEPTION_EXECUTABLE launcher variable that chose it:
+  # one node, one mirror-free source, and the backend named in the config the bundle records.
+  enabled: false
   bbox_backend: "cpu_processes"  # "sequential" | "cpu_processes" | "cuda"
   bbox_cpu_workers: 4
   bbox_cpu_chunksize: 1

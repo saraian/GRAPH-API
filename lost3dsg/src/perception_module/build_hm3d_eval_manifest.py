@@ -22,6 +22,64 @@ def _load(path, default, required=False):
         return default
 
 
+def _category_embedding_map(document):
+    """Read category vectors without mistaking runtime CLIP for class vectors.
+
+    ``clip_embeddings.json`` was historically a flat label -> vector file.  The
+    live pipeline now writes a detection-keyed document with the explicit
+    ``lost3dsg.runtime_clip_embeddings.v1`` schema.  Runtime detection vectors
+    cannot fill ``category_embeddings``: they are per-image-instance features,
+    not one vector per HM3D class.  Keep accepting the old flat/category-shaped
+    files for evaluation bundles that already contain class vectors.
+    """
+    if not isinstance(document, dict):
+        return {}
+    if document.get("schema") == "lost3dsg.runtime_clip_embeddings.v1":
+        return {}
+    for key in ("categories", "embeddings"):
+        value = document.get(key)
+        if isinstance(value, dict):
+            return value
+    return {
+        str(key): value for key, value in document.items()
+        if isinstance(value, list)
+    }
+
+
+def _finite_vector(value):
+    """Return a JSON vector with finite floats, otherwise ``None``."""
+    if not isinstance(value, list) or not value:
+        return None
+    try:
+        vector = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    return vector if all(math.isfinite(item) for item in vector) else None
+
+
+def _hovsg_vector(obj, bbox):
+    """Get the offline HOV-SG vector, with a safe legacy compatibility fallback."""
+    for candidate in (
+        bbox.get("hovsg_embedding") if isinstance(bbox, dict) else None,
+        obj.get("hovsg_embedding") if isinstance(obj, dict) else None,
+    ):
+        vector = _finite_vector(candidate)
+        if vector is not None:
+            return vector
+
+    # Bundles produced before the channel split stored the offline 1024-D
+    # vector under ``clip_embedding``.  Accept only that known HOV-SG shape;
+    # a live 512-D CLIP vector must never enter the HOV-SG ``embedding`` slot.
+    for candidate in (
+        bbox.get("clip_embedding") if isinstance(bbox, dict) else None,
+        obj.get("clip_embedding") if isinstance(obj, dict) else None,
+    ):
+        vector = _finite_vector(candidate)
+        if vector is not None and len(vector) == 1024:
+            return vector
+    return None
+
+
 def _polygon_mask(polygon_ros, spec, floor_index):
     """Rasterizza ROS (x,y) in Habitat (x,z)=(-ros_y,-ros_x)."""
     if not isinstance(polygon_ros, list) or len(polygon_ros) < 3:
@@ -131,12 +189,12 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
     bev = _load(run_dir / "bev_data.json", {}, required=True)
     objects = _load(persistent_path or run_dir / "persistent_perception.json", [],
                     required=True)
-    embeddings = _load(run_dir / "clip_embeddings.json", {})
-    # Older capture runs used ``[]`` for an empty room snapshot.  Treat that
+    # Older capture runs used ``[]`` for an empty room snapshot. Treat that
     # representation as an empty snapshot while still rejecting malformed
     # non-container JSON.
     if isinstance(room_doc, list) and not room_doc:
         room_doc = {"rooms": []}
+    embeddings = _category_embedding_map(_load(run_dir / "clip_embeddings.json", {}))
     if not isinstance(room_doc, dict):
         raise RuntimeError("room.json deve contenere un oggetto JSON")
     if not isinstance(bev, dict):
@@ -239,12 +297,18 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
                "room_id": obj.get("room_id"),
                "bbox_source": "fused_bbox" if isinstance(fused, dict) else "bbox",
                "aabb_min_m": box[0].tolist(), "aabb_max_m": box[1].tolist()}
-        # HOV-SG evaluates the appearance embedding belonging to this object.
-        # It is serialized in the persistent object's bbox, not in the
-        # bbox-free top-level object record.
+        # Keep both appearance channels visible in the adapter output.  The
+        # runtime CLIP vector is useful for auditing/association, while only
+        # the offline HOV-SG vector belongs in the evaluator's historical
+        # ``embedding`` field.
         bbox_data = obj.get("bbox") if isinstance(obj.get("bbox"), dict) else {}
-        embedding = bbox_data.get("clip_embedding", obj.get("clip_embedding"))
-        if isinstance(embedding, list):
+        runtime_embedding = _finite_vector(
+            bbox_data.get("clip_embedding", obj.get("clip_embedding"))
+        )
+        if runtime_embedding is not None:
+            row["clip_embedding"] = runtime_embedding
+        embedding = _hovsg_vector(obj, bbox_data)
+        if embedding is not None:
             row["embedding"] = embedding
         predicted_objects.append(row)
     result["predicted_objects"] = predicted_objects
@@ -293,7 +357,7 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--persistent-perception", type=Path,
-                        help="JSON persistente alternativo, eventualmente arricchito con CLIP")
+                        help="JSON persistente alternativo, eventualmente arricchito con HOV-SG")
     parser.add_argument("--prediction-yaw-deg", type=float, default=0.0,
                         choices=(0.0, 90.0, 180.0, 270.0),
                         help="rotazione ROS delle predizioni attorno all'origine")

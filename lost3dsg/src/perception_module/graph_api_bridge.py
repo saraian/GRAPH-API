@@ -256,12 +256,15 @@ class BridgeNode(Node):
 
     def _convert_to_jpeg(self, msg: Image) -> bytes:
         try:
-            h, w = msg.height, msg.width
-            if h <= 0 or w <= 0 or not msg.data:
+            if not msg.data:
                 return None
-            img_np = np.frombuffer(msg.data, dtype=np.uint8).reshape((h, w, 3))
-            if msg.encoding in ('rgb8', 'RGB8'):
+            img_np, encoding = ros_image_to_array(msg)
+            if encoding == 'rgb8':
                 img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            elif encoding == 'rgba8':
+                img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
+            elif encoding == 'bgra8':
+                img_np = cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
             _, jpeg = cv2.imencode('.jpg', img_np, [cv2.IMWRITE_JPEG_QUALITY, 80])
             return jpeg.tobytes()
         except (ValueError, TypeError, AttributeError) as exc:
@@ -357,6 +360,22 @@ def _set_description_embedding(req, body):
     return req.has_description_embedding
 
 
+def _set_clip_embedding(req, body):
+    """Carry the per-detection CLIP image vector across the HTTP/ROS seam.
+
+    ``float32[]`` cannot represent JSON ``null``.  The explicit flag therefore has
+    the same meaning as ``has_description_embedding``: false means "do not change or
+    use appearance evidence", while a non-empty finite vector is a measurement.
+    """
+    raw = body.get("clip_embedding")
+    values = [] if raw is None else [float(value) for value in raw]
+    if not all(math.isfinite(value) for value in values):
+        raise HTTPException(status_code=400, detail="clip_embedding contains a non-finite value")
+    req.clip_embedding = values
+    req.has_clip_embedding = bool(values)
+    return req.has_clip_embedding
+
+
 def _set_orientation(req, body: dict):
     """GA-312. Carry the oriented box across the service boundary when the caller sent one.
     `has_orientation` is set from the presence of ALL THREE keys, never from a default, so an
@@ -429,6 +448,7 @@ def add_object(body: dict):
     _set_description_embedding(req, body)
     _set_bbox_fusion(req, body)
     _set_observation_refs(req, body)
+    _set_clip_embedding(req, body)
     res = require_node().call('add', req)
     if not res.success:
         raise HTTPException(status_code=400, detail={
@@ -505,6 +525,7 @@ def update_object(object_id: str, body: dict):
     _set_description_embedding(req, body)
     _set_bbox_fusion(req, body)
     _set_observation_refs(req, body)
+    _set_clip_embedding(req, body)
 
     res = require_node().call('update', req)
     if not res.success:
@@ -1406,6 +1427,10 @@ try:
     from . import live_overlay as _lo
 except ImportError:                                   # launched by file path, not as a package
     import live_overlay as _lo
+try:
+    from .image_transport import ros_image_to_array
+except ImportError:                                   # launched by file path, not as a package
+    from image_transport import ros_image_to_array
 
 OVERLAY_ON = os.environ.get("BRIDGE_OVERLAY", "1") == "1"
 # The frame the world model is expressed in, and the camera frame to look it up as. Both are
@@ -1597,7 +1622,13 @@ _OVERLAY_FAILURES = {"n": 0, "last": None}
 # file, rule 6), and carried on /health.stamp.frame_source_counts.
 _FRAME_SOURCE_COUNTS = {"perception overlay": 0, "simulator host": 0, "raw camera": 0,
                         "stale overlay": 0, "stale composite": 0, "none": 0}
+# Both of these bytes already contain the perception renderer's boxes.  A stale annotated
+# image is still annotated; treating it as a raw frame and applying the persistent world-model
+# overlay a second time creates the exact duplicated/misaligned boxes visible in the dashboard.
+_ANNOTATED_FRAME_SOURCES = {"perception overlay", "stale overlay"}
 _FRAME_SOURCE_WRITE = {"at": 0.0, "lock": threading.Lock()}
+_FRAME_PICK_LOCK = threading.Lock()
+_FRAME_PICK_LOCAL = threading.local()
 atexit.register(lambda: _write_frame_source_counts(force=True))
 
 
@@ -1619,10 +1650,27 @@ def _write_frame_source_counts(force=False):
 
 def _best_frame():
     """`_best_frame_pick` plus the GA-354 tally; every caller goes through here."""
-    data = _best_frame_pick()
-    _FRAME_SOURCE_COUNTS[_last_frame_source or "none"] = _FRAME_SOURCE_COUNTS.get(_last_frame_source or "none", 0) + 1
+    # The source used to be read from the process-global `_last_frame_source` after this
+    # function returned. `/feed` and `/frame.jpg` can overlap, so another request could change
+    # that value between the pick and the guard, causing an already annotated image to be
+    # composited again. Keep the source with this request as well as the health badge's global.
+    with _FRAME_PICK_LOCK:
+        data = _best_frame_pick()
+        source = _last_frame_source
+    _FRAME_PICK_LOCAL.source = source
+    _FRAME_SOURCE_COUNTS[source or "none"] = _FRAME_SOURCE_COUNTS.get(source or "none", 0) + 1
     _write_frame_source_counts()
     return data
+
+
+def _frame_needs_world_overlay(source):
+    """Whether `source` is an unannotated frame that needs persistent 3D boxes."""
+    return source not in _ANNOTATED_FRAME_SOURCES
+
+
+def _picked_frame_source():
+    """Source selected by this request, falling back to the health badge for old callers."""
+    return getattr(_FRAME_PICK_LOCAL, "source", _last_frame_source)
 
 
 def _best_frame_pick():
@@ -1688,7 +1736,7 @@ def proxy_frame():
         # NOT when perception's own overlay is what answered: that frame already carries the
         # boxes AND the masks, drawn from the detection itself rather than reprojected, and
         # drawing over it would put two rectangles round every object.
-        if _last_frame_source != "perception overlay":
+        if _frame_needs_world_overlay(_picked_frame_source()):
             frame = _with_overlay(frame)
         return Response(content=frame, media_type="image/jpeg")
     return Response(status_code=503)
@@ -1740,7 +1788,7 @@ def proxy_feed():
         last, last_sent = None, 0.0
         while True:
             frame_data = _best_frame()
-            if frame_data and _last_frame_source != "perception overlay":
+            if frame_data and _frame_needs_world_overlay(_picked_frame_source()):
                 frame_data = _with_overlay(frame_data)   # see proxy_frame for why the guard
 
             # Don't re-push a frame the browser already has: the sources run at ~3 fps

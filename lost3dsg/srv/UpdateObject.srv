@@ -44,6 +44,10 @@ bool has_fusion_voxels
 string fusion_view_id
 float32 fusion_voxel_size_m
 int32[] fusion_voxel_keys
+# Runtime image appearance vector from CLIP ViT-B/32. This is distinct from the
+# text/description embedding above and from the offline HOV-SG evaluation vector.
+bool has_clip_embedding
+float32[] clip_embedding
 ---
 # RESPONSE
 bool success

@@ -784,12 +784,44 @@
     #graphBackdrop.on { display:block; }
     #scene3dBackdrop.on { display:block; }
 
+    /* The LAYERS disclosure is a MOBILE control. The script clears its `hidden` attribute so
+       CSS can own the decision, which means CSS must state the desktop case too -- without
+       this rule the button inherited the default display and appeared at 1440 px, beside the
+       pills it exists to replace. */
+    #btnLayersSummary { display: none; }
+
     /* Mobile / narrow viewports: stack panes vertically, drop drag-resizers */
     @media (max-width: 820px) {
       body, html { overflow: auto; height: auto; }
       .hud-page { height: auto; }
       .hud-header { height: auto; flex-wrap: wrap; gap: 6px; }
-      .hud-stats { flex-wrap: wrap; gap: 6px; }
+      /* STATUS INDICATORS, COMPRESSED (owner 2026-09-14).
+         Measured before: the six badges wrapped to two rows 71 px tall, every value broke onto
+         a second line ("NOT / USED"), and PERCEPTION was cut off at the right edge with OBJ MGR
+         not reachable at all -- wrapping hid two of them rather than showing them.
+         One nowrap row that SCROLLS sideways instead: nothing is clipped out of reach, the band
+         halves in height, and the values stop breaking. Scrolling is the honest trade here --
+         six live readings do not fit across 390 px at a legible size, so the choice is to make
+         them reachable, not to make them fit. */
+      .hud-stats { flex-wrap: nowrap; gap: 6px; overflow-x: auto; overflow-y: hidden;
+                   -webkit-overflow-scrolling: touch; scrollbar-width: none;
+                   width: 100%; padding-bottom: 2px; }
+      .hud-stats::-webkit-scrollbar { display: none; }
+      .hud-stats > * { flex: 0 0 auto; }
+      #pipelineStatusBadges { flex-wrap: nowrap; }
+      .hud-stat-badge { white-space: nowrap; padding: 3px 7px; font-size: 0.68rem; }
+      /* The tools slot must not be dragged off into the scroll strip with the readings. */
+      .hud-stats > #globalToolsSlot { position: sticky; right: 0; }
+
+      /* LAYERS, COLLAPSED BY DEFAULT (owner 2026-09-14, "very cramped").
+         Thirteen toggles wrapped to five rows here and cost about 140 px, which is why the
+         graph panel started at y=744 in an 844 px viewport -- 88% of the first screen was
+         chrome. The summary button replaces them and says how many are on. */
+      #btnLayersSummary { display: inline-flex; }
+      .viz-layer-group { margin-left: 0; width: 100%; }
+      .viz-layer-box { display: none !important; }
+      .viz-layer-box.open { display: flex !important; width: 100%; margin-top: 4px;
+                            max-height: 34vh; overflow-y: auto; }
       .hud-body { flex-direction: column; height: auto; overflow: visible; }
       .col-pane { width: 100% !important; min-width: 0 !important; height: auto; }
       #panelFeed { height: 42vh !important; min-height: 220px !important; }
@@ -1013,14 +1045,35 @@
           </div>
 
           <!-- Right: Interactive Visualization Layers -->
-          <div style="display: flex; align-items: center; gap: 4px; margin-left: auto;">
+          <!-- THE PILLS LIVE IN THEIR OWN BOX NOW (owner 2026-09-14, "very cramped" on mobile).
+               Thirteen toggles land in this one container -- four written here, five appended by
+               the FOUND replay server and the rest relabelled in place -- and at 390 px they wrap
+               to five rows and push the graph panel to y=744 in an 844 px viewport. Separating the
+               LABEL and the SUMMARY BUTTON from the pill box is what lets the box collapse on a
+               phone without the label going with it.
+               THE ID IS NEW AND THE CLASS IS DELIBERATELY NOT `viz-layer-bar-outside`, because
+               that class is already on the WHOLE ROW (this file, ~line 160) -- cycle stamp, status
+               line and this group together. replay_server.py appended its five pills to that row,
+               which put them BESIDE this box rather than in it, so they stayed on screen when the
+               box collapsed. Measured, not assumed: `#btnVizPca`'s parent was
+               `div.viz-layer-bar-outside`, a sibling of this box. The server now looks for
+               `#vizLayerBar` first and falls back to the old selectors. -->
+          <div class="viz-layer-group" style="display: flex; align-items: center; gap: 4px; margin-left: auto; flex-wrap: wrap;">
             <span style="font-size:0.6rem; font-weight:700; color:var(--muted); text-transform:uppercase; display:flex; align-items:center; gap:4px; margin-right:2px;">
               <i data-lucide="layers" style="width:11px;height:11px;"></i> LAYERS:
             </span>
+            <!-- Mobile only (CSS shows it under 820px). It reports how many layers are ON, so a
+                 collapsed box still says what state it is in -- a disclosure that hides the
+                 answer as well as the controls is worse than the cramped row it replaced. -->
+            <button id="btnLayersSummary" class="viz-btn" type="button" hidden
+                    aria-expanded="false" aria-controls="vizLayerBar"
+                    onclick="toggleLayerBar()">LAYERS <span id="layerCount">0</span></button>
+            <div id="vizLayerBar" class="viz-layer-box" style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
             <button id="btnVizPerm" class="viz-btn active" onclick="toggleVizLayer('perm')" title="Toggle Permanent Bounding Boxes"><i data-lucide="box" style="width:11px;height:11px;"></i> PERM BBOX</button>
             <button id="btnVizTemp" class="viz-btn active" onclick="toggleVizLayer('temp')" title="Toggle Temporary Bounding Boxes"><i data-lucide="square" style="width:11px;height:11px;"></i> TEMP BBOX</button>
             <button id="btnVizSeg" class="viz-btn active" onclick="toggleVizLayer('seg')" title="Toggle Segmentation Overlay"><i data-lucide="layers" style="width:11px;height:11px;"></i> SEGMENTATION</button>
             <button id="btnVizDet" class="viz-btn active" onclick="toggleVizLayer('det')" title="Toggle Single Detector Stages"><i data-lucide="cpu" style="width:11px;height:11px;"></i> STAGES</button>
+            </div>
           </div>
         </div>
 
@@ -1648,6 +1701,59 @@
     }
 
     const vizLayers = { perm: true, temp: true, seg: true, det: true };
+
+    // THE LAYER BOX'S DISCLOSURE, mobile only (owner 2026-09-14). The button is `hidden` in the
+    // markup and CSS shows it under 820 px, so a desktop reader never meets it and the pills stay
+    // exactly where they were.
+    //
+    // THE COUNT IS READ OFF THE PILLS THEMSELVES, not off a variable. Thirteen toggles reach this
+    // box from three different places -- four written in this file, five appended by the FOUND
+    // replay server, and several relabelled in place afterwards -- so no single variable in this
+    // file knows what is in there. Counting `.active` in the DOM is the only reading that cannot
+    // drift from what the reader is actually looking at.
+    function layerBarCount() {
+      const bar = document.getElementById('vizLayerBar');
+      if (!bar) return null;
+      const pills = bar.querySelectorAll('button.viz-btn');
+      return { on: bar.querySelectorAll('button.viz-btn.active').length, total: pills.length };
+    }
+
+    function refreshLayerSummary() {
+      const btn = document.getElementById('btnLayersSummary');
+      const label = document.getElementById('layerCount');
+      const c = layerBarCount();
+      if (!btn || !label || !c) return;
+      label.textContent = c.on + '/' + c.total;
+      btn.title = c.on + ' of ' + c.total + ' visualisation layers are on';
+    }
+
+    function toggleLayerBar() {
+      const bar = document.getElementById('vizLayerBar');
+      const btn = document.getElementById('btnLayersSummary');
+      if (!bar || !btn) return;
+      const open = bar.classList.toggle('open');
+      btn.classList.toggle('active', open);
+      btn.setAttribute('aria-expanded', String(open));
+      refreshLayerSummary();
+    }
+
+    (function armLayerSummary() {
+      const start = () => {
+        const btn = document.getElementById('btnLayersSummary');
+        const bar = document.getElementById('vizLayerBar');
+        if (!btn || !bar) return;
+        btn.hidden = false;                    // CSS decides whether it is SHOWN; this only unhides
+        refreshLayerSummary();
+        // The server appends and relabels pills after this file runs, and every pill toggles its
+        // own `active` class. One observer over the box keeps the count true for all of them
+        // without this file needing to know who added what.
+        new MutationObserver(refreshLayerSummary).observe(bar, {
+          childList: true, subtree: true, attributes: true, attributeFilter: ['class']
+        });
+      };
+      if (document.readyState === 'loading') addEventListener('DOMContentLoaded', start);
+      else start();
+    })();
 
     function toggleVizLayer(layer) {
       if (!requireLiveMutation('Visualization layer')) return;

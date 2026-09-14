@@ -109,9 +109,71 @@ def test_the_fix_keeps_the_value_it_reports():
         assert json.loads('{"%s": %s}' % (key, render(expr, "")))[key] is None, n
 
 
+# ---------------------------------------------------------------------------------------
+# GA-507, second half: the sign strip makes `+0.07` legal JSON; it does not make the value a
+# number. Added by the orchestrator 2026-09-14 under the owner's direct instruction to close
+# GA-507, whose acceptance asks that malformed input "refuses before bundle creation" and that
+# a failed launch "remove no evidence from failed bundles".
+
+FLOOR_GUARD_RE = re.compile(r"FEED_SPAWN_FLOOR='\$FEED_SPAWN_FLOOR' is not a decimal height")
+
+
+def _guard_verdict(floor):
+    """Run run_sim.sh's floor guard alone, with the surrounding launcher stubbed out.
+
+    Reads the guard OUT OF THE LAUNCHER (working rule 75) rather than restating it, so a
+    rewrite of those lines is tested and not just today's text.
+    """
+    text = open(SCRIPT).read()
+    start = text.index('if [ -n "${FEED_SPAWN_FLOOR:-}" ]; then\n  case "$FEED_SPAWN_FLOOR" in')
+    end = text.index('RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"', start)
+    guard = text[start:end]
+    r = subprocess.run(["bash", "-c", guard + "\necho LAUNCH_CONTINUES"],
+                       env={**os.environ, "FEED_SPAWN_FLOOR": floor},
+                       capture_output=True, text=True)
+    return r.returncode, r.stdout
+
+
+def test_the_floor_guard_exists_and_sits_above_the_bundle_directory():
+    """A guard below `mkdir -p "$RUN_DIR/logs"` refuses too late: the incomplete bundle is
+    already on disk. Order is the whole content of this check."""
+    text = open(SCRIPT).read()
+    assert FLOOR_GUARD_RE.search(text), "the GA-507 floor guard is missing from run_sim.sh"
+    guard_at = text.index("is not a decimal height")
+    mkdir_at = text.index('mkdir -p "$RUN_DIR/logs"')
+    assert guard_at < mkdir_at, (
+        "the floor guard must refuse BEFORE the bundle directory is created; it currently sits "
+        f"at offset {guard_at}, after the mkdir at {mkdir_at}")
+
+
+def test_every_published_floor_spelling_still_launches():
+    """The guard must not refuse the values the formatter actually writes."""
+    for floor in ["+0.00", "+0.11", "+1.21", "-1.59", "0.00", "0", "1.5", ""]:
+        rc, out = _guard_verdict(floor)
+        assert rc == 0 and "LAUNCH_CONTINUES" in out, f"{floor!r} must launch, got rc={rc} {out!r}"
+
+
+def test_malformed_floors_refuse_before_the_bundle_exists():
+    """Exercise the guard where the answer is PRESENT (working rule 77).
+
+    `1e3` is the one that matters: it is VALID JSON and not a height. Without this guard it
+    would be written into the bundle as 1000.0 and compared against a map directory that
+    cannot exist -- a wrong number where a measurement lives, not a crash.
+    """
+    for floor in ["abc", "+abc", "1.2.3", "0x10", " +0.07", "1e3", "+", "-", "."]:
+        rc, out = _guard_verdict(floor)
+        assert rc == 1, f"{floor!r} must REFUSE before bundle creation, got rc={rc} {out!r}"
+        assert "LAUNCH_CONTINUES" not in out, f"{floor!r} reached the launcher: {out!r}"
+
+
 if __name__ == "__main__":
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok  {name}")
-    print("all checks passed")
+    # The runner reads globals() AT THE MOMENT IT RUNS, so anything defined BELOW this block is
+    # invisible to it and is silently not run. That already happened once here: the GA-507
+    # pre-bundle guard tests were appended below and reported nothing while passing vacuously.
+    # The count is printed so an empty or shrinking collection is visible.
+    _tests = [(n, f) for n, f in sorted(globals().items())
+              if n.startswith("test_") and callable(f)]
+    for name, fn in _tests:
+        fn()
+        print(f"ok  {name}")
+    print(f"all checks passed ({len(_tests)} tests)")

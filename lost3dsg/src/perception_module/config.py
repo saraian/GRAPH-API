@@ -35,8 +35,11 @@ _DEFAULTS = {
         "grid_cells": 0,
         "base_url": "https://api.regolo.ai/v1",
         "model": "qwen3.8-27b",          # owner ruling 2026-09-14 (was gemma4-31b)
-        "enable_thinking": False,        # vlm_completion_kwargs() is inert unless this is exactly False;
-                                         # a config that omits the key must not silently re-enable reasoning
+        # vlm_completion_kwargs() below is INERT unless this is exactly False, so a config
+        # passed through GRAPH_API_CONFIG that omits the key would fall back to a default
+        # without it and silently re-enable hidden reasoning, with nothing in the bundle to
+        # show it. Ported from the merge-algorithm branch (522c5f1), which found the hole.
+        "enable_thinking": False,
         # empty -> use OPENAI_API_KEY env if set, else the legacy api.txt next
         # to cv_utils.py if present, else "ollama" (local server ignores it)
         "api_key": "",
@@ -57,6 +60,18 @@ _DEFAULTS = {
     "embedding": {
         "word2vec_path": "/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz",
         "word2vec_limit": 200000,
+    },
+    # Runtime image appearance vectors.  This is deliberately a separate namespace from
+    # `embedding` above: the latter is the text/description vector used by the legacy
+    # semantic score, while this is the normalized CLIP image vector used by association
+    # appearance evidence and persisted as `bbox.clip_embedding`.
+    "appearance": {
+        "enabled": True,
+        "model_id": "openai/clip-vit-base-patch32",
+        "device": "auto",
+        "require_cuda": False,
+        "min_crop_px": 4,
+        "batch_size": 8,
     },
     # lost_similarity weights; must sum to 1.0
     "similarity": {"label": 0.05, "color": 0.30, "material": 0.15, "description": 0.50},
@@ -121,6 +136,12 @@ _DEFAULTS = {
         # else. Values are the literals object_manager_6.py:281-282 already used.
         "scan_complete_topic": "/habitat/scan_complete",
         "scan_merge_settle_s": 1.0,
+        # A very close, substantially overlapping re-detection of the same base label is
+        # geometric identity evidence. It may bypass the semantic similarity floor, whose
+        # VLM attributes are known to fluctuate between views. The optional evidence gate
+        # still applies, so an identical label with no measured attributes is not enough.
+        "merge_near_distance_m": 0.02,      # 2 cm centre distance: depth noise / re-detection jitter
+        "merge_near_iou_threshold": 0.25,  # minimum 3D AABB overlap for the geometry override
         # Must stay STRICTLY above `sim_threshold` or a merge fuses pairs the association loop
         # just refused; object_services asserts that at load and the service now refuses a
         # request that carries a lower floor.
@@ -626,7 +647,8 @@ _DEFAULTS = {
         "excluded_labels": ["wall", "floor", "ceiling", "door", "doorway",
                             "door frame", "doorframe"],
     },
-    # Execution settings used only by perception_parallel.py. The existing launch
+    # Execution settings for the batched bbox-fusion encoder inside perception_2.py, selected by
+    # perception_parallel.enabled. The existing launch
     # still starts perception_2.py. Four spawned CPU processes are the portable
     # measured candidate; CUDA remains an explicit calibration arm.
     "perception_parallel": {

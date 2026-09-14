@@ -9,7 +9,7 @@ CMAKE = ROOT / "lost3dsg/CMakeLists.txt"
 DEBUG_RUN = ROOT / "lost3dsg/test/ga493_debug_run.sh"
 LIVE_STACK = ROOT / "lost3dsg/test/live_stack_container.sh"
 PREFLIGHT = ROOT / "lost3dsg/test/preflight_gate.py"
-PERCEPTION = ROOT / "lost3dsg/src/perception_module/perception_parallel.py"
+PERCEPTION = ROOT / "lost3dsg/src/perception_module/perception_2.py"
 OBJECT_MANAGER = ROOT / "lost3dsg/src/perception_module/object_manager_6.py"
 
 
@@ -43,7 +43,7 @@ def test_capture_module_is_installed_with_ros_nodes():
 def test_debug_entry_point_enforces_cap_parallel_cuda_and_no_gt():
     source = DEBUG_RUN.read_text(encoding="utf-8")
     assert 'FEED_GT_SEMANTIC=0' in source
-    assert 'PERCEPTION_EXECUTABLE=perception_parallel.py' in source
+    assert 'GRAPH_API_PARALLEL_FUSION=1' in source
     assert '"bbox_backend") == "cuda"' in source
     assert '"cap_min", ""' in source
     assert 'GA493_REPLAY_CAPTURE_DIR' in source
@@ -62,7 +62,7 @@ def test_container_finalizes_both_capture_owners_before_map_close():
     assert "consumer/complete.json" in finalizer
     assert "finalization_failure.txt" in finalizer
     assert 'capture owners did not start; no replay finalization is required' in finalizer
-    assert "pkill -INT -f 'perception_parallel.py'" in finalizer
+    assert "pkill -INT -f 'perception_2.py'" in finalizer
     assert "pkill -INT -f 'object_manager_6.py'" in finalizer
 
 

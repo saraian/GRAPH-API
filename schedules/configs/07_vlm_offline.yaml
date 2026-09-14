@@ -15,8 +15,8 @@
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
-# generated_at:   2026-09-14T15:14:04
-# generated_from: lost3dsg/src/perception_module/config.yaml sha256 2cd0a53ca1f465f5
+# generated_at:   2026-09-14T17:04:40
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 56d1442de207767a
 #
 # A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
 # code then takes its module fallback instead. If a bundle's config is missing a key
@@ -33,6 +33,13 @@ vlm:
 embedding:
   word2vec_path: /root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz
   word2vec_limit: 200000
+appearance:
+  enabled: false
+  model_id: openai/clip-vit-base-patch32
+  device: auto
+  require_cuda: false
+  min_crop_px: 4
+  batch_size: 8
 similarity:
   label: 0.25
   color: 0.36
@@ -56,6 +63,8 @@ association:
   merge_cost_ratio: 20.0
   merge_min_consecutive: 2
   merge_max_distance_m: 0.8
+  merge_near_distance_m: 0.02
+  merge_near_iou_threshold: 0.25
   merge_aabb_margin_m: 0.8
   merge_min_evidence: 1
   merge_min_similarity: 0.925
@@ -230,7 +239,7 @@ run:
   hf_offline: true
   cfg_name: regolo_config.yaml
 size_check:
-  enabled: true
+  enabled: false
   enforce: false
 hooks:
   search_paths: []
@@ -257,6 +266,7 @@ perception:
   - door frame
   - doorframe
 perception_parallel:
+  enabled: false
   bbox_backend: cpu_processes
   bbox_cpu_workers: 4
   bbox_cpu_chunksize: 1

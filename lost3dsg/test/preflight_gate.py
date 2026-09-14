@@ -19,8 +19,8 @@ ponytail: the probes deliberately do NOT try to repair anything. A gate that fix
 finds is a gate that hides what it found; the run is cheap to restart and the bundle is not.
 """
 import argparse
-import json
 import glob
+import json
 import os
 import sys
 import time
@@ -1143,9 +1143,10 @@ def a8_stack_imports(modules=None, install=None):
     if os.path.isfile(os.path.join(src_root, "CMakeLists.txt")):
         try:
             sys.path.insert(0, os.path.join(src_root, "src", "perception_module"))
-            from check_install_list import audit
-            import io
             import contextlib
+            import io
+
+            from check_install_list import audit
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc = audit(src_root)
@@ -1462,6 +1463,14 @@ A12_ALLOWED_FILES = {
     "src/perception_module/config.yaml": "declares the gt_semantic switch; the key's name, not a read",
     "test/debug_configs/ga493_bbox_replay.yaml":
         "debug configuration declares gt_semantic false",
+    # merge-algorithm lane, 2026-09-14: the same debug switch, generated FROM config.yaml so the
+    # merge keys are the tracked ones; the generator names the key it sets to False.
+    "test/debug_configs/make_merge_debug_config.py":
+        "generator writes run.gt_semantic false into the debug configs; the key's name, not a read",
+    "test/debug_configs/merge_debug_00824_evidence.yaml":
+        "generated debug configuration declares gt_semantic false",
+    "test/debug_configs/merge_debug_00824_legacy.yaml":
+        "generated debug configuration declares gt_semantic false",
     "test/ga493_debug_run.sh":
         "debug entry point enforces FEED_GT_SEMANTIC=0 before launch",
     "test/test_ga493_execution_mode.py":

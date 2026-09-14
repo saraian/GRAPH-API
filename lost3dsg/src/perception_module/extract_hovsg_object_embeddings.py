@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Calcola offline embedding oggetto HOV-SG senza modificare il ramo OWLv2.
+"""Calcola offline gli embedding oggetto usati da HOV-SG.
 
 Il crop associato a un oggetto persistente e' quello con la stessa instance
 label e data di scrittura piu' vicina alla creation_time dell'oggetto.  Ogni
 scelta viene salvata in un report, incluso lo scarto temporale, cosi' che la
-provenienza dell'embedding resti verificabile.
+provenienza dell'embedding resti verificabile.  L'embedding runtime CLIP, se
+presente nel bundle, viene conservato separatamente: questo script aggiunge
+``hovsg_embedding`` e non sovrascrive ``clip_embedding``.
 """
 from __future__ import annotations
 
@@ -146,9 +148,10 @@ def enrich_manifest(manifest: dict[str, Any],
     attached = 0
     for original in manifest.get("predicted_objects", []):
         row = dict(original)
-        # Il manifest di base puo' contenere embedding OWLv2 a 512 dimensioni.
-        # Questo output e' volutamente un canale separato e omogeneo: prima li
-        # rimuoviamo tutti, poi inseriamo soltanto i ViT-H/14 calcolati qui.
+        # ``embedding`` is the historical field consumed by metrics_eval for the
+        # offline HOV-SG vector.  The live pipeline's CLIP image vector is a
+        # different channel (``clip_embedding``) and is not present in this
+        # bbox-only evaluation manifest.
         row.pop("embedding", None)
         vector = vectors.get(str(row.get("object_id")))
         if vector is not None:
@@ -169,7 +172,7 @@ def enrich_manifest(manifest: dict[str, Any],
 
 def enrich_persistent(objects: list[dict[str, Any]],
                       vectors: dict[str, list[float]]) -> tuple[list[dict[str, Any]], int]:
-    """Attach each HOV-SG image embedding to its persistent object's bbox."""
+    """Attach HOV-SG vectors without destroying runtime CLIP vectors."""
     enriched = []
     attached = 0
     for original in objects:
@@ -177,12 +180,15 @@ def enrich_persistent(objects: list[dict[str, Any]],
         bbox = row.get("bbox")
         if isinstance(bbox, dict):
             bbox = dict(bbox)
-            bbox.pop("clip_embedding", None)
-            bbox.pop("clip_embedding_model", None)
+            # Runtime CLIP is computed online by perception_2 and has a
+            # different model/dimensionality from HOV-SG's offline ViT-H/14.
+            # Keep it intact and give the offline vector an unambiguous key.
+            bbox.pop("hovsg_embedding", None)
+            bbox.pop("hovsg_embedding_model", None)
             vector = vectors.get(str(row.get("object_id")))
             if vector is not None:
-                bbox["clip_embedding"] = vector
-                bbox["clip_embedding_model"] = {
+                bbox["hovsg_embedding"] = vector
+                bbox["hovsg_embedding_model"] = {
                     "architecture": MODEL_NAME, "pretrained": PRETRAINED,
                     "library": "open_clip", "dimension": 1024,
                 }
@@ -209,7 +215,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path,
                         help="nuovo manifest; il sorgente non viene mai sovrascritto")
     parser.add_argument("--persistent-output", type=Path,
-                        help="copia di persistent_perception.json con clip_embedding nel bbox")
+                        help="copia con hovsg_embedding nel bbox, preservando clip_embedding")
     parser.add_argument("--report", type=Path,
                         help="report object_id -> crop (default: <output>.crop-map.json)")
     parser.add_argument("--checkpoint", default="",

@@ -200,6 +200,43 @@ def test_no_dead_perception_keys_are_declared():
     assert not offenders, offenders
 
 
+def test_the_reasoning_switch_cannot_silently_turn_itself_off():
+    """The Qwen reasoning fix is TWO halves and either one alone is inert.
+
+    Upstream b85a9e6 passes `vlm_completion_kwargs()` into the completion request. That
+    helper returns {} unless `vlm.enable_thinking` is EXACTLY False, so the port on its own
+    changes nothing. The merge-algorithm lane found the remaining hole (branch 522c5f1): a
+    config handed to GRAPH_API_CONFIG that omits the key fell back to a DEFAULT without it,
+    the helper returned {}, and hidden reasoning came back on with nothing in the bundle to
+    show it -- a component quietly not running while the run reports success (working rule 2).
+
+    So this asserts the DEFAULT, not just the YAML: a config that forgets the key must still
+    disable reasoning.
+    """
+    import config as cfgmod
+
+    assert cfgmod._DEFAULTS["vlm"]["enable_thinking"] is False, (
+        "the default must disable reasoning; a config that omits the key would otherwise "
+        "silently re-enable it")
+
+    # The helper must produce the real payload, not merely a truthy value. This is the thing
+    # that reaches the OpenAI client, and it is what a reader would check in a bundle.
+    kwargs = cfgmod.vlm_completion_kwargs()
+    assert kwargs.get("extra_body", {}).get("chat_template_kwargs", {}).get(
+        "enable_thinking") is False, f"reasoning is not actually disabled: {kwargs}"
+
+    # And it must be able to say YES as well as no -- a check that cannot fail asserts
+    # nothing (working rule 77). Exercised against the case where the answer is the other way.
+    saved = cfgmod.CFG["vlm"].get("enable_thinking")
+    try:
+        cfgmod.CFG["vlm"]["enable_thinking"] = True
+        assert cfgmod.vlm_completion_kwargs() == {}, (
+            "with thinking ON the helper must add nothing, or this test would pass whatever "
+            "the config said")
+    finally:
+        cfgmod.CFG["vlm"]["enable_thinking"] = saved
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

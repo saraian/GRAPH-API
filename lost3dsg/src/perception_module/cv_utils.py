@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import os
 import urllib.parse
 import re
@@ -14,7 +15,7 @@ from sensor_msgs.msg import PointField
 import json
 from geometry_msgs.msg import Point
 from utils import statistical_outlier_removal, get_distinct_color
-from box_view import BOX_EDGES, box_corners_map, project_visible
+from box_view import BOX_EDGES, box_corners_map, pca_oriented_box, project_visible
 from config import CFG, vlm_completion_kwargs, world_frame
 import struct
 from openai import OpenAI
@@ -26,7 +27,6 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from builtin_interfaces.msg import Time as TimeMsg
 file_path = os.path.abspath(__file__)
 import time
-import itertools
 import tf2_ros
 
 def _filter_object_points(mask, depth_image, fx, fy, cx, cy,
@@ -398,6 +398,104 @@ def init_bbox_publisher(node):
     time.sleep(0.5)
     return bbox_pub, centroid_pub
 
+
+def set_marker_from_bbox(marker, bbox):
+    """Set a CUBE marker's pose and scale from an AABB or PCA-oriented box.
+
+    RViz renders a ``Marker.CUBE`` in the marker's local frame.  The old publisher
+    always put the marker at the AABB centre with an identity orientation, even when
+    ``bbox`` already carried ``yaw``/``oriented_center``/``oriented_extents``.  Keep
+    that six-key representation as the fallback, but prefer the measured OBB whenever
+    it is present.
+
+    Returns ``True`` when usable geometry was applied and ``False`` for malformed
+    geometry.  The latter lets callers skip a bad marker rather than publish a zero-size
+    cube that is difficult to diagnose in RViz.
+    """
+    b = bbox or {}
+    try:
+        corners, oriented = box_corners_map(b)
+        if not corners:
+            return False
+
+        if oriented:
+            center = [float(v) for v in b["oriented_center"]]
+            scale = [float(v) for v in b["oriented_extents"]]
+            yaw = float(b.get("yaw", 0.0))
+        else:
+            center = [
+                (float(b["x_min"]) + float(b["x_max"])) * 0.5,
+                (float(b["y_min"]) + float(b["y_max"])) * 0.5,
+                (float(b["z_min"]) + float(b["z_max"])) * 0.5,
+            ]
+            scale = [
+                float(b["x_max"]) - float(b["x_min"]),
+                float(b["y_max"]) - float(b["y_min"]),
+                float(b["z_max"]) - float(b["z_min"]),
+            ]
+            yaw = 0.0
+
+        if (not np.all(np.isfinite(center)) or not np.all(np.isfinite(scale))
+                or not np.all(np.asarray(scale) > 0.0) or not np.isfinite(yaw)):
+            return False
+
+        marker.pose.position.x, marker.pose.position.y, marker.pose.position.z = center
+        marker.pose.orientation.x = 0.0
+        marker.pose.orientation.y = 0.0
+        marker.pose.orientation.z = float(np.sin(yaw * 0.5))
+        marker.pose.orientation.w = float(np.cos(yaw * 0.5))
+        marker.scale.x, marker.scale.y, marker.scale.z = scale
+        return True
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def publish_bbox_corner_markers(node, bboxes, bbox_marker_pub=None,
+                                frame_id=None, stamp=None):
+    """Publish frame-local box corners using each box's OBB when available.
+
+    This is separate from the persistent CUBE publisher because the frame-local RViz
+    topic historically used ``SPHERE_LIST`` markers for the eight corners.  A corner
+    list has no pose to rotate; selecting its corners through ``box_corners_map`` keeps
+    the visualisation exactly aligned with the OBB used by the CUBE markers and the
+    image overlay.
+    """
+    if bbox_marker_pub is None:
+        return
+    frame_id = frame_id or world_frame()
+    stamp = stamp if stamp is not None else node.get_clock().now().to_msg()
+    if not hasattr(node, "_bbox_marker_id_counter"):
+        node._bbox_marker_id_counter = 0
+
+    marker_array = MarkerArray()
+    for bbox in bboxes or []:
+        if not bbox:
+            continue
+        corners, _ = box_corners_map(bbox)
+        if len(corners) != 8:
+            continue
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.ns = "bbox_markers"
+        marker.id = node._bbox_marker_id_counter
+        marker.type = Marker.SPHERE_LIST
+        marker.action = Marker.ADD
+        marker.scale.x = marker.scale.y = marker.scale.z = 0.02
+        marker.color = get_distinct_color(node._bbox_marker_id_counter)
+        marker.lifetime = Duration(seconds=0).to_msg()
+        marker.points = [
+            Point(x=float(point[0]), y=float(point[1]), z=float(point[2]))
+            for point in corners
+        ]
+        marker_array.markers.append(marker)
+        node._bbox_marker_id_counter += 1
+
+    if marker_array.markers:
+        bbox_marker_pub.publish(marker_array)
+        node.get_logger().info(
+            f"Published {len(marker_array.markers)} bbox markers on /bbox_marker")
+
 def _apply_transform(pts, transform):
     """Applica in un colpo solo una trasformazione tf2 già risolta a un array (N,3)."""
     R, T = _get_R_and_T(transform)
@@ -523,10 +621,13 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                                     bbox_marker_pub=None, centroid_marker_pub=None,
                                     max_points_per_obj=20000, remove_outliers=True,
                                     sor_k=30, sor_std=1.5, transform=None,
-                                    output_frame=None, points_out=None):
+                                    output_frame=None, points_out=None,
+                                    include_orientation=True):
     """`points_out`, when a list, receives one entry per mask: the map-frame points the
     box was measured from, or None where no box was produced. The PCA stage reads them
-    instead of re-running the projection and the outlier removal on the same mask."""
+    instead of re-running the projection and the outlier removal on the same mask.
+    ``include_orientation=False`` is used by the two-stage perception node so it can apply
+    its clipped-mask policy before publishing the frame-local marker."""
     output_frame = output_frame or world_frame()
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
     camera_frame = CFG["frames"]["camera"]
@@ -578,19 +679,30 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                     marker_scale=0.05
                 )
 
-            mins_map, maxs_map = _robust_bounds_from_points(pts_map)
-            if mins_map is None or maxs_map is None:
-                raise ValueError("empty bbox after robust filtering")
+            # The points have already passed the depth/MAD and SOR filters above. A box is an
+            # enclosure, so do not apply another 5/95 percentile trim here: that was the reason
+            # valid mask-supported points fell outside both the merge and visualisation boxes.
+            mins_map = np.min(pts_map, axis=0)
+            maxs_map = np.max(pts_map, axis=0)
 
             if np.any((maxs_map - mins_map) <= 1e-4):
-                raise ValueError("degenerate bbox after robust filtering")
+                raise ValueError("degenerate bbox after filtered-point enclosure")
 
             bbox_dict = {
                 "x_min": float(mins_map[0]), "x_max": float(maxs_map[0]),
                 "y_min": float(mins_map[1]), "y_max": float(maxs_map[1]),
                 "z_min": float(mins_map[2]), "z_max": float(maxs_map[2]),
             }
-            corners_map = np.array(list(itertools.product(*zip(mins_map, maxs_map))))
+            if include_orientation:
+                # RViz should expose the PCA selected by the measured point set even when the
+                # footprint is close to square. The shared fitter still rejects degenerate
+                # clouds; min_anisotropy=1.0 only avoids silently turning a valid visual
+                # measurement into an AABB on this inspection path.
+                oriented = pca_oriented_box(pts_map, min_anisotropy=1.0)
+                if oriented is not None:
+                    bbox_dict.update(oriented)
+                    bbox_dict["has_orientation"] = True
+            corners_map, _ = box_corners_map(bbox_dict)
 
             # ALL THREE appends together, as the LAST statements of the try. The centroid used
             # to be appended before the two raises above, so on an empty or degenerate box
@@ -686,11 +798,38 @@ def _stamp_from_seconds(timestamp_sec):
     return stamp
 
 
+def _stable_marker_id(obj, fallback_index):
+    """Return a repeatable RViz id for a persistent object.
+
+    The object-manager and merge paths can enumerate the same world-model list in
+    different orders.  Using the list index therefore makes RViz associate a
+    label with the wrong box for one update (and makes a moving label look late).
+    Persistent objects have a stable ``object_id``; the bbox fallback keeps legacy
+    objects renderable when an old run did not store one.
+    """
+    object_id = getattr(obj, "object_id", None)
+    if object_id is None or not str(object_id).strip():
+        bbox = getattr(obj, "bbox", None) or {}
+        identity = [getattr(obj, "label", "")]
+        identity.extend(bbox.get(key) for key in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max"))
+        object_id = "|".join(str(value) for value in identity)
+
+    digest = hashlib.sha1(str(object_id).encode("utf-8")).digest()
+    marker_id = int.from_bytes(digest[:4], byteorder="big") & 0x7FFFFFFF
+    return marker_id or (fallback_index + 1)
+
+
 def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix="",
                               prefer_fused=False):
     if not pub:
         return
     ma = MarkerArray()
+    clear = Marker()
+    clear.header.frame_id = world_frame()
+    clear.header.stamp = node.get_clock().now().to_msg()
+    clear.action = Marker.DELETEALL
+    ma.markers.append(clear)
+    used_ids = set()
     for i, obj in enumerate(objects):
         bbox = (getattr(obj, "fused_bbox", None) if prefer_fused else None) or obj.bbox
         if bbox is None:
@@ -698,11 +837,18 @@ def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix="",
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
         cx, cy, cz = _centroid_from_bbox(bbox)
-        ma.markers.append(_make_marker(world_frame(), stamp, ns, i, Marker.SPHERE, 0.08, color, (cx, cy, cz)))
-        ma.markers.append(_make_text_marker(world_frame(), stamp, ns+"_labels", i+10000,
-                                            obj.label.replace(' ', '') + label_suffix, (cx, cy, cz)))
-    if ma.markers:
-        pub.publish(ma)
+        marker_id = _stable_marker_id(obj, i)
+        while marker_id in used_ids:
+            marker_id = (marker_id + 1) & 0x7FFFFFFF or 1
+        used_ids.add(marker_id)
+        ma.markers.append(_make_marker(world_frame(), stamp, ns, marker_id,
+                                       Marker.SPHERE, 0.08, color, (cx, cy, cz)))
+        ma.markers.append(_make_text_marker(world_frame(), stamp, ns+"_labels", marker_id,
+                                            str(obj.label).replace(' ', '') + label_suffix,
+                                            (cx, cy, cz)))
+    # Publish even when the list is empty: DELETEALL removes labels belonging to
+    # objects deleted or merged since the previous update.
+    pub.publish(ma)
 
 
 def publish_pov_volume(node, pov_volume, considered_volume_pub=None):
@@ -743,11 +889,10 @@ def _publish_bbox_markers(node, objects, pub, ns, color, prefer_fused=False):
             continue
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
-        cx, cy, cz = _centroid_from_bbox(bbox)
-        m = _make_marker(world_frame(), stamp, ns, i * 2, Marker.CUBE, None, color, (cx, cy, cz))
-        m.scale.x = bbox["x_max"] - bbox["x_min"]
-        m.scale.y = bbox["y_max"] - bbox["y_min"]
-        m.scale.z = bbox["z_max"] - bbox["z_min"]
+        m = _make_marker(world_frame(), stamp, ns, i * 2, Marker.CUBE, None, color,
+                         (0.0, 0.0, 0.0))
+        if not set_marker_from_bbox(m, bbox):
+            continue
         ma.markers.append(m)
     if ma.markers:
         pub.publish(ma)
@@ -861,7 +1006,38 @@ def _vlm_client():
     return _client
 
 
-def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_detail=None):
+def _emit_vlm_trace(trace_fn, event):
+    """Send request telemetry to the owning node without making logging fatal.
+
+    ``cv_utils`` is also used by small offline tests and by the legacy perception node, so
+    telemetry is an optional callback rather than a hard dependency on an rclpy logger.
+    A broken logger must never turn a successful model response into a failed perception
+    cycle.
+    """
+    if trace_fn is None:
+        return
+    try:
+        trace_fn(event)
+    except Exception:
+        pass
+
+
+def _header_value(headers, name):
+    """Read an HTTP header from both dicts and case-insensitive header mappings."""
+    if not headers:
+        return None
+    wanted = name.lower()
+    try:
+        for key, value in headers.items():
+            if str(key).lower() == wanted:
+                return value
+    except Exception:
+        return None
+    return None
+
+
+def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_detail=None,
+             trace_fn=None, request_kind="vlm"):
     """One VLM round-trip. Transport failures (timeout, malformed envelope)
     retry up to cfg vlm.retries times, then raise — never silently degraded.
     A well-formed response is returned as-is (may be empty: a semantic outcome
@@ -876,14 +1052,18 @@ def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_de
     the boxes and attributes for the entire frame.
     """
     last_err = None
+    attempts_total = CFG["vlm"]["retries"] + 1
+    call_started = time.perf_counter()
     for attempt in range(CFG["vlm"]["retries"] + 1):
         # GA-288. BACKOFF, because there was none. Run 20260903_135823 died at 18 cycles on
         # a DNS blip ("Temporary failure in name resolution") that lasted under a second:
         # three attempts fired back-to-back inside that second, all failed, and the raise
         # below propagated through the timer callback into executor.spin(). 1 s / 2 s / 4 s
         # lets a transient fault pass; a real outage still exhausts the attempts and raises.
-        if attempt:
-            time.sleep(min(2 ** (attempt - 1), 8))
+        backoff_s = min(2 ** (attempt - 1), 8) if attempt else 0.0
+        if backoff_s:
+            time.sleep(backoff_s)
+        attempt_started = time.perf_counter()
         try:
             image_url = {"url": f"data:image/png;base64,{encoded_image}"}
             if image_detail is not None:
@@ -921,10 +1101,58 @@ def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_de
                 raise RuntimeError(f"VLM refused the image request: {refusal}")
             if not message.content:
                 raise RuntimeError("VLM returned an empty response")
+
+            attempt_ms = (time.perf_counter() - attempt_started) * 1000.0
+            usage = getattr(agent, "usage", None)
+            _emit_vlm_trace(trace_fn, {
+                "request_kind": request_kind,
+                "status": "ok",
+                "attempt": attempt + 1,
+                "attempts_total": attempts_total,
+                # This is the client-observed request/response round trip. Regolo does not
+                # currently expose a separate server-compute duration in the response.
+                "request_ms": round(attempt_ms, 1),
+                "call_ms": round((time.perf_counter() - call_started) * 1000.0, 1),
+                "backoff_ms": round(backoff_s * 1000.0, 1),
+                "model": CFG["vlm"]["model"],
+                "prompt_chars": len(prompt),
+                "image_b64_chars": len(encoded_image),
+                "image_detail": image_detail,
+                "structured_response": response_format is not None,
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+                "request_id": getattr(agent, "_request_id", None),
+            })
             return message.content
         except Exception as e:
+            attempt_ms = (time.perf_counter() - attempt_started) * 1000.0
+            response = getattr(e, "response", None)
+            headers = getattr(response, "headers", None)
+            _emit_vlm_trace(trace_fn, {
+                "request_kind": request_kind,
+                "status": "error",
+                "attempt": attempt + 1,
+                "attempts_total": attempts_total,
+                "request_ms": round(attempt_ms, 1),
+                "call_ms": round((time.perf_counter() - call_started) * 1000.0, 1),
+                "backoff_ms": round(backoff_s * 1000.0, 1),
+                "model": CFG["vlm"]["model"],
+                "prompt_chars": len(prompt),
+                "image_b64_chars": len(encoded_image),
+                "image_detail": image_detail,
+                "structured_response": response_format is not None,
+                "http_status": getattr(e, "status_code", None),
+                "retry_after": _header_value(headers, "retry-after"),
+                "request_id": _header_value(headers, "x-request-id"),
+                "error_type": type(e).__name__,
+                "error": str(e)[:300],
+            })
             last_err = e
-    raise RuntimeError(f"VLM unreachable after {CFG['vlm']['retries'] + 1} attempts") from last_err
+    last_detail = f"{type(last_err).__name__}: {str(last_err)[:240]}" if last_err else "unknown"
+    raise RuntimeError(
+        f"VLM unreachable after {attempts_total} attempts; last_error={last_detail}"
+    ) from last_err
 
 def numpy_to_base64(img, fmt='.png'):
     _, buf = cv2.imencode(fmt, img)

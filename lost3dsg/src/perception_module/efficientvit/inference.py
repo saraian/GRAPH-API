@@ -15,7 +15,13 @@ from efficientvit.export_encoder import SamResize
 
 
 def _cuda_provider():
-    """Return the CUDA provider without exhaustive first-run cuDNN tuning."""
+    """Return the CUDA provider without exhaustive first-run cuDNN tuning.
+
+    The l2 encoder's first execution is otherwise dominated by cuDNN's exhaustive
+    convolution-algorithm search (over two minutes on the RTX 3070).  HEURISTIC is
+    fast at startup and has the same steady-state result for this model.  Keep the
+    setting overrideable for benchmarking, while avoiding an accidental empty value.
+    """
     search = os.environ.get("VITSAM_CUDNN_CONV_ALGO_SEARCH", "HEURISTIC").strip().upper()
     if search not in {"DEFAULT", "HEURISTIC", "EXHAUSTIVE"}:
         raise ValueError(
@@ -135,7 +141,11 @@ class SamDecoder:
         input_dict = {"image_embeddings": img_embeddings, "point_coords": point_coords, "point_labels": point_labels}
         low_res_masks, iou_predictions = self.session.run(None, input_dict)
 
-        masks = mask_postprocessing(low_res_masks, origin_image_size)
+        # The exported l2 encoder is fed a 512x512 padded image, but its prompt encoder and
+        # mask decoder use the model's 1024x1024 coordinate frame. Restore masks in that
+        # decoder frame, then remove the resized-image padding and return to the camera frame.
+        masks = mask_postprocessing(low_res_masks, origin_image_size,
+                                    img_size=self.target_size)
 
         if not return_logits:
             masks = masks > self.mask_threshold
@@ -179,8 +189,19 @@ def resize_longest_image_size(input_image_size: torch.Tensor, longest_side: int)
     return transformed_size
 
 
-def mask_postprocessing(masks: torch.Tensor, orig_im_size: torch.Tensor) -> torch.Tensor:
-    img_size = 1024
+def mask_postprocessing(
+    masks: torch.Tensor,
+    orig_im_size: torch.Tensor,
+    img_size: int = 1024,
+) -> torch.Tensor:
+    """Undo SAM padding using the decoder/prompt coordinate-frame size.
+
+    ``l0/l1/l2`` use a 512-pixel square encoder input but retain a 1024-pixel
+    prompt/mask coordinate frame. Keeping 1024 as the standalone default
+    preserves the upstream API; ``SamDecoder.run`` passes its actual
+    ``target_size`` so prompt coordinates and mask restoration use one geometry.
+    """
+    img_size = int(img_size)
     masks = torch.tensor(masks)
     orig_im_size = torch.tensor(orig_im_size)
     masks = F.interpolate(

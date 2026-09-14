@@ -7,21 +7,28 @@ import time
 import numpy as np
 import torch
 from config import CFG
+from box_view import pca_oriented_box as _fit_pca_oriented_box
 from cv_utils import _apply_transform, _filter_object_points
 from detection_types import Detection
+
+
+# RViz is an inspection surface: when the filtered point set has any measurable XY
+# anisotropy, keep its PCA axis even for a clipped mask.  A clipped mask is recorded as a
+# warning below, but suppressing its OBB made RViz silently fall back to an AABB for exactly
+# the objects the operator was trying to inspect.  The shared fitter still rejects truly
+# degenerate point sets; 1.0 only removes the arbitrary visual stability gate.
+RVIZ_PCA_MIN_ANISOTROPY = 1.0
 
 
 def mask_touches_border(mask, margin_px=2):
     """True when the mask has a pixel within `margin_px` of any image edge — i.e. the
     object very likely continues OUTSIDE the frame and the mask is a clipped wedge.
 
-    GA-315. PCA on a wedge returns its hypotenuse: a right isosceles triangle has an
-    eigenvalue ratio of 3.0 (anisotropy 1.73, past the 1.2 gate) and a principal axis at
-    45 degrees, whatever the object's real axis. Measured over 25 bundles' detections.jsonl
-    (2026-09-07): beds longer than 1.7 m whose mask touches a border are diagonal
-    (25-65 degrees mod 90) in 64 of 118; fully-in-frame beds in 9 of 43. No single-view
-    estimator can recover the axes from a wedge that holds one bed edge, so the honest
-    answer for a clipped mask is NO orientation, not a guessed one.
+    GA-315. PCA on a wedge can return its hypotenuse: a right isosceles triangle has an
+    eigenvalue ratio of 3.0 and a principal axis at 45 degrees, whatever the object's real
+    axis. The predicate is retained as provenance for the visualisation warning; the RViz
+    path still emits the measured PCA box because its purpose is to expose the geometry that
+    was actually used by the detector.
 
     The 2D box could stand in for the mask, but the wedge is in the raw mask (re-lifts of
     the depth PNGs reproduce the archived yaws to 1.8 degrees), so the mask is the instrument."""
@@ -32,77 +39,16 @@ def mask_touches_border(mask, margin_px=2):
     return bool(m[:k].any() or m[-k:].any() or m[:, :k].any() or m[:, -k:].any())
 
 
-def _rectangle_support_yaw(xy, tol=0.04, step_deg=1.0):
-    """Choose the yaw with the most support on the fitted rectangle perimeter."""
-    xy = np.asarray(xy, dtype=np.float64)
-    if len(xy) < 10:
-        return None
-    best_n, best_th = -1, None
-    for deg in np.arange(-90.0, 90.0, step_deg):
-        th = np.radians(deg)
-        c, s = np.cos(th), np.sin(th)
-        u = xy[:, 0] * c + xy[:, 1] * s
-        v = -xy[:, 0] * s + xy[:, 1] * c
-        lu, hu = np.percentile(u, [1, 99])
-        lv, hv = np.percentile(v, [1, 99])
-        n = int(((np.abs(u - lu) <= tol) | (np.abs(u - hu) <= tol)
-                 | (np.abs(v - lv) <= tol) | (np.abs(v - hv) <= tol)).sum())
-        if n > best_n:
-            best_n, best_th = n, float(th)
-    return best_th
-
-
 def pca_oriented_box(pts_map, min_anisotropy=1.2, top_fraction=0.2, top_min_points=30):
-    """Yaw-about-z oriented box from object points in the map frame — the optional
-    PCA keys (yaw / oriented_center / oriented_extents) that box_corners_map and
-    the map store already consume. Returns None when the XY spread is too small or
-    too isotropic for a stable orientation (the AABB alone is then the honest box).
+    """Compatibility wrapper around the shared, exact PCA box fitter.
 
-    The top surface determines the perimeter-supported yaw; all points determine extents.
-    Near-square or poorly supported sets return None so the AABB remains authoritative."""
-    pts = np.asarray(pts_map, dtype=np.float64)
-    if pts.shape[0] < 10:
-        return None
-    xy = pts[:, :2]
-    z_all = pts[:, 2]
-    top = z_all >= z_all.max() - top_fraction * max(z_all.max() - z_all.min(), 1e-6)
-    fit_xy = xy[top] if int(top.sum()) >= top_min_points else xy
-    if not np.all(np.isfinite(fit_xy)):
-        return None
-    yaw = _rectangle_support_yaw(fit_xy)
-    if yaw is None:
-        return None
-    # a box is symmetric under 180°: keep yaw in [-pi/2, pi/2)
-    if yaw < -np.pi / 2:
-        yaw += np.pi
-    elif yaw >= np.pi / 2:
-        yaw -= np.pi
-
-    c, s = np.cos(yaw), np.sin(yaw)
-    u = xy[:, 0] * c + xy[:, 1] * s      # box frame
-    v = -xy[:, 0] * s + xy[:, 1] * c
-    z = pts[:, 2]
-    lo_u, hi_u = np.percentile(u, [5, 95])
-    lo_v, hi_v = np.percentile(v, [5, 95])
-    lo_z, hi_z = np.percentile(z, [5, 95])
-    if min(hi_u - lo_u, hi_v - lo_v, hi_z - lo_z) <= 1e-4:
-        return None
-    du, dv = hi_u - lo_u, hi_v - lo_v
-    if dv > du:
-        yaw = yaw + np.pi / 2 if yaw < 0 else yaw - np.pi / 2
-        c, s = np.cos(yaw), np.sin(yaw)
-        u, v = xy[:, 0] * c + xy[:, 1] * s, -xy[:, 0] * s + xy[:, 1] * c
-        lo_u, hi_u = np.percentile(u, [5, 95])
-        lo_v, hi_v = np.percentile(v, [5, 95])
-        du, dv = hi_u - lo_u, hi_v - lo_v
-    if du / max(dv, 1e-6) < min_anisotropy:
-        return None
-    uc, vc = (lo_u + hi_u) / 2.0, (lo_v + hi_v) / 2.0
-    return {
-        "yaw": float(yaw),
-        "oriented_center": [float(uc * c - vc * s), float(uc * s + vc * c), float((lo_z + hi_z) / 2.0)],
-        "oriented_extents": [float(du), float(dv), float(hi_z - lo_z)],
-    }
+    ``top_fraction`` and ``top_min_points`` remain in the signature for callers from older
+    builds, but are intentionally ignored. Fitting a top-surface rectangle and using trimmed
+    percentiles made the orientation and the extents describe different subsets of one mask.
+    The shared fitter uses the complete filtered point set and exact projections instead.
+    """
+    del top_fraction, top_min_points
+    return _fit_pca_oriented_box(pts_map, min_anisotropy=min_anisotropy)
 
 
 def _backend_health_no_roundtrip(backend, backend_type):
@@ -143,6 +89,8 @@ class DetectionPipelineMixin:
         # None on the local path, and None is the honest value there: a local backend makes
         # no request, so there is no wire time to report. 0.0 would read as "measured zero".
         client_timings = None
+        t_clip = 0.0
+        clip_reported = False
         backend = getattr(self, "perception_backend", None)
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
 
@@ -244,6 +192,19 @@ class DetectionPipelineMixin:
         if self._abort_if_moving("SAM segmentation"):
             return []
 
+        if backend_type == "local":
+            # Regolo supplies the boxes and local VitSAM supplies the masks.  The
+            # appearance channel must still be populated on this path, using the same
+            # CLIP ViT-B/32 crop contract as the cloud backend.  Do this before the
+            # detection is archived or published so every downstream representation sees
+            # the same per-detection vector.
+            t0 = time.time()
+            self._attach_local_clip_embeddings(
+                camera_data["rgb"], detections
+            )
+            t_clip = time.time() - t0
+            clip_reported = getattr(self, "clip_embedder", None) is not None
+
         t0 = time.time()
         self._publish_detection_pointclouds(detections, camera_data)
         t_proj = time.time() - t0
@@ -275,6 +236,8 @@ class DetectionPipelineMixin:
             # a 36.6 KiB body cannot take 42 s, and that was an inference until now.
             "client": client_timings,
             "sam_ms": round(t_sam * 1000.0, 1),
+            "clip_ms": round(t_clip * 1000.0, 1),
+            "clip_reported": clip_reported,
             "projection_ms": round(t_proj * 1000.0, 1),
             # WN1. This is the DETECTION sub-span only (entry of run_detection to here) --
             # NOT the cycle: `publish_objects` wraps it with FOV computation, 3D geometry,
@@ -327,10 +290,13 @@ class DetectionPipelineMixin:
             os.path.dirname(__file__), "prompts", "scene_analysis_prompt.txt")
         try:
             scene_objects = self.vlm.call_scene(prompt_path, rgb_image)
+            scene_latency_ms = round((time.time() - t0) * 1000.0, 1)
             self._vlm_status = {
                 "status": "ok",
                 "model": CFG.get("vlm", {}).get("model", "unknown"),
-                "latency_ms": round((time.time() - t0) * 1000.0, 1),
+                # This outer value includes local prompt/image preparation and response
+                # parsing. The per-attempt HTTP round trip is logged by vlm_call itself.
+                "latency_ms": scene_latency_ms,
             }
         except Exception as exc:
             # Match the current label-call outage policy: a transient failure skips
@@ -341,6 +307,7 @@ class DetectionPipelineMixin:
             self._vlm_status = {
                 "status": "unreachable",
                 "model": CFG.get("vlm", {}).get("model", "unknown"),
+                "latency_ms": round((time.time() - t0) * 1000.0, 1),
                 "error": str(exc)[:300],
                 "consecutive_failures": self._vlm_strikes,
                 "strikes_max": strikes_max,
@@ -381,6 +348,38 @@ class DetectionPipelineMixin:
             self.log_both("warn", "Unified VLM scene analysis returned no objects")
             return []
         return scene_objects
+
+    def _attach_local_clip_embeddings(self, rgb_image, detections):
+        """Attach one normalized appearance vector to each local detection.
+
+        The embedder returns a slot for every input box, including ``None`` for an invalid
+        or sub-pixel crop.  Keeping the positional contract here prevents a skipped crop
+        from shifting the next object's vector onto the wrong detection.
+        """
+        embedder = getattr(self, "clip_embedder", None)
+        if embedder is None:
+            # `appearance.enabled: false` is a deliberate ablation.  Do not invent a
+            # placeholder vector, because association must treat this as absent evidence.
+            return 0
+        vectors = embedder.embed_boxes(
+            rgb_image, [getattr(det, "bbox", None) for det in detections]
+        )
+        if len(vectors) != len(detections):
+            raise RuntimeError(
+                f"local CLIP returned {len(vectors)} vectors for "
+                f"{len(detections)} detections"
+            )
+        attached = 0
+        for detection, vector in zip(detections, vectors):
+            detection.clip_embedding = vector
+            if vector is not None:
+                attached += 1
+        self.log_both(
+            "info",
+            f"[PROFILE] Local CLIP appearance embeddings: "
+            f"{attached}/{len(detections)} attached",
+        )
+        return attached
 
     def _segment_scene_objects(self, rgb_image, scene_objects):
         """Run local VitSAM on VLM boxes and retain their same-call attributes."""
@@ -427,26 +426,29 @@ class DetectionPipelineMixin:
         """Add the optional PCA keys to each valid bbox dict, in place.
         Reads the points the geometry stage kept on each detection (2026-09-06); the
         re-lift it used to do per mask was pure duplication of the AABB pass (W8)."""
-        if transform is None:
-            return
         fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
         for det, bbox in zip(detections, bboxes_3d):
             if not bbox:
                 continue
             try:
-                # GA-315. A mask that runs off the image edge is a wedge of the object, and a
-                # wedge's principal axis is its hypotenuse. No PCA for it: the AABB stays,
-                # and the reason is written beside it (a key the msg builder ignores and the
-                # detections.jsonl archive keeps, so the skip count is readable per bundle).
-                if mask_touches_border(det.mask):
-                    bbox["orientation_skipped"] = "mask_clipped"
-                    continue
+                # GA-315. A mask that runs off the image edge is a wedge of the object. Keep
+                # that fact as a warning, but let the RViz inspection path show the PCA of the
+                # filtered points instead of silently replacing it with an AABB.
+                mask_clipped = mask_touches_border(det.mask)
+                if mask_clipped:
+                    # Keep the provenance warning, but do not suppress the PCA box used by
+                    # RViz. The point set is still the filtered depth measurement, and the
+                    # operator explicitly asked to see that oriented geometry. If PCA cannot
+                    # produce a box at all, the fallback below records the old skip reason.
+                    bbox["orientation_warning"] = "mask_clipped"
                 # The geometry stage now keeps the map-frame points it measured the box
                 # from on the detection (cv_utils points_out), and this reads them. The
                 # re-lift below is IDENTICAL work (W8, same mask, same parameters, same
                 # transform) and runs only for a caller that skipped _compute_3d_geometry.
                 pts_map = getattr(det, "points_map", None)
                 if pts_map is None:
+                    if transform is None:
+                        continue
                     pts = _filter_object_points(
                         det.mask[:, :, 0], depth, fx, fy, cx, cy,
                         # W8. The SAME parameters `mask_list_to_centroid_and_bbox` (the AABB
@@ -464,9 +466,13 @@ class DetectionPipelineMixin:
                     if pts is None:
                         continue
                     pts_map = _apply_transform(pts, transform)
-                obb = pca_oriented_box(pts_map)
+                obb = pca_oriented_box(
+                    pts_map, min_anisotropy=RVIZ_PCA_MIN_ANISOTROPY)
                 if obb:
                     bbox.update(obb)
+                    bbox["has_orientation"] = True
+                elif mask_clipped:
+                    bbox["orientation_skipped"] = "mask_clipped"
             except Exception as exc:
                 self.log_both("warn", f"PCA orientation failed for {det.instance_label}: {exc}")
 
@@ -480,8 +486,8 @@ if __name__ == "__main__":
     pts += np.array([3.0, 4.0, 0.2])
     box = pca_oriented_box(pts)
     assert box is not None and abs(box["yaw"] - yaw_true) < 0.05, box
-    assert np.allclose(box["oriented_extents"], [1.755, 0.45, 0.40], atol=0.02), box
-    assert np.allclose(box["oriented_center"], [3.0, 4.0, 0.45], atol=0.1), box
+    assert np.allclose(box["oriented_extents"], [1.95, 0.45, 0.40], atol=0.02), box
+    assert np.allclose(box["oriented_center"], [2.975, 3.975, 0.40], atol=0.1), box
     theta = np.linspace(0, 2 * np.pi, 500)
     circle = np.stack([np.cos(theta), np.sin(theta), np.zeros_like(theta)], axis=1)
     assert pca_oriented_box(circle) is None          # isotropic -> keep AABB

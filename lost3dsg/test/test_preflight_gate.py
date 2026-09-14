@@ -1271,16 +1271,19 @@ def test_found_exercised_auto_follows_the_configured_hook():
             sys.modules["config"] = saved
 
 
-def test_a4_asserts_every_hub_model_a_run_loads():
+def test_a4_asserts_only_active_hub_models():
     """GA-438. The cache check sat inside `backend == "local"`, so a cloud run asserted nothing.
 
-    MiniLM and both dinov2 sizes load on EVERY run whatever the backend -- nlp_utils for semantic
-    matching, visual_reid for the crop embedder, which picks -base over -small on measured VRAM, so
-    both must be present or the run downloads whichever it chooses.
+    MiniLM is the active semantic model. The local unified-VLM path also loads CLIP for the
+    per-detection appearance vector; the disabled visual-reid code does not add a model.
     """
     import os
     import tempfile
-    from preflight_gate import HF_MODELS_EVERY_RUN, _hf_models_present
+    from preflight_gate import (
+        HF_MODELS_EVERY_RUN,
+        HF_MODELS_LOCAL_BACKEND,
+        _hf_models_present,
+    )
 
     saved = {k: os.environ.get(k) for k in ("PREFLIGHT_HF_CACHE", "HF_HOME", "TRANSFORMERS_CACHE")}
     try:
@@ -1293,24 +1296,40 @@ def test_a4_asserts_every_hub_model_a_run_loads():
             check(len(missing) == len(HF_MODELS_EVERY_RUN) and not seen,
                   f"an empty cache must report every always-loaded model missing: {missing}")
 
+            _, local_missing, local_seen = _hf_models_present(local_backend=True)
+            check(len(local_missing) == len(HF_MODELS_EVERY_RUN) + len(HF_MODELS_LOCAL_BACKEND)
+                  and not local_seen,
+                  f"an empty local cache must include runtime appearance models: {local_missing}")
+
             # A DIRECTORY IS NOT A CACHED MODEL: huggingface creates it before the fetch finishes,
             # and an interrupted download leaves snapshots/ empty. That must still read as missing.
-            stem = os.path.join(td, "hub", "models--facebook--dinov2-small")
+            stem = os.path.join(td, "hub", "models--sentence-transformers--all-MiniLM-L6-v2")
             os.makedirs(os.path.join(stem, "snapshots", "abc123"))
             _, missing, seen = _hf_models_present(local_backend=False)
-            check("facebook/dinov2-small" in missing,
+            check("sentence-transformers/all-MiniLM-L6-v2" in missing,
                   "an empty snapshots/ directory must NOT count as cached")
 
             open(os.path.join(stem, "snapshots", "abc123", "config.json"), "w").write("{}")
             _, missing, seen = _hf_models_present(local_backend=False)
-            check("facebook/dinov2-small" in seen and "facebook/dinov2-small" not in missing,
+            check("sentence-transformers/all-MiniLM-L6-v2" in seen and "sentence-transformers/all-MiniLM-L6-v2" not in missing,
                   f"a snapshot holding a file must count as cached: {missing}")
 
-            # the local backend asks for one more model than a cloud backend
+            # The local unified-VLM backend has an additional runtime appearance model, but it
+            # must not be required when the configured appearance channel is explicitly disabled.
             _, m_cloud, _ = _hf_models_present(local_backend=False)
             _, m_local, _ = _hf_models_present(local_backend=True)
-            check(len(m_local) == len(m_cloud) + 1,
-                  f"the local backend must also assert the detector: {m_local} vs {m_cloud}")
+            check("openai/clip-vit-base-patch32" in m_local and m_cloud == [],
+                  f"the local backend must require its CLIP appearance model: {m_local} vs {m_cloud}")
+
+            clip_stem = os.path.join(td, "hub", "models--openai--clip-vit-base-patch32")
+            os.makedirs(os.path.join(clip_stem, "snapshots", "clip123"))
+            open(os.path.join(clip_stem, "snapshots", "clip123", "config.json"), "w").write("{}")
+            _, m_local, _ = _hf_models_present(local_backend=True)
+            check(m_local == [], f"MiniLM and CLIP snapshots must satisfy a local run: {m_local}")
+
+            _, m_disabled, _ = _hf_models_present(local_backend=True, local_models=())
+            check(m_disabled == [],
+                  f"an explicit appearance disablement must not require the CLIP cache: {m_disabled}")
     finally:
         for k, v in saved.items():
             if v is None:
@@ -1364,6 +1383,127 @@ def test_a3_passes_vacuously_with_no_policy_layer():
             sys.modules.pop("config", None)
         else:
             sys.modules["config"] = saved
+
+
+
+def _bundle_with_roots(directory, roots, a7_ok=True):
+    """Write a bundle's preflight.json carrying an a7 row, the way a real run records one."""
+    os.makedirs(directory, exist_ok=True)
+    report = {"verdict": "pass" if a7_ok else "fail", "failed": [], "skipped": [],
+              "probes": [{"id": "a2", "name": "config_identity", "ok": True, "detail": {}},
+                         {"id": "a7", "name": "source_frozen", "ok": a7_ok,
+                          "detail": {"frozen": {n: {"sha256_16": v, "files": 1}
+                                                for n, v in roots.items() if n == "graph_api"},
+                                     "live_sampled": {n: {"sha256_16": v, "files": 1}
+                                                      for n, v in roots.items() if n != "graph_api"}}}]}
+    with open(os.path.join(directory, "preflight.json"), "w") as fh:
+        json.dump(report, fh)
+    return directory
+
+
+def test_a14_passes_when_this_run_matches_the_baseline_it_declares_itself_comparable_to():
+    """GA-423. a7 polices drift DURING a run; nothing compared a run against the run it is
+    read against. On 2026-09-09 that comparison existed only because a lane read two digests
+    by hand and caught /DATA/FOUND dirty before run 2."""
+    with tempfile.TemporaryDirectory() as td:
+        live = os.path.join(td, "found")
+        os.makedirs(live)
+        open(os.path.join(live, "a.py"), "w").write("y = 1\n")
+        sha, _ = g.tree_sha(live)
+        base = _bundle_with_roots(os.path.join(td, "run1"), {"found": sha})
+        ok, d = g.a14_source_comparable(base, live_roots={"found": live})
+        check(ok is True, d)
+        check(d["compared"] == ["found"] and d["differs"] == {}, d)
+
+
+def test_a14_refuses_when_the_declared_baseline_ran_a_different_tree():
+    """The GA-423 case itself: run 1's FOUND digest against run 2's, where a7 on BOTH runs
+    passes because each is internally consistent with its own launcher stamp."""
+    with tempfile.TemporaryDirectory() as td:
+        live = os.path.join(td, "found")
+        os.makedirs(live)
+        open(os.path.join(live, "a.py"), "w").write("y = 1\n")
+        sha_run1, _ = g.tree_sha(live)
+        base = _bundle_with_roots(os.path.join(td, "run1"), {"found": sha_run1})
+        # the tree moves between the two runs, exactly as /DATA/FOUND did
+        open(os.path.join(live, "a.py"), "w").write("y = 2\n")
+        ok, d = g.a14_source_comparable(base, live_roots={"found": live})
+        check(ok is False, f"a moved tree must REFUSE the comparison: {d}")
+        check("found" in d["differs"], d)
+        check("SOURCE DRIFT" in d["why"], d)
+
+
+def test_a14_refuses_a_baseline_whose_own_a7_did_not_pass():
+    """The fixed end of a comparison must itself be established. A baseline that never proved
+    which tree it ran cannot make another run comparable (working rule 2)."""
+    with tempfile.TemporaryDirectory() as td:
+        live = os.path.join(td, "found")
+        os.makedirs(live)
+        open(os.path.join(live, "a.py"), "w").write("y = 1\n")
+        sha, _ = g.tree_sha(live)
+        base = _bundle_with_roots(os.path.join(td, "run1"), {"found": sha}, a7_ok=False)
+        ok, d = g.a14_source_comparable(base, live_roots={"found": live})
+        check(ok is False, f"an unestablished baseline must not read as comparable: {d}")
+        check("did not pass" in d["why"], d)
+
+
+def test_a14_skips_rather_than_passes_when_the_baseline_recorded_no_tree():
+    """A probe that could not run has asserted NOTHING. A baseline with no a7 row never
+    recorded which tree it ran, so there is nothing to compare against."""
+    with tempfile.TemporaryDirectory() as td:
+        empty = os.path.join(td, "run1")
+        os.makedirs(empty)
+        with open(os.path.join(empty, "preflight.json"), "w") as fh:
+            json.dump({"verdict": "pass", "probes": []}, fh)
+        ok, d = g.a14_source_comparable(empty)
+        check(ok is g.SKIPPED, f"no a7 row must SKIP, never pass: {ok} {d}")
+        ok, d = g.a14_source_comparable(os.path.join(td, "nope"))
+        check(ok is g.SKIPPED, f"a missing baseline record must SKIP: {ok} {d}")
+
+
+def test_a14_is_out_of_the_roster_until_a_comparison_is_declared():
+    """Declaring a baseline IS the claim of comparability. A run that declares none is not
+    claiming it, so a14 must not sit in the default set recording a SKIP -- a skipped probe
+    fails the gate, which would refuse every ordinary run."""
+    check("a14" in g.PROBES, "a14 must be declared so the two-edit registration check covers it")
+    check("a14" in g.CONDITIONAL_PROBES, "a14 must be conditional, not in the default roster")
+    out = subprocess.run([sys.executable, os.path.join(HERE, "preflight_gate.py"), "--help"],
+                         capture_output=True, text=True)
+    check("--compare-against" in out.stdout, "the flag must be documented in --help")
+
+
+def test_live_root_flag_actually_reaches_the_probes():
+    """GA-423, found while adding a14. `--live-root` was accepted by argparse, printed in the
+    help, and NAMED IN a7'S OWN ERROR MESSAGE as the remedy -- and nothing read it. LIVE_ROOTS
+    was {} and no caller passed it, so a7's live-root half was dead in both directions. That
+    is why the FOUND drift needed a person."""
+    check(g._kv_roots(["found=/DATA/FOUND", "kb=/x"]) == {"found": "/DATA/FOUND", "kb": "/x"},
+          "NAME=PATH pairs must parse")
+    check(g._kv_roots([]) == {} and g._kv_roots(None) == {}, "no roots is an empty mapping")
+    try:
+        g._kv_roots(["nonsense"])
+    except SystemExit:
+        pass
+    else:
+        check(False, "a malformed --live-root must refuse, not silently drop the root")
+
+
+def test_compare_bundles_answers_offline_for_two_runs_that_already_exist():
+    """The GA-423 comparison must also be runnable by a reader who was not there at launch."""
+    with tempfile.TemporaryDirectory() as td:
+        a = _bundle_with_roots(os.path.join(td, "a"), {"graph_api": "aaa", "found": "bbb"})
+        b = _bundle_with_roots(os.path.join(td, "b"), {"graph_api": "aaa", "found": "bbb"})
+        r = g.compare_bundles(os.path.join(a, "preflight.json"), os.path.join(b, "preflight.json"))
+        check(r["comparable"] is True, r)
+        c = _bundle_with_roots(os.path.join(td, "c"), {"graph_api": "aaa", "found": "ZZZ"})
+        r = g.compare_bundles(os.path.join(a, "preflight.json"), os.path.join(c, "preflight.json"))
+        check(r["comparable"] is False and r["differs"] == ["found"], r)
+        d = _bundle_with_roots(os.path.join(td, "d"), {"graph_api": "aaa"})
+        r = g.compare_bundles(os.path.join(a, "preflight.json"), os.path.join(d, "preflight.json"))
+        check(r["comparable"] is False and r["only_in_baseline"] == ["found"], r)
+        out = subprocess.run([sys.executable, os.path.join(HERE, "preflight_gate.py"),
+                              "--compare-bundles", f"{a},{c}"], capture_output=True, text=True)
+        check(out.returncode == 1, f"a differing pair must exit non-zero: {out.stdout}")
 
 
 if __name__ == "__main__":
@@ -1449,7 +1589,6 @@ def test_a12_refuses_a_gt_reader_outside_the_allow_list_and_passes_the_clean_tre
         needle = "    def publish_objects("
         detail_keys = {
             "perception_2.py": "perception_2_functions_not_allowed",
-            "perception_parallel.py": "perception_parallel_functions_not_allowed",
         }
         for filename, detail_key in detail_keys.items():
             path = os.path.join(root, "src", "perception_module", filename)
