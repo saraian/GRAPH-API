@@ -46,6 +46,7 @@ from lost3dsg.srv import (
     RemoveObject,
     UpdateObject,
 )
+from detection_types import write_observation_msg
 
 app = FastAPI(title="Graph API")
 
@@ -370,6 +371,46 @@ def _set_orientation(req, body: dict):
         req.has_orientation = False
 
 
+def _set_bbox_fusion(req, body: dict):
+    """Carry one measured view's voxel keys without fabricating an empty cloud."""
+    raw_keys = body.get("fusion_voxel_keys")
+    view_id = str(body.get("fusion_view_id") or "").strip()
+    raw_voxel_m = body.get("fusion_voxel_size_m")
+    if raw_keys is None and not view_id and raw_voxel_m is None:
+        req.has_fusion_voxels = False
+        req.fusion_view_id = ""
+        req.fusion_voxel_size_m = 0.0
+        req.fusion_voxel_keys = []
+        return False
+
+    if not isinstance(raw_keys, (list, tuple)) or not raw_keys:
+        raise HTTPException(status_code=422, detail="fusion_voxel_keys must be a non-empty array")
+    if len(raw_keys) % 3:
+        raise HTTPException(status_code=422, detail="fusion_voxel_keys length must be a multiple of 3")
+    if not view_id:
+        raise HTTPException(status_code=422, detail="fusion_view_id is required with voxel evidence")
+    try:
+        voxel_m = float(raw_voxel_m)
+        keys = [int(value) for value in raw_keys]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"invalid bbox fusion payload: {exc}") from exc
+    if voxel_m <= 0.0:
+        raise HTTPException(status_code=422, detail="fusion_voxel_size_m must be positive")
+
+    req.has_fusion_voxels = True
+    req.fusion_view_id = view_id
+    req.fusion_voxel_size_m = voxel_m
+    req.fusion_voxel_keys = keys
+    return True
+
+
+def _set_observation_refs(req, body: dict):
+    write_observation_msg(req.observation, body.get("observation"))
+    write_observation_msg(
+        req.description_observation, body.get("description_observation"))
+    req.observation_attempt_id = str(body.get("observation_attempt_id") or "")
+
+
 @app.post("/objects")
 def add_object(body: dict):
     req = AddObject.Request()
@@ -386,14 +427,26 @@ def add_object(body: dict):
     req.z_max = float(body.get("z_max", 0.0))
     _set_orientation(req, body)
     _set_description_embedding(req, body)
+    _set_bbox_fusion(req, body)
+    _set_observation_refs(req, body)
     res = require_node().call('add', req)
     if not res.success:
-        raise HTTPException(status_code=400, detail=res.message)
+        raise HTTPException(status_code=400, detail={
+            "message": res.message,
+            "mutation_event_id": res.mutation_event_id,
+            "mutation_state": res.mutation_state,
+            "object_revision": int(res.object_revision),
+            "geometry_epoch": int(res.geometry_epoch),
+        })
 
     return {
         "success": res.success,
         "object_id": res.object_id,
         "message": res.message,
+        "mutation_event_id": res.mutation_event_id,
+        "mutation_state": res.mutation_state,
+        "object_revision": int(res.object_revision),
+        "geometry_epoch": int(res.geometry_epoch),
     }
 
 
@@ -450,10 +503,19 @@ def update_object(object_id: str, body: dict):
         _set_orientation(req, body)
 
     _set_description_embedding(req, body)
+    _set_bbox_fusion(req, body)
+    _set_observation_refs(req, body)
 
     res = require_node().call('update', req)
     if not res.success:
-        raise HTTPException(status_code=400, detail=res.message)
+        raise HTTPException(status_code=400, detail={
+            "message": res.message,
+            "object_id": res.object_id,
+            "mutation_event_id": res.mutation_event_id,
+            "mutation_state": res.mutation_state,
+            "object_revision": int(res.object_revision),
+            "geometry_epoch": int(res.geometry_epoch),
+        })
 
     return {
         "success": res.success,
@@ -462,6 +524,10 @@ def update_object(object_id: str, body: dict):
         "distance": res.distance,
         "iou": res.iou,
         "replaced": res.replaced,
+        "mutation_event_id": res.mutation_event_id,
+        "mutation_state": res.mutation_state,
+        "object_revision": int(res.object_revision),
+        "geometry_epoch": int(res.geometry_epoch),
     }
 
 

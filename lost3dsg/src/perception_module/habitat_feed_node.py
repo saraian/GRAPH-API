@@ -208,6 +208,14 @@ class HabitatFeedNode(Node):
 
         self._host = os.environ.get("FEED_HOST", "127.0.0.1")
         self._port = int(os.environ.get("FEED_PORT", "7799"))
+        self._expected_floor_session = {
+            "session_id": os.environ.get("MULTI_FLOOR_SESSION_ID"),
+            "floor_id": os.environ.get("MULTI_FLOOR_FLOOR_ID"),
+            "transform_epoch": (
+                int(os.environ["MULTI_FLOOR_VISIT_INDEX"])
+                if os.environ.get("MULTI_FLOOR_VISIT_INDEX") is not None else None
+            ),
+        }
         self._ctrl_host = os.environ.get("FEED_CTRL_HOST", self._host)
         self._ctrl_port = int(os.environ.get("FEED_CTRL_PORT", "7790"))
         self.sock = None
@@ -475,6 +483,21 @@ class HabitatFeedNode(Node):
             # trusted from here, so drop the connection rather than reinterpret it.
             self._reconnect(f"malformed frame: {type(exc).__name__}: {exc}")
             return
+
+        expected = self._expected_floor_session
+        if expected["session_id"] is not None:
+            mismatches = [
+                key for key, value in expected.items()
+                if frame.get(key) != value
+            ]
+            if mismatches:
+                raise RuntimeError(
+                    "refusing stale or cross-floor feed frame: "
+                    + ", ".join(
+                        f"{key}={frame.get(key)!r}, expected {expected[key]!r}"
+                        for key in mismatches
+                    )
+                )
 
         stamp = self.get_clock().now().to_msg()
         if not self._schedule_published and frame.get("schedule"):

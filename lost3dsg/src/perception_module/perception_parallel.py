@@ -1,4 +1,24 @@
 #!/usr/bin/env python3
+# PARALLEL_VARIANT_BEGIN: mirror contract documentation
+# PARALLEL MIRROR CONTRACT
+#
+# Keep this file aligned with perception_2.py. The SHA below identifies the exact
+# base file that was copied and audited. When perception_2.py changes, apply the
+# same semantic change here, audit the full diff, and only then update the SHA.
+# Intentional differences must stay inside PARALLEL_VARIANT_BEGIN / END blocks.
+#
+# Parallel-variant rules:
+# - Keep ROS topics, message fields, frame boundaries, detection order, and failure
+#   behaviour equal to perception_2.py.
+# - Reuse the same filtered float64 map points and the same voxel policy.
+# - A CPU process or CUDA result must equal the sequential NumPy payload exactly.
+# - Batch only objects that already exist in the current perception cycle. Do not
+#   wait for a future frame to make a larger batch.
+# - Create workers once per node. Report their exact identity with every measured
+#   encoding time. Do not silently replace a selected backend.
+# - Treat worker, CUDA, range, and equivalence failures as node failures.
+#
+# PARALLEL_VARIANT_END: mirror contract documentation
 import json
 import logging
 import math
@@ -40,6 +60,7 @@ import torch  # noqa: E402
 from config import CFG, motion_gate, world_frame  # noqa: E402
 from detection_archive import (  # noqa: E402
     DetectionArchive, frame_id_from_stamp, resolve_archive_dir)
+from ga493_replay_capture import ReplayCapture  # noqa: E402
 from config import visibility as visibility_cfg  # noqa: E402
 from cv_bridge import CvBridge  # noqa: E402
 from geometry_msgs.msg import PoseStamped  # noqa: E402
@@ -62,6 +83,9 @@ from bbox_fusion import (  # noqa: E402
     VOXEL_SIZE_M,
     fusion_payload_from_points,
 )
+# PARALLEL_VARIANT_BEGIN: persistent bbox fusion execution backend
+from bbox_fusion_parallel import ParallelFusionEncoder  # noqa: E402
+# PARALLEL_VARIANT_END: persistent bbox fusion execution backend
 from cloud import get_perception_backend  # noqa: E402
 from cv_utils import (  # noqa: E402
     _clear_markers,
@@ -87,6 +111,10 @@ from vlm_call import VlmClient  # noqa: E402
 from world_model import wm  # noqa: E402
 
 from lost3dsg.msg import Bbox3d, Bbox3dArray, ObjectDescription, ObjectDescriptionArray  # noqa: E402
+
+# PARALLEL_VARIANT_BEGIN: maintained-base identity
+PERCEPTION_2_BASELINE_SHA256 = "41c8175b7d6de32092dfb41d489af3463164d79632143ffaf917a14ad200e89b"
+# PARALLEL_VARIANT_END: maintained-base identity
 
 # Do not probe torch CUDA during module import. The local VitSAM path is ONNX-based and
 # selects its provider in models.VitSam; probing here used to emit a misleading CUDA warning
@@ -261,6 +289,15 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.file_logger = module_logger
         self.file_logger.info("=== DetectObjectsNode initialized ===")
 
+        # PARALLEL_VARIANT_BEGIN: create and identify the selected backend once
+        self._bbox_fusion_encoder = ParallelFusionEncoder.from_config(CFG)
+        self.log_both(
+            "info",
+            "[BBOX PARALLEL] selected and verified backend: "
+            + json.dumps(self._bbox_fusion_encoder.identity, sort_keys=True),
+        )
+        # PARALLEL_VARIANT_END: create and identify the selected backend once
+
         self.bridge = CvBridge()
         self.perception_backend = get_perception_backend(CFG)
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
@@ -341,6 +378,26 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # detections never recorded. And rebuilding the object 29 times reset _frames_written,
         # so the frame dedupe was not running at all; three frames for three frame_ids held
         # only because rewriting the same path is idempotent. It LOOKED like it worked.
+        self.ga493_replay_capture = ReplayCapture.from_environment(
+            "producer",
+            identity={
+                "run_id": self._observation_run_id,
+                "config_name": os.environ.get("CFG_NAME", ""),
+                "executable": "perception_parallel.py",
+                "vlm_model": (CFG.get("vlm", {}) or {}).get("model", ""),
+                "perception_backend": (CFG.get("perception", {}) or {}).get("backend", ""),
+            },
+            source_files=[
+                __file__,
+                os.path.join(_HERE, "perception_utils.py"),
+                os.path.join(_HERE, "bbox_fusion.py"),
+                os.path.join(_HERE, "bbox_fusion_parallel.py"),
+            ],
+        )
+        if self.ga493_replay_capture is not None and bool(CFG["archive"]["per_detection"]):
+            raise RuntimeError(
+                "GA-493 replay capture requires archive.per_detection=false so the perception "
+                "process never subscribes to the GT semantic topic")
         self.detection_archive = DetectionArchive(
             resolve_archive_dir(CFG, PROJECT_ROOT),
             enabled=bool(CFG["archive"]["per_detection"]),
@@ -986,6 +1043,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.get_logger().error("Processing interrupted: robot moving during detection")
             return
         if not detections:
+            if self.ga493_replay_capture is not None:
+                self.ga493_replay_capture.producer_cycle(
+                    cycle_id, image_raw, depth, camera_info, camera_data["transform"],
+                    [], [], [], [])
             self.detection_archive.record_event(
                 "cycle_completed", frame_id=frame_id_from_stamp(cycle_stamp),
                 cycle_id=cycle_id, outcome="valid_empty", detection_count=0)
@@ -1051,6 +1112,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # detection and segmentation are supplied.
         vlm_results = self._unified_scene_description_results(detections)
         descriptions = self._build_descriptions(detections, vlm_results, crops_data)
+        if self.ga493_replay_capture is not None:
+            self.ga493_replay_capture.producer_cycle(
+                cycle_id, image_raw, depth, camera_info, camera_data["transform"],
+                detections, bboxes_3d, centroids_3d, descriptions)
         _mark("describer_queue")
         # ONE ID FOR THIS CYCLE, carried by BOTH arrays. object_manager_6 joins on it instead
         # of the header stamp: the box is published as soon as geometry is computed and the
@@ -1087,6 +1152,12 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         if not isinstance(lat, dict):
             lat = {}
             self.latest_latencies = lat
+        # PARALLEL_VARIANT_BEGIN: additive measured time and backend identity
+        bbox_parallel = getattr(self, "_bbox_fusion_measurement", None)
+        if isinstance(bbox_parallel, dict):
+            lat["bbox_fusion_encode_ms"] = bbox_parallel["elapsed_ms"]
+            lat["bbox_fusion_encoder"] = dict(bbox_parallel)
+        # PARALLEL_VARIANT_END: additive measured time and backend identity
         lat["cycle_ms"] = round(cycle_seconds * 1000.0, 1)
         if stages:
             lat["stages_ms"] = dict(stages)
@@ -1281,16 +1352,19 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         for det, pts_map in zip(detections, points):
             det.points_map = pts_map
 
+        # PARALLEL_VARIANT_BEGIN: parallel or vectorized per-frame voxel encoding
         # Reuse the map-frame points already computed for the AABB and PCA
-        # stages. A frame-grouped benchmark rejected a thread pool here: the
-        # small batches made two workers slower than one.
+        # stages. The encoder keeps this cycle as one batch and returns payloads
+        # in detection order. Its startup check compares the selected backend
+        # against fusion_payload_from_points, which remains the reference above.
         fusion_labels = [det.instance_label for det in detections]
-        payloads = [
-            fusion_payload_from_points(pts_map, label)
-            for pts_map, label in zip(points, fusion_labels)
-        ]
+        payloads = self._bbox_fusion_encoder.encode(points, fusion_labels)
         for det, payload in zip(detections, payloads):
             det.fusion_voxel_keys = payload
+        self._bbox_fusion_measurement = dict(
+            self._bbox_fusion_encoder.last_measurement
+        )
+        # PARALLEL_VARIANT_END: parallel or vectorized per-frame voxel encoding
         return centroids_3d, bboxes_3d
 
     def _attach_crop_embeddings(self, detections, crops_data):
@@ -1944,6 +2018,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.log_both("info", "Stop published to /robot_movement_detected")
 
     def destroy_node(self):
+        if self.ga493_replay_capture is not None:
+            self.ga493_replay_capture.finalize()
+        # PARALLEL_VARIANT_BEGIN: stop persistent bbox workers
+        self._bbox_fusion_encoder.shutdown()
+        # PARALLEL_VARIANT_END: stop persistent bbox workers
         try:
             self._io_executor.shutdown(wait=True)
         except Exception:
@@ -1977,9 +2056,21 @@ def main(args=None):
         executor.spin()
     except KeyboardInterrupt:
         pass
+    except Exception:
+        # ROS Humble can close the context from its signal handler while the multithreaded
+        # executor is building its next wait set. That shutdown-only RCLError must still reach
+        # finally and finish the replay manifest. Any exception with a live context remains fatal.
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # PARALLEL_VARIANT_BEGIN: one parent owns ROS and worker shutdown after SIGINT
+        # Spawned bbox workers ignore SIGINT. The parent stops them in destroy_node.
+        # ROS can also close its context through its installed signal handler, so only
+        # request shutdown while the context remains active.
+        if rclpy.ok():
+            rclpy.shutdown()
+        # PARALLEL_VARIANT_END: one parent owns ROS and worker shutdown after SIGINT
 
 
 if __name__ == "__main__":

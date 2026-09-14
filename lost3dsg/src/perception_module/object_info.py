@@ -31,3 +31,9 @@ class Object:
         # Populated by ObjectManagerService._record_sighting; empty is legitimate and every
         # channel that needs observations ABSTAINS on it rather than assuming.
         self.observations = []
+        # Multi-observation geometry stays separate from ``bbox``. The latter is
+        # one measured view and remains the conservative association geometry.
+        # The private state maps voxel keys to distinct view IDs; ``fused_bbox``
+        # is the reconstructed AABB exposed to persistence and visualisation.
+        self._bbox_fusion_state = None
+        self.fused_bbox = None

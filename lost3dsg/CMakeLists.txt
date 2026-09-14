@@ -17,12 +17,14 @@ find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 # Generate custom messages
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Centroid.msg"
   "msg/CentroidArray.msg"
+  "msg/ObservationRef.msg"
   "msg/Bbox3d.msg"
   "msg/Bbox3dArray.msg"
   "msg/ObjectDescription.msg"
@@ -34,12 +36,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/MergeObjects.srv"
   "srv/DeleteObjects.srv"
   "srv/QueryObjects.srv"
-  DEPENDENCIES std_msgs sensor_msgs geometry_msgs
+  DEPENDENCIES std_msgs sensor_msgs geometry_msgs builtin_interfaces
 )
 
 # Install Python scripts
 install(PROGRAMS
   src/perception_module/perception_2.py
+  src/perception_module/perception_parallel.py
   src/perception_module/cv_utils.py
   src/perception_module/utils.py
   src/perception_module/detection_pipeline.py
@@ -92,6 +95,7 @@ install(PROGRAMS
   # the node dies at startup with ModuleNotFoundError after a gate that passed -- this list
   # is a hand-maintained inventory and nothing checks it against the imports.
   src/perception_module/detection_archive.py
+  src/perception_module/ga493_replay_capture.py
   src/perception_module/crop_context.py
   src/perception_module/gt_codec.py
   src/perception_module/visual_reid.py

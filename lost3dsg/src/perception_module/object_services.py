@@ -8,14 +8,22 @@ import time
 import uuid
 from datetime import datetime, timezone
 from functools import wraps
+from types import SimpleNamespace
 
 import association as assoc
 import numpy as np
 import rclpy
+from bbox_fusion import (
+    apply_request_fusion,
+    fusion_summary,
+    merge_bbox_fusion,
+    reset_bbox_fusion,
+)
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
 from cv_utils import publish_persistent_centroids, publish_pov_volume
 from detection_index import DetectionIndex
+from detection_types import observation_dict_from_msg
 from hooks import DecisionLog, load_store
 from map_database import MapDatabase
 from nlp_utils import _known, get_embedding, lost_similarity_detailed, world2vec
@@ -519,6 +527,11 @@ def save_persistent_perceptions(node):
         # evaluator works per instance; a label-keyed sidecar can associate
         # the wrong vector when two objects share a label.
         bbox = dict(obj.bbox) if isinstance(obj.bbox, dict) else obj.bbox
+        fused_bbox = (
+            dict(obj.fused_bbox)
+            if isinstance(getattr(obj, "fused_bbox", None), dict)
+            else None
+        )
         clip_embedding = getattr(obj, "clip_embedding", None)
         if isinstance(bbox, dict) and clip_embedding is not None:
             try:
@@ -534,6 +547,10 @@ def save_persistent_perceptions(node):
             "material": obj.material,
             "shape": obj.shape,
             "bbox": bbox,
+            # The measured-view box above remains the association geometry.
+            # This separate box is reconstructed from several accepted views.
+            "fused_bbox": fused_bbox,
+            "bbox_fusion": fusion_summary(obj),
             "room_id": getattr(obj, "room_id", "unknown"),
             "relations": {k: sorted(list(v)) for k, v in obj.relations.items()},
             # Added 2026-08-31. This was in-memory only, so GA-12's invariant -- every
@@ -594,6 +611,7 @@ def publish_persistent_bboxes(node, wm, pub):
     for i, obj in enumerate(wm.persistent_perceptions):
         if obj.bbox is None or "door" in obj.label.lower():
              continue
+        display_bbox = getattr(obj, "fused_bbox", None) or obj.bbox
         marker = Marker()
         marker.header.frame_id = world_frame()
         obj_stamp = getattr(obj, "last_perception_time", None)
@@ -601,7 +619,7 @@ def publish_persistent_bboxes(node, wm, pub):
         marker.id = i
         marker.type = Marker.CUBE
         marker.action = Marker.ADD
-        if "yaw" in obj.bbox and obj.bbox.get("oriented_extents"):
+        if display_bbox is obj.bbox and "yaw" in obj.bbox and obj.bbox.get("oriented_extents"):
             # Draw the PCA-oriented box (yaw about z) instead of the AABB.
             yaw = obj.bbox["yaw"]
             cx, cy, cz = obj.bbox["oriented_center"]
@@ -612,12 +630,12 @@ def publish_persistent_bboxes(node, wm, pub):
             marker.scale.x, marker.scale.y, marker.scale.z = ex, ey, ez
         else:
             marker.pose.orientation.w = 1.0
-            marker.pose.position.x = (obj.bbox['x_min'] + obj.bbox['x_max']) / 2.0
-            marker.pose.position.y = (obj.bbox['y_min'] + obj.bbox['y_max']) / 2.0
-            marker.pose.position.z = (obj.bbox['z_min'] + obj.bbox['z_max']) / 2.0
-            marker.scale.x = obj.bbox['x_max'] - obj.bbox['x_min']
-            marker.scale.y = obj.bbox['y_max'] - obj.bbox['y_min']
-            marker.scale.z = obj.bbox['z_max'] - obj.bbox['z_min']
+            marker.pose.position.x = (display_bbox['x_min'] + display_bbox['x_max']) / 2.0
+            marker.pose.position.y = (display_bbox['y_min'] + display_bbox['y_max']) / 2.0
+            marker.pose.position.z = (display_bbox['z_min'] + display_bbox['z_max']) / 2.0
+            marker.scale.x = display_bbox['x_max'] - display_bbox['x_min']
+            marker.scale.y = display_bbox['y_max'] - display_bbox['y_min']
+            marker.scale.z = display_bbox['z_max'] - display_bbox['z_min']
         marker.color.a = 0.5
         marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
         marker_array.markers.append(marker)
@@ -788,6 +806,12 @@ class ObjectServices(Node):
         # Unused by the legacy engine, which decides from a single scoring and keeps nothing.
         self._hypotheses = {}
         self._merge_sweep = 0
+        self._mutation_sequence = 0
+        self._provenance_incomplete = False
+        self._mutation_ledger_path = os.path.join(
+            os.environ.get("GRAPH_API_OUTPUT_DIR") or log_dir,
+            "mutation_receipts.jsonl",
+        )
 
         with open(SYNTHETIC_LOG_FILE, "a") as f:
             f.write(f"\n{'='*50}\n")
@@ -827,6 +851,70 @@ class ObjectServices(Node):
         if level in ['info', 'warn']:
             prefix = "[INFO] " if level == 'info' else "[WARN] "
             print(f"{prefix}{message}")
+
+    @staticmethod
+    def _prepare_receipt(response):
+        response.mutation_event_id = ""
+        response.mutation_state = "none"
+        response.object_revision = 0
+        response.geometry_epoch = 0
+
+    def _write_mutation_receipt(self, event_id, request, state, operation,
+                                obj=None, reason="", fusion_applied=False):
+        """Append one ordered mutation stage; a write failure invalidates provenance."""
+        self._mutation_sequence += 1
+        record = {
+            "schema_version": 1,
+            "mutation_sequence": self._mutation_sequence,
+            "mutation_event_id": event_id,
+            "observation_attempt_id": str(
+                getattr(request, "observation_attempt_id", "") or ""),
+            "observation": observation_dict_from_msg(
+                getattr(request, "observation", None)),
+            "description_observation": observation_dict_from_msg(
+                getattr(request, "description_observation", None)),
+            "operation": operation,
+            "mutation_state": state,
+            "reason": reason,
+            "object_id": (str(getattr(obj, "object_id", "") or "")
+                          if obj is not None else None),
+            "object_revision": (int(getattr(obj, "object_revision", 0))
+                                if obj is not None else None),
+            "geometry_epoch": (int(getattr(obj, "geometry_epoch", 0))
+                               if obj is not None else None),
+            "fusion_applied": bool(fusion_applied),
+            "recorded_at": time.time(),
+        }
+        try:
+            os.makedirs(os.path.dirname(self._mutation_ledger_path), exist_ok=True)
+            with open(self._mutation_ledger_path, "a", encoding="utf-8") as ledger:
+                ledger.write(json.dumps(record, sort_keys=True) + "\n")
+                ledger.flush()
+                os.fsync(ledger.fileno())
+        except OSError:
+            self._provenance_incomplete = True
+            raise
+        return record
+
+    @staticmethod
+    def _set_receipt_response(response, event_id, state, obj=None):
+        response.mutation_event_id = event_id
+        response.mutation_state = state
+        response.object_revision = int(getattr(obj, "object_revision", 0)) if obj else 0
+        response.geometry_epoch = int(getattr(obj, "geometry_epoch", 0)) if obj else 0
+
+    def record_direct_mutation(self, event_id, obj, observation,
+                               description_observation, state,
+                               fusion_applied=False):
+        """Record a manager-side mutation that does not cross the ROS service."""
+        request = SimpleNamespace(
+            observation=observation,
+            description_observation=description_observation,
+            observation_attempt_id=event_id,
+        )
+        return self._write_mutation_receipt(
+            event_id, request, state, "direct_exploration_update",
+            obj=obj, fusion_applied=fusion_applied)
 
 
     @synchronized_world_model
@@ -1800,6 +1888,10 @@ class ObjectServices(Node):
                             stale += 1
                             continue
                         if discard in wm.persistent_perceptions:
+                            # Merge geometry while both tracks still exist. The
+                            # operation preserves distinct view IDs, so two
+                            # tracks containing the same cycle do not count it twice.
+                            merge_bbox_fusion(keeper, discard)
                             cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
                             cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
                             print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
@@ -1872,6 +1964,10 @@ class ObjectServices(Node):
 
     @synchronized_world_model
     def _cb_add_object(self, request, response):
+        self._prepare_receipt(response)
+        mutation_event_id = uuid.uuid4().hex
+        new_obj = None
+        applied = False
         try:
             bbox = {
                 "x_min": request.x_min, "x_max": request.x_max,
@@ -1887,6 +1983,8 @@ class ObjectServices(Node):
             new_obj = Object(label, _centroid_from_bbox(bbox), bbox, description, color, material)
             # Identity remains stable when visual attributes are refined.
             new_obj.object_id = f"obj_{uuid.uuid4().hex}"
+            new_obj.object_revision = 1
+            new_obj.geometry_epoch = 1
             new_obj.creation_time = time.time()
             new_obj.relations = {
                 "isIn": set(),
@@ -1895,6 +1993,7 @@ class ObjectServices(Node):
                 "isAbove": set(),
                 "isUnder": set(),
             }
+            apply_request_fusion(new_obj, request, label=label)
 
             raw_embedding = getattr(request, 'description_embedding', None)
             # GA-184. The flag, not the length, says whether an embedding was SENT. A
@@ -1975,6 +2074,12 @@ class ObjectServices(Node):
                 self.room_manager.scene_graph[assigned_room]["objects"].append(label)
 
             wm.persistent_perceptions.append(new_obj)
+            applied = True
+            self._write_mutation_receipt(
+                mutation_event_id, request, "applied_in_memory", "add",
+                obj=new_obj,
+                fusion_applied=bool(getattr(request, "has_fusion_voxels", False)),
+            )
 
             in_exploration = getattr(request, 'in_exploration', False)
             phase = "exploration" if in_exploration else "tracking"
@@ -1990,6 +2095,11 @@ class ObjectServices(Node):
             self.log_both('info', f"{mode_tag} New object '{label}' in {assigned_room} (vol: {volume:.3f} m³)")
 
             save_persistent_perceptions(self)
+            self._write_mutation_receipt(
+                mutation_event_id, request, "applied_and_checkpointed", "add",
+                obj=new_obj,
+                fusion_applied=bool(getattr(request, "has_fusion_voxels", False)),
+            )
 
             if in_exploration:
                 self.exploration_step_counter += 1
@@ -2008,12 +2118,17 @@ class ObjectServices(Node):
             response.success   = True
             response.message   = f"Object '{label}' added to {assigned_room}"
             response.object_id = new_obj.object_id
+            self._set_receipt_response(
+                response, mutation_event_id, "applied_and_checkpointed", new_obj)
 
         except Exception as e:
             self.get_logger().error(f"_cb_add_object failed: {e}")
             response.success = False
             response.message = str(e)
             response.object_id = ""
+            self._set_receipt_response(
+                response, mutation_event_id,
+                "incomplete" if applied else "refused", new_obj)
 
         return response
     
@@ -2053,6 +2168,10 @@ class ObjectServices(Node):
 
     @synchronized_world_model
     def _cb_update_object(self, request, response):
+        self._prepare_receipt(response)
+        mutation_event_id = uuid.uuid4().hex
+        mutation_applied = False
+        updated_obj = None
         try:
             obj_id = request.object_id
             all_ids = [getattr(o, "object_id", None) or o.label for o in wm.persistent_perceptions]
@@ -2068,6 +2187,10 @@ class ObjectServices(Node):
                 response.distance = 0.0
                 response.iou = 0.0
                 response.replaced = False
+                self._write_mutation_receipt(
+                    mutation_event_id, request, "refused", "update",
+                    reason="object_not_found")
+                self._set_receipt_response(response, mutation_event_id, "refused")
                 return response
 
             bbox = {
@@ -2097,14 +2220,30 @@ class ObjectServices(Node):
                 if old_bbox is None:
                     best_match.bbox = bbox
                     best_match._yaw_acc = yaw_acc   # GA-315 part 2
+                    apply_request_fusion(best_match, request, label=best_match.label)
                     wm.refresh_spatial(best_match)
+                    best_match.object_revision = int(
+                        getattr(best_match, "object_revision", 0)) + 1
+                    best_match.geometry_epoch = max(
+                        1, int(getattr(best_match, "geometry_epoch", 0)))
+                    mutation_applied = True
+                    self._write_mutation_receipt(
+                        mutation_event_id, request, "applied_in_memory", "update",
+                        obj=best_match,
+                        fusion_applied=bool(getattr(request, "has_fusion_voxels", False)))
                     save_persistent_perceptions(self)
+                    self._write_mutation_receipt(
+                        mutation_event_id, request, "applied_and_checkpointed", "update",
+                        obj=best_match,
+                        fusion_applied=bool(getattr(request, "has_fusion_voxels", False)))
                     response.success = True
                     response.message = "bbox initialized"
                     response.object_id = best_match.object_id
                     response.distance = 0.0
                     response.iou = 0.0
                     response.replaced = False
+                    self._set_receipt_response(
+                        response, mutation_event_id, "applied_and_checkpointed", best_match)
                     return response
                 iou = compute_iou_3d(bbox, old_bbox)
 
@@ -2138,6 +2277,11 @@ class ObjectServices(Node):
                     response.distance = float(distance)
                     response.iou = float(iou)
                     response.replaced = False
+                    self._write_mutation_receipt(
+                        mutation_event_id, request, "refused", "update",
+                        obj=best_match, reason="implausible_bbox")
+                    self._set_receipt_response(
+                        response, mutation_event_id, "refused", best_match)
                     return response
 
                 elif distance < UPDATE_IN_PLACE_DISTANCE_M or iou >= TRACKING_IOU_THRESHOLD:
@@ -2190,6 +2334,11 @@ class ObjectServices(Node):
                         response.distance = float(distance)
                         response.iou = float(iou)
                         response.replaced = False
+                        self._write_mutation_receipt(
+                            mutation_event_id, request, "refused", "move",
+                            obj=best_match, reason="room_unresolved")
+                        self._set_receipt_response(
+                            response, mutation_event_id, "refused", best_match)
                         return response
 
                     updated_obj = Object(
@@ -2200,7 +2349,16 @@ class ObjectServices(Node):
                         best_match.color,
                         best_match.material
                     )
+                    # A physical move starts a new geometry history. Keep this
+                    # explicit so a later state-copy change cannot mix positions.
+                    reset_bbox_fusion(updated_obj)
                     updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
+                    # Preserve the logical track revision across the replacement object.
+                    # The common tail increments it after the new geometry is visible.
+                    updated_obj.object_revision = int(
+                        getattr(best_match, "object_revision", 0))
+                    updated_obj.geometry_epoch = int(
+                        getattr(best_match, "geometry_epoch", 0)) + 1
                     _, updated_obj._yaw_acc = fuse_orientation(None, raw_bbox)   # GA-315 part 2
                     # Reviewed 2026-09-07: a moved object was rebuilt WITHOUT its sightings, so
                     # co-visibility and the late-description join (GA-108) lost every object
@@ -2246,6 +2404,7 @@ class ObjectServices(Node):
                     else:
                         wm.persistent_perceptions.append(updated_obj)
                         moved_from_map = False
+                    mutation_applied = True
 
                     if moved_from_map:
                         self.db.on_object_moved(
@@ -2278,6 +2437,11 @@ class ObjectServices(Node):
                     except Exception as e:
                         self.get_logger().error(f"decision_log update failed: {e}")
 
+            # In-place updates accumulate this view. A confirmed physical move
+            # built a new Object above, so its state starts here with the new
+            # position and never mixes old and new geometry.
+            apply_request_fusion(updated_obj, request, label=updated_obj.label)
+
             # GA-26: attributes were written BEFORE the box check and never rolled back, so
             # a mis-associated detection whose box was refused still left its description,
             # colour and material on the object. Applied here, past every refusal.
@@ -2298,7 +2462,20 @@ class ObjectServices(Node):
             # merge uses it.  Replacement moves already invalidated the index through the
             # tracked world-model list, so refresh_spatial is harmless there too.
             wm.refresh_spatial(updated_obj)
+            updated_obj.object_revision = int(
+                getattr(updated_obj, "object_revision", 0)) + 1
+            updated_obj.geometry_epoch = max(
+                1, int(getattr(updated_obj, "geometry_epoch", 0)))
+            mutation_applied = True
+            self._write_mutation_receipt(
+                mutation_event_id, request, "applied_in_memory", "update",
+                obj=updated_obj,
+                fusion_applied=bool(getattr(request, "has_fusion_voxels", False)))
             save_persistent_perceptions(self)
+            self._write_mutation_receipt(
+                mutation_event_id, request, "applied_and_checkpointed", "update",
+                obj=updated_obj,
+                fusion_applied=bool(getattr(request, "has_fusion_voxels", False)))
 
             replaced = updated_obj is not best_match
 
@@ -2321,6 +2498,8 @@ class ObjectServices(Node):
             response.distance = float(distance)
             response.iou = float(iou)
             response.replaced = replaced
+            self._set_receipt_response(
+                response, mutation_event_id, "applied_and_checkpointed", updated_obj)
             return response
 
         except Exception as e:
@@ -2331,6 +2510,9 @@ class ObjectServices(Node):
             response.distance = 0.0
             response.iou = 0.0
             response.replaced = False
+            self._set_receipt_response(
+                response, mutation_event_id,
+                "incomplete" if mutation_applied else "refused", updated_obj)
             return response
 
     @synchronized_world_model
@@ -2358,6 +2540,8 @@ class ObjectServices(Node):
                 "color":       o.color,
                 "material":    o.material,
                 "bbox":        o.bbox,
+                "fused_bbox":  getattr(o, "fused_bbox", None),
+                "bbox_fusion": fusion_summary(o),
                 "room_id":     getattr(o, 'room_id', 'unknown')
             } for o in results])
             response.success = True

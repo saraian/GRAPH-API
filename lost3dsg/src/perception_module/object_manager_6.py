@@ -20,17 +20,21 @@ import urllib.parse
 import uuid
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path as FilePath
 
 import cv2
 import numpy as np
 import rclpy
 import requests
 from association import AssocObject, Observation, search_radius
+from bbox_fusion import add_fusion_view, fusion_http_fields
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
 from cv_bridge import CvBridge
 from cv_utils import publish_persistent_bboxes
 from detection_index import bounds as spatial_bounds
+from detection_types import observation_dict_from_msg
+from ga493_replay_capture import ReplayCapture
 from geometry_msgs.msg import PoseStamped
 from hooks import DecisionLog, load_hooks
 from nav_msgs.msg import Path
@@ -666,6 +670,29 @@ def publish_pov_volume(node, pov_volume, pub):
     pub.publish(marker_array)
 
 
+def _embedding_model_identity():
+    """Which embedder actually loaded, for the GA-493 replay manifest.
+
+    `SemanticEmbedder.__init__` tries SentenceTransformer, then Word2Vec, and continues on
+    either failure, so the configured path says what was ASKED FOR and this says what
+    ANSWERED. A replay whose similarity scores disagree with the run reads this first.
+    """
+    embedding_cfg = (CFG.get("embedding", {}) or {})
+    configured = embedding_cfg.get("word2vec_path", "")
+    if getattr(world2vec, "st_model", None) is not None:
+        loaded = "sentence_transformer:sentence-transformers/all-MiniLM-L6-v2"
+    elif getattr(world2vec, "w2v_model", None) is not None:
+        loaded = f"word2vec:{configured}"
+    else:
+        loaded = "none"
+    return {
+        "loaded": loaded,
+        "word2vec_path_configured": configured,
+        "word2vec_path_exists": bool(configured) and os.path.exists(configured),
+        "word2vec_limit": embedding_cfg.get("word2vec_limit"),
+    }
+
+
 # ============= MAIN SERVICE NODE =============
 
 class ObjectManagerService(Node):
@@ -730,6 +757,40 @@ class ObjectManagerService(Node):
 
         self.latest_descriptions = None
         self.latest_bboxes_msg = None
+        self.ga493_replay_capture = ReplayCapture.from_environment(
+            "consumer",
+            identity={
+                "run_id": os.environ.get("GRAPH_API_RUN_ID", ""),
+                "config_name": os.environ.get("CFG_NAME", ""),
+                "executable": "object_manager_6.py",
+                "mutation_ledger": "mutation_receipts.jsonl",
+                # Rule 2: assert WHICH component answered, not that one did. SemanticEmbedder
+                # prefers SentenceTransformer and falls back to Word2Vec, and its constructor
+                # swallows both failures -- so "sentence_transformer", "word2vec" and "none"
+                # are three different systems that were previously one blank field.
+                "embedding_model": _embedding_model_identity(),
+            },
+            source_files=[
+                __file__,
+                os.path.join(os.path.dirname(__file__), "object_services.py"),
+                os.path.join(os.path.dirname(__file__), "association.py"),
+                os.path.join(os.path.dirname(__file__), "room_manager.py"),
+                # The embedding model is an INPUT to association, exactly like the four
+                # Python files above, and until now only those four were hashed. A run that
+                # swapped the model produced a manifest identical to one that did not.
+                # ReplayCapture skips a path that is not a file, so a missing model leaves
+                # no entry here -- which is why `embedding_model` below names the component
+                # that actually answered, and the two are read together.
+                (CFG.get("embedding", {}) or {}).get("word2vec_path", ""),
+            ],
+        )
+        if self.ga493_replay_capture is not None:
+            if wm.persistent_perceptions or self.uncertain_objects:
+                raise RuntimeError("GA-493 replay capture requires an empty initial tracker state")
+            self.ga493_replay_capture.event(
+                "initial_state",
+                {"persistent_objects": 0, "uncertain_objects": 0,
+                 "exploration_mode": True})
 
         self.agent_poses = []
         self.agent_pose_history = deque(maxlen=2000)
@@ -758,9 +819,6 @@ class ObjectManagerService(Node):
             map_topic='/rtabmap/map',
             cloud_map_topic='/rtabmap/cloud_map',
         )
-        # Room VLM images must come from the frame bucket of the exact current
-        # room. This avoids leaking the latest camera view from another room.
-        self.room_manager._room_frame_provider = self._room_frames_for
         self.object_services = ObjectServices(self.room_manager)
         self.object_services.on_object_removed = self._note_removed   # GA-47
         self.last_room_check_time = time.time()
@@ -930,6 +988,12 @@ class ObjectManagerService(Node):
             self.object_services.log_both('info', "[MOVEMENT] Robot has stopped -> room creation allowed")
             # Motion has ended: anything buffered from before it began is still valid.
             self._try_process()
+        if getattr(self, "ga493_replay_capture", None) is not None:
+            self.ga493_replay_capture.event(
+                "movement_state_changed",
+                {"moving": bool(msg.data), "was_moving": bool(was_moving),
+                 "moving_since": self._moving_since},
+            )
 
     def _agent_pose_callback(self, msg):
         stamp = msg.header.stamp
@@ -977,6 +1041,13 @@ class ObjectManagerService(Node):
         # admission path: hanging them off new-object proposals meant a room the robot
         # crossed without detecting anything new was only ever typed from its doorway.
         self._room_frames_for(self.room_manager._effective_room_id())
+
+        # GA-493 replay input 2 of 8. Without the pose stream `_record_sighting` abstains,
+        # so no Observation exists, so no covariance exists, so every candidate search
+        # falls back to the fixed 1.0 m radius -- a replay that lacks this re-derives
+        # DIFFERENT associations and cannot tell that it did.
+        if getattr(self, "ga493_replay_capture", None) is not None:
+            self.ga493_replay_capture.event("agent_pose_arrived", {"pose": entry})
 
     def _closest_agent_pose(self, timestamp_sec):
         if timestamp_sec is None:
@@ -1079,6 +1150,8 @@ class ObjectManagerService(Node):
                 payload = {"source": raw}
 
         scan_id = payload.get("scan_id")
+        if self.ga493_replay_capture is not None:
+            self.ga493_replay_capture.event("scan_complete_arrived", {"payload": payload})
         if scan_id is None:
             scan_id = f"scan-{time.monotonic_ns()}"
         scan_id = str(scan_id)
@@ -1120,6 +1193,8 @@ class ObjectManagerService(Node):
             except Exception:
                 pass
 
+        if self.ga493_replay_capture is not None:
+            self.ga493_replay_capture.event("scan_merge_started", {"scan_id": scan_id})
         try:
             merged_count = self.merge_duplicate_objects(scan_id=scan_id)
         except Exception as exc:
@@ -1128,6 +1203,9 @@ class ObjectManagerService(Node):
             )
             return
 
+        if self.ga493_replay_capture is not None:
+            self.ga493_replay_capture.event(
+                "scan_merge_completed", {"scan_id": scan_id, "merged_count": merged_count})
         self.object_services.log_both(
             'info',
             f"[SCAN MERGE] scan {scan_id!r}: {merged_count} merge(s) applied",
@@ -1463,6 +1541,14 @@ class ObjectManagerService(Node):
 
         if self.robot_has_moved:
             self.object_services.log_both('warn', "Robot is moving — data discarded by object_tracking_callback")
+            for box in request.bboxes.boxes:
+                observation = observation_dict_from_msg(
+                    getattr(box, "observation", None))
+                self.decision_log.write(
+                    "observation_discard",
+                    (observation or {}).get("observation_id") or "<legacy>",
+                    reason="manager_motion_gate",
+                    cycle_id=getattr(request.bboxes, "cycle_id", "") or None)
             response.status = "moving"
             response.num_objects = len(wm.persistent_perceptions)
             response.tracking_mode_activated = False
@@ -1472,6 +1558,7 @@ class ObjectManagerService(Node):
         current_perception_objects = []
         objects_modified = False
         tracking_activated = False
+        direct_mutation_events = []
 
         bbox_header = getattr(request.bboxes, "header", None)
         if bbox_header is not None and (bbox_header.stamp.sec != 0 or bbox_header.stamp.nanosec != 0):
@@ -1483,7 +1570,15 @@ class ObjectManagerService(Node):
         if in_exploration:
             self.exploration_frame_counter += 1
 
+        # This callback owns a stable lookup for its captured pair. The separate movement
+        # callback can invalidate latest_bboxes while descriptions are being processed, but
+        # it must not erase geometry already captured for this cycle.
+        cycle_bboxes_by_observation = {}
+        cycle_bboxes_by_label = {}
         self.latest_bboxes = {}
+        fusion_view_id = str(
+            getattr(request.bboxes, "cycle_id", "") or ""
+        ).strip()
 
         if request.bboxes.fov_x_max != 0 or request.bboxes.fov_y_max != 0 or request.bboxes.fov_z_max != 0:
             self.latest_fov_volume = {
@@ -1524,11 +1619,49 @@ class ObjectManagerService(Node):
             # GA-190: same rule, third field. Only when the publisher says it carried one.
             if getattr(box, "has_clip_embedding", False):
                 bbox_data["clip_embedding"] = [float(v) for v in box.clip_embedding]
+            bbox_fusion = None
+            if getattr(box, "has_fusion_voxels", False):
+                fusion_keys = [int(v) for v in box.fusion_voxel_keys]
+                if not fusion_view_id:
+                    raise ValueError("bbox fusion payload has no Bbox3dArray.cycle_id")
+                if float(box.fusion_voxel_size_m) <= 0.0:
+                    raise ValueError("bbox fusion voxel size must be positive")
+                if not fusion_keys or len(fusion_keys) % 3:
+                    raise ValueError(
+                        "bbox fusion voxel keys must contain complete XYZ triplets"
+                    )
+                bbox_fusion = {
+                    "view_id": fusion_view_id,
+                    "voxel_m": float(box.fusion_voxel_size_m),
+                    "flat_keys": fusion_keys,
+                }
             temp_key = create_object_key(box.label, "", "", "")
-            self.latest_bboxes[temp_key] = {
+            observation = observation_dict_from_msg(getattr(box, "observation", None))
+            previous = cycle_bboxes_by_label.get(temp_key)
+            if previous is not None:
+                self.object_services.log_both(
+                    'warn',
+                    f"[OBSERVATION] bbox label collision for {box.label}: "
+                    f"{(previous.get('observation') or {}).get('observation_id')} superseded by "
+                    f"{(observation or {}).get('observation_id')}",
+                )
+            entry = {
                 "bbox": bbox_data, "label": box.label,
-                "color": "", "material": "", "description": ""
+                "color": "", "material": "", "description": "",
+                "bbox_fusion": bbox_fusion, "observation": observation,
             }
+            cycle_bboxes_by_label[temp_key] = entry
+            observation_id = str((observation or {}).get("observation_id") or "").strip()
+            if observation_id:
+                if observation_id in cycle_bboxes_by_observation:
+                    raise ValueError(
+                        f"duplicate ObservationRef in one bbox cycle: {observation_id}"
+                    )
+                cycle_bboxes_by_observation[observation_id] = entry
+
+        # Live-view consumers retain the historical label lookup. It is a copy, so motion can
+        # clear it without mutating either cycle-local lookup above.
+        self.latest_bboxes = dict(cycle_bboxes_by_label)
 
         current_time = time.time()
 
@@ -1580,19 +1713,44 @@ class ObjectManagerService(Node):
             description_embedding = get_embedding(world2vec, description_text)
 
             old_key = create_object_key(label, "", "", "")
-            if old_key not in self.latest_bboxes:
+            description_observation = observation_dict_from_msg(
+                getattr(description, "observation", None))
+            description_observation_id = str(
+                (description_observation or {}).get("observation_id") or ""
+            ).strip()
+            if description_observation_id:
+                bbox_entry = cycle_bboxes_by_observation.pop(
+                    description_observation_id, None)
+                if (bbox_entry is not None
+                        and cycle_bboxes_by_label.get(old_key) is bbox_entry):
+                    cycle_bboxes_by_label.pop(old_key, None)
+            else:
+                bbox_entry = cycle_bboxes_by_label.pop(old_key, None)
+                bbox_observation_id = str(
+                    ((bbox_entry or {}).get("observation") or {}).get("observation_id") or ""
+                ).strip()
+                if bbox_observation_id:
+                    cycle_bboxes_by_observation.pop(bbox_observation_id, None)
+            if bbox_entry is None:
+                self.decision_log.write(
+                    "unpaired_description",
+                    description_observation_id or "<legacy>",
+                    reason="no_bbox_for_description",
+                    label=label)
                 continue
 
-            bbox = self.latest_bboxes[old_key]["bbox"]
-            new_key = create_object_key(label, material, color, description_text)
-
-            del self.latest_bboxes[old_key]
-            self.latest_bboxes[new_key] = {
-                "bbox": bbox, "label": label,
-                "color": color, "material": material, "description": description_text,
-                "status": status
-            }
-
+            bbox = bbox_entry["bbox"]
+            bbox_fusion = bbox_entry.get("bbox_fusion")
+            bbox_observation = bbox_entry.get("observation")
+            if (bbox_observation and description_observation and
+                    bbox_observation.get("observation_id") !=
+                    description_observation.get("observation_id")):
+                self.object_services.log_both(
+                    'warn',
+                    "[OBSERVATION] legacy label join mixed geometry and description: "
+                    f"{bbox_observation.get('observation_id')} != "
+                    f"{description_observation.get('observation_id')}",
+                )
             already_seen = False
             transition = False
 
@@ -1610,7 +1768,10 @@ class ObjectManagerService(Node):
                     tracking_activated = True
                     in_exploration = False
 
-                    update_response = self.modify_existing_object(obj, bbox, description_embedding)
+                    update_response = self.modify_existing_object(
+                        obj, bbox, description_embedding, bbox_fusion,
+                        bbox_observation, description_observation,
+                    )
                     if update_response.success:
                         matching_obj = next(
                             (o for o in wm.snapshot()
@@ -1702,7 +1863,24 @@ class ObjectManagerService(Node):
                         # GA-315 part 2: the AABB is this view's; the axis is fused over
                         # every accepted view, never the last one's alone.
                         obj.bbox, obj._yaw_acc = fuse_orientation(obj, bbox)
+                        if bbox_fusion:
+                            add_fusion_view(
+                                obj, obj.label, bbox_fusion["view_id"],
+                                bbox_fusion["voxel_m"], bbox_fusion["flat_keys"]
+                            )
                         wm.refresh_spatial(obj)
+                        obj.object_revision = int(
+                            getattr(obj, "object_revision", 0)) + 1
+                        obj.geometry_epoch = max(
+                            1, int(getattr(obj, "geometry_epoch", 0)))
+                        direct_event_id = uuid.uuid4().hex
+                        self.object_services.record_direct_mutation(
+                            direct_event_id, obj, bbox_observation,
+                            description_observation, "applied_in_memory",
+                            fusion_applied=bool(bbox_fusion))
+                        direct_mutation_events.append((
+                            direct_event_id, obj, bbox_observation,
+                            description_observation, bool(bbox_fusion)))
                         objects_modified = True
                         # GA-11: an in-place box write is a change to THIS object; queue it.
                         self._note_update(getattr(obj, "object_id", None) or obj.label, reason="box_written")
@@ -1765,7 +1943,10 @@ class ObjectManagerService(Node):
                     # above. `target_bbox` resolved to `bbox` on every arrival because
                     # is_moving was always False, so passing `bbox` directly is behaviour-
                     # identical and removes a name that suggested a choice was being made.
-                    update_response = self.modify_existing_object(best_match, bbox, description_embedding)
+                    update_response = self.modify_existing_object(
+                        best_match, bbox, description_embedding, bbox_fusion,
+                        bbox_observation, description_observation,
+                    )
                     if update_response.success:
                         matching_obj = next(
                             (o for o in wm.snapshot()
@@ -1801,6 +1982,8 @@ class ObjectManagerService(Node):
                     # on a borderline decision had nothing to look at. The PATH, not the
                     # image: the seam stays a small message and the reader opens the file.
                     "crop_path": crop_path,
+                    "observation": bbox_observation,
+                    "description_observation": description_observation,
                 }
                 decision = self.filter_hook.judge(proposal)
                 # EVERY ADMISSION CARRIES A decision_id, WHOEVER THE FILTER IS.
@@ -1828,13 +2011,16 @@ class ObjectManagerService(Node):
                 # with no room on the decision it cannot score above zero however good the
                 # segmentation gets. Recorded here, where the room was actually decided.
                 self.decision_log.write("admission", label, filter=self.filter_hook.name, outcome=decision.outcome,
-                                        reason=decision.reason, room_id=room_id, annotation=_ann)
+                                        reason=decision.reason, room_id=room_id, annotation=_ann,
+                                        observation_id=(bbox_observation or {}).get("observation_id"),
+                                        description_observation_id=(description_observation or {}).get("observation_id"))
                 if not decision.admitted:
                     self.object_services.log_both('warn', f"[{self.filter_hook.name}] refused {label}: {decision.reason}")
                     continue
                 new_obj = self.add_new_object(
                     label, bbox, description_text, color, material,
-                    description_embedding, in_exploration, proposal["room_id"]
+                    description_embedding, in_exploration, proposal["room_id"],
+                    bbox_fusion, bbox_observation, description_observation,
                 )
                 if new_obj is not None:
                     # Join the decision to the object it produced. The admission line above is
@@ -1980,6 +2166,11 @@ class ObjectManagerService(Node):
             save_uncertain_objects(self)
             self.update_spatial_relations()
             save_persistent_perceptions(self.object_services)
+            for (event_id, obj, observation,
+                 description_observation, fusion_applied) in direct_mutation_events:
+                self.object_services.record_direct_mutation(
+                    event_id, obj, observation, description_observation,
+                    "applied_and_checkpointed", fusion_applied=fusion_applied)
         
         facts = self.publish_kb_facts(current_perception_objects)
         relation_facts = self.publish_kb_relation_facts()
@@ -2045,17 +2236,21 @@ class ObjectManagerService(Node):
 
         if not ok:
             detail = response.text
+            payload = None
             try:
                 payload = response.json()
                 if isinstance(payload, dict):
                     detail = payload.get('detail') or payload.get('message') or payload
-            except Exception:
-                pass
+            except ValueError:
+                payload = None
             if response.status_code >= 500:
                 self._graph_api_strike(f"{response.status_code} on {method} {path}: {detail}")
             else:
                 self._graph_api_strikes = 0     # a refusal is the service ALIVE and answering
-            raise RuntimeError(f"Graph API error {response.status_code} on {method} {path}: {detail}")
+            error = RuntimeError(
+                f"Graph API error {response.status_code} on {method} {path}: {detail}")
+            error.payload = payload
+            raise error
 
         try:
             body = response.json()
@@ -2143,7 +2338,9 @@ class ObjectManagerService(Node):
         return frames
 
     def add_new_object(self, label, bbox, description, color, material,
-                       description_embedding=None, in_exploration=False, room_id=None):
+                       description_embedding=None, in_exploration=False, room_id=None,
+                       bbox_fusion=None, observation=None,
+                       description_observation=None):
 
         serialized_embedding=self._serialize_embedding(description_embedding)
         assigned_room = str(room_id) if room_id is not None else self.room_manager.current_room_id
@@ -2165,6 +2362,10 @@ class ObjectManagerService(Node):
                if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "in_exploration": in_exploration,
             "description_embedding": serialized_embedding,
+            **fusion_http_fields(bbox_fusion),
+            "observation": observation,
+            "description_observation": description_observation,
+            "observation_attempt_id": uuid.uuid4().hex,
         }
 
         try:
@@ -2186,7 +2387,9 @@ class ObjectManagerService(Node):
         self.get_logger().warn(f"Object {label} created via the API but not found in memory")
         return None
 
-    def modify_existing_object(self, best_match, bbox, description_embedding=None):
+    def modify_existing_object(self, best_match, bbox, description_embedding=None,
+                               bbox_fusion=None, observation=None,
+                               description_observation=None):
         payload = {
             "description": best_match.description,
             "color": best_match.color,
@@ -2201,6 +2404,10 @@ class ObjectManagerService(Node):
                 "oriented_extents": list(bbox["oriented_extents"])}
                if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "description_embedding": self._serialize_embedding(description_embedding),
+            **fusion_http_fields(bbox_fusion),
+            "observation": observation,
+            "description_observation": description_observation,
+            "observation_attempt_id": uuid.uuid4().hex,
         }
 
         response = UpdateObject.Response()
@@ -2214,13 +2421,26 @@ class ObjectManagerService(Node):
             response.distance = float(result.get("distance", 0.0))
             response.iou = float(result.get("iou", 0.0))
             response.replaced = bool(result.get("replaced", False))
+            response.mutation_event_id = str(result.get("mutation_event_id", ""))
+            response.mutation_state = str(result.get("mutation_state", "none"))
+            response.object_revision = int(result.get("object_revision", 0))
+            response.geometry_epoch = int(result.get("geometry_epoch", 0))
         except RuntimeError as e:
+            failure = getattr(e, "payload", None) or {}
+            if isinstance(failure.get("detail"), dict):
+                failure = failure["detail"]
             response.success = False
-            response.message = str(e)
-            response.object_id = getattr(best_match, "object_id", None) or best_match.label
+            response.message = str(failure.get("message") or e)
+            response.object_id = str(
+                failure.get("object_id") or
+                getattr(best_match, "object_id", None) or best_match.label)
             response.distance = 0.0
             response.iou = 0.0
             response.replaced = False
+            response.mutation_event_id = str(failure.get("mutation_event_id", ""))
+            response.mutation_state = str(failure.get("mutation_state", "incomplete"))
+            response.object_revision = int(failure.get("object_revision", 0))
+            response.geometry_epoch = int(failure.get("geometry_epoch", 0))
             self.get_logger().error(f"Update object failed via Graph API: {e}")
         return response
 
@@ -2333,6 +2553,10 @@ class ObjectManagerService(Node):
                 self.object_services.log_both('info', f"[UNCERTAIN CLEANUP] Removed '{obj.label}' (expired)")
     
     def _descriptions_callback(self, msg):
+        if self.ga493_replay_capture is not None:
+            self.ga493_replay_capture.event(
+                "object_descriptions_arrived", {"message": msg},
+                cycle_id=str(getattr(msg, "cycle_id", "") or ""))
         self._n_desc_msgs += 1
         stamp = getattr(getattr(msg, "header", None), "stamp", None)
         if stamp is None:
@@ -2355,7 +2579,15 @@ class ObjectManagerService(Node):
             pass
         self._pending_descriptions[_join_key(msg, stamp)] = msg
         while len(self._pending_descriptions) > SYNC_BUFFER_LIMIT:
-            self._pending_descriptions.pop(next(iter(self._pending_descriptions)))
+            evicted_key = next(iter(self._pending_descriptions))
+            evicted = self._pending_descriptions.pop(evicted_key)
+            self.decision_log.write(
+                "sync_buffer_evicted", "<description_array>",
+                side="description", join_key=str(evicted_key),
+                observation_ids=[
+                    (observation_dict_from_msg(getattr(item, "observation", None)) or {})
+                    .get("observation_id")
+                    for item in evicted.descriptions])
         self._try_process()
 
     def _scan_settle_s(self):
@@ -2468,6 +2700,9 @@ class ObjectManagerService(Node):
     def _enter_tracking(self, why):
         """The one exit from EXPLORATION (GA-08): the transition branch and the frame limit
         both come through here, so the counters cannot drift apart again."""
+        if self.ga493_replay_capture is not None:
+            self.ga493_replay_capture.event(
+                "mode_transition", {"from": "exploration", "to": "tracking", "reason": why})
         self.object_services.log_both('warn', f"[TRANSITION] Switching from EXPLORATION to TRACKING mode: {why}")
         self.exploration_mode = False
         self.tracking_step_counter = 1
@@ -2477,6 +2712,10 @@ class ObjectManagerService(Node):
         self.tracking_activated_pub.publish(msg)
 
     def _bboxes_callback(self, msg):
+        if self.ga493_replay_capture is not None:
+            self.ga493_replay_capture.event(
+                "bbox3d_array_arrived", {"message": msg},
+                cycle_id=str(getattr(msg, "cycle_id", "") or ""))
         self._n_bbox_msgs += 1
         self._last_bbox_at = time.time()
         self._input_silence_reported = False
@@ -2490,7 +2729,15 @@ class ObjectManagerService(Node):
             return
         self._pending_bboxes[_join_key(msg, stamp)] = msg
         while len(self._pending_bboxes) > SYNC_BUFFER_LIMIT:
-            self._pending_bboxes.pop(next(iter(self._pending_bboxes)))
+            evicted_key = next(iter(self._pending_bboxes))
+            evicted = self._pending_bboxes.pop(evicted_key)
+            self.decision_log.write(
+                "sync_buffer_evicted", "<bbox_array>",
+                side="bbox", join_key=str(evicted_key),
+                observation_ids=[
+                    (observation_dict_from_msg(getattr(item, "observation", None)) or {})
+                    .get("observation_id")
+                    for item in evicted.boxes])
         self._try_process()
 
     def _try_process(self):
@@ -2555,6 +2802,14 @@ class ObjectManagerService(Node):
                     self._pending_descriptions.pop(stamp_key, None)
                     self._pending_bboxes.pop(stamp_key, None)
                     self._dropped_moving_pairs += 1
+                    for box in bboxes_msg.boxes:
+                        observation = observation_dict_from_msg(
+                            getattr(box, "observation", None))
+                        self.decision_log.write(
+                            "observation_discard",
+                            (observation or {}).get("observation_id") or "<legacy>",
+                            reason="observed_during_motion",
+                            join_key=str(stamp_key))
                     self.object_services.log_both(
                         'warn',
                         f"[SYNC] pair {_stamp_key_str(bboxes_msg.header.stamp)} observed during "
@@ -2602,8 +2857,22 @@ class ObjectManagerService(Node):
             request.descriptions = descriptions
             request.bboxes = bboxes
 
+            if self.ga493_replay_capture is not None:
+                self.ga493_replay_capture.event(
+                    "consumer_pair",
+                    {"join_key": list(stamp_key), "descriptions": descriptions,
+                     "bboxes": bboxes, "exploration_mode": self.exploration_mode,
+                     "robot_has_moved": self.robot_has_moved,
+                     "current_room_id": getattr(self.room_manager, "current_room_id", None),
+                     "latest_fov_volume": self.latest_fov_volume,
+                     "room_scene_graph": getattr(self.room_manager, "scene_graph", {})},
+                    cycle_id=str(getattr(bboxes, "cycle_id", "") or ""))
             response = ObjectTrackingService.Response()
             self.object_tracking_callback(request, response)
+            if self.ga493_replay_capture is not None:
+                self.ga493_replay_capture.event(
+                    "consumer_result", {"response": response},
+                    cycle_id=str(getattr(bboxes, "cycle_id", "") or ""))
 
     def walls_callback(self, msg):
         # The `except Exception` that stood here printed to stdout and continued, so a
@@ -2617,6 +2886,17 @@ class ObjectManagerService(Node):
         # naming the field that was wrong. Rule 14: a missing component crashes.
         new_walls = json.loads(msg.data)
         self.room_manager.ingest_detected_walls(new_walls)
+
+        # GA-493 replay input 3 of 8. The room polygons these segments build set `room_id`
+        # on every admission, and the merge criterion reads it. The segments are recorded
+        # rather than the resulting polygons, so the replay RE-DERIVES the rooms instead of
+        # being handed the answer it exists to check.
+        if getattr(self, "ga493_replay_capture", None) is not None:
+            self.ga493_replay_capture.event(
+                "walls_arrived",
+                {"segments": new_walls,
+                 "room_id_after": self.room_manager._effective_room_id()},
+            )
 
     # --- re-evaluation seam (hooks.Reevaluation / hooks.Refiner) ---
     @staticmethod
@@ -2706,8 +2986,27 @@ class ObjectManagerService(Node):
             if revision:
                 self.decision_log.write("revision", object_id, refiner=self.refiner_hook.name, reason=reason, revision=revision)
 
+    def destroy_node(self):
+        if self.ga493_replay_capture is not None:
+            ledger = FilePath(self.object_services._mutation_ledger_path)
+            ledger_ref = {"path": ledger.name, "exists": ledger.is_file()}
+            if ledger.is_file():
+                ledger_ref["sha256"] = hashlib.sha256(ledger.read_bytes()).hexdigest()
+                ledger_ref["bytes"] = ledger.stat().st_size
+            self.ga493_replay_capture.event("mutation_ledger", ledger_ref)
+            self.ga493_replay_capture.finalize()
+        super().destroy_node()
+
     @synchronized_world_model
     def periodic_bbox_publisher(self):
+        if self.ga493_replay_capture is not None:
+            self.ga493_replay_capture.event(
+                "periodic_tick",
+                {"exploration_mode": self.exploration_mode,
+                 "persistent_object_ids": [str(getattr(obj, "object_id", ""))
+                                           for obj in wm.persistent_perceptions],
+                 "current_room_id": getattr(self.room_manager, "current_room_id", None),
+                 "latest_fov_volume": self.latest_fov_volume})
         self._drain_reevaluations()
         # Room polygons evolve independently from object detections. Re-file objects after
         # each resegmentation; the method is a no-op when geometry did not change.

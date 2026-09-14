@@ -24,6 +24,7 @@ import glob
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 # Probes return (ok: bool|None, detail: dict). ok=None means "could not run" — distinct from
 # False, because a probe that could not run has asserted NOTHING and must never read as a pass.
@@ -520,6 +521,22 @@ def a4_perception_twice(frame=None):
         frame = cv2.imread(frame_path)
         if frame is None:
             return SKIPPED, {"reason": f"a4's probe frame at {frame_path} could not be decoded"}
+
+    # GA-504. Modal deliberately returns before encoding or making an HTTP request when this
+    # list is empty. Passing [] therefore made all three attempts report success in 0 ms while
+    # exercising no segmentation and returning no stage timings. Give SAM one box on the real
+    # frame so the probe reaches the same adapter path as a run. These neutral attributes are
+    # needed only to construct the returned Detection; Modal receives image_b64 and boxes only.
+    height, width = frame.shape[:2]
+    probe_object = SimpleNamespace(
+        bbox=(width * 0.25, height * 0.25, width * 0.75, height * 0.75),
+        label="",
+        description="",
+        color="",
+        material="",
+        shape="",
+    )
+    probe_objects = [probe_object]
     attempts = []
     reported = []
     for i in (1, 2, 3):
@@ -531,10 +548,9 @@ def a4_perception_twice(frame=None):
             # cold" for an AttributeError, which is a different fault with a different fix, and it
             # refused three runs today while the endpoint was healthy.
             #
-            # THE SECOND ARGUMENT CHANGED MEANING TOO. It was a label list; segment_scene takes the
-            # scene objects the whole-scene VLM proposed. An empty list is the honest probe input:
-            # a4 asks whether the backend ANSWERS TWICE, not whether it finds a chair.
-            result = backend.segment_scene(frame, [])
+            # THE SECOND ARGUMENT CHANGED MEANING TOO. It was a label list; segment_scene takes
+            # scene objects with boxes. The synthetic object above contains no category or GT.
+            result = backend.segment_scene(frame, probe_objects)
             # The contract is (detections, timings). A backend that returns something else is
             # reported as such rather than raised as a TypeError, which would land in the
             # attempt's `error` and read as an unreachable service.
@@ -580,6 +596,9 @@ def a4_perception_twice(frame=None):
     detail = {"backend": type(backend).__name__, "attempts": attempts,
               "pattern": "".join("P" if a["ok"] else "F" for a in attempts),
               "probe_frame": os.path.basename(frame_path), "frame_shape": list(frame.shape),
+              "probe_object_count": len(probe_objects),
+              "probe_boxes": [list(probe_object.bbox)],
+              "probe_semantics": "empty local attributes; image and bbox only on the wire",
               "reported_timing_keys": reported,
               "required": list(required), "required_read_from": required_from}
 
@@ -1266,6 +1285,10 @@ A12_ALLOWED_FILES = {
     "src/perception_module/gt_codec.py": "the run-length codec",
     "src/perception_module/detection_archive.py": "the archive join: habitat_gt_* row keys, validation only",
     "src/perception_module/perception_2.py": "subscription + cache + hand-off to the archive; functions audited below",
+    "src/perception_module/perception_parallel.py":
+        "maintained perception_2.py mirror; the same archive functions are audited below",
+    "src/perception_module/ga493_replay_capture.py":
+        "opt-in replay recorder; reads only the GT enable switch to refuse capture and rejects GT-shaped keys",
     "src/perception_module/test_perception_smoke.py": "smoke test",
     "src/perception_module/habitat_camera_node.py": "NOT installed (GA-299); host-side node",
     "src/perception_module/habitat_camera_objects_node.py": "NOT installed (GA-299); host-side node",
@@ -1287,12 +1310,24 @@ A12_ALLOWED_FILES = {
     # both offline. A module that ships but is never imported cannot leak what it can read.
     "src/perception_module/metrics_eval.py":
         "offline HOV-SG metrics; installed, but imported only by two offline tools",
+    "src/perception_module/object_metrics.py":
+        "offline object evaluator; imported only by run_hm3d_metrics.py and installed nowhere",
+    "src/perception_module/run_hm3d_metrics.py":
+        "offline HM3D metrics driver; imported by nothing and installed nowhere",
     # Added 2026-09-10. The config DECLARES the `gt_semantic` switch — a config that carries a
     # setting has to name it, exactly as run_sim.sh does when it exports FEED_GT_SEMANTIC. Both
     # entries are a declaration plus a comment; neither reads a ground-truth value. Verified before
     # listing: the only token in either file is the key's own name, once.
     "src/perception_module/config.py": "declares the gt_semantic switch; the key's name, not a read",
     "src/perception_module/config.yaml": "declares the gt_semantic switch; the key's name, not a read",
+    "test/debug_configs/ga493_bbox_replay.yaml":
+        "debug configuration declares gt_semantic false",
+    "test/ga493_debug_run.sh":
+        "debug entry point enforces FEED_GT_SEMANTIC=0 before launch",
+    "test/test_ga493_execution_mode.py":
+        "negative contract test names the GT disable switch",
+    "test/test_ga493_replay_capture.py":
+        "negative recorder tests name GT fields and verify refusal",
 }
 # Inside perception_2.py a GT token may occur only in these functions (AST, not grep).
 # _record_cycle_ms carries the gt_semantic_hit latency key: MEASURED by this probe's first run on the
@@ -1321,7 +1356,7 @@ def a12_gt_isolation(root=None):
         return SKIPPED, {"reason": f"no src/ under {root} or /bin/grep absent"}
     dirs = [d for d in ("src", "test", "launch") if os.path.isdir(os.path.join(root, d))]
     cmd = ["/bin/grep", "-rlE", GT_TOKENS, "--include=*.py", "--include=*.sh", "--include=*.yaml",
-           "--exclude-dir=__pycache__", "--exclude-dir=.ruff_cache"] + dirs
+           "--exclude-dir=__pycache__", "--exclude-dir=.ruff_cache", "--exclude-dir=output"] + dirs
     out = subprocess.run(cmd, cwd=root, capture_output=True, text=True).stdout.split()
     files = sorted(f.replace(os.sep, "/") for f in out)
     # THE LAUNCHER IS OUTSIDE THIS ROOT AND IS STILL SCANNED. It was run_sim.sh and
@@ -1336,11 +1371,15 @@ def a12_gt_isolation(root=None):
     if subprocess.run(["/bin/grep", "-qE", GT_TOKENS, launcher]).returncode == 0:
         files = sorted(files + ["../run_sim.sh"])
     not_allowed = [f for f in files if f not in A12_ALLOWED_FILES]
-    bad_functions = {}
-    p2 = os.path.join(root, "src", "perception_module", "perception_2.py")
-    if os.path.isfile(p2):
+    bad_functions_by_file = {}
+    for filename in ("perception_2.py", "perception_parallel.py"):
+        path = os.path.join(root, "src", "perception_module", filename)
+        bad_functions = {}
+        if not os.path.isfile(path):
+            bad_functions_by_file[filename] = bad_functions
+            continue
         import re
-        src = open(p2).read()
+        src = open(path).read()
         tree = ast.parse(src)
         lines = src.splitlines()
         for node in ast.walk(tree):
@@ -1348,15 +1387,21 @@ def a12_gt_isolation(root=None):
                 body = "\n".join(lines[node.lineno - 1:node.end_lineno])
                 if re.search(GT_TOKENS, body) and node.name not in A12_ALLOWED_FUNCTIONS:
                     bad_functions[node.name] = node.lineno
-    ok = not not_allowed and not bad_functions
+        bad_functions_by_file[filename] = bad_functions
+    p2_bad_functions = bad_functions_by_file["perception_2.py"]
+    parallel_bad_functions = bad_functions_by_file["perception_parallel.py"]
+    ok = not not_allowed and not p2_bad_functions and not parallel_bad_functions
     return ok, {
         "root": root,
         "files_with_gt_tokens": files,
         "not_allowed_files": not_allowed,
-        "perception_2_functions_not_allowed": bad_functions,
+        "perception_2_functions_not_allowed": p2_bad_functions,
+        "perception_parallel_functions_not_allowed": parallel_bad_functions,
         "pose_source": "simulator odometry (habitat_feed_node /odom + TF) re-anchored by rtabmap map->odom; NOT asserted (design question 1)",
-        "reason": "" if ok else (f"ground-truth tokens outside the allow-list: files {not_allowed}, "
-                                 f"perception_2 functions {bad_functions}"),
+        "reason": "" if ok else (
+            f"ground-truth tokens outside the allow-list: files {not_allowed}, "
+            f"perception_2 functions {p2_bad_functions}, "
+            f"perception_parallel functions {parallel_bad_functions}"),
     }
 
 

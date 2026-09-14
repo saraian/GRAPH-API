@@ -1,4 +1,7 @@
 # REQUEST
+ObservationRef observation
+ObservationRef description_observation
+string observation_attempt_id
 string object_id
 string description
 string color
@@ -36,6 +39,11 @@ float32[] description_embedding
 # indistinguishable from one whose embedding genuinely came back empty, and absence read
 # as a measurement is the defect class this review keeps finding.
 bool has_description_embedding
+# One detection view's map-frame voxel evidence for the reconstructed box.
+bool has_fusion_voxels
+string fusion_view_id
+float32 fusion_voxel_size_m
+int32[] fusion_voxel_keys
 ---
 # RESPONSE
 bool success
@@ -44,3 +52,7 @@ string object_id
 float32 distance
 float32 iou
 bool replaced
+string mutation_event_id
+string mutation_state
+uint64 object_revision
+uint64 geometry_epoch

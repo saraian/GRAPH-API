@@ -295,6 +295,38 @@ if [ -z "${RTABMAP_LOCALIZE_DB:-}" ] && [ -f /ws/output/rtabmap.db ]; then
 fi
 }
 
+_finalize_ga493_capture() {
+  # GA-493 is opt-in. A capped debug run stops the container with SIGTERM, which runs this
+  # EXIT trap but does not give the two Python nodes time to execute destroy_node(). Ask only
+  # those two capture owners to stop, then require their independently reconciled completion
+  # markers before the container can leave. A missing marker remains a visible failed capture.
+  [ -n "${GA493_REPLAY_CAPTURE_DIR:-}" ] || return 0
+  _capture_root="$GA493_REPLAY_CAPTURE_DIR"
+  if [ ! -d "$_capture_root/producer" ] && [ ! -d "$_capture_root/consumer" ]; then
+    echo ">>> GA-493: capture owners did not start; no replay finalization is required"
+    return 0
+  fi
+  _capture_t=${GA493_CAPTURE_CLOSE_TIMEOUT:-30}
+  echo ">>> GA-493: asking replay capture owners to finalize (up to ${_capture_t}s)"
+  pkill -INT -f 'perception_parallel.py' 2>/dev/null || true
+  pkill -INT -f 'object_manager_6.py' 2>/dev/null || true
+  for _ in $(seq 1 "$_capture_t"); do
+    if [ -f "$_capture_root/producer/complete.json" ] && \
+       [ -f "$_capture_root/consumer/complete.json" ]; then
+      echo ">>> GA-493: producer and consumer capture manifests are complete"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "!! GA-493 replay capture did not finalize within ${_capture_t}s"
+  mkdir -p "$_capture_root"
+  printf 'producer_complete=%s\nconsumer_complete=%s\n' \
+    "$([ -f "$_capture_root/producer/complete.json" ] && echo true || echo false)" \
+    "$([ -f "$_capture_root/consumer/complete.json" ] && echo true || echo false)" \
+    > "$_capture_root/finalization_failure.txt"
+  return 1
+}
+
 container_exit_cleanup() {
   # GA-373. a7 ONCE MORE AT TEARDOWN, before anything else in the close: the extension is a live mount, so
   # a live tree that moved during the run is what the stack executed, and only a second sample can
@@ -306,8 +338,9 @@ container_exit_cleanup() {
       --install-tree /ws/install/lost3dsg/lib/lost3dsg > /tmp/a7_teardown.log 2>&1 \
     && echo ">>> a7 at teardown: PASS — $(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));a=[p for p in d['probes'] if p['id']=='a7'][0]['detail'];m=a.get('live_mismatches') or {};print('live roots unchanged since the launch stamp' if not m else 'live root(s) MOVED during the run, recorded non-blocking: '+', '.join(f'{k} {v[\"launcher\"]}->{v[\"container\"]}' for k,v in m.items()))" /ws/output/a7_teardown.json 2>/dev/null || echo 'a7_teardown.json unreadable')" \
     || echo "!! a7 at teardown FAILED — a source root moved during the run; see a7_teardown.json (latest will not move)"
-  # The close runs FIRST: it can still write into $LOG_DIR, and the log copy below should carry
-  # whatever it says. Log-copy-then-close would ship a bundle whose logs predate its own verdict.
+  # Capture owners close before RTAB-Map. This preserves their final event ledgers while ROS is
+  # still available. Each close can still write into $LOG_DIR, and the copy carries its verdict.
+  _finalize_ga493_capture || true
   _close_map_and_check
   cp /tmp/*.log "$LOG_DIR/" 2>/dev/null || true
 }
@@ -317,6 +350,67 @@ trap container_exit_cleanup EXIT
 # into the grid (whole rooms painted as obstacles). Heights are relative to
 # base_link, which sits on the floor; the camera is 1.5 m up, ceilings ~2.7 m.
 RTABMAP_GRID_ARGS=${RTABMAP_GRID_ARGS:-"--Grid/NormalsSegmentation false --Grid/MaxGroundHeight 0.25 --Grid/MaxObstacleHeight 1.8 --Grid/RangeMax 4.0 --Grid/RayTracing true --Grid/NoiseFilteringRadius 0.1 --Grid/NoiseFilteringMinNeighbors 5 --Grid/CellSize 0.05"}
+
+# One writable database per floor-session. The launcher copies a declared prior map into
+# /ws/output before the container starts; the canonical map library stays read-only. Mapping is
+# the established default. Localization is explicit and refuses a missing/mismatched/corrupt copy.
+RTABMAP_SESSION_MODE="${RTABMAP_SESSION_MODE:-mapping}"
+RTABMAP_DATABASE_PATH="${RTABMAP_DATABASE_PATH:-/ws/output/rtabmap.db}"
+case "$RTABMAP_SESSION_MODE" in
+  mapping)
+    RTABMAP_DELETE_DB_ON_START=true
+    [ -z "${RTABMAP_LOCALIZE_DB:-}" ] || {
+      echo "!! mapping session received RTABMAP_LOCALIZE_DB=$RTABMAP_LOCALIZE_DB"
+      exit 1
+    }
+    echo ">>> RTAB-Map session: mapping, new writable database $RTABMAP_DATABASE_PATH"
+    ;;
+  localization)
+    RTABMAP_DELETE_DB_ON_START=false
+    [ -n "${RTABMAP_LOCALIZE_DB:-}" ] || {
+      echo "!! localization session has no RTABMAP_LOCALIZE_DB identity"
+      exit 1
+    }
+    [ "$RTABMAP_LOCALIZE_DB" = "$RTABMAP_DATABASE_PATH" ] || {
+      echo "!! RTABMAP_LOCALIZE_DB=$RTABMAP_LOCALIZE_DB does not match session database $RTABMAP_DATABASE_PATH"
+      exit 1
+    }
+    [ -f "$RTABMAP_DATABASE_PATH" ] || {
+      echo "!! localization database $RTABMAP_DATABASE_PATH does not exist"
+      exit 1
+    }
+    _want=$(printf '%s' "$RTABMAP_GRID_ARGS" | sha256sum | cut -c1-16)
+    _sidecar="${RTABMAP_DATABASE_PATH}.params-sha"
+    [ -f "$_sidecar" ] || {
+      echo "!! $_sidecar is missing; refusing a map with unknown build parameters"
+      exit 1
+    }
+    _have=$(tr -d '[:space:]' < "$_sidecar")
+    [ "$_have" = "$_want" ] || {
+      echo "!! MAP PARAMETER MISMATCH: map=$_have session=$_want"
+      exit 1
+    }
+    python3 - "$RTABMAP_DATABASE_PATH" <<'PYDB'
+import sqlite3
+import sys
+
+path = sys.argv[1]
+connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+verdict = connection.execute("PRAGMA integrity_check").fetchone()[0]
+nodes = connection.execute("SELECT count(*) FROM Node").fetchone()[0]
+connection.close()
+if verdict != "ok" or nodes <= 0:
+    raise SystemExit(f"localization database refused: integrity={verdict}, nodes={nodes}")
+print(f">>> localization database verified: integrity={verdict}, nodes={nodes}")
+PYDB
+    echo ">>> RTAB-Map session: localization, writable copy $RTABMAP_DATABASE_PATH (params-sha $_have)"
+    ;;
+  *)
+    echo "!! RTABMAP_SESSION_MODE=$RTABMAP_SESSION_MODE; expected mapping or localization"
+    exit 1
+    ;;
+esac
+export RTABMAP_SESSION_MODE RTABMAP_DATABASE_PATH RTABMAP_DELETE_DB_ON_START
 
 echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 -> bridge :${BRIDGE_PORT:-8081})"
 # THE BRIDGE PORT IS NOT THE DASHBOARD. :8081 serves the bridge's own control page -- no 3D
@@ -372,37 +466,6 @@ else
     || { echo "!! PRE-FLIGHT FAILED — no measured run produced. See /ws/output/preflight.json"; exit 1; }
 fi
 # -------------------------------------------------------------------------------------------
-
-# GA-97 / GA-433. LOCALIZATION MODE, RETIRED. Localizing against a published map used to happen
-# here: a params-sha sidecar check refused a map built under different grid parameters, and the run
-# read a scratch copy so it could not write into the canonical map. habitat_launch.py owns rtabmap
-# now and hardcodes its database, so neither is reachable. Both branches below only report that.
-if [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
-  # SAY SO WHEN THE BRANCH IS NOT TAKEN. An unset variable took this path silently, and the
-  # testing lane found the passthrough missing only because it went looking BEFORE launching
-  # rather than after. Silence is how "the feature is off" and "the feature never arrived" became
-  # the same observation.
-  echo ">>> localization OFF — mapping from scratch (RTABMAP_LOCALIZE_DB is unset)"
-fi
-if [ -n "${RTABMAP_LOCALIZE_DB:-}" ]; then
-  # GA-433 (2026-09-10). LOCALIZING AGAINST A PUBLISHED MAP IS NOT REACHABLE ANY MORE, so this
-  # refuses instead of accepting the variable and ignoring it.
-  #
-  # habitat_launch.py owns rtabmap now, and it hardcodes database_path /root/.ros/rtabmap.db with
-  # --delete_db_on_start. Nothing here can hand it another database. The apparatus that used to do
-  # that — the params-sha sidecar check, the read-only canonical mount (GA-158), the writable
-  # scratch copy (GA-336), the per-floor publish refusal (GA-380) — has no caller under this
-  # configuration and is preserved only in git history at a4c5957^ and in PLAN_1.3 §54-66.
-  #
-  # A variable that is set, printed and then dropped is the failure this whole file argues against
-  # (rule 68: a setting is not an outcome). Until the owner rules on the localization regime, the
-  # honest behaviour is to stop.
-  echo "!! RTABMAP_LOCALIZE_DB=$RTABMAP_LOCALIZE_DB is set, and this stack CANNOT honour it."
-  echo "   habitat_launch.py hardcodes database_path /root/.ros/rtabmap.db --delete_db_on_start,"
-  echo "   so every launch MAPS FRESH and never localizes against a published map."
-  echo "   Clear RTABMAP_LOCALIZE_DB, or restore a launch path that accepts a database."
-  exit 1
-fi
 
 # same rtabmap arguments as launch/habitat_launch.py (odometry from /odom, no TF publish)
 # GA-359 (2026-09-07). `publish_tf:=false`, passed here and in upstream habitat_launch.py since the
@@ -471,15 +534,26 @@ ros2 topic echo --csv --full-length /rtabmap/localization_pose geometry_msgs/msg
 # configuration somebody will set, and then two machines run different stacks and nothing says so.
 _wall_arg=$([ "${WALL_DETECTOR:-0}" = "1" ] && echo true || echo false)
 _loc_arg=$([ "${FEED_POSE_SOURCE:-simulator}" = "rtabmap" ] && echo rtabmap || echo ground_truth)
+PERCEPTION_EXECUTABLE="${PERCEPTION_EXECUTABLE:-perception_2.py}"
+case "$PERCEPTION_EXECUTABLE" in
+  ''|*[!A-Za-z0-9_.-]*)
+    echo "!! invalid PERCEPTION_EXECUTABLE=$PERCEPTION_EXECUTABLE; use an installed executable name"
+    exit 2
+    ;;
+esac
+export PERCEPTION_EXECUTABLE
 # GA-479. THE LAYOUT THE ONE RVIZ OPENS WITH. habitat_launch.py started rviz2 with no `-d`, so
 # the single surviving viewer (GA-464 removed the sibling container) showed rviz's own defaults:
 # no map, no clouds, no object markers and no schedule. live.rviz carries all of them, including
 # the exploration schedule on /schedule_markers. The launch file ignores an empty or missing path
 # and keeps its defaults, so this cannot cost a run its viewer.
 export RVIZ_CONFIG="${RVIZ_CONFIG:-/graph_api/lost3dsg/test/live.rviz}"
-echo ">>> stack via habitat_launch.py (use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg rviz_config=$RVIZ_CONFIG)"
+echo ">>> stack via habitat_launch.py (perception_executable:=$PERCEPTION_EXECUTABLE use_wall_detector:=$_wall_arg localization_mode:=$_loc_arg rtabmap_session_mode:=$RTABMAP_SESSION_MODE rtabmap_database_path:=$RTABMAP_DATABASE_PATH rviz_config=$RVIZ_CONFIG)"
 ros2 launch lost3dsg habitat_launch.py \
+    perception_executable:="$PERCEPTION_EXECUTABLE" \
     use_wall_detector:="$_wall_arg" localization_mode:="$_loc_arg" \
+    rtabmap_session_mode:="$RTABMAP_SESSION_MODE" \
+    rtabmap_database_path:="$RTABMAP_DATABASE_PATH" \
     use_rviz:="${USE_RVIZ:-true}" \
     > "$LOG_DIR/launch.log" 2>&1 &
 LAUNCH_PID=$!
@@ -540,10 +614,12 @@ fi
 # starts last and loads the 1.2 GB map first -- "Localization mode" came 119 s after the feed node's
 # first line in run 20260907_170421, and a13 sampled at 15 s, saw no map->odom from anyone, and ended
 # a healthy run (my probe's false positive; rule 24's asymmetry, paid once). So: wait for rtabmap's
-# own readiness line (localization or mapping), up to 300 s, then sample. No line by then is itself
-# a finding, and a13 then reports whatever the TF tree holds.
+# own readiness line (localization or mapping), up to 300 s, then sample. habitat_launch.py owns
+# rtabmap and redirects every child into launch.log; the retired direct start's rtabmap.log stays
+# empty. Reading that retired file made every healthy launch wait the full five minutes.
+# No readiness line by the deadline is itself a finding, and a13 then reports the TF tree.
 _a13_deadline=$(( $(date +%s) + 300 ))
-until grep -q "Localization mode\|Mapping mode\|rtabmap: subscribe_odom" /tmp/rtabmap.log 2>/dev/null; do
+until grep -q "Localization mode\|Mapping mode\|rtabmap: subscribe_odom" "$LOG_DIR/launch.log" 2>/dev/null; do
   [ "$(date +%s)" -ge "$_a13_deadline" ] && { echo "!! a13: rtabmap printed no readiness line in 300 s; sampling anyway"; break; }
   sleep 3
 done

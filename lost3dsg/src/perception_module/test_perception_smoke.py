@@ -14,6 +14,7 @@ Executing the path once is the whole of what was missing.
 
 Run: python3 test_perception_smoke.py
 """
+import hashlib
 import json
 import os
 import pathlib
@@ -32,10 +33,12 @@ rosstub.install()
 import object_info      # noqa: E402
 import object_services  # noqa: E402
 import perception_2     # noqa: E402
+import perception_parallel  # noqa: E402
 import room_manager     # noqa: E402
+from bbox_fusion import add_fusion_view  # noqa: E402
 from world_model import wm  # noqa: E402
 
-for mod in (object_services, perception_2, room_manager):
+for mod in (object_services, perception_2, perception_parallel, room_manager):
     assert pathlib.Path(mod.__file__).resolve().parent == HERE, \
         f"testing the wrong tree: imported {mod.__file__}"
 
@@ -76,6 +79,77 @@ def description_chain():
     perception_2.DetectObjectsNode._publish_description_array(node, dets, descs, None)
     perception_2.DetectObjectsNode._update_world_model(
         node, dets, [None, None], [BOX, BOX], descs)
+
+
+def bbox_fusion_message():
+    """The measured voxel keys and view ID reach the typed bbox message."""
+    published = []
+    node = perception_2.DetectObjectsNode.__new__(perception_2.DetectObjectsNode)
+    node.make_header_msg = lambda cls, **kwargs: cls()
+    node.bbox_pub = types.SimpleNamespace(publish=published.append)
+    det = types.SimpleNamespace(
+        instance_label="chair",
+        bbox=None,
+        clip_embedding=None,
+        fusion_voxel_keys=[0, 0, 0, 1, 2, 3],
+    )
+
+    perception_2.DetectObjectsNode._publish_bbox_array(
+        node, [det], [dict(BOX)], None, None, cycle_id="cycle-17"
+    )
+
+    assert len(published) == 1 and published[0].cycle_id == "cycle-17"
+    box = published[0].boxes[0]
+    assert box.has_fusion_voxels is True
+    assert box.fusion_voxel_size_m == perception_2.VOXEL_SIZE_M
+    assert box.fusion_voxel_keys == [0, 0, 0, 1, 2, 3]
+
+
+def parallel_perception_tracks_its_base():
+    """The parallel copy names the exact perception_2.py revision it mirrors."""
+    base_bytes = (HERE / "perception_2.py").read_bytes()
+    digest = hashlib.sha256(base_bytes).hexdigest()
+    assert digest == perception_parallel.PERCEPTION_2_BASELINE_SHA256, (
+        "perception_2.py changed: audit and apply the same semantic change to "
+        "perception_parallel.py before updating PERCEPTION_2_BASELINE_SHA256"
+    )
+    parallel_source = (HERE / "perception_parallel.py").read_text()
+    begin = sum(line.lstrip().startswith("# PARALLEL_VARIANT_BEGIN:")
+                for line in parallel_source.splitlines())
+    end = sum(line.lstrip().startswith("# PARALLEL_VARIANT_END:")
+              for line in parallel_source.splitlines())
+    assert begin == end and begin >= 5, (begin, end)
+    assert "ParallelFusionEncoder.from_config(CFG)" in parallel_source
+
+
+def parallel_timing_names_the_backend():
+    """The directly measured encoder time and identity reach the cycle row."""
+    rows = []
+    node = perception_parallel.DetectObjectsNode.__new__(
+        perception_parallel.DetectObjectsNode
+    )
+    node.latest_latencies = {}
+    node._bbox_fusion_measurement = {
+        "component": "ParallelFusionEncoder",
+        "backend": "cpu_processes",
+        "elapsed_ms": 12.375,
+        "cpu_workers": 4,
+    }
+    node._cycle_count = 0
+    original_paths = perception_parallel.LATENCY_JSON_PATHS
+    original_append = perception_parallel._append_cycle_row
+    perception_parallel.LATENCY_JSON_PATHS = ()
+    perception_parallel._append_cycle_row = rows.append
+    try:
+        perception_parallel.DetectObjectsNode._record_cycle_ms(
+            node, 0.100, frame_id="frame-1", n_detections=3
+        )
+    finally:
+        perception_parallel.LATENCY_JSON_PATHS = original_paths
+        perception_parallel._append_cycle_row = original_append
+    assert node.latest_latencies["bbox_fusion_encode_ms"] == 12.375
+    assert node.latest_latencies["bbox_fusion_encoder"]["backend"] == "cpu_processes"
+    assert rows[0]["bbox_fusion_encoder"]["cpu_workers"] == 4
 
 
 # --- the three names that did not exist --------------------------------------------
@@ -1177,6 +1251,7 @@ def save_persistent_roundtrip():
     a = object_info.Object("chair", [0.0, 0.0, 0.0], BOX)
     b = object_info.Object("desk", [1.0, 1.0, 0.0], FAR)
     a.object_id, b.object_id = "obj_a", "obj_b"
+    add_fusion_view(a, "chair", "cycle-17", 0.03, [0, 0, 0, 1, 2, 3])
     wm.persistent_perceptions.extend([a, b])
     with tempfile.TemporaryDirectory() as tmp:
         object_services.PROJECT_ROOT = tmp
@@ -1188,6 +1263,10 @@ def save_persistent_roundtrip():
             object_services.PROJECT_ROOT = original
         ids = {e["object_id"] for e in on_disk}
         assert ids == {"obj_a", "obj_b"}, f"both live objects must survive: {ids}"
+        saved_a = next(e for e in on_disk if e["object_id"] == "obj_a")
+        assert saved_a["bbox"] == BOX, "fusion must not replace association geometry"
+        assert saved_a["fused_bbox"]["source"] == "multi_observation_voxel_agreement"
+        assert saved_a["bbox_fusion"]["view_count"] == 1
         # and a second save with one removed must drop exactly that one
         wm.persistent_perceptions.remove(b)
         with tempfile.TemporaryDirectory() as tmp2:
@@ -1559,6 +1638,9 @@ def localisation_gate():
 
 
 for name, fn in [("description chain (build -> publish -> world model)", description_chain),
+                 ("bbox fusion keys and view ID reach the typed message", bbox_fusion_message),
+                 ("parallel perception mirrors the named base", parallel_perception_tracks_its_base),
+                 ("parallel timing names the measured backend", parallel_timing_names_the_backend),
                  ("install list covers every import (GA-128)", install_list),
                  ("empty embedding is absent, not a crash (GA-171)", empty_embedding),
                  ("tracking scan summary: one row per cycle (GA-190)", scan_summary),
