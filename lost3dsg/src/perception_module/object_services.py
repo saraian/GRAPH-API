@@ -2867,7 +2867,19 @@ class ObjectServices(Node):
                     best_match._yaw_acc = yaw_acc   # GA-315 part 2
                     updated_obj = best_match
 
-                elif bbox_is_suspicious(bbox, old_bbox):
+                # THE GATE JUDGES THE INCOMING VIEW, NOT THE UNION. `bbox` above is
+                # fuse_orientation(best_match, raw_bbox) -- the stored box UNIONED with this
+                # view -- so asking "is it more than 3x the old box, or over 1.5 m3, or over
+                # 3 m across?" of the union is a question that answers itself for any object
+                # already near a limit. MEASURED with the real function on 20260914_180343's
+                # 47 detector boxes: fusing a box WITH ITSELF inflates its volume by a median
+                # 2.83x (max 4.14x), and 15 of the 47 would be refused if re-observed
+                # identically. Of that run's 8 update attempts, 6 were refused
+                # `implausible_bbox` and became duplicate objects -- and ground truth
+                # (evaluator-only, read afterwards) says all 8 had paired the detection with
+                # the RIGHT instance. The association verdict was right 8 of 8; this gate was
+                # wrong 6 of 6. `raw_bbox` is what the sensor actually reported.
+                elif bbox_is_suspicious(raw_bbox, old_bbox):
                     # GA-26: this used to set a rejection message and fall through to
                     # the success tail, which overwrote it with success=True -- byte-
                     # identical to an attribute-only update. The detection was NOT

@@ -8,7 +8,6 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "src" / "perception_module"
 
@@ -169,8 +168,18 @@ class ObservationContractTest(unittest.TestCase):
             self.assertIn('reason="motion_during_detection"', source)
         self.assertIn('"unpaired_description"', manager)
         self.assertIn('"sync_buffer_evicted"', manager)
-        self.assertIn('reason="manager_motion_gate"', manager)
         self.assertIn('reason="observed_during_motion"', manager)
+        # `manager_motion_gate` IS GONE ON PURPOSE, 2026-09-14. It was written by an early
+        # return in object_tracking_callback that read `self.robot_has_moved` -- the robot's
+        # state WHEN THE PAIR ARRIVED, 21-77 s after capture -- and discarded the whole cycle.
+        # `_try_process` already applies the gate that one was meant to be, comparing the
+        # frame's own stamp against `_moving_since` and writing `observed_during_motion`.
+        # MEASURED: the delivery-time gate dropped 19 of 52 detections on 20260914_174342
+        # (including that run's only re-observation cycle, which is why all 21 of its objects
+        # ended single-view), 13 of 47 on 20260914_180343 and 85 of 226 on the GA-493 bundle
+        # -- every discarded cycle captured while STATIONARY. This assertion holds the site
+        # retired: a motion discard is recorded once, where the decision is actually taken.
+        self.assertNotIn('reason="manager_motion_gate"', manager)
 
 
 if __name__ == "__main__":

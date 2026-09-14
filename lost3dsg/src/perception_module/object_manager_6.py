@@ -1600,21 +1600,24 @@ class ObjectManagerService(Node):
         if not self.exploration_mode:
             self.tracking_step_counter += 1
 
-        if self.robot_has_moved:
-            self.object_services.log_both('warn', "Robot is moving — data discarded by object_tracking_callback")
-            for box in request.bboxes.boxes:
-                observation = observation_dict_from_msg(
-                    getattr(box, "observation", None))
-                self.decision_log.write(
-                    "observation_discard",
-                    (observation or {}).get("observation_id") or "<legacy>",
-                    reason="manager_motion_gate",
-                    cycle_id=getattr(request.bboxes, "cycle_id", "") or None)
-            response.status = "moving"
-            response.num_objects = len(wm.persistent_perceptions)
-            response.tracking_mode_activated = False
-            return response
-
+        # THE DELIVERY-TIME MOTION GATE IS GONE. It read `self.robot_has_moved` -- what the robot
+        # is doing WHEN THE PAIR ARRIVES -- and discarded the whole cycle. `_try_process`, the only
+        # caller (the ROS service has no client in this tree), already applies the gate this one
+        # was meant to be, and says so: "A pair is judged by WHEN IT WAS OBSERVED, not by what the
+        # robot is doing when it arrives", comparing the frame's own stamp against `_moving_since`.
+        # This early return re-applied at delivery exactly what that fix removed at capture.
+        #
+        # WHY IT MATTERED: the describer answers 21-77 s after capture, and the robot changes
+        # motion state 4-22 times in that window, so whether a cycle survived was timing luck.
+        # MEASURED across three bundles, every discarded cycle having moving_at_capture=False:
+        # 20260914_174342 19 of 52 detections (37%) -- including the run's ONLY re-observation
+        # cycle, with sofa IoU 0.87, rug 0.56, table 0.50 against existing objects, which is why
+        # all 21 of its objects ended single-view; 20260914_180343 13 of 47 (28%); the GA-493
+        # bundle 85 of 226 (38%), every one logged `manager_motion_gate`. Cycles captured WHILE
+        # MOVING were meanwhile accepted, because the flag says nothing about the frame.
+        #
+        # The discard row keeps its place in _try_process under reason `observed_during_motion`,
+        # which is the decision actually taken.
         in_exploration = self.exploration_mode
         current_perception_objects = []
         objects_modified = False
