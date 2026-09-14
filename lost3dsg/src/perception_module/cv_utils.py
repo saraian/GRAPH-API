@@ -15,7 +15,7 @@ from sensor_msgs.msg import PointField
 import json
 from geometry_msgs.msg import Point
 from utils import statistical_outlier_removal, get_distinct_color
-from box_view import BOX_EDGES, box_corners_map, project_visible
+from box_view import BOX_EDGES, box_corners_map, pca_oriented_box, project_visible
 from config import CFG, vlm_completion_kwargs, world_frame
 import struct
 from openai import OpenAI
@@ -27,7 +27,6 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from builtin_interfaces.msg import Time as TimeMsg
 file_path = os.path.abspath(__file__)
 import time
-import itertools
 import tf2_ros
 
 def _filter_object_points(mask, depth_image, fx, fy, cx, cy,
@@ -399,6 +398,104 @@ def init_bbox_publisher(node):
     time.sleep(0.5)
     return bbox_pub, centroid_pub
 
+
+def set_marker_from_bbox(marker, bbox):
+    """Set a CUBE marker's pose and scale from an AABB or PCA-oriented box.
+
+    RViz renders a ``Marker.CUBE`` in the marker's local frame.  The old publisher
+    always put the marker at the AABB centre with an identity orientation, even when
+    ``bbox`` already carried ``yaw``/``oriented_center``/``oriented_extents``.  Keep
+    that six-key representation as the fallback, but prefer the measured OBB whenever
+    it is present.
+
+    Returns ``True`` when usable geometry was applied and ``False`` for malformed
+    geometry.  The latter lets callers skip a bad marker rather than publish a zero-size
+    cube that is difficult to diagnose in RViz.
+    """
+    b = bbox or {}
+    try:
+        corners, oriented = box_corners_map(b)
+        if not corners:
+            return False
+
+        if oriented:
+            center = [float(v) for v in b["oriented_center"]]
+            scale = [float(v) for v in b["oriented_extents"]]
+            yaw = float(b.get("yaw", 0.0))
+        else:
+            center = [
+                (float(b["x_min"]) + float(b["x_max"])) * 0.5,
+                (float(b["y_min"]) + float(b["y_max"])) * 0.5,
+                (float(b["z_min"]) + float(b["z_max"])) * 0.5,
+            ]
+            scale = [
+                float(b["x_max"]) - float(b["x_min"]),
+                float(b["y_max"]) - float(b["y_min"]),
+                float(b["z_max"]) - float(b["z_min"]),
+            ]
+            yaw = 0.0
+
+        if (not np.all(np.isfinite(center)) or not np.all(np.isfinite(scale))
+                or not np.all(np.asarray(scale) > 0.0) or not np.isfinite(yaw)):
+            return False
+
+        marker.pose.position.x, marker.pose.position.y, marker.pose.position.z = center
+        marker.pose.orientation.x = 0.0
+        marker.pose.orientation.y = 0.0
+        marker.pose.orientation.z = float(np.sin(yaw * 0.5))
+        marker.pose.orientation.w = float(np.cos(yaw * 0.5))
+        marker.scale.x, marker.scale.y, marker.scale.z = scale
+        return True
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def publish_bbox_corner_markers(node, bboxes, bbox_marker_pub=None,
+                                frame_id=None, stamp=None):
+    """Publish frame-local box corners using each box's OBB when available.
+
+    This is separate from the persistent CUBE publisher because the frame-local RViz
+    topic historically used ``SPHERE_LIST`` markers for the eight corners.  A corner
+    list has no pose to rotate; selecting its corners through ``box_corners_map`` keeps
+    the visualisation exactly aligned with the OBB used by the CUBE markers and the
+    image overlay.
+    """
+    if bbox_marker_pub is None:
+        return
+    frame_id = frame_id or world_frame()
+    stamp = stamp if stamp is not None else node.get_clock().now().to_msg()
+    if not hasattr(node, "_bbox_marker_id_counter"):
+        node._bbox_marker_id_counter = 0
+
+    marker_array = MarkerArray()
+    for bbox in bboxes or []:
+        if not bbox:
+            continue
+        corners, _ = box_corners_map(bbox)
+        if len(corners) != 8:
+            continue
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.ns = "bbox_markers"
+        marker.id = node._bbox_marker_id_counter
+        marker.type = Marker.SPHERE_LIST
+        marker.action = Marker.ADD
+        marker.scale.x = marker.scale.y = marker.scale.z = 0.02
+        marker.color = get_distinct_color(node._bbox_marker_id_counter)
+        marker.lifetime = Duration(seconds=0).to_msg()
+        marker.points = [
+            Point(x=float(point[0]), y=float(point[1]), z=float(point[2]))
+            for point in corners
+        ]
+        marker_array.markers.append(marker)
+        node._bbox_marker_id_counter += 1
+
+    if marker_array.markers:
+        bbox_marker_pub.publish(marker_array)
+        node.get_logger().info(
+            f"Published {len(marker_array.markers)} bbox markers on /bbox_marker")
+
 def _apply_transform(pts, transform):
     """Applica in un colpo solo una trasformazione tf2 già risolta a un array (N,3)."""
     R, T = _get_R_and_T(transform)
@@ -524,10 +621,13 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                                     bbox_marker_pub=None, centroid_marker_pub=None,
                                     max_points_per_obj=20000, remove_outliers=True,
                                     sor_k=30, sor_std=1.5, transform=None,
-                                    output_frame=None, points_out=None):
+                                    output_frame=None, points_out=None,
+                                    include_orientation=True):
     """`points_out`, when a list, receives one entry per mask: the map-frame points the
     box was measured from, or None where no box was produced. The PCA stage reads them
-    instead of re-running the projection and the outlier removal on the same mask."""
+    instead of re-running the projection and the outlier removal on the same mask.
+    ``include_orientation=False`` is used by the two-stage perception node so it can apply
+    its clipped-mask policy before publishing the frame-local marker."""
     output_frame = output_frame or world_frame()
     fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
     camera_frame = CFG["frames"]["camera"]
@@ -593,7 +693,16 @@ def mask_list_to_centroid_and_bbox(mask_list, labels, depth_image, camera_info, 
                 "y_min": float(mins_map[1]), "y_max": float(maxs_map[1]),
                 "z_min": float(mins_map[2]), "z_max": float(maxs_map[2]),
             }
-            corners_map = np.array(list(itertools.product(*zip(mins_map, maxs_map))))
+            if include_orientation:
+                # RViz should expose the PCA selected by the measured point set even when the
+                # footprint is close to square. The shared fitter still rejects degenerate
+                # clouds; min_anisotropy=1.0 only avoids silently turning a valid visual
+                # measurement into an AABB on this inspection path.
+                oriented = pca_oriented_box(pts_map, min_anisotropy=1.0)
+                if oriented is not None:
+                    bbox_dict.update(oriented)
+                    bbox_dict["has_orientation"] = True
+            corners_map, _ = box_corners_map(bbox_dict)
 
             # ALL THREE appends together, as the LAST statements of the try. The centroid used
             # to be appended before the two raises above, so on an empty or degenerate box
@@ -780,11 +889,10 @@ def _publish_bbox_markers(node, objects, pub, ns, color, prefer_fused=False):
             continue
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
-        cx, cy, cz = _centroid_from_bbox(bbox)
-        m = _make_marker(world_frame(), stamp, ns, i * 2, Marker.CUBE, None, color, (cx, cy, cz))
-        m.scale.x = bbox["x_max"] - bbox["x_min"]
-        m.scale.y = bbox["y_max"] - bbox["y_min"]
-        m.scale.z = bbox["z_max"] - bbox["z_min"]
+        m = _make_marker(world_frame(), stamp, ns, i * 2, Marker.CUBE, None, color,
+                         (0.0, 0.0, 0.0))
+        if not set_marker_from_bbox(m, bbox):
+            continue
         ma.markers.append(m)
     if ma.markers:
         pub.publish(ma)

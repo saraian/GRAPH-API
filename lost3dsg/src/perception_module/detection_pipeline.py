@@ -12,17 +12,23 @@ from cv_utils import _apply_transform, _filter_object_points
 from detection_types import Detection
 
 
+# RViz is an inspection surface: when the filtered point set has any measurable XY
+# anisotropy, keep its PCA axis even for a clipped mask.  A clipped mask is recorded as a
+# warning below, but suppressing its OBB made RViz silently fall back to an AABB for exactly
+# the objects the operator was trying to inspect.  The shared fitter still rejects truly
+# degenerate point sets; 1.0 only removes the arbitrary visual stability gate.
+RVIZ_PCA_MIN_ANISOTROPY = 1.0
+
+
 def mask_touches_border(mask, margin_px=2):
     """True when the mask has a pixel within `margin_px` of any image edge — i.e. the
     object very likely continues OUTSIDE the frame and the mask is a clipped wedge.
 
-    GA-315. PCA on a wedge returns its hypotenuse: a right isosceles triangle has an
-    eigenvalue ratio of 3.0 (anisotropy 1.73, past the 1.2 gate) and a principal axis at
-    45 degrees, whatever the object's real axis. Measured over 25 bundles' detections.jsonl
-    (2026-09-07): beds longer than 1.7 m whose mask touches a border are diagonal
-    (25-65 degrees mod 90) in 64 of 118; fully-in-frame beds in 9 of 43. No single-view
-    estimator can recover the axes from a wedge that holds one bed edge, so the honest
-    answer for a clipped mask is NO orientation, not a guessed one.
+    GA-315. PCA on a wedge can return its hypotenuse: a right isosceles triangle has an
+    eigenvalue ratio of 3.0 and a principal axis at 45 degrees, whatever the object's real
+    axis. The predicate is retained as provenance for the visualisation warning; the RViz
+    path still emits the measured PCA box because its purpose is to expose the geometry that
+    was actually used by the detector.
 
     The 2D box could stand in for the mask, but the wedge is in the raw mask (re-lifts of
     the depth PNGs reproduce the archived yaws to 1.8 degrees), so the mask is the instrument."""
@@ -420,26 +426,29 @@ class DetectionPipelineMixin:
         """Add the optional PCA keys to each valid bbox dict, in place.
         Reads the points the geometry stage kept on each detection (2026-09-06); the
         re-lift it used to do per mask was pure duplication of the AABB pass (W8)."""
-        if transform is None:
-            return
         fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
         for det, bbox in zip(detections, bboxes_3d):
             if not bbox:
                 continue
             try:
-                # GA-315. A mask that runs off the image edge is a wedge of the object, and a
-                # wedge's principal axis is its hypotenuse. No PCA for it: the AABB stays,
-                # and the reason is written beside it (a key the msg builder ignores and the
-                # detections.jsonl archive keeps, so the skip count is readable per bundle).
-                if mask_touches_border(det.mask):
-                    bbox["orientation_skipped"] = "mask_clipped"
-                    continue
+                # GA-315. A mask that runs off the image edge is a wedge of the object. Keep
+                # that fact as a warning, but let the RViz inspection path show the PCA of the
+                # filtered points instead of silently replacing it with an AABB.
+                mask_clipped = mask_touches_border(det.mask)
+                if mask_clipped:
+                    # Keep the provenance warning, but do not suppress the PCA box used by
+                    # RViz. The point set is still the filtered depth measurement, and the
+                    # operator explicitly asked to see that oriented geometry. If PCA cannot
+                    # produce a box at all, the fallback below records the old skip reason.
+                    bbox["orientation_warning"] = "mask_clipped"
                 # The geometry stage now keeps the map-frame points it measured the box
                 # from on the detection (cv_utils points_out), and this reads them. The
                 # re-lift below is IDENTICAL work (W8, same mask, same parameters, same
                 # transform) and runs only for a caller that skipped _compute_3d_geometry.
                 pts_map = getattr(det, "points_map", None)
                 if pts_map is None:
+                    if transform is None:
+                        continue
                     pts = _filter_object_points(
                         det.mask[:, :, 0], depth, fx, fy, cx, cy,
                         # W8. The SAME parameters `mask_list_to_centroid_and_bbox` (the AABB
@@ -457,9 +466,13 @@ class DetectionPipelineMixin:
                     if pts is None:
                         continue
                     pts_map = _apply_transform(pts, transform)
-                obb = pca_oriented_box(pts_map)
+                obb = pca_oriented_box(
+                    pts_map, min_anisotropy=RVIZ_PCA_MIN_ANISOTROPY)
                 if obb:
                     bbox.update(obb)
+                    bbox["has_orientation"] = True
+                elif mask_clipped:
+                    bbox["orientation_skipped"] = "mask_clipped"
             except Exception as exc:
                 self.log_both("warn", f"PCA orientation failed for {det.instance_label}: {exc}")
 

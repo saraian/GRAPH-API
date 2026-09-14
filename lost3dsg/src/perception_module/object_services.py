@@ -22,7 +22,7 @@ from bbox_fusion import (
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
 from box_view import box_corners_map, enclosing_box_from_points
-from cv_utils import publish_persistent_centroids, publish_pov_volume
+from cv_utils import publish_persistent_centroids, publish_pov_volume, set_marker_from_bbox
 from detection_index import DetectionIndex
 from detection_types import observation_dict_from_msg
 from hooks import DecisionLog, load_store
@@ -350,6 +350,16 @@ def _combine_object_geometry(a, b):
     if merged is None:
         # Malformed geometry must not turn a valid identity merge into a service failure.
         merged = dict(getattr(a, "bbox", None) or getattr(b, "bbox", None) or {})
+    elif include_orientation and not _is_oriented(merged):
+        # The combined AABB can be nearly isotropic even when one input has a valid PCA box.
+        # Do not erase that measured orientation merely because the enclosing union cannot
+        # choose a stable new axis; keep an actual input OBB for RViz and for the next update.
+        source = (getattr(a, "bbox", None) if _is_oriented(getattr(a, "bbox", None))
+                  else getattr(b, "bbox", None))
+        if _is_oriented(source):
+            for key in ("yaw", "oriented_center", "oriented_extents"):
+                merged[key] = source[key]
+            merged["has_orientation"] = True
 
     def count(obj):
         acc = getattr(obj, "_yaw_acc", None)
@@ -957,23 +967,10 @@ def publish_persistent_bboxes(node, wm, pub):
         marker.id = i
         marker.type = Marker.CUBE
         marker.action = Marker.ADD
-        if display_bbox is obj.bbox and "yaw" in obj.bbox and obj.bbox.get("oriented_extents"):
-            # Draw the PCA-oriented box (yaw about z) instead of the AABB.
-            yaw = obj.bbox["yaw"]
-            cx, cy, cz = obj.bbox["oriented_center"]
-            ex, ey, ez = obj.bbox["oriented_extents"]
-            marker.pose.orientation.z = float(np.sin(yaw / 2.0))
-            marker.pose.orientation.w = float(np.cos(yaw / 2.0))
-            marker.pose.position.x, marker.pose.position.y, marker.pose.position.z = cx, cy, cz
-            marker.scale.x, marker.scale.y, marker.scale.z = ex, ey, ez
-        else:
-            marker.pose.orientation.w = 1.0
-            marker.pose.position.x = (display_bbox['x_min'] + display_bbox['x_max']) / 2.0
-            marker.pose.position.y = (display_bbox['y_min'] + display_bbox['y_max']) / 2.0
-            marker.pose.position.z = (display_bbox['z_min'] + display_bbox['z_max']) / 2.0
-            marker.scale.x = display_bbox['x_max'] - display_bbox['x_min']
-            marker.scale.y = display_bbox['y_max'] - display_bbox['y_min']
-            marker.scale.z = display_bbox['z_max'] - display_bbox['z_min']
+        # display_bbox, not obj.bbox: the fused multi-view box is the one the evaluator
+        # scores (bbox_source), so RViz must show the same geometry the numbers come from.
+        if not set_marker_from_bbox(marker, display_bbox):
+            continue
         marker.color.a = 0.5
         marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
         marker_array.markers.append(marker)
