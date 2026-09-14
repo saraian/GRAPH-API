@@ -880,10 +880,25 @@ class ObjectManagerService(Node):
         self.room_pub = self.create_publisher(String, '/current_room', 10)
        
         # Service server
+        # THE DETECTION PATH GETS ITS OWN GROUP. 2026-09-14, measured on
+        # 20260914_170945_hm3d_00824: perception published 7 Bbox3dArray messages and this node
+        # logged "no /bbox_3d for 76s (1 received in total, 10 objects in the map)" -- ONE of
+        # seven. Everything below used to sit in the node's DEFAULT group, which rclpy makes
+        # MUTUALLY EXCLUSIVE: the service handler (20-50 s per cycle on this host, VLM-bound),
+        # the three detection inputs, the 2 s bbox timer, the 60 s watchdog and /camera/rgb at
+        # the feed rate all competed for ONE slot, and the low-rate inputs lost.
+        #
+        # They stay mutually exclusive WITH EACH OTHER -- the description/bbox pairing and the
+        # post-scan merge are written to be serialised, and the motion fix (test_motion_cycle_
+        # lookup.py) depends on it -- but they no longer contend with the housekeeping timers
+        # and the camera feed, which stay in the default group. `movement_callback` keeps its
+        # own group, as before.
+        self.detection_cb_group = MutuallyExclusiveCallbackGroup()
         self.srv = self.create_service(
             ObjectTrackingService,
             'object_tracking_service',
-            self.object_tracking_callback
+            self.object_tracking_callback,
+            callback_group=self.detection_cb_group
         )
 
         self.tf_buffer = Buffer()
@@ -917,18 +932,27 @@ class ObjectManagerService(Node):
         self.create_subscription(Bool, "/robot_movement_detected", self.movement_callback, qos_poly,
                                  callback_group=self.movement_cb_group)
 
-        self.create_subscription(ObjectDescriptionArray, '/object_descriptions', self._descriptions_callback, qos_standard)
+        # A cycle's detections must not be dropped while the service handler runs: depth 10 is
+        # about three seconds of a 3 Hz feed against a handler that takes 20-50 s on this host.
+        # Deeper queue, and the detection group declared at the service above.
+        qos_detections = QoSProfile(depth=64)
+        self.create_subscription(ObjectDescriptionArray, '/object_descriptions',
+                                 self._descriptions_callback, qos_detections,
+                                 callback_group=self.detection_cb_group)
         # GA-108: describer answers that arrived after their cycle, addressed by the crop's
         # origin frame and 2D box. They go to the object whose SIGHTING matches, not to the
         # next cycle's namesake (run 20260906_223701: 204 of 212 objects ended "unknown").
         self.create_subscription(ObjectDescriptionArray, '/object_descriptions_late',
-                                 self._late_descriptions_callback, qos_standard)
+                                 self._late_descriptions_callback, qos_detections,
+                                 callback_group=self.detection_cb_group)
         self._n_late_applied = 0
         self._n_late_unmatched = 0
-        self.create_subscription(Bbox3dArray, '/bbox_3d', self._bboxes_callback, qos_standard)
+        self.create_subscription(Bbox3dArray, '/bbox_3d', self._bboxes_callback,
+                                 qos_detections, callback_group=self.detection_cb_group)
         self.create_subscription(PoseStamped, '/agent_camera_pose', self._agent_pose_callback, qos_standard)
         self.get_logger().info("Subscribing to /object_descriptions, /bbox_3d and /agent_camera_pose")
-        self.create_subscription(String, SCAN_COMPLETE_TOPIC, self._scan_complete_callback, qos_standard)
+        self.create_subscription(String, SCAN_COMPLETE_TOPIC, self._scan_complete_callback,
+                                 qos_detections, callback_group=self.detection_cb_group)
         self.get_logger().info(f"Scan-complete merge hook: {SCAN_COMPLETE_TOPIC}")
         if TIAGO_MERGE_INTERVAL_S > 0.0:
             self._periodic_merge_timer = self.create_timer(

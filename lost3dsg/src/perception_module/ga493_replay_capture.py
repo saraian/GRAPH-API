@@ -6,6 +6,7 @@ import json
 import math
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,9 @@ class ReplayCapture:
         self.role_dir.mkdir(parents=True, exist_ok=True)
         self.cycles_dir.mkdir(exist_ok=True)
         self.events_path = self.role_dir / "events.jsonl"
+        # Callbacks in different ROS callback groups call event() concurrently; the number and
+        # the append are one operation (see event()).
+        self._event_lock = threading.Lock()
         self._sequence = 0
         self._cycles = 0
         self._bytes = 0
@@ -139,21 +143,29 @@ class ReplayCapture:
         self._bytes += size
 
     def event(self, kind: str, payload: dict | None = None, cycle_id: str | None = None) -> None:
-        row = {
-            "sequence": self._sequence,
-            "recorded_at": time.time(),
-            "kind": str(kind),
-            "cycle_id": cycle_id,
-            "payload": _json_value(payload or {}),
-        }
-        _assert_gt_free(row)
-        encoded = (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        self._reserve(len(encoded))
-        with self.events_path.open("ab") as stream:
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        self._sequence += 1
+        # ONE LOCK ROUND THE NUMBER AND THE WRITE. 2026-09-14: this read `self._sequence`, did an
+        # fsync'd append, then incremented, with nothing serialising it -- and `movement_callback`
+        # runs in its own callback group beside the default-group callbacks, so two events took
+        # the same number. MEASURED: 1 duplicate on 20260914_170517, 3 on 20260914_170945 (rows
+        # 26/27, 54/55, 79/80, each a `movement_state_changed` sharing with a `walls_arrived` or
+        # `periodic_tick`). `finalize` then raised "event sequence is not contiguous", the replay
+        # artefact was void and object_manager_6 exited 1 at teardown in BOTH runs.
+        with self._event_lock:
+            row = {
+                "sequence": self._sequence,
+                "recorded_at": time.time(),
+                "kind": str(kind),
+                "cycle_id": cycle_id,
+                "payload": _json_value(payload or {}),
+            }
+            _assert_gt_free(row)
+            encoded = (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            self._reserve(len(encoded))
+            with self.events_path.open("ab") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            self._sequence += 1
 
     def producer_cycle(self, cycle_id: str, rgb, depth, camera_info, transform,
                        detections, bboxes_3d, centroids_3d, descriptions) -> None:
