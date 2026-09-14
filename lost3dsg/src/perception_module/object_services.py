@@ -627,6 +627,19 @@ def merge_rank(o):
             str(getattr(o, "object_id", "") or o.label))
 
 
+def _box_row(bbox):
+    """A bbox as six rounded numbers for a decision row, or None. Compact on purpose: a dict of
+    six keys is twice the bytes, and GA-232's lesson is that per-pair rows are what took
+    hook_decisions.jsonl to 1.71 GB. Order is the one every reader here already uses."""
+    if not bbox:
+        return None
+    try:
+        return [round(float(bbox[k]), 3) for k in
+                ("x_min", "y_min", "z_min", "x_max", "y_max", "z_max")]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def pair_attribute_score(a, b):
     """-> (score, evidence) of lost_similarity_detailed for two world-model objects.
 
@@ -1748,7 +1761,7 @@ class ObjectServices(Node):
                 try:
                     self.decision_log.write(
                         "not_offered_summary", "<sweep>",
-                        n_pairs=not_offered,
+                        sweep=self._merge_sweep, n_pairs=not_offered,
                         by_reason={"aabb_margin": not_offered})
                 except Exception as e:
                     self.get_logger().error(
@@ -1792,7 +1805,7 @@ class ObjectServices(Node):
             try:
                 self.decision_log.write(
                     "not_offered_summary", "<sweep>",
-                    n_pairs=sum(excluded_tally.values()),
+                    sweep=self._merge_sweep, n_pairs=sum(excluded_tally.values()),
                     by_reason=excluded_tally)
             except Exception as e:
                 self.get_logger().error(f"decision_log not_offered_summary failed: {e}")
@@ -1918,6 +1931,26 @@ class ObjectServices(Node):
                         a_has_material=_known(a.material), b_has_material=_known(b.material),
                         a_has_description=_known(a.description),
                         b_has_description=_known(b.description),
+                        # WHICH SWEEP, AND BOTH SIDES' GEOMETRY. Measured by the DGX lane on the
+                        # 144-stop tour 20260914_172628, and both make a question unanswerable
+                        # rather than merely harder:
+                        #   * no refusal row carried a sweep number (0 of 19,892), and
+                        #     `not_offered_summary` is an aggregate with no pair identities, so a
+                        #     pair's streak cannot be reconstructed at all -- which is exactly
+                        #     what `merge_min_consecutive` has to be judged on. Time-binning gave
+                        #     59 clusters against the engine's own 62.
+                        #   * of the 68 pairs held at 1/2 consecutive, BOTH sides survived to the
+                        #     final state in 0 cases: a held pair is by definition one the run
+                        #     later resolved, so persistent_perception.json has no box for one
+                        #     side and no assignment rule can score it against ground truth.
+                        #     c17e38c fixed this for applied merges; the interesting pairs are
+                        #     the ones that did NOT commit.
+                        # Compact on purpose (six rounded numbers, not a dict): GA-232's lesson is
+                        # that per-pair rows are what took this file to 1.71 GB. Added keys only.
+                        sweep=self._merge_sweep,
+                        a_box=_box_row(a.bbox), b_box=_box_row(b.bbox),
+                        a_fused=_box_row(getattr(a, "fused_bbox", None)),
+                        b_fused=_box_row(getattr(b, "fused_bbox", None)),
                         similarity=similarity, dry_run=bool(dry_run), **extra)
                 except Exception as e:
                     self.get_logger().error(f"decision_log merge_refused failed: {e}")
@@ -2463,6 +2496,7 @@ class ObjectServices(Node):
                         merged_from=getattr(discard, "object_id", discard.label),
                         keeper_label=keeper.label, discarded_label=discard.label,
                         keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
+                        sweep=self._merge_sweep,
                         similarity=pair["similarity"],
                         # the shared tree's legacy-arm near-geometry fields, carried verbatim
                         decision_reason=pair.get("decision_reason"),
