@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Single-entry HM3D/HOV-SG evaluation pipeline."""
 from __future__ import annotations
-import argparse, json
+import argparse, json, re
 from pathlib import Path
 import numpy as np
 import build_hm3d_eval_manifest as adapter
@@ -10,7 +10,7 @@ import metrics_eval
 import metrics_eval_visualize
 import object_metrics
 
-SCENES = {"808":"00808-y9hTuugGdiq","810":"00810-CrMo8WxCyVb","813":"00813-svBbv1Pavdk","814":"00814-p53SfW6mjZe","815":"00815-h1zeeAwLh9Z","820":"00820-mL8ThkuaVTM","821":"00821-eF36g7L6Z9M","824":"00824-Dd4bFSTQ8gi","827":"00827-BAbdmeyTvMZ","829":"00829-QaLdnwvtxbs"}
+SCENES = {"808":"00808-y9hTuugGdiq","810":"00810-CrMo8WxCyVb","813":"00813-svBbv1Pavdk","814":"00814-p53SfW6mjZe","815":"00815-h1zeeAwLh9Z","820":"00820-mL8ThkuaVTM","821":"00821-eF36g7L6Z9M","824":"00824-Dd4bFSTQ8gi","827":"00827-BAbdmeyTvMZ","829":"00829-QaLdnwvtxbs","862":"00862-LT9Jq6dN3Ea","873":"00873-bxsVRursffK","877":"00877-4ok3usBNeis"}
 HERE = Path(__file__).resolve().parent
 
 def _gt(directory, key):
@@ -19,6 +19,32 @@ def _gt(directory, key):
     return next((p for p in paths if p.is_file()), paths[0])
 
 _ground_truth_path = _gt
+
+
+def _scene_number(value):
+    """Extract the canonical five-digit HM3D scene number from metadata."""
+    match = re.search(r"(?<!\d)(\d{5})(?!\d)", str(value or ""))
+    return match.group(1) if match else None
+
+
+def _validate_scene_provenance(expected, ground_truth, bev):
+    """Reject crossed GT/run artifacts before producing plausible-looking scores."""
+    expected = str(expected).zfill(5)
+    gt_scene = _scene_number(ground_truth.get("scene"))
+    gt_source_scene = _scene_number(
+        (ground_truth.get("ground_truth_source") or {}).get("scene"))
+    for label, actual in (("manifest GT", gt_scene),
+                          ("sorgente del manifest GT", gt_source_scene)):
+        if actual is not None and actual != expected:
+            raise ValueError(
+                f"{label} della scena {actual}, ma è stata richiesta {expected}")
+
+    # New bundles record the source scene in bev_data.json.  Keep accepting old
+    # bundles without provenance, but never accept an explicit mismatch.
+    run_scene = _scene_number(bev.get("scene") or bev.get("scene_id"))
+    if run_scene is not None and run_scene != expected:
+        raise ValueError(
+            f"run-dir della scena {run_scene}, ma è stata richiesta {expected}")
 
 def _write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +124,13 @@ def main():
     out.mkdir(parents=True, exist_ok=True); canonical = SCENES[key].split("-",1)[0]
     # Always build from the two explicit current inputs. No yaw option and no
     # previous evaluation artifact can influence this manifest.
-    manifest = adapter.build(json.loads(gt.read_text()), run,
+    gt_document = json.loads(gt.read_text(encoding="utf-8"))
+    bev_document = json.loads((run / "bev_data.json").read_text(encoding="utf-8"))
+    try:
+        _validate_scene_provenance(canonical, gt_document, bev_document)
+    except ValueError as exc:
+        ap.error(str(exc))
+    manifest = adapter.build(gt_document, run,
                              persistent or run / "persistent_perception.json", 0.0)
     # Keep the browser and the region metric tied to the same RViz snapshot,
     # even if the adapter implementation changes later.
@@ -112,7 +144,12 @@ def main():
         if usable:
             vectors = embedding_stage.encode_crops(usable, args.checkpoint, args.device, args.batch_size)
             manifest, _ = embedding_stage.enrich_manifest(manifest, vectors); manifest["embedding_crop_map"] = mapping
-    manifest["evaluation_protocol"] = "HOV-SG top-k IoU>0.5 + object_metrics center3d"; manifest["object_distance_threshold_m"] = args.object_distance
+    manifest["evaluation_protocol"] = (
+        "HOV-SG top-k object association + HOV-SG 5 cm directional room overlap "
+        "+ object_metrics center3d")
+    manifest["region_association_metric"] = "HOV-SG max directional overlap"
+    manifest["region_overlap_threshold"] = args.region_iou
+    manifest["object_distance_threshold_m"] = args.object_distance
     manifest_path = out / f"manifest_eval_{canonical}.json"; metrics_path = out / f"risultati_eval_{canonical}.json"; visual_path = out / f"boxes_{canonical}.html"
     _write(manifest_path, manifest)
     evaluated = metrics_eval.filtered_scene(manifest)

@@ -9,7 +9,7 @@ vlm:
   # https://obs.regolo.ai/model?model=qwen3.8-27b
   model: "qwen3.8-27b"
   api_key: ""          # empty -> OPENAI_API_KEY env, else legacy api.txt, else "ollama"
-  timeout: 30.0        # seconds per request
+  timeout: 180.0        # seconds per request
   retries: 2           # extra attempts on timeout/malformed response, then raise
   # REQUIRED WITH A QWEN MODEL, and it is the half that makes the reasoning fix bite.
   # `vlm_completion_kwargs()` (config.py) returns {} unless this key is exactly False, so
@@ -129,8 +129,8 @@ frames:
   # into. If you point this at a BODY frame (x forward, z up), depth lands in
   # the height axis and every object position is silently wrong.
   camera: "habitat_camera_optical"
-  # Physical camera axes (x forward, y left, z up) for the saved agent pose.
-  agent_pose: "habitat_camera"
+  # Frame used for the pose published on /agent_camera_pose.
+  agent_pose: "habitat_camera_optical"
 
   # The motion gate: perception runs only while the camera is still. A score is metres of
   # translation PLUS radians of rotation since the previous 1 Hz sample, and the camera counts
@@ -161,8 +161,8 @@ paths:
   # and those files are in no tree and in no image, so an empty value is a path that does not
   # resolve. Pre-flight probe a4 refuses the run for it rather than letting the first cycle
   # discover it.
-  vitsam_encoder: "/models/vitsam/l2_encoder.onnx"
-  vitsam_decoder: "/models/vitsam/l2_decoder.onnx"
+  vitsam_encoder: "/root/exchange/lost3dsg/src/perception_module/utils/l2_encoder.onnx"
+  vitsam_decoder: "/root/exchange/lost3dsg/src/perception_module/utils/l2_decoder.onnx"
   identification_prompt: ""  # empty -> <package>/prompts/object_identification_prompt.txt
   scene_analysis_prompt: ""  # empty -> <package>/prompts/scene_analysis_prompt.txt
   visual_prompt: ""          # empty -> <package>/prompts/visual_prompt.txt
@@ -176,8 +176,8 @@ walls:
   height_band_m: [0.4, 2.0]
   depth_range_m: [0.3, 8.0]
   pixel_stride: 4
-  temporal_window_s: 2.5
-  temporal_max_frames: 8
+  temporal_window_s: 4.0
+  temporal_max_frames: 12
   temporal_voxel_m: 0.035
   floor_reset_m: 0.60
   floor_min_points: 20
@@ -218,16 +218,20 @@ walls:
   plane_cluster_angle_deg: 4.0
   plane_cluster_distance_m: 0.08
   plane_cluster_min_overlap: 0.35
-  max_segments: 12
+  max_segments: 32
 rooms:
   default_room_id: ""   # empty = strict: no room known -> object rejected (needs SLAM rooms)
   gvd_method: ridge
+  # Allow confirmed wall openings to split rooms even if the GVD has no branch
+  # at that particular map update.
+  detected_wall_direct_door_cuts: true
+  detected_wall_topology_dilation_px: 1
   # 2.5D wall evidence from /rtabmap/cloud_map. Points are measured relative
   # to the robot's current floor and must occupy multiple vertical bands, so
   # low furniture and points from another storey do not become room dividers.
   enable_3d_structural_filter: true
-  gvd_3d_min_points_per_cell: 4
-  gvd_3d_min_vertical_span_m: 0.75
+  gvd_3d_min_points_per_cell: 2
+  gvd_3d_min_vertical_span_m: 0.55
   gvd_3d_min_height_m: 0.25
   gvd_3d_mid_height_m: 0.80
   gvd_3d_high_height_m: 1.40
@@ -248,6 +252,9 @@ rooms:
   detected_wall_reinforce_obstacles: true
   detected_wall_close_free_space: true
   detected_wall_min_observations: 2
+  # One-frame walls may be proposed, but topology reinforcement requires
+  # persistence to avoid false room barriers.
+  detected_wall_topology_min_observations: 2
   # RTAB-Map loop closures can move map-frame geometry. Re-observe old wall
   # segments instead of letting a stale/false line constrain rooms forever.
   detected_wall_max_age_s: 300.0
@@ -256,9 +263,12 @@ rooms:
   detected_wall_merge_distance_m: 0.18
   detected_wall_merge_gap_m: 0.50
   detected_wall_interpolation_gap_m: 0.20
+  detected_wall_endpoint_join_max_m: 0.35
   detected_wall_thickness_m: 0.06
   detected_wall_door_endpoint_radius_m: 0.20
   detected_wall_door_min_support: 0.16
+  detected_wall_door_endpoint_max_extension_m: 0.75
+  detected_wall_map_max_segments: 256
   detected_wall_door_max_m: 2.00
   detected_wall_bottleneck_ratio: 0.90
   gvd_wall_network_max_fill_ratio: 0.35
@@ -268,20 +278,34 @@ rooms:
   room_nested_merge_max_area_m2: 8.0
   room_nested_merge_area_ratio: 0.30
   gvd_3d_nonwall_component_ratio: 0.01
-  gvd_door_nms_m: 1.60
+  # Separate nearby doors along a corridor instead of collapsing everything
+  # inside a 1.6 m radius into one hypothesis.
+  gvd_door_nms_m: 0.80
   gvd_critical_endpoint_margin_m: 0.20
+  # A GVD branch may end at a junction exactly where the doorway lies. Recover
+  # that endpoint only when measured walls support both sides of the cut.
+  gvd_wall_supported_endpoint_recovery: true
   doorway_vlm_enabled: true
   doorway_vlm_min_confidence: 0.55
   doorway_vlm_min_confirmations: 1
-  doorway_require_wall_support: true
+  # Wall detections are sparse and view-dependent. Use them to strengthen a
+  # candidate, but do not reject a valid GVD bottleneck merely because no wall
+  # segment was measured at that location.
+  doorway_require_wall_support: false
   doorway_vlm_key_resolution_m: 0.25
   doorway_vlm_show_rejected: false
   doorway_vlm_show_pending: false
-  doorway_vlm_cluster_distance_m: 1.20
+  # Yellow means a geometric cut used by segmentation; green is VLM-confirmed.
+  doorway_show_geometric: true
+  doorway_vlm_cluster_distance_m: 0.80
+  # Nearby candidates with different wall orientations are distinct doors.
+  doorway_vlm_cluster_angle_deg: 30.0
   room_use_watershed: false
   doorway_vlm_max_candidates_per_call: 8
   doorway_vlm_retry_s: 8.0
   doorway_vlm_max_image_age_s: 2.0
+  # Height above the current floor used to project a doorway into RGB.
+  doorway_vlm_projection_height_m: 1.0
   doorway_vlm_state_max_age_s: 60.0
   doorway_vlm_camera_topic: "/camera/rgb"
   doorway_vlm_camera_info_topic: "/camera/camera_info"
@@ -289,10 +313,20 @@ rooms:
   window_vlm_enabled: true
   window_vlm_retry_s: 10.0
   min_room_area_m2: 1.5
+  # Keep partial room candidates during mapping; only finalized rooms use
+  # min_room_area_m2 for the confirmed semantic state.
+  min_candidate_area_m2: 0.6
+  room_wall_completion_enabled: true
+  room_wall_completion_max_m: 0.35
+  # Include one structural border cell in the room polygon. This follows the
+  # wall centreline and improves coverage without expanding into unknown space.
+  room_boundary_outset_m: 0.05
   # A split/merge or large boundary change must persist across several map updates.
   room_partition_change_confirmations: 3
   room_partition_min_area_retention_ratio: 0.75
-  room_partition_stable_iou_min: 0.65
+  room_partition_stable_iou_min: 0.55
+  room_resegment_local_change_max_cells: 100
+  room_resegment_local_change_max_bbox_fraction: 0.002
   gvd_fill_cloud_nonwall_direct: true
   gvd_min_robot_component_ratio: 0.15
 
