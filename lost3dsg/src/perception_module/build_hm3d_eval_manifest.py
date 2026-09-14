@@ -338,7 +338,14 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
     ledger = script_ledger.load_ledger(str(run_dir))
     scripted_gt = script_ledger.ground_truth_rows(ledger)
     if scripted_gt:
-        result["ground_truth_objects"] = list(result.get("ground_truth_objects") or []) + scripted_gt
+        # THROUGH _habitat_aabb_to_ros, like every other ground-truth row (see the static rows
+        # above). The ledger records placements in HABITAT coordinates; the manifest is ROS. Appended
+        # raw, a scripted pose sat 6.811 m from where it belonged on the real compiled_script.json
+        # against a 0.5 m gate -- so no scripted object could EVER match, and the scripted column
+        # would have read 0% recall for a perfect tracker. The helper returns {**row, ...}, so
+        # valid_from, valid_to and scripted survive the conversion.
+        result["ground_truth_objects"] = (list(result.get("ground_truth_objects") or [])
+                                          + [_habitat_aabb_to_ros(row) for row in scripted_gt])
     result["scene_script"] = {
         "present": ledger is not None,
         "steps_recorded": len(((ledger or {}).get("steps")) or []),

@@ -229,8 +229,23 @@ def _scripted_counts(scenes, matches_by_scene):
     if not total:
         return {'present': False,
                 'note': 'no scene had a script; the static evaluation is unchanged'}
+    # HOW MANY PREDICTIONS THE GATE COULD NOT JUDGE. holds_at() lets an untimed prediction match any
+    # window on purpose -- refusing it would turn every pre-change bundle into 0% scripted recall,
+    # and an absent timestamp cannot be told from a system that genuinely has none. But that
+    # permissiveness EXEMPTS an untimed system from the very gate a timed one is held to, and until
+    # this counter existed nothing in the output said so. MEASURED on identical geometry: with
+    # observed_at set on all three predictions, precision 66.7% / scripted recall 50.0%; with the key
+    # simply absent, 100% / 100%. A scripted column is comparable across systems ONLY when this is 0
+    # for every system in the table; otherwise the untimed one is exempt, and must be marked so
+    # rather than quoted.
+    untimed = sum(observed_at(p) is None
+                  for scene in scenes for p in scene.get('predicted_objects', []))
+    predicted = sum(len(scene.get('predicted_objects', [])) for scene in scenes)
     return {
         'present': True,
+        'untimed_predictions': untimed,
+        'gate_applied_to_pct': round(100.0 * (predicted - untimed) / predicted, 4) if predicted else None,
+        'comparable': untimed == 0,
         'poses': total,
         'poses_matched': matched,
         'poses_missed': total - matched,
