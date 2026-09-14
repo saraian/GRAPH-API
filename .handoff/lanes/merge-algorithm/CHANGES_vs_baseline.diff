@@ -1,0 +1,650 @@
+diff --git a/lost3dsg/src/perception_module/association.py b/lost3dsg/src/perception_module/association.py
+index 045df3e..ba4361f 100644
+--- a/lost3dsg/src/perception_module/association.py
++++ b/lost3dsg/src/perception_module/association.py
+@@ -322,6 +322,41 @@ def generalized_iou(a, b):
+     return inter / union - (hull - union) / hull
+ 
+ 
++def box_gap(a, b):
++    """Largest per-axis separation between two AABBs in metres; 0.0 when they intersect or touch."""
++    return max(0.0, max(a[0] - b[1], b[0] - a[1]), max(a[2] - b[3], b[2] - a[3]),
++               max(a[4] - b[5], b[4] - a[5]))
++
++
++def geometry_compatible(bounds_a, bounds_b, gap_m):
++    """THE ONE LOCALITY TEST both stages apply (owner ruling 2026-09-14: geometry filters
++    boxes out). Two boxes are compatible when they intersect, or when the largest per-axis gap
++    between them is at most `gap_m`.
++
++    It replaces a fixed IoU floor on the association path (0.10 exploration / 0.30 tracking)
++    and a fixed centre distance on the merge path (0.8 m). Both refused genuine
++    re-observations by construction: two single-view boxes of one object see different
++    surfaces and overlap little, and two halves of a rug have centres further apart than any
++    fixed radius. MEASURED on the GA-493 bundle (scene 00824): 25 of 119 new objects were
++    created while a same-label object overlapped the detection at 0 < IoU < 0.30, and 46
++    same-label merge pairs were refused on centre distance at a median 1.27 m.
++
++    Returns None when either box is absent: absence is not locality evidence.
++    """
++    if bounds_a is None or bounds_b is None:
++        return None
++    return box_gap(bounds_a, bounds_b) <= float(gap_m)
++
++
++def locality_bounds(obj):
++    """The box a locality test reads for a world-model object: the multi-view fused box when
++    one exists, else the last measured view. Two views of one object overlap far more on the
++    fused box (chair pairs on GA-493: 0.78-0.91 fused against 0.44-0.61 measured)."""
++    if obj is None:
++        return None
++    return _as_bounds(getattr(obj, "fused_bbox", None) or getattr(obj, "bbox", None))
++
++
+ # ---------------------------------------------------------------------------------------
+ # CHANNEL 1 (PRIMARY) — containment / overlap
+ # ---------------------------------------------------------------------------------------
+@@ -691,6 +726,47 @@ def channel_room(room_a, room_b, n_rooms):
+ # ---------------------------------------------------------------------------------------
+ 
+ 
++def channel_attributes(score, evidence_count, reference, max_log_odds, min_evidence=1,
++                       same_kind=None):
++    """CHANNEL 7 — the attribute score (label, colour, material, description) as BOUNDED evidence.
++
++    Owner ruling 2026-09-14: keep the LSF metric in the decision. What the data allows it to say
++    (GA-493 bundle, real MiniLM, `tools/sweep_c.py`): attributes cannot tell two objects of the
++    same KIND apart -- 306 same-label pairs more than 1.5 m apart score a median 0.91 under the
++    chosen weights, the same as true re-observations (0.89-0.94). They do separate a different
++    KIND at the same spot (lamp on a table: median 0.44). So agreement is worth little and
++    disagreement is worth a lot:
++
++        score >= reference : +max_log_odds * (score - reference) / (1 - reference)
++        score <  reference : -MAX_CHANNEL_LOG_ODDS * (reference - score) / (reference - 0.5)
++
++    `reference` is the association gate (sim_threshold, 0.85), so a score that would not
++    associate contributes nothing or less. `max_log_odds` (config merge_attribute_max_log_odds,
++    2.0) is BELOW the commit threshold log(20) = 3.0 by design: attributes alone can never
++    commit a merge (GA-101), while a clear disagreement (0.44 -> -8) outweighs the overlap
++    channel on its own (GA-21's red book and blue book). Abstains when nothing optional was
++    comparable (GA-101: the label alone is not evidence).
++    """
++    if score is None:
++        return Abstain("attribute score not supplied")
++    if evidence_count < min_evidence:
++        return Abstain(f"{evidence_count} optional term(s) comparable < {min_evidence}", measured=True)
++    s = float(score)
++    ref = float(reference)
++    if s >= ref:
++        llr = float(max_log_odds) * (s - ref) / max(1.0 - ref, 1e-9)
++    else:
++        llr = -MAX_CHANNEL_LOG_ODDS * (ref - s) / max(ref - 0.5, 1e-9)
++    llr = float(np.clip(llr, -MAX_CHANNEL_LOG_ODDS, float(max_log_odds)))
++    # `same_kind` is the caller's EXACT base-label equality, recorded for the GA-328 guard
++    # (PairScore.containment_unchecked). Not a similarity: MEASURED with the real model over
++    # the 40 labels of GA-493, label similarity cannot separate synonyms from kinds
++    # (pillow/cushion 0.61, painting/picture 0.41 against pillow/bed 0.54, cushion/sofa 0.63),
++    # so a floor on it would be a false instrument. Equal strings, or unknown.
++    return llr, {"score": round(s, 4), "evidence_count": int(evidence_count), "reference": ref,
++                 "same_kind": same_kind}
++
++
+ class PairScore:
+     """The full record of one comparison: total log-odds, every channel, every abstention.
+ 
+@@ -775,6 +851,17 @@ class PairScore:
+             # holding here would refuse exactly the merges this module exists to make.
+             # Only an UNCOLLECTED co-visibility leaves overlap unsupported.
+             return False
++        attrs = self.channels.get("attributes", {})
++        if attrs.get("log_odds", 0.0) > 0 and attrs.get("same_kind") is True:
++            # 2026-09-14 owner ruling: the attribute channel is the SECOND WITNESS. Two views
++            # of one object are never in one frame together, so co-visibility is uncollected
++            # for every genuine re-observation and this guard held all of them (GA-493: the
++            # chair pairs at fused IoU 0.78-0.91). What the guard protects against is the
++            # CROSS-KIND containment merge (pillow in bed, vanity + bath mat, GA-328); a pair
++            # whose base labels are the same string and whose attributes agree is not that
++            # case. Synonyms (painting/picture) and different kinds stay held: the reversible
++            # failure (rule 11).
++            return False
+         ov = self.channels.get("overlap", {}).get("log_odds")
+         if ov is None or ov <= 0 or self.total <= 0:
+             return False
+@@ -815,10 +902,24 @@ def score_pair(a, b, ctx):
+     else:
+         s.abstentions["separation"] = "boxes overlap; containment already answers this"
+ 
+-    s.add("ontology", channel_ontology(
+-        a.onto_type, b.onto_type, a.onto_aligned, b.onto_aligned,
+-        disjoint_fn=ctx.disjoint_fn, n_types=ctx.n_types,
+-        disjoint_source=getattr(ctx, "disjoint_source", None)))
++    if getattr(ctx, "use_ontology", True):
++        s.add("ontology", channel_ontology(
++            a.onto_type, b.onto_type, a.onto_aligned, b.onto_aligned,
++            disjoint_fn=ctx.disjoint_fn, n_types=ctx.n_types,
++            disjoint_source=getattr(ctx, "disjoint_source", None)))
++    else:
++        # Owner ruling 2026-09-14: the ontology stays out of this paper's decision (it is
++        # used in FOUND). Recorded as an abstention so a bundle SAYS the channel was off.
++        s.abstentions["ontology"] = "disabled by config (association.merge_ontology_channel)"
++    fn = getattr(ctx, "attribute_score_fn", None)
++    if fn is not None:
++        measured = fn(a, b)
++        # (score, evidence_count) or (score, evidence_count, same_kind)
++        score, n_ev, same_kind = (None, 0, None) if measured is None else (
++            tuple(measured) + (None,))[:3]
++        s.add("attributes", channel_attributes(
++            score, n_ev, ctx.attribute_reference, ctx.attribute_max_log_odds,
++            same_kind=same_kind))
+     s.add("appearance", channel_appearance(
+         a.descriptors, b.descriptors, ctx.cone_half_angle_rad,
+         a.descriptor_spread, b.descriptor_spread))
+@@ -878,9 +979,16 @@ def generate_candidates(objects, ctx, k=None):
+             r_b, basis_b = radii[id(b)]
+             d = float(np.linalg.norm(np.asarray(a.centroid) - np.asarray(b.centroid)))
+             reach = r_a + r_b
+-            if d <= reach:
++            # 2026-09-14: ONE locality definition. A pair the shared geometry test accepts
++            # (boxes intersect or their gap is at most ctx.locality_gap_m) is offered whatever
++            # the shell says; the shell can only WIDEN the search for uncertain objects.
++            gap_ok = (ctx.locality_gap_m is not None
++                      and geometry_compatible(_as_bounds(a.bbox), _as_bounds(b.bbox),
++                                              ctx.locality_gap_m) is True)
++            if d <= reach or gap_ok:
+                 offered.append((a, b, {"distance_m": d, "reach_m": reach,
+-                                       "basis_a": basis_a, "basis_b": basis_b}))
++                                       "basis_a": basis_a, "basis_b": basis_b,
++                                       "offered_by": "shell" if d <= reach else "gap"}))
+             else:
+                 excluded.append((a, b, {"distance_m": d, "reach_m": reach,
+                                         "reason": "outside the combined covariance shell",
+@@ -1035,15 +1143,19 @@ class Hypothesis:
+ 
+ class AssocObject:
+     __slots__ = ("object_id", "label", "bbox", "centroid", "observations", "covariance",
+-                 "descriptors", "descriptor_spread", "room_id", "onto_type", "onto_aligned")
++                 "descriptors", "descriptor_spread", "room_id", "onto_type", "onto_aligned",
++                 "source")
+ 
+     def __init__(self, object_id, bbox=None, centroid=None, label=None, observations=None,
+                  room_id=None, onto_type=None, onto_aligned=False,
+                  descriptors=None, descriptor_spread=None,
+-                 depth_sparsity=0.0, pose_sigma_m=0.0):
++                 depth_sparsity=0.0, pose_sigma_m=0.0, source=None):
+         self.object_id = object_id
+         self.label = label
+         self.bbox = bbox
++        # The world-model object this was built from, for the caller's attribute scorer
++        # (channel 7). This module never reads it.
++        self.source = source
+         self.observations = list(observations or [])
+         b = _as_bounds(bbox)
+         if centroid is not None:
+@@ -1082,11 +1194,25 @@ class AssocObject:
+ 
+ class AssocContext:
+     __slots__ = ("map_volume_m3", "n_rooms", "n_types", "cone_half_angle_rad",
+-                 "disjoint_fn", "disjoint_source", "cost_ratio", "overlap_2d_fn")
++                 "disjoint_fn", "disjoint_source", "cost_ratio", "overlap_2d_fn",
++                 "use_ontology", "attribute_score_fn", "attribute_reference",
++                 "attribute_max_log_odds", "locality_gap_m")
+ 
+     def __init__(self, map_volume_m3=None, n_rooms=None, n_types=None,
+                  cone_half_angle_rad=math.radians(45.0), disjoint_fn=None, cost_ratio=20.0,
+-                 overlap_2d_fn=None, disjoint_source=None):
++                 overlap_2d_fn=None, disjoint_source=None, use_ontology=True,
++                 attribute_score_fn=None, attribute_reference=0.85, attribute_max_log_odds=2.0,
++                 locality_gap_m=None):
++        # None = candidate generation uses the covariance shell alone (the pre-2026-09-14
++        # behaviour); a number also offers every pair the shared geometry test accepts.
++        self.locality_gap_m = locality_gap_m
++        # Owner ruling 2026-09-14: ontology off for this paper; attributes (channel 7) in.
++        # `attribute_score_fn(a, b) -> (score, evidence_count) | None` is supplied by the
++        # caller, which owns the models; this module stays model-free.
++        self.use_ontology = use_ontology
++        self.attribute_score_fn = attribute_score_fn
++        self.attribute_reference = attribute_reference
++        self.attribute_max_log_odds = attribute_max_log_odds
+         self.map_volume_m3 = map_volume_m3
+         self.n_rooms = n_rooms
+         self.n_types = n_types
+@@ -1288,6 +1414,60 @@ def demo():
+     print(f"  constants : chi2 95%@3dof {CHI2_95_3DOF}, commit threshold "
+           f"log(cost_ratio={ctx.cost_ratio:g}) = {thr:.3f}")
+ 
++    # --- 8. 2026-09-14: the shared geometry filter and the bounded attribute channel --------
++    a8 = _as_bounds(_box(0, 0, 0.5, 1.0, 1.0, 1.0))
++    touching = _as_bounds(_box(1.0, 0, 0.5, 1.0, 1.0, 1.0))      # faces touch: gap 0
++    near = _as_bounds(_box(1.25, 0, 0.5, 1.0, 1.0, 1.0))         # gap 0.25 on x
++    far = _as_bounds(_box(2.0, 0, 0.5, 1.0, 1.0, 1.0))           # gap 1.0 on x
++    diag = _as_bounds(_box(1.2, 1.2, 0.5, 1.0, 1.0, 1.0))        # gap 0.2 on x AND y
++    assert box_gap(a8, touching) == 0.0 and geometry_compatible(a8, touching, 0.0)
++    assert abs(box_gap(a8, near) - 0.25) < 1e-9
++    assert geometry_compatible(a8, near, 0.3) and not geometry_compatible(a8, near, 0.2)
++    assert not geometry_compatible(a8, far, 0.3)
++    assert geometry_compatible(a8, diag, 0.3) and not geometry_compatible(a8, diag, 0.1)
++    assert geometry_compatible(None, a8, 0.3) is None, "absence is not locality evidence"
++    print("  geometry filter : touching/gap 0.25/gap 1.0 -> compatible at 0.3 m: True/True/False")
++
++    thr8 = commit_threshold(20.0)
++    agree, _ = channel_attributes(1.0, 3, 0.85, 2.0)
++    same_kind, _ = channel_attributes(0.91, 3, 0.85, 2.0)
++    other_kind, _ = channel_attributes(0.44, 3, 0.85, 2.0)
++    at_gate, _ = channel_attributes(0.85, 3, 0.85, 2.0)
++    assert agree == 2.0 < thr8, "perfect agreement is capped below the commit threshold"
++    assert 0.0 < same_kind < agree and at_gate == 0.0
++    assert other_kind == -MAX_CHANNEL_LOG_ODDS, other_kind
++    assert isinstance(channel_attributes(1.0, 0, 0.85, 2.0), Abstain), "label alone is not evidence"
++    assert isinstance(channel_attributes(None, 3, 0.85, 2.0), Abstain)
++    # wired through score_pair: a same-spot different-kind pair loses to a strong overlap
++    ctx8 = AssocContext(map_volume_m3=300.0, n_rooms=6, cost_ratio=20.0, use_ontology=False,
++                        attribute_score_fn=lambda x, y: (0.44, 3))
++    lamp = AssocObject("lamp", bbox=_box(0, 0, 1.0, 0.3, 0.3, 0.4), room_id="r")
++    table = AssocObject("table", bbox=_box(0, 0, 0.8, 1.2, 0.8, 0.8), room_id="r")
++    s8 = score_pair(lamp, table, ctx8)
++    assert "ontology" in s8.abstentions and "attributes" in s8.channels, s8.as_record()
++    assert s8.channels["overlap"]["log_odds"] > 0 and s8.total < thr8, s8.as_record()
++    print(f"  attributes : agree {agree:+.1f} (cap), same kind {same_kind:+.2f}, other kind "
++          f"{other_kind:+.1f}; lamp-on-table total {s8.total:+.2f} < {thr8:+.2f} -> no merge")
++    # the second witness: overlap carries the decision, co-visibility is uncollected (two views
++    # are never in one frame), and the GA-328 guard held every such pair. Same-kind agreeing
++    # attributes lift it; a cross-kind pair with the same score stays held.
++    v1 = AssocObject("v1", bbox=_box(0, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
++    v2 = AssocObject("v2", bbox=_box(0.2, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
++    same = AssocContext(map_volume_m3=300.0, n_rooms=1, cost_ratio=20.0, use_ontology=False,
++                        attribute_score_fn=lambda x, y: (1.0, 3, True))
++    cross = AssocContext(map_volume_m3=300.0, n_rooms=1, cost_ratio=20.0, use_ontology=False,
++                         attribute_score_fn=lambda x, y: (1.0, 3, False))
++    h_same, h_cross = Hypothesis(("v1", "v2")), Hypothesis(("v1", "v2"))
++    for f in (1, 2):   # one update AND one decision per sweep, as the service does
++        h_same.update(score_pair(v1, v2, same), frame_id=f)
++        d_same = h_same.decide(thr8, min_consecutive=2)
++        h_cross.update(score_pair(v1, v2, cross), frame_id=f)
++        d_cross = h_cross.decide(thr8, min_consecutive=2)
++    assert d_same[0] == "merge", d_same
++    assert d_cross[0] == "hold" and d_cross[1].startswith("containment carries"), d_cross
++    print(f"  second witness : same kind + agreeing attributes -> {d_same[0]}; "
++          f"cross kind, same score -> {d_cross[0]} (GA-328 guard kept)")
++
+     print("\nassociation self-check OK")
+ 
+ 
+diff --git a/lost3dsg/src/perception_module/config.py b/lost3dsg/src/perception_module/config.py
+index 122ca02..133598f 100755
+--- a/lost3dsg/src/perception_module/config.py
++++ b/lost3dsg/src/perception_module/config.py
+@@ -100,6 +100,8 @@ _DEFAULTS = {
+         # with, NOT the 3 the dead `min_consecutive` claims. Retiring the three dead names is
+         # GA-341's own change and is deliberately not done here.
+         "merge_engine": "legacy",          # legacy | evidence -- which merge path decides
++        "merge_ontology_channel": True,    # 2026-09-14: False = ontology channel recorded as abstaining
++        "merge_attribute_max_log_odds": 2.0,   # ceiling of the attribute channel's positive log-odds
+         "merge_cost_ratio": 20.0,          # false-merge cost / missed-merge cost; threshold = log(ratio)
+         "merge_min_consecutive": 2,        # consecutive sweeps a pair must hold before it commits
+         "merge_max_distance_m": 0.8,       # centre distance beyond which a pair is never merged
+diff --git a/lost3dsg/src/perception_module/config.yaml b/lost3dsg/src/perception_module/config.yaml
+index 847e830..ba20cda 100644
+--- a/lost3dsg/src/perception_module/config.yaml
++++ b/lost3dsg/src/perception_module/config.yaml
+@@ -15,10 +15,18 @@ embedding:
+   word2vec_limit: 200000   # vocabulary cap; keeps RAM bounded
+ 
+ similarity:            # lost_similarity weights, must sum to 1.0
++  # 2026-09-14, owner ruling "C is needed", form chosen from the data (merge-algorithm lane,
++  # tools/sweep_c.py, real MiniLM, GA-493 bundle). Was 0.05/0.30/0.15/0.50. The description
++  # cosine of two VLM sentences about ONE object seen from two views is 0.36-0.83 (median
++  # 0.685, n=21 exact), so at weight 0.50 no genuine re-observation could reach the merge gate
++  # (needs >= 0.85 on that term) and the median one failed the association gate too. At 0.20
++  # true re-observations score a median 0.89-0.94 and a different KIND at the same spot (lamp
++  # on a table) stays at 0.44. Attributes still cannot separate two objects of the same kind
++  # (same-label pairs > 1.5 m apart also score ~0.91): that is geometry's job, not this score's.
+   label: 0.05
+-  color: 0.30
+-  material: 0.15
+-  description: 0.50
++  color: 0.45
++  material: 0.30
++  description: 0.20
+ 
+ association:
+   exploration_iou_threshold: 0.10
+@@ -39,7 +47,18 @@ association:
+   # the names object_services reads. The values below are what the code already falls back to,
+   # so writing them down changes no behaviour -- note merge_min_consecutive is 2, which is what
+   # every recipe stamps and every bundle ran with, not the 3 the dead key claims.
+-  merge_engine: legacy        # legacy | evidence -- which merge path decides
++  # 2026-09-14, owner ruling (merge-algorithm lane): the evidence engine decides, with the
++  # ontology channel OFF (it is used in FOUND, not in this paper) and the attribute score
++  # (label/colour/material/description) IN as a bounded channel. MEASURED reason, GA-493
++  # bundle: under the legacy gate a pair with IDENTICAL fused boxes and identical label,
++  # colour and material was refused at similarity 0.889 because the gate needs the
++  # description cosine >= 0.85 and true re-observations sit at 0.36-0.83 (0 of 21 reached it).
++  merge_engine: evidence      # legacy | evidence -- which merge path decides
++  merge_ontology_channel: false   # true = channel_ontology runs; false = recorded as an abstention
++  merge_attribute_max_log_odds: 2.0   # ceiling of the attribute channel's POSITIVE contribution.
++                              # Below log(merge_cost_ratio) = 3.0 on purpose: attributes alone
++                              # can never commit a merge (GA-101); a clear disagreement still
++                              # contributes down to -8 (GA-21's red book / blue book).
+   merge_cost_ratio: 20.0      # false-merge cost / missed-merge cost; the commit threshold is
+                               # log(ratio), so raising it makes merging strictly harder
+   merge_min_consecutive: 2    # consecutive sweeps a pair must hold before it commits. Raise it
+diff --git a/lost3dsg/src/perception_module/object_manager_6.py b/lost3dsg/src/perception_module/object_manager_6.py
+index da5781b..3f73264 100755
+--- a/lost3dsg/src/perception_module/object_manager_6.py
++++ b/lost3dsg/src/perception_module/object_manager_6.py
+@@ -26,7 +26,8 @@ import cv2
+ import numpy as np
+ import rclpy
+ import requests
+-from association import AssocObject, Observation, search_radius
++from association import AssocObject, Observation, geometry_compatible, locality_bounds, search_radius
++from association import _as_bounds as assoc_as_bounds
+ from bbox_fusion import add_fusion_view, fusion_http_fields
+ from builtin_interfaces.msg import Time as TimeMsg
+ from config import CFG, world_frame
+@@ -191,17 +192,24 @@ def _half_diagonal_m(bbox):
+         return 0.0
+ 
+ 
+-def locality_ok(bbox, obj, threshold):
+-    """GA-04: 3D overlap gate, applied BEFORE any attribute comparison.
++def locality_ok(bbox, obj, gap_m):
++    """GA-04: the locality gate, applied BEFORE any attribute comparison.
+ 
+     Contract G1 invariant 3: locality is evaluated before attribute similarity, and an
+     object failing the gate is never compared on attributes. Absent geometry is not
+     locality evidence, so a candidate without a box does not pass -- the exploration
+     branch already excluded those, and D14 prefers strict.
++
++    2026-09-14, owner ruling: THE SAME TEST AS THE MERGE (association.geometry_compatible),
++    on the object's fused box when it has one -- the detection's box intersects it, or the
++    largest per-axis gap is at most `gap_m` (association_margin_m). It replaces the fixed IoU
++    floor (0.10 exploration / 0.30 tracking) on the LAST MEASURED VIEW, which MEASURED on the
++    GA-493 bundle created 25 of 119 new objects while a same-label object overlapped the
++    detection at 0 < IoU < 0.30 -- two single-view boxes of one object see different
++    surfaces and overlap little.
+     """
+-    if bbox is None or getattr(obj, "bbox", None) is None:
+-        return False
+-    return compute_iou_3d(bbox, obj.bbox) >= threshold
++    ok = geometry_compatible(assoc_as_bounds(bbox), locality_bounds(obj), gap_m)
++    return bool(ok)
+ 
+ 
+ def _association_candidates(bbox):
+@@ -1799,10 +1807,16 @@ class ObjectManagerService(Node):
+ 
+             if in_exploration:
+                 for obj in candidates:
++                    # Two detections of ONE cycle are two objects by construction (the detector's
++                    # NMS already separated them), so an object absorbed earlier in this cycle
++                    # cannot absorb a second detection. This is the merge engine's co-visibility
++                    # veto, applied where the frame is known for certain. 2026-09-14.
++                    if obj in current_perception_objects:
++                        continue
+                     # GA-04: locality first. Previously the overlap test was conjoined with the
+                     # similarity test below, so attributes were compared against every object in
+                     # the map before geometry could rule any of them out.
+-                    if not locality_ok(bbox, obj, EXPLORATION_IOU_THRESHOLD):
++                    if not locality_ok(bbox, obj, ASSOCIATION_MARGIN_M):
+                         continue
+ 
+                     obj_label_base = obj.label.split('#')[0] if '#' in obj.label else obj.label
+@@ -1900,7 +1914,12 @@ class ObjectManagerService(Node):
+                     # A candidate with no bbox no longer matches here. It did before, on
+                     # similarity alone; the exploration branch always excluded it, and D14
+                     # prefers strict. Deliberate behaviour change, owner-approved 30 Aug.
+-                    if not locality_ok(bbox, obj, TRACKING_IOU_THRESHOLD):
++                    # 2026-09-14: same-cycle veto and the shared geometry test, as in the
++                    # exploration loop above. TRACKING_IOU_THRESHOLD (0.30 on the last measured
++                    # view) is no longer read: MEASURED on GA-493 it created 25 of 119 new objects.
++                    if obj in current_perception_objects:
++                        continue
++                    if not locality_ok(bbox, obj, ASSOCIATION_MARGIN_M):
+                         continue
+ 
+                     if not hasattr(obj, "embedding"):
+diff --git a/lost3dsg/src/perception_module/object_services.py b/lost3dsg/src/perception_module/object_services.py
+index 3f67914..9972266 100644
+--- a/lost3dsg/src/perception_module/object_services.py
++++ b/lost3dsg/src/perception_module/object_services.py
+@@ -132,6 +132,14 @@ if MERGE_ENGINE not in ("legacy", "evidence"):
+ # visible and repairable, a wrong merge destroys an identity, so it sits well above 1.
+ # commit_threshold() turns it into log-odds -- there is no similarity constant to tune.
+ MERGE_COST_RATIO = float(CFG["association"].get("merge_cost_ratio", 20.0))
++# 2026-09-14 owner ruling (merge-algorithm lane): ontology channel off for this paper; the
++# attribute score in as a bounded channel (association.channel_attributes). Both declared in
++# config.yaml beside merge_engine.
++MERGE_ONTOLOGY_CHANNEL = bool(CFG["association"].get("merge_ontology_channel", True))
++MERGE_ATTRIBUTE_MAX_LOG_ODDS = float(CFG["association"].get("merge_attribute_max_log_odds", 2.0))
++# The one locality test both stages apply: boxes intersect or their largest per-axis gap is at
++# most this. It is the association broad-phase margin, not a new constant.
++LOCALITY_GAP_M = float(CFG["association"].get("association_margin_m", 0.3))
+ # How many nearest neighbours per object survive candidate generation. None = no cap, keep
+ # everything inside the covariance shell. A cap that silently drops a pair is the defect
+ # that lost the air-conditioner pair, so generate_candidates reports what the cap removed.
+@@ -317,6 +325,38 @@ def merge_rank(o):
+             str(getattr(o, "object_id", "") or o.label))
+ 
+ 
++def pair_attribute_score(a, b):
++    """-> (score, evidence) of lost_similarity_detailed for two world-model objects.
++
++    Embeddings cache on the object, so each description is encoded once. GA-101: the score
++    alone cannot say whether four axes agreed or nothing was comparable, and those two produce
++    the SAME number when the labels match, so the evidence dict travels with it. Shared by the
++    merge loop and the evidence engine's attribute channel (2026-09-14 owner ruling).
++    """
++    if getattr(a, "embedding", None) is None:
++        a.embedding = get_embedding(world2vec, a.description)
++    if getattr(b, "embedding", None) is None:
++        b.embedding = get_embedding(world2vec, b.description)
++    a_label = a.label.split('#')[0] if '#' in a.label else a.label
++    b_label = b.label.split('#')[0] if '#' in b.label else b.label
++    return lost_similarity_detailed(world2vec, a_label, b_label, a.color, b.color,
++                                    a.material, b.material, a.embedding, b.embedding)
++
++
++def _attribute_channel_input(aa, bb):
++    """AssocContext.attribute_score_fn: (score, optional_count) from the two AssocObjects'
++    world-model sources; None when a side has no source (channel abstains)."""
++    if getattr(aa, "source", None) is None or getattr(bb, "source", None) is None:
++        return None
++    score, ev = pair_attribute_score(aa.source, bb.source)
++    la = str(aa.source.label).split('#')[0].strip().lower()
++    lb = str(bb.source.label).split('#')[0].strip().lower()
++    # same_kind is EXACT base-label equality (see association.channel_attributes for why a
++    # label-similarity floor was rejected). It is what lets the attribute channel stand in for
++    # the uncollected co-visibility on a genuine re-observation (GA-328 guard).
++    return score, int(ev["optional_count"]), (la == lb and la != "")
++
++
+ def _centroid_from_bbox(bbox):
+     """GA-296. The centroid a world-model Object is created WITHOUT.
+ 
+@@ -1220,6 +1260,12 @@ class ObjectServices(Node):
+             n_rooms=max(len(rooms), 1),
+             n_types=n_types,
+             cost_ratio=MERGE_COST_RATIO,
++            # 2026-09-14 owner ruling: ontology off for this paper, attributes in, bounded.
++            use_ontology=MERGE_ONTOLOGY_CHANNEL,
++            attribute_score_fn=_attribute_channel_input,
++            attribute_reference=SIM_THRESHOLD,
++            attribute_max_log_odds=MERGE_ATTRIBUTE_MAX_LOG_ODDS,
++            locality_gap_m=LOCALITY_GAP_M,
+             disjoint_fn=disjoint_fn,
+             disjoint_source=(getattr(hook, "name", type(hook).__name__)
+                              if disjoint_fn is not None else None),
+@@ -1248,6 +1294,7 @@ class ObjectServices(Node):
+                     # unaligned side rather than comparing labels the ontology never endorsed.
+                     onto_type=getattr(o, "onto_type", None),
+                     onto_aligned=bool(getattr(o, "onto_aligned", False)),
++                    source=o,
+                 )
+             except (TypeError, ValueError, KeyError) as e:
+                 # A malformed object must not be silently dropped from candidate
+@@ -1304,8 +1351,12 @@ class ObjectServices(Node):
+             pair_indices = set()
+             for i in valid:
+                 key = f"merge:{i}"
+-                for hit in index.query(objects[i].bbox, margin):
+-                    examined += index.last_examined
++                hits = index.query(objects[i].bbox, margin)
++                # `last_examined` is per QUERY. Summing it once per hit multiplied the count by
++                # the hit count (every object hits at least itself), so the logged `examined`
++                # was inflated on every sweep.
++                examined += index.last_examined
++                for hit in hits:
+                     j = indexed[hit]
+                     if i < j:
+                         pair_indices.add((i, j))
+@@ -1468,14 +1519,7 @@ class ObjectServices(Node):
+                 GA-101: the score alone cannot say whether four axes agreed or nothing was
+                 comparable, and those two produce the SAME number when the labels match.
+                 """
+-                if not hasattr(a, 'embedding') or a.embedding is None:
+-                    a.embedding = get_embedding(world2vec, a.description)
+-                if not hasattr(b, 'embedding') or b.embedding is None:
+-                    b.embedding = get_embedding(world2vec, b.description)
+-                return lost_similarity_detailed(world2vec, a_label, b_label,
+-                                                a.color, b.color,
+-                                                a.material, b.material,
+-                                                a.embedding, b.embedding)
++                return pair_attribute_score(a, b)
+ 
+             def _refused(a, b, reason, similarity, **extra):
+                 """A refusal is a decision and belongs beside the admissions.
+@@ -1593,6 +1637,35 @@ class ObjectServices(Node):
+                     room_b = self.room_manager.room_at_bbox(b.bbox)
+ 
+                     if MERGE_ENGINE == "evidence":
++                        # 2026-09-14 owner ruling, in this order: room gate, then geometry,
++                        # then the evidence decision. Both gates read the fused box when there
++                        # is one. The legacy arm below keeps its own gates untouched, so an
++                        # ablation against it compares the ruling with the pre-ruling system.
++                        ba, bb_ = assoc.locality_bounds(a), assoc.locality_bounds(b)
++                        overlapping = (ba is not None and bb_ is not None
++                                       and assoc.intersection_volume(ba, bb_) > 0.0)
++                        if (room_a is not None and room_b is not None and room_a != room_b
++                                and not overlapping):
++                            # Two boxes that OVERLAP are one thing whichever side of a room
++                            # boundary each centre fell on. MEASURED on GA-493: 56 of 57
++                            # distinct room refusals were one kitchen boundary (room_4/room_5)
++                            # and 7 of them scored above the merge gate. Only NON-overlapping
++                            # boxes in different rooms are refused here; the similarity is
++                            # computed solely to be recorded.
++                            print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b}), boxes apart")
++                            _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
++                            _refused(a, b, "room", _room_sim,
++                                     evidence_count=_room_ev["optional_count"],
++                                     room_a=room_a, room_b=room_b)
++                            continue
++                        if assoc.geometry_compatible(ba, bb_, LOCALITY_GAP_M) is False:
++                            # The one locality test both stages apply: intersect, or a largest
++                            # per-axis gap at most LOCALITY_GAP_M. A pair that fails it is
++                            # never scored on attributes (GA-25's order, kept).
++                            _refused(a, b, "geometry", None,
++                                     gap_m=round(assoc.box_gap(ba, bb_), 3),
++                                     threshold_gap_m=LOCALITY_GAP_M, room_a=room_a, room_b=room_b)
++                            continue
+                         # GA-186. No gate cascade and no similarity constant: every channel
+                         # runs, the log-odds are fused, and the pair commits only if the
+                         # total clears log(cost_ratio). Three outcomes, not two -- a HOLD is
+@@ -1667,14 +1740,11 @@ class ObjectServices(Node):
+                                 np.asarray(aa.centroid) - np.asarray(bb.centroid)))
+                     if (MERGE_ENGINE == "legacy"
+                             and room_a is not None and room_b is not None and room_a != room_b):
++                        # LEGACY ARM ONLY, unchanged: refuses on room whether or not the boxes
++                        # overlap. The evidence arm's room gate stands above the engine switch
++                        # (2026-09-14). The similarity is computed HERE, on the refusal path
++                        # only, and solely to be recorded (GA-25's order is kept).
+                         print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b})")
+-                        # The similarity is computed HERE, on the refusal path only, and
+-                        # solely to be recorded. The gate ORDER is unchanged -- locality
+-                        # still decides before attributes (GA-25) and no similarity can
+-                        # rescue a pair in two different rooms. Paying for it only on the
+-                        # pairs actually refused on room keeps the early gate's saving on
+-                        # every pair that passes it, and those refused pairs are exactly
+-                        # the population the log needs to be able to describe.
+                         _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
+                         _refused(a, b, "room", _room_sim,
+                                  evidence_count=_room_ev["optional_count"],
+@@ -1861,6 +1931,10 @@ class ObjectServices(Node):
+                 except Exception as e:
+                     self.get_logger().error(f"decision_log merge failed: {e}")
+ 
++            # `merged_count` reports APPLIED merges. A dry run applies nothing and its
++            # decisions ARE its output, so it keeps the decided count; the live path
++            # overwrites this with what actually survived the locked re-check below.
++            applied = len(to_remove_pairs)
+             if to_remove_pairs and not dry_run:
+                 print(f"\n🗑️ REMOVING: {len(to_remove_pairs)} duplicate objects:")
+ 
+@@ -1877,6 +1951,7 @@ class ObjectServices(Node):
+                 # inside the lock -- the keeper was never checked before -- and a stale pair is
+                 # skipped and COUNTED, never applied to an object that has left the map.
+                 stale = 0
++                applied = 0
+                 with wm.lock:
+                     for pair in to_remove_pairs:
+                         keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
+@@ -1887,22 +1962,29 @@ class ObjectServices(Node):
+                         if keeper not in wm.persistent_perceptions:
+                             stale += 1
+                             continue
+-                        if discard in wm.persistent_perceptions:
+-                            # Merge geometry while both tracks still exist. The
+-                            # operation preserves distinct view IDs, so two
+-                            # tracks containing the same cycle do not count it twice.
+-                            merge_bbox_fusion(keeper, discard)
+-                            cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
+-                            cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
+-                            print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
+-                            wm.persistent_perceptions.remove(discard)
+-                            # GA-26: the store learns about the merge, or its row stays active
+-                            # forever and the database disagrees with the map by one object.
+-                            if hasattr(self, 'db'):
+-                                try:
+-                                    self.db.on_object_merged(keeper, discard, step=self.tracking_step_counter)
+-                                except Exception as e:
+-                                    self.get_logger().error(f"db.on_object_merged failed: {e}")
++                        if discard not in wm.persistent_perceptions:
++                            # Same race as the keeper: the discard left the map between the
++                            # unlocked sweep and this write. Nothing is merged, so nothing
++                            # is counted. Before, this case fell through to the room-graph
++                            # update and was still reported as a merge.
++                            stale += 1
++                            continue
++                        applied += 1
++                        # Merge geometry while both tracks still exist. The
++                        # operation preserves distinct view IDs, so two
++                        # tracks containing the same cycle do not count it twice.
++                        merge_bbox_fusion(keeper, discard)
++                        cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
++                        cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
++                        print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
++                        wm.persistent_perceptions.remove(discard)
++                        # GA-26: the store learns about the merge, or its row stays active
++                        # forever and the database disagrees with the map by one object.
++                        if hasattr(self, 'db'):
++                            try:
++                                self.db.on_object_merged(keeper, discard, step=self.tracking_step_counter)
++                            except Exception as e:
++                                self.get_logger().error(f"db.on_object_merged failed: {e}")
+ 
+                         discard_room = getattr(discard, 'room_id', None)
+                         if discard_room and discard_room in self.room_manager.scene_graph:
+@@ -1944,11 +2026,11 @@ class ObjectServices(Node):
+ 
+             # ── Risposta ──────────────────────────────────────────────────────
+             response.success        = True
+-            response.merged_count   = len(to_remove_pairs)
++            response.merged_count   = applied
+             response.merge_log_json = json.dumps(merge_log)
+             response.message        = (
+                 f"{'[DRY RUN] ' if dry_run else ''}"
+-                f"{len(to_remove_pairs)} merge(s) "
++                f"{applied} merge(s) "
+                 f"{'simulati' if dry_run else 'eseguiti'}"
+             )
+ 
