@@ -726,7 +726,8 @@ def channel_room(room_a, room_b, n_rooms):
 # ---------------------------------------------------------------------------------------
 
 
-def channel_attributes(score, evidence_count, reference, max_log_odds, min_evidence=1):
+def channel_attributes(score, evidence_count, reference, max_log_odds, min_evidence=1,
+                       same_kind=None):
     """CHANNEL 7 — the attribute score (label, colour, material, description) as BOUNDED evidence.
 
     Owner ruling 2026-09-14: keep the LSF metric in the decision. What the data allows it to say
@@ -757,7 +758,13 @@ def channel_attributes(score, evidence_count, reference, max_log_odds, min_evide
     else:
         llr = -MAX_CHANNEL_LOG_ODDS * (ref - s) / max(ref - 0.5, 1e-9)
     llr = float(np.clip(llr, -MAX_CHANNEL_LOG_ODDS, float(max_log_odds)))
-    return llr, {"score": round(s, 4), "evidence_count": int(evidence_count), "reference": ref}
+    # `same_kind` is the caller's EXACT base-label equality, recorded for the GA-328 guard
+    # (PairScore.containment_unchecked). Not a similarity: MEASURED with the real model over
+    # the 40 labels of GA-493, label similarity cannot separate synonyms from kinds
+    # (pillow/cushion 0.61, painting/picture 0.41 against pillow/bed 0.54, cushion/sofa 0.63),
+    # so a floor on it would be a false instrument. Equal strings, or unknown.
+    return llr, {"score": round(s, 4), "evidence_count": int(evidence_count), "reference": ref,
+                 "same_kind": same_kind}
 
 
 class PairScore:
@@ -844,6 +851,17 @@ class PairScore:
             # holding here would refuse exactly the merges this module exists to make.
             # Only an UNCOLLECTED co-visibility leaves overlap unsupported.
             return False
+        attrs = self.channels.get("attributes", {})
+        if attrs.get("log_odds", 0.0) > 0 and attrs.get("same_kind") is True:
+            # 2026-09-14 owner ruling: the attribute channel is the SECOND WITNESS. Two views
+            # of one object are never in one frame together, so co-visibility is uncollected
+            # for every genuine re-observation and this guard held all of them (GA-493: the
+            # chair pairs at fused IoU 0.78-0.91). What the guard protects against is the
+            # CROSS-KIND containment merge (pillow in bed, vanity + bath mat, GA-328); a pair
+            # whose base labels are the same string and whose attributes agree is not that
+            # case. Synonyms (painting/picture) and different kinds stay held: the reversible
+            # failure (rule 11).
+            return False
         ov = self.channels.get("overlap", {}).get("log_odds")
         if ov is None or ov <= 0 or self.total <= 0:
             return False
@@ -896,9 +914,12 @@ def score_pair(a, b, ctx):
     fn = getattr(ctx, "attribute_score_fn", None)
     if fn is not None:
         measured = fn(a, b)
-        score, n_ev = (None, 0) if measured is None else measured
+        # (score, evidence_count) or (score, evidence_count, same_kind)
+        score, n_ev, same_kind = (None, 0, None) if measured is None else (
+            tuple(measured) + (None,))[:3]
         s.add("attributes", channel_attributes(
-            score, n_ev, ctx.attribute_reference, ctx.attribute_max_log_odds))
+            score, n_ev, ctx.attribute_reference, ctx.attribute_max_log_odds,
+            same_kind=same_kind))
     s.add("appearance", channel_appearance(
         a.descriptors, b.descriptors, ctx.cone_half_angle_rad,
         a.descriptor_spread, b.descriptor_spread))
@@ -958,9 +979,16 @@ def generate_candidates(objects, ctx, k=None):
             r_b, basis_b = radii[id(b)]
             d = float(np.linalg.norm(np.asarray(a.centroid) - np.asarray(b.centroid)))
             reach = r_a + r_b
-            if d <= reach:
+            # 2026-09-14: ONE locality definition. A pair the shared geometry test accepts
+            # (boxes intersect or their gap is at most ctx.locality_gap_m) is offered whatever
+            # the shell says; the shell can only WIDEN the search for uncertain objects.
+            gap_ok = (ctx.locality_gap_m is not None
+                      and geometry_compatible(_as_bounds(a.bbox), _as_bounds(b.bbox),
+                                              ctx.locality_gap_m) is True)
+            if d <= reach or gap_ok:
                 offered.append((a, b, {"distance_m": d, "reach_m": reach,
-                                       "basis_a": basis_a, "basis_b": basis_b}))
+                                       "basis_a": basis_a, "basis_b": basis_b,
+                                       "offered_by": "shell" if d <= reach else "gap"}))
             else:
                 excluded.append((a, b, {"distance_m": d, "reach_m": reach,
                                         "reason": "outside the combined covariance shell",
@@ -1168,12 +1196,16 @@ class AssocContext:
     __slots__ = ("map_volume_m3", "n_rooms", "n_types", "cone_half_angle_rad",
                  "disjoint_fn", "disjoint_source", "cost_ratio", "overlap_2d_fn",
                  "use_ontology", "attribute_score_fn", "attribute_reference",
-                 "attribute_max_log_odds")
+                 "attribute_max_log_odds", "locality_gap_m")
 
     def __init__(self, map_volume_m3=None, n_rooms=None, n_types=None,
                  cone_half_angle_rad=math.radians(45.0), disjoint_fn=None, cost_ratio=20.0,
                  overlap_2d_fn=None, disjoint_source=None, use_ontology=True,
-                 attribute_score_fn=None, attribute_reference=0.85, attribute_max_log_odds=2.0):
+                 attribute_score_fn=None, attribute_reference=0.85, attribute_max_log_odds=2.0,
+                 locality_gap_m=None):
+        # None = candidate generation uses the covariance shell alone (the pre-2026-09-14
+        # behaviour); a number also offers every pair the shared geometry test accepts.
+        self.locality_gap_m = locality_gap_m
         # Owner ruling 2026-09-14: ontology off for this paper; attributes (channel 7) in.
         # `attribute_score_fn(a, b) -> (score, evidence_count) | None` is supplied by the
         # caller, which owns the models; this module stays model-free.
@@ -1416,6 +1448,25 @@ def demo():
     assert s8.channels["overlap"]["log_odds"] > 0 and s8.total < thr8, s8.as_record()
     print(f"  attributes : agree {agree:+.1f} (cap), same kind {same_kind:+.2f}, other kind "
           f"{other_kind:+.1f}; lamp-on-table total {s8.total:+.2f} < {thr8:+.2f} -> no merge")
+    # the second witness: overlap carries the decision, co-visibility is uncollected (two views
+    # are never in one frame), and the GA-328 guard held every such pair. Same-kind agreeing
+    # attributes lift it; a cross-kind pair with the same score stays held.
+    v1 = AssocObject("v1", bbox=_box(0, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
+    v2 = AssocObject("v2", bbox=_box(0.2, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
+    same = AssocContext(map_volume_m3=300.0, n_rooms=1, cost_ratio=20.0, use_ontology=False,
+                        attribute_score_fn=lambda x, y: (1.0, 3, True))
+    cross = AssocContext(map_volume_m3=300.0, n_rooms=1, cost_ratio=20.0, use_ontology=False,
+                         attribute_score_fn=lambda x, y: (1.0, 3, False))
+    h_same, h_cross = Hypothesis(("v1", "v2")), Hypothesis(("v1", "v2"))
+    for f in (1, 2):   # one update AND one decision per sweep, as the service does
+        h_same.update(score_pair(v1, v2, same), frame_id=f)
+        d_same = h_same.decide(thr8, min_consecutive=2)
+        h_cross.update(score_pair(v1, v2, cross), frame_id=f)
+        d_cross = h_cross.decide(thr8, min_consecutive=2)
+    assert d_same[0] == "merge", d_same
+    assert d_cross[0] == "hold" and d_cross[1].startswith("containment carries"), d_cross
+    print(f"  second witness : same kind + agreeing attributes -> {d_same[0]}; "
+          f"cross kind, same score -> {d_cross[0]} (GA-328 guard kept)")
 
     print("\nassociation self-check OK")
 

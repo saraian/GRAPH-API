@@ -212,6 +212,26 @@ def reassign_rooms():
     assert obj.room_id == "room_1", "an unplaceable object must not be re-filed"
 
 
+def _with(module, name, value):
+    """Run a check with one module constant pinned, restored afterwards whatever happens.
+
+    2026-09-14: config.yaml now selects the EVIDENCE engine with the ontology channel off.
+    Checks written for the legacy engine's mechanics (request-distance widening, per-pair
+    distance refusals, typed threshold keys) pin MERGE_ENGINE to "legacy" so they keep
+    testing what they were written to test; the ontology seam pins its channel on."""
+    def deco(fn):
+        def run():
+            old = getattr(module, name)
+            setattr(module, name, value)
+            try:
+                return fn()
+            finally:
+                setattr(module, name, old)
+        run.__name__, run.__doc__ = fn.__name__, fn.__doc__
+        return run
+    return deco
+
+
 def merge_request_below_match_gate_refused():
     """GA-341: a merge request whose similarity floor sits at or below the match gate is
     REFUSED with the bound named -- never clamped, never merged at the bridge's old 0.75."""
@@ -222,6 +242,8 @@ def merge_request_below_match_gate_refused():
     svc.room_manager.scene_graph = {}
     svc.room_manager.room_at_bbox = lambda bbox: None
     svc.decision_log = rosstub.Any()
+    # the configured (evidence) engine keeps per-pair hypotheses across sweeps
+    svc._hypotheses, svc._merge_sweep = {}, 0
     wm.persistent_perceptions.clear()
 
     req, resp = rosstub.Any(), rosstub.Any()
@@ -316,6 +338,7 @@ def detector_failure_skips_the_cycle():
         detection_pipeline.CFG["perception"] = original
 
 
+@_with(object_services, "MERGE_ENGINE", "legacy")
 def merge_lock_covers_writes_only():
     """GA-393 narrowed: the world-model lock is held for the WRITES and not for the sweep.
 
@@ -430,6 +453,95 @@ def merge_lock_covers_writes_only():
         osv.wm.persistent_perceptions.clear()
 
 
+def merge_path_evidence():
+    """2026-09-14 owner ruling, on the CONFIGURED engine: room gate refuses only NON-overlapping
+    boxes, then the shared geometry test, then the evidence decision with the ontology channel
+    off and the attribute channel bounded. Two views of one chair with different sentences
+    merge on the second consecutive sweep (the attribute channel stands in for the uncollected
+    co-visibility); a lamp on a table never merges; a 0.5 m gap is refused on geometry."""
+    assert object_services.MERGE_ENGINE == "evidence", object_services.MERGE_ENGINE
+    assert object_services.MERGE_ONTOLOGY_CHANNEL is False
+    svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
+    svc.get_logger = lambda: rosstub.Any()
+    svc.log_both = lambda *a, **k: None
+    svc.room_manager = room_manager.RoomManager.__new__(room_manager.RoomManager)
+    svc.room_manager.scene_graph = {}
+    svc.room_manager.current_room_id = "room_1"
+    svc.room_manager.room_at_bbox = lambda bbox: None
+    svc._hypotheses, svc._merge_sweep = {}, 0
+    rows = []
+
+    class _Log:
+        def write(self, kind, oid, **kw):
+            rows.append((kind, oid, kw))
+
+    svc.decision_log = _Log()
+
+    def obj(label, box, desc, color, material, oid, t):
+        o = object_info.Object(label, None, dict(box), description=desc, color=color, material=material)
+        o.object_id, o.creation_time = oid, t
+        return o
+
+    def sweep(objects):
+        wm.persistent_perceptions.clear()
+        wm.persistent_perceptions.extend(objects)
+        rows.clear()
+        req, resp = rosstub.Any(), rosstub.Any()
+        req.max_distance, req.min_similarity, req.dry_run = 0.8, 0.95, True
+        object_services.ObjectServices._cb_merge_objects(svc, req, resp)
+        assert resp.success is True, resp.message
+        return resp
+
+    def refusals(reason, pair):
+        return [kw for k, oid, kw in rows if k == "merge_refused" and kw.get("reason") == reason
+                and {oid, kw.get("candidate")} == set(pair)]
+
+    SHIFT = {**BOX, "x_min": 0.2, "x_max": 1.2}
+    ANCHOR = {"x_min": 20.0, "x_max": 21.0, "y_min": 0.0, "y_max": 1.0, "z_min": 0.0, "z_max": 1.0}
+    a = obj("chair#1", BOX, "dark grey tufted armchair with nailhead trim", "grey", "fabric", "obj_a", 1.0)
+    b = obj("chair#1", SHIFT, "dark grey armchair in the foreground", "grey", "fabric", "obj_b", 2.0)
+    # a far object widens the map hull the overlap channel's null is taken over; alone, two
+    # touching boxes ARE the map and chance overlap is not surprising
+    anchor = obj("lamp", ANCHOR, "a lamp", "black", "metal", "obj_anchor", 3.0)
+    r1 = sweep([a, b, anchor])
+    held = refusals("hold", ("obj_a", "obj_b"))
+    assert r1.merged_count == 0 and held, ("first sweep must HOLD, 1/2 consecutive",
+                                           [(k, kw.get("reason")) for k, _, kw in rows])
+    rec = held[0]
+    assert rec.get("engine") == "evidence" and "ontology" in rec.get("abstentions", {}), rec
+    attrs = rec["channels"]["attributes"]
+    assert attrs["same_kind"] is True and attrs["log_odds"] > 0, attrs
+    r2 = sweep([a, b, anchor])
+    assert r2.merged_count == 1, ("second consecutive sweep must MERGE",
+                                  [(k, kw.get("reason"), kw.get("decision_reason")) for k, _, kw in rows])
+
+    lamp = obj("lamp", BOX, "a lamp", "blue", "metal", "obj_l", 1.0)
+    table = obj("table", SHIFT, "a table", "red", "wood", "obj_t", 2.0)
+    svc._hypotheses.clear()
+    for _ in range(3):
+        assert sweep([lamp, table, anchor]).merged_count == 0, "different kinds at one spot must not merge"
+
+    svc.room_manager.room_at_bbox = lambda bbox: "r_left" if bbox["x_min"] < 0.1 else "r_right"
+    svc._hypotheses.clear()
+    sweep([a, b, anchor])
+    assert not refusals("room", ("obj_a", "obj_b")), "overlapping boxes in two rooms pass the room gate"
+    APART = {**BOX, "x_min": 1.2, "x_max": 2.2}      # gap 0.2 m: geometry-compatible, no overlap
+    c = obj("chair#1", APART, "dark grey armchair", "grey", "fabric", "obj_c", 2.0)
+    svc._hypotheses.clear()
+    sweep([a, c, anchor])
+    assert refusals("room", ("obj_a", "obj_c")), "non-overlapping boxes in two rooms are refused on room"
+    svc.room_manager.room_at_bbox = lambda bbox: None
+
+    FARISH = {**BOX, "x_min": 1.5, "x_max": 2.5}     # gap 0.5 m: past association_margin_m 0.3
+    d = obj("chair#1", FARISH, "dark grey armchair", "grey", "fabric", "obj_d", 2.0)
+    svc._hypotheses.clear()
+    sweep([a, d, anchor])
+    g = refusals("geometry", ("obj_a", "obj_d"))
+    assert g and abs(g[0]["gap_m"] - 0.5) < 1e-6 and g[0]["threshold_gap_m"] == 0.3, \
+        [(k, kw.get("reason")) for k, _, kw in rows]
+    wm.persistent_perceptions.clear()
+
+
 def every_config_key_read_is_declared():
     """A key the code reads and the file never declares silently takes the module fallback,
     so the config says one thing and the run does another. This swept 22 such keys out of
@@ -466,6 +578,7 @@ def every_config_key_read_is_declared():
 
 
 # --- the merge path ----------------------------------------------------------------
+@_with(object_services, "MERGE_ENGINE", "legacy")
 def merge_path():
     svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
     svc.get_logger = lambda: rosstub.Any()
@@ -554,6 +667,7 @@ def merge_path():
     assert "threshold_distance_m" not in sr, "the similarity arm must not carry the distance key"
 
 
+@_with(object_services, "MERGE_ENGINE", "legacy")
 def merge_request_distance_survives_the_broad_phase():
     """The AABB broad phase must WIDEN to the request's distance, never narrow it.
 
@@ -1425,6 +1539,7 @@ def orientation_fusion():
     assert legacy.bbox["has_orientation"] is True
 
 
+@_with(object_services, "MERGE_ONTOLOGY_CHANNEL", True)
 def ontology_veto_seam():
     """GA-309: the hook's optional `disjoint` reaches the ontology channel and the record
     names which component answered; an absent attribute reproduces today's record exactly
@@ -1695,7 +1810,9 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                   merge_request_distance_survives_the_broad_phase),
                  ("frame queue processes a snapshot while the gate says moving",
                   frame_queue_decouples_processing_from_the_motion_gate),
-                 ("merge path (dry run)", merge_path)]:
+                 ("merge path (dry run)", merge_path),
+                 ("merge path, configured engine: room, geometry, evidence + attributes (2026-09-14)",
+                  merge_path_evidence)]:
     check(name, fn)
 
 width = max(len(n) for n, _ in checks)

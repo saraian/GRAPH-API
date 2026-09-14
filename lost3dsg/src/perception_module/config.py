@@ -100,6 +100,8 @@ _DEFAULTS = {
         # with, NOT the 3 the dead `min_consecutive` claims. Retiring the three dead names is
         # GA-341's own change and is deliberately not done here.
         "merge_engine": "legacy",          # legacy | evidence -- which merge path decides
+        "merge_ontology_channel": True,    # 2026-09-14: False = ontology channel recorded as abstaining
+        "merge_attribute_max_log_odds": 2.0,   # ceiling of the attribute channel's positive log-odds
         "merge_cost_ratio": 20.0,          # false-merge cost / missed-merge cost; threshold = log(ratio)
         "merge_min_consecutive": 2,        # consecutive sweeps a pair must hold before it commits
         "merge_max_distance_m": 0.8,       # centre distance beyond which a pair is never merged

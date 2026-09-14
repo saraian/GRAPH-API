@@ -349,7 +349,12 @@ def _attribute_channel_input(aa, bb):
     if getattr(aa, "source", None) is None or getattr(bb, "source", None) is None:
         return None
     score, ev = pair_attribute_score(aa.source, bb.source)
-    return score, int(ev["optional_count"])
+    la = str(aa.source.label).split('#')[0].strip().lower()
+    lb = str(bb.source.label).split('#')[0].strip().lower()
+    # same_kind is EXACT base-label equality (see association.channel_attributes for why a
+    # label-similarity floor was rejected). It is what lets the attribute channel stand in for
+    # the uncollected co-visibility on a genuine re-observation (GA-328 guard).
+    return score, int(ev["optional_count"]), (la == lb and la != "")
 
 
 def _centroid_from_bbox(bbox):
@@ -1260,6 +1265,7 @@ class ObjectServices(Node):
             attribute_score_fn=_attribute_channel_input,
             attribute_reference=SIM_THRESHOLD,
             attribute_max_log_odds=MERGE_ATTRIBUTE_MAX_LOG_ODDS,
+            locality_gap_m=LOCALITY_GAP_M,
             disjoint_fn=disjoint_fn,
             disjoint_source=(getattr(hook, "name", type(hook).__name__)
                              if disjoint_fn is not None else None),
@@ -1630,34 +1636,36 @@ class ObjectServices(Node):
                     room_a = self.room_manager.room_at_bbox(a.bbox)
                     room_b = self.room_manager.room_at_bbox(b.bbox)
 
-                    # 2026-09-14 owner ruling, in this order: room gate, then geometry, then
-                    # the evidence decision. Both gates read the fused box when there is one.
-                    ba, bb_ = assoc.locality_bounds(a), assoc.locality_bounds(b)
-                    overlapping = (ba is not None and bb_ is not None
-                                   and assoc.intersection_volume(ba, bb_) > 0.0)
-                    if (room_a is not None and room_b is not None and room_a != room_b
-                            and not overlapping):
-                        # Two boxes that OVERLAP are one thing whichever side of a room boundary
-                        # each centre fell on. MEASURED on GA-493: 56 of 57 distinct room
-                        # refusals were one kitchen boundary (room_4/room_5) and 7 of them scored
-                        # above the merge gate. Only NON-overlapping boxes in different rooms are
-                        # refused here; the similarity is computed solely to be recorded.
-                        print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b}), boxes apart")
-                        _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
-                        _refused(a, b, "room", _room_sim,
-                                 evidence_count=_room_ev["optional_count"],
-                                 room_a=room_a, room_b=room_b)
-                        continue
-                    if assoc.geometry_compatible(ba, bb_, LOCALITY_GAP_M) is False:
-                        # The one locality test both stages apply: intersect, or a largest
-                        # per-axis gap at most LOCALITY_GAP_M. A pair that fails it is never
-                        # scored on attributes (GA-25's order, kept).
-                        _refused(a, b, "geometry", None,
-                                 gap_m=round(assoc.box_gap(ba, bb_), 3),
-                                 threshold_gap_m=LOCALITY_GAP_M, room_a=room_a, room_b=room_b)
-                        continue
-
                     if MERGE_ENGINE == "evidence":
+                        # 2026-09-14 owner ruling, in this order: room gate, then geometry,
+                        # then the evidence decision. Both gates read the fused box when there
+                        # is one. The legacy arm below keeps its own gates untouched, so an
+                        # ablation against it compares the ruling with the pre-ruling system.
+                        ba, bb_ = assoc.locality_bounds(a), assoc.locality_bounds(b)
+                        overlapping = (ba is not None and bb_ is not None
+                                       and assoc.intersection_volume(ba, bb_) > 0.0)
+                        if (room_a is not None and room_b is not None and room_a != room_b
+                                and not overlapping):
+                            # Two boxes that OVERLAP are one thing whichever side of a room
+                            # boundary each centre fell on. MEASURED on GA-493: 56 of 57
+                            # distinct room refusals were one kitchen boundary (room_4/room_5)
+                            # and 7 of them scored above the merge gate. Only NON-overlapping
+                            # boxes in different rooms are refused here; the similarity is
+                            # computed solely to be recorded.
+                            print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b}), boxes apart")
+                            _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
+                            _refused(a, b, "room", _room_sim,
+                                     evidence_count=_room_ev["optional_count"],
+                                     room_a=room_a, room_b=room_b)
+                            continue
+                        if assoc.geometry_compatible(ba, bb_, LOCALITY_GAP_M) is False:
+                            # The one locality test both stages apply: intersect, or a largest
+                            # per-axis gap at most LOCALITY_GAP_M. A pair that fails it is
+                            # never scored on attributes (GA-25's order, kept).
+                            _refused(a, b, "geometry", None,
+                                     gap_m=round(assoc.box_gap(ba, bb_), 3),
+                                     threshold_gap_m=LOCALITY_GAP_M, room_a=room_a, room_b=room_b)
+                            continue
                         # GA-186. No gate cascade and no similarity constant: every channel
                         # runs, the log-odds are fused, and the pair commits only if the
                         # total clears log(cost_ratio). Three outcomes, not two -- a HOLD is
@@ -1730,8 +1738,18 @@ class ObjectServices(Node):
                         if dist is None:
                             dist = float(np.linalg.norm(
                                 np.asarray(aa.centroid) - np.asarray(bb.centroid)))
-                    # The legacy room gate that stood here moved ABOVE the engine switch on
-                    # 2026-09-14 and now refuses only non-overlapping boxes, for both engines.
+                    if (MERGE_ENGINE == "legacy"
+                            and room_a is not None and room_b is not None and room_a != room_b):
+                        # LEGACY ARM ONLY, unchanged: refuses on room whether or not the boxes
+                        # overlap. The evidence arm's room gate stands above the engine switch
+                        # (2026-09-14). The similarity is computed HERE, on the refusal path
+                        # only, and solely to be recorded (GA-25's order is kept).
+                        print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b})")
+                        _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
+                        _refused(a, b, "room", _room_sim,
+                                 evidence_count=_room_ev["optional_count"],
+                                 room_a=room_a, room_b=room_b)
+                        continue
 
                     ax = (a.bbox['x_min'] + a.bbox['x_max']) / 2.0
                     ay = (a.bbox['y_min'] + a.bbox['y_max']) / 2.0
