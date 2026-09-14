@@ -1951,7 +1951,9 @@ class ObjectServices(Node):
                         # is a pair that was never judged on its own evidence, and the count
                         # of those is how you tell "the gate refused it" from "the gate
                         # never saw it".
-                        _refused(a, b, "already_condemned", None)
+                        _refused(a, b, "already_condemned", None,
+                                 decision_reason="one side was condemned earlier in this sweep",
+                                 offered_by=pair_meta.get("offered_by"))
                         continue
 
                     near_geometry_override = False
@@ -1976,6 +1978,8 @@ class ObjectServices(Node):
                         # A pair that is never compared is invisible in precisely the way
                         # refusals were before they were logged. So it is logged now.
                         _refused(a, b, "bbox_absent", None,
+                                 decision_reason="a side has no bbox, so locality cannot be evaluated",
+                                 offered_by=pair_meta.get("offered_by"),
                                  a_has_bbox=a.bbox is not None, b_has_bbox=b.bbox is not None)
                         continue
 
@@ -2015,6 +2019,8 @@ class ObjectServices(Node):
                             _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
                             _refused(a, b, "room", _room_sim,
                                      evidence_count=_room_ev["optional_count"],
+                                     decision_reason="rooms differ and the boxes do not intersect",
+                                     offered_by=pair_meta.get("offered_by"),
                                      room_a=room_a, room_b=room_b)
                             self._interrupt_hypothesis(a, b, "room", dry_run)
                             continue
@@ -2023,6 +2029,7 @@ class ObjectServices(Node):
                             # per-axis gap at most LOCALITY_GAP_M. A pair that fails it is
                             # never scored on attributes (GA-25's order, kept).
                             _refused(a, b, "geometry", None,
+                                     decision_reason="largest per-axis gap exceeds the locality gap",
                                      gap_m=round(assoc.box_gap(ba, bb_), 3),
                                      threshold_gap_m=LOCALITY_GAP_M, room_a=room_a, room_b=room_b,
                                      offered_by=pair_meta.get("offered_by"))
@@ -2036,7 +2043,9 @@ class ObjectServices(Node):
                         aa = assoc_objs.get(id(a))
                         bb = assoc_objs.get(id(b))
                         if aa is None or bb is None:
-                            _refused(a, b, "assoc_object_missing", None)
+                            _refused(a, b, "assoc_object_missing", None,
+                                     decision_reason="no AssocObject was built for a side",
+                                     offered_by=pair_meta.get("offered_by"))
                             continue
                         # Sorted, so the same pair keys identically whichever side is `a`
                         # this sweep -- candidate order is not stable between sweeps and an
@@ -2116,6 +2125,8 @@ class ObjectServices(Node):
                         _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
                         _refused(a, b, "room", _room_sim,
                                  evidence_count=_room_ev["optional_count"],
+                                 decision_reason="different rooms (legacy arm)",
+                                 offered_by=pair_meta.get("offered_by"),
                                  room_a=room_a, room_b=room_b)
                         continue
 
@@ -2149,6 +2160,8 @@ class ObjectServices(Node):
                         # similarity path's is unitless -- the typed key says which.
                         _refused(a, b, "distance", None,
                                  evidence_count=None,
+                                 decision_reason="centre distance exceeds the legacy gate",
+                                 offered_by=pair_meta.get("offered_by"),
                                  distance=dist, threshold_distance_m=MAX_DISTANCE,
                                  room_a=room_a, room_b=room_b)
                         continue
@@ -2192,6 +2205,8 @@ class ObjectServices(Node):
                         # `threshold_log_odds` beside it rather than swept into this rename.
                         _refused(a, b, "similarity", sim,
                                  evidence_count=ev["optional_count"],
+                                 decision_reason="attribute score below the legacy merge floor",
+                                 offered_by=pair_meta.get("offered_by"),
                                  threshold_similarity=MIN_SIMILARITY,
                                  room_a=room_a, room_b=room_b)
                         continue
@@ -2223,6 +2238,8 @@ class ObjectServices(Node):
                               f"terms < {MERGE_MIN_EVIDENCE}; sim {sim:.3f} on the label alone)")
                         _refused(a, b, "evidence_absent", sim,
                                  evidence_count=ev["optional_count"],
+                                 decision_reason="no optional attribute term was comparable",
+                                 offered_by=pair_meta.get("offered_by"),
                                  required=MERGE_MIN_EVIDENCE, room_a=room_a, room_b=room_b)
                         continue
 
