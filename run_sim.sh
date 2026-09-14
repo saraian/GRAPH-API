@@ -1421,6 +1421,10 @@ print(json.dumps({
     # This comment used them and bash reported 'association.merge_engine: command not found'
     # at the heredoc's opening line -- the trap the docker-block comment already documents.
     'association.merge_engine': g('association', 'merge_engine'),
+    # The MERGE_ENGINE env override (passed into the container below) switches the engine
+    # without touching the config, so the line above alone could name the other engine
+    # (rules 2 and 5). This key records what will actually run. Added, never renamed.
+    'association.merge_engine_effective': (__import__('os').environ.get('MERGE_ENGINE') or '').strip().lower() or g('association', 'merge_engine'),
     'association.merge_cost_ratio': g('association', 'merge_cost_ratio'),
     'association.merge_min_consecutive': g('association', 'merge_min_consecutive'),
     'association.merge_ontology_channel': g('association', 'merge_ontology_channel'),

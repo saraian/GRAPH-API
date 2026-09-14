@@ -47,6 +47,17 @@ OUT_DIR = REPO / "schedules/configs"
 # `note` is the paragraph a reader of a bundle needs in order to know what the arm was FOR -- it
 # is not decoration, and an arm whose purpose is not written down cannot be reported.
 ARMS = [
+    ("09_legacy_merge", {"association.merge_engine": "legacy"}, [
+        "THE MERGE ABLATION BASELINE (merge-algorithm lane, 2026-09-14). Identical to 01_reference",
+        "except that the LEGACY merge engine decides: the pre-ruling gates (room on any two rooms,",
+        "0.8 m centre distance, similarity >= 0.925 on the weighted attribute score) instead of the",
+        "evidence engine with the ontology channel off and the bounded attribute channel. Run it",
+        "ONLY through this file: the MERGE_ENGINE environment override also switches the engine",
+        "but run_metadata's effective_config stamps association.merge_engine from the config, so",
+        "an env-switched run would carry a stamp that names the other engine (rules 2 and 5).",
+        "Compare against the reference on the SAME tour: merges, adds, updates, final objects,",
+        "cross-kind merges, and the evaluator's precision at IoU 0.25 / 0.50.",
+    ]),
     ("01_reference", {}, [
         "THE REFERENCE RUN. Everything else is compared against this one, and it is the tracked",
         "configuration with nothing changed: local detector, rtabmap pose (owner ruling",

@@ -1,13 +1,19 @@
-# 01_reference.yaml — a complete run configuration. Use it directly:
-#     ./run_sim_headless.sh --config schedules/configs/01_reference.yaml
+# 09_legacy_merge.yaml — a complete run configuration. Use it directly:
+#     ./run_sim_headless.sh --config schedules/configs/09_legacy_merge.yaml
 # or name it from a schedule arm with `config_file:`.
 #
-# THE REFERENCE RUN. Everything else is compared against this one, and it is the tracked
-# configuration with nothing changed: local detector, rtabmap pose (owner ruling
-# 2026-09-10), the scheduled exploration, the camera tilted 30 degrees down, no cap.
+# THE MERGE ABLATION BASELINE (merge-algorithm lane, 2026-09-14). Identical to 01_reference
+# except that the LEGACY merge engine decides: the pre-ruling gates (room on any two rooms,
+# 0.8 m centre distance, similarity >= 0.925 on the weighted attribute score) instead of the
+# evidence engine with the ontology channel off and the bounded attribute channel. Run it
+# ONLY through this file: the MERGE_ENGINE environment override also switches the engine
+# but run_metadata's effective_config stamps association.merge_engine from the config, so
+# an env-switched run would carry a stamp that names the other engine (rules 2 and 5).
+# Compare against the reference on the SAME tour: merges, adds, updates, final objects,
+# cross-kind merges, and the evaluator's precision at IoU 0.25 / 0.50.
 #
 # WHAT DIFFERS FROM THE TRACKED config.yaml:
-#   nothing. This arm IS the tracked configuration.
+#   association.merge_engine: 'legacy'
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
@@ -45,7 +51,7 @@ association:
   bbox_reduction_ratio: 0.3
   reevaluation_radius_m: 2.0
   association_margin_m: 0.3
-  merge_engine: evidence
+  merge_engine: legacy
   merge_ontology_channel: false
   merge_attribute_max_log_odds: 2.0
   merge_cost_ratio: 20.0

@@ -13,8 +13,8 @@
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
-# generated_at:   2026-09-14T14:27:26
-# generated_from: lost3dsg/src/perception_module/config.yaml sha256 095ad1c2a773caef
+# generated_at:   2026-09-14T15:08:37
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 591bef5ccd472f6b
 #
 # A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
 # code then takes its module fallback instead. If a bundle's config is missing a key
@@ -31,10 +31,10 @@ embedding:
   word2vec_path: /root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz
   word2vec_limit: 200000
 similarity:
-  label: 0.05
-  color: 0.45
-  material: 0.3
-  description: 0.2
+  label: 0.25
+  color: 0.36
+  material: 0.24
+  description: 0.15
 association:
   exploration_iou_threshold: 0.1
   sim_threshold: 0.85
