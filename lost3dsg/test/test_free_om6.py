@@ -134,14 +134,14 @@ b = NS(label="chair", object_id="obj_b", bbox=box(0.5), **ATTR)
 wm.persistent_perceptions[:] = [a, b]
 merge_log = [{"keeper": "chair", "keeper_id": "obj_a", "discarded": "chair#2", "bbox_from_object_id": "obj_a"}]
 om6.requests.request = lambda **k: fake_response(200, json.dumps({"success": True, "merged_count": 1, "merge_log": merge_log}))
-assert om6.ObjectManagerService.merge_duplicate_objects(n) is True
+assert om6.ObjectManagerService.merge_duplicate_objects(n) == 1  # returns the applied COUNT, not a bool
 pending = dict(n.reeval.drain())
 assert pending.get("obj_a") == "merged" and "obj_b" in pending, pending
 # an older log without keeper_id (label under "keeper") must not raise either
 n = node()
 wm.persistent_perceptions[:] = [a, b]
 merge_log = [{"keeper": "chair", "discarded": "chair#2", "bbox_from_object_id": "obj_a"}]
-assert om6.ObjectManagerService.merge_duplicate_objects(n) is True
+assert om6.ObjectManagerService.merge_duplicate_objects(n) == 1  # returns the applied COUNT, not a bool
 assert dict(n.reeval.drain()).get("obj_a") == "merged"
 
 # ---------------------------------------------------------------- GA-47 delete: neighbours of the removed object

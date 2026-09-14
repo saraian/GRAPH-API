@@ -30,5 +30,5 @@ for shape, want in ((real_shape, "obj_keep"), (legacy_shape, "obj_legacy"), (odd
     node._call_graph_api = lambda *a, **k: {"merged_count": 1, "merge_log": shape}
     node.latest_agent_pose = None
     ok = node.merge_duplicate_objects()
-    assert ok is True and queued == [(want, "merged")], (shape, queued)
+    assert ok == 1 and queued == [(want, "merged")], (shape, queued)  # applied COUNT, not a bool
 print("OK GA-11: the survivor is queued from the real merge-log shape; label strings and odd entries do not raise")

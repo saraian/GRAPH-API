@@ -402,6 +402,27 @@ def merge_lock_covers_writes_only():
         assert len(osv.wm.persistent_perceptions) == 1, osv.wm.persistent_perceptions
         assert osv.wm.persistent_perceptions[0].object_id == "obj_keep"
         assert not osv.wm.lock.held, "the lock must be released when the callback returns"
+        assert resp.merged_count == 1, resp.merged_count
+        # `merged_count` reports APPLIED merges. Run the race the locked re-check exists for:
+        # the discard leaves the map during the unlocked sweep. The pair is decided, then
+        # skipped as stale at the write -- so it must not be counted. Before the fix this
+        # path fell through to the room-graph update and reported 1.
+        c = object_info.Object("chair", None, BOX, description="a chair", color="red", material="wood")
+        c.object_id, c.creation_time = "obj_gone", 3.0
+        osv.wm.persistent_perceptions.append(c)
+
+        def racing_probe(*a, **k):
+            if c in osv.wm.persistent_perceptions:
+                osv.wm.persistent_perceptions.remove(c)
+            return real_sim(*a, **k)
+
+        osv.lost_similarity_detailed = racing_probe
+        resp2 = rosstub.Any()
+        with tempfile.TemporaryDirectory() as tmp:
+            osv.PROJECT_ROOT = tmp
+            osv.ObjectServices._cb_merge_objects(svc, req, resp2)
+        assert resp2.merged_count == 0, f"a stale pair was counted as a merge: {resp2.merged_count}"
+        assert [o.object_id for o in osv.wm.persistent_perceptions] == ["obj_keep"]
     finally:
         osv.lost_similarity_detailed = real_sim
         osv.wm.lock = real_lock

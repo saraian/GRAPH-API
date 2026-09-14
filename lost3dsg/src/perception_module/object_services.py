@@ -1304,8 +1304,12 @@ class ObjectServices(Node):
             pair_indices = set()
             for i in valid:
                 key = f"merge:{i}"
-                for hit in index.query(objects[i].bbox, margin):
-                    examined += index.last_examined
+                hits = index.query(objects[i].bbox, margin)
+                # `last_examined` is per QUERY. Summing it once per hit multiplied the count by
+                # the hit count (every object hits at least itself), so the logged `examined`
+                # was inflated on every sweep.
+                examined += index.last_examined
+                for hit in hits:
                     j = indexed[hit]
                     if i < j:
                         pair_indices.add((i, j))
@@ -1861,6 +1865,10 @@ class ObjectServices(Node):
                 except Exception as e:
                     self.get_logger().error(f"decision_log merge failed: {e}")
 
+            # `merged_count` reports APPLIED merges. A dry run applies nothing and its
+            # decisions ARE its output, so it keeps the decided count; the live path
+            # overwrites this with what actually survived the locked re-check below.
+            applied = len(to_remove_pairs)
             if to_remove_pairs and not dry_run:
                 print(f"\n🗑️ REMOVING: {len(to_remove_pairs)} duplicate objects:")
 
@@ -1877,6 +1885,7 @@ class ObjectServices(Node):
                 # inside the lock -- the keeper was never checked before -- and a stale pair is
                 # skipped and COUNTED, never applied to an object that has left the map.
                 stale = 0
+                applied = 0
                 with wm.lock:
                     for pair in to_remove_pairs:
                         keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
@@ -1887,22 +1896,29 @@ class ObjectServices(Node):
                         if keeper not in wm.persistent_perceptions:
                             stale += 1
                             continue
-                        if discard in wm.persistent_perceptions:
-                            # Merge geometry while both tracks still exist. The
-                            # operation preserves distinct view IDs, so two
-                            # tracks containing the same cycle do not count it twice.
-                            merge_bbox_fusion(keeper, discard)
-                            cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
-                            cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
-                            print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
-                            wm.persistent_perceptions.remove(discard)
-                            # GA-26: the store learns about the merge, or its row stays active
-                            # forever and the database disagrees with the map by one object.
-                            if hasattr(self, 'db'):
-                                try:
-                                    self.db.on_object_merged(keeper, discard, step=self.tracking_step_counter)
-                                except Exception as e:
-                                    self.get_logger().error(f"db.on_object_merged failed: {e}")
+                        if discard not in wm.persistent_perceptions:
+                            # Same race as the keeper: the discard left the map between the
+                            # unlocked sweep and this write. Nothing is merged, so nothing
+                            # is counted. Before, this case fell through to the room-graph
+                            # update and was still reported as a merge.
+                            stale += 1
+                            continue
+                        applied += 1
+                        # Merge geometry while both tracks still exist. The
+                        # operation preserves distinct view IDs, so two
+                        # tracks containing the same cycle do not count it twice.
+                        merge_bbox_fusion(keeper, discard)
+                        cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
+                        cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
+                        print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
+                        wm.persistent_perceptions.remove(discard)
+                        # GA-26: the store learns about the merge, or its row stays active
+                        # forever and the database disagrees with the map by one object.
+                        if hasattr(self, 'db'):
+                            try:
+                                self.db.on_object_merged(keeper, discard, step=self.tracking_step_counter)
+                            except Exception as e:
+                                self.get_logger().error(f"db.on_object_merged failed: {e}")
 
                         discard_room = getattr(discard, 'room_id', None)
                         if discard_room and discard_room in self.room_manager.scene_graph:
@@ -1944,11 +1960,11 @@ class ObjectServices(Node):
 
             # ── Risposta ──────────────────────────────────────────────────────
             response.success        = True
-            response.merged_count   = len(to_remove_pairs)
+            response.merged_count   = applied
             response.merge_log_json = json.dumps(merge_log)
             response.message        = (
                 f"{'[DRY RUN] ' if dry_run else ''}"
-                f"{len(to_remove_pairs)} merge(s) "
+                f"{applied} merge(s) "
                 f"{'simulati' if dry_run else 'eseguiti'}"
             )
 
