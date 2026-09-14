@@ -76,6 +76,7 @@ from world_model import wm
 
 from lost3dsg.msg import Bbox3dArray, ObjectDescriptionArray
 from lost3dsg.srv import (
+    MergeObjects,
     ObjectTrackingService,
     UpdateObject,
 )
@@ -2623,11 +2624,32 @@ class ObjectManagerService(Node):
         }
 
         try:
-            result = self._call_graph_api("POST", "/merge", json_body=payload)
-            if result.get("pending"):
-                # GA-183: HTTP 202 -- the bridge dispatched the request and stopped waiting.
-                # The merge may still land; the next cycle re-reads the world model.
-                self.get_logger().warn(f"Merge dispatched, not confirmed: {result.get('message')}")
+            # IN-PROCESS, NOT OVER HTTP (2026-09-15). This used to POST /merge to the bridge,
+            # whose route builds the same MergeObjects request and calls the service back into
+            # THIS process -- a round trip that occupied the bridge's single worker for the
+            # whole sweep. Every other Graph API call from the tracking path that landed in
+            # that window (POST /objects on admission, PATCH /objects/<id> on update) failed
+            # "unreachable" and counted a GA-09 strike; five consecutive strikes end the run.
+            # MEASURED: run 20260915_003535 (periodic sweep every 5 s) took 35 such failures
+            # and survived because they never ran five in a row; run 20260915_012249 (the same
+            # plus an event sweep every 1 s) took 19 and died at cycle 23 with exit 1 and no
+            # traceback -- _flush_and_exit on the fifth consecutive strike, a PATCH of the very
+            # object the last UPDATE line names, while the bridge was alive serving GETs.
+            # The bridge route is a pure passthrough (three request fields in, four fields
+            # out), so calling the handler directly is the same operation minus the worker it
+            # held -- the shape the tracking path already uses for object_tracking_callback.
+            # The /merge route stays for external callers. GA-183's "pending" (HTTP 202) case
+            # cannot occur in-process: the call returns when the sweep has finished.
+            req = MergeObjects.Request()
+            req.max_distance = float(payload["max_distance"])
+            req.min_similarity = float(payload["min_similarity"])
+            req.dry_run = bool(payload["dry_run"])
+            res = self.object_services._cb_merge_objects(req, MergeObjects.Response())
+            if not res.success:
+                raise RuntimeError(f"merge service refused: {res.message}")
+            result = {"success": res.success, "message": res.message,
+                      "merged_count": res.merged_count,
+                      "merge_log": (json.loads(res.merge_log_json) if res.merge_log_json else [])}
             merged_count = int(result.get("merged_count", 0))
             if merged_count:
                 # GA-11. A merge changes the survivor more than anything else does; it never
