@@ -68,6 +68,7 @@ from cv_utils import (  # noqa: E402
     mask_list_to_centroid_and_bbox,
     mask_list_to_pointcloud2,
     numpy_to_base64,
+    publish_bbox_corner_markers,
     publish_individual_pointclouds_by_id,
     vlm_call,
 )
@@ -1055,6 +1056,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                           bboxes_3d=bboxes_3d, transform=camera_data["transform"], depth=depth)
         _mark("geometry")
         self._add_pca_orientation(detections, bboxes_3d, depth, camera_info, camera_data["transform"])
+        # The geometry helper also publishes frame-local markers, but the newer pipeline
+        # deliberately fits PCA after that helper so clipped masks can abstain. Publish the
+        # corners only after the final orientation decision; otherwise RViz receives an AABB
+        # while /image_with_bb and /persistent_bbox receive the OBB from the same cycle.
+        publish_bbox_corner_markers(
+            self, bboxes_3d, self.bbox_marker_pub,
+            frame_id=world_frame(), stamp=cycle_stamp,
+        )
         _mark("pca")
         self._publish_image_with_bb(
             image_raw, detections, bboxes_3d, camera_info, camera_data["transform"], cycle_stamp, depth,
@@ -1318,10 +1327,16 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         centroids_3d, bboxes_3d = mask_list_to_centroid_and_bbox(
             all_masks, instance_labels, depth, camera_info,
             node=self,
-            bbox_marker_pub=self.bbox_marker_pub,
+            # Publish only after _add_pca_orientation below; otherwise this helper's
+            # provisional AABB markers would remain next to the final OBB markers in RViz.
+            bbox_marker_pub=None,
             centroid_marker_pub=self.centroid_marker_pub,
             transform=transform,
             points_out=points,
+            # _add_pca_orientation applies the mask-clipping policy and must run before the
+            # frame-local marker is emitted. The legacy perception entry point keeps the
+            # default here because it has no second PCA stage.
+            include_orientation=False,
         )
         # The map-frame points each box came from, kept for _add_pca_orientation. It used
         # to re-run _filter_object_points (projection + k=30 outlier removal on up to

@@ -1126,10 +1126,10 @@ def pca_gets_aabb_points():
     assert seen.get("sor_k") == 30 and seen.get("sor_std") == 1.5, seen
     assert seen.get("max_points_per_obj") == 20000, seen
     assert "oriented_extents" in bbox, f"the stubbed point set must still yield a box: {bbox}"
-    if hasattr(dp, "mask_touches_border"):   # GA-315 part 1 landed
-        assert "oriented_extents" not in clipped_bbox and \
-            clipped_bbox.get("orientation_skipped") == "mask_clipped", \
-            f"a clipped mask must get no PCA keys and the skip marker: {clipped_bbox}"
+    if hasattr(dp, "mask_touches_border"):   # GA-315 / RViz OBB path
+        assert "oriented_extents" in clipped_bbox and \
+            clipped_bbox.get("orientation_warning") == "mask_clipped", \
+            f"a clipped mask must retain its PCA box and warning: {clipped_bbox}"
 
 
 def crop_file_gets_describer_pixels():

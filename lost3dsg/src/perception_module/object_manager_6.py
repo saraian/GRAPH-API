@@ -30,6 +30,7 @@ from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
 from cv_bridge import CvBridge
 from cv_utils import (
+    set_marker_from_bbox,
     publish_persistent_bboxes,
     publish_persistent_centroids as _publish_cv_persistent_centroids,
 )
@@ -596,13 +597,8 @@ def publish_uncertain_bboxes(node, uncertain_objects, pub):
         marker.id = i
         marker.type = Marker.CUBE
         marker.action = Marker.ADD
-        marker.pose.orientation.w = 1.0
-        marker.pose.position.x = (obj.bbox['x_min'] + obj.bbox['x_max']) / 2.0
-        marker.pose.position.y = (obj.bbox['y_min'] + obj.bbox['y_max']) / 2.0
-        marker.pose.position.z = (obj.bbox['z_min'] + obj.bbox['z_max']) / 2.0
-        marker.scale.x = obj.bbox['x_max'] - obj.bbox['x_min']
-        marker.scale.y = obj.bbox['y_max'] - obj.bbox['y_min']
-        marker.scale.z = obj.bbox['z_max'] - obj.bbox['z_min']
+        if not set_marker_from_bbox(marker, obj.bbox):
+            continue
         marker.color.a = 0.5
         marker.color.r, marker.color.g, marker.color.b = 1.0, 0.5, 0.0
         marker_array.markers.append(marker)
