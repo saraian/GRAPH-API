@@ -476,7 +476,8 @@ def channel_separation(mu_a, cov_a, mu_b, cov_b, map_volume_m3):
 # ---------------------------------------------------------------------------------------
 
 
-def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30):
+def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30,
+                         bounds_a=None, bounds_b=None):
     """Two detections in one frame are different objects — UNLESS THEY ARE THE SAME PIXELS.
 
     GA-181, MEASURED AND IT OVERTURNS THE ORIGINAL PREMISE. I wrote that "a single frame
@@ -551,6 +552,21 @@ def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30):
         return Abstain(f"co-visible but overlapping (2D IoU {overlap_2d:.2f}) — the "
                        f"duplicate-detection case, not evidence of two objects",
                        measured=True)
+    if bounds_a is not None and bounds_b is not None:
+        # OWNER RULING 2026-09-14: THE VETO NEEDS 3D SEPARATION TOO. Disjoint 2D boxes in one
+        # frame say the two detections cover different pixels; they do not say the two boxes
+        # are different objects, because one object split by an occluder (or by the detector)
+        # yields exactly that picture. MEASURED on 20260914_174342: pillow#1 and pillow#3, same
+        # base label, attribute score 0.937, 3D containment 0.20 -- vetoed permanently on a
+        # single frame whose 2D IoU was 0.056. Requiring the 3D boxes to be disjoint as well
+        # keeps the veto for genuinely separate neighbours (which is all of the GA-181 corpus:
+        # every one of those pairs is 3D-disjoint too) and spares the split-object case.
+        if intersection_volume(bounds_a, bounds_b) > 0.0:
+            detail = {**detail, "boxes_intersect_3d": True}
+            return Abstain("co-visible and 2D-disjoint, but the 3D boxes intersect — an "
+                           "occluder can split one object into two disjoint detections",
+                           measured=True)
+        detail = {**detail, "boxes_intersect_3d": False}
     return VETO, detail
 
 
@@ -740,7 +756,7 @@ def channel_room(room_a, room_b, n_rooms):
 
 
 def channel_attributes(score, evidence_count, reference, max_log_odds, min_evidence=1,
-                       same_kind=None):
+                       same_kind=None, same_kind_floor_zero=True):
     """CHANNEL 7 — the attribute score (label, colour, material, description) as BOUNDED evidence.
 
     Owner ruling 2026-09-14: keep the LSF metric in the decision. What the data allows it to say
@@ -768,6 +784,19 @@ def channel_attributes(score, evidence_count, reference, max_log_odds, min_evide
     ref = float(reference)
     if s >= ref:
         llr = float(max_log_odds) * (s - ref) / max(1.0 - ref, 1e-9)
+    elif same_kind and same_kind_floor_zero:
+        # OWNER RULING 2026-09-14, after measuring on 20260914_174342: a SAME-KIND pair is never
+        # penalised for wording. Two views of one object described by the VLM score ~0.78 with
+        # qwen3.8-27b, below the 0.85 reference, so the negative arm cancelled the geometry that
+        # identified them: chair#1/chair had containment 0.913 and overlap +3.94 -- over the
+        # 2.996 threshold on its own -- and attributes at -1.52 held it at 2.418.
+        #
+        # ONLY same-kind. The negative arm is what keeps a pillow out of the sofa it rests in:
+        # replayed over that run's 61 decisions, removing it for every pair puts 8 CROSS-KIND
+        # pairs over the threshold (sofa+pillow x4 at containment 1.0, table+rug, vase+plant),
+        # and lowering the reference to 0.75 puts 2 there. This option puts exactly ONE pair
+        # over: the same-kind chair, with zero cross-kind.
+        llr = 0.0
     else:
         llr = -MAX_CHANNEL_LOG_ODDS * (ref - s) / max(ref - 0.5, 1e-9)
     llr = float(np.clip(llr, -MAX_CHANNEL_LOG_ODDS, float(max_log_odds)))
@@ -896,7 +925,8 @@ def score_pair(a, b, ctx):
     # no 2D boxes to compare, `overlap_2d` stays None and the channel abstains rather than
     # assuming the two detections are disjoint.
     s.add("covisibility", channel_covisibility(a.observations, b.observations,
-                                               overlap_2d=ctx.overlap_2d(a, b)))
+                                               overlap_2d=ctx.overlap_2d(a, b),
+                                               bounds_a=bounds_a, bounds_b=bounds_b))
     s.add("overlap", channel_overlap(bounds_a, bounds_b, ctx.map_volume_m3))
 
     ov = s.channels.get("overlap", {})
@@ -925,7 +955,8 @@ def score_pair(a, b, ctx):
             tuple(measured) + (None,))[:3]
         s.add("attributes", channel_attributes(
             score, n_ev, ctx.attribute_reference, ctx.attribute_max_log_odds,
-            same_kind=same_kind))
+            same_kind=same_kind,
+            same_kind_floor_zero=getattr(ctx, "attribute_same_kind_floor_zero", True)))
     s.add("appearance", channel_appearance(
         a.descriptors, b.descriptors, ctx.cone_half_angle_rad,
         a.descriptor_spread, b.descriptor_spread))
@@ -1254,13 +1285,15 @@ class AssocContext:
     __slots__ = ("map_volume_m3", "n_rooms", "n_types", "cone_half_angle_rad",
                  "disjoint_fn", "disjoint_source", "cost_ratio", "overlap_2d_fn",
                  "use_ontology", "attribute_score_fn", "attribute_reference",
-                 "attribute_max_log_odds", "locality_gap_m")
+                 "attribute_max_log_odds", "locality_gap_m", "attribute_same_kind_floor_zero")
 
     def __init__(self, map_volume_m3=None, n_rooms=None, n_types=None,
                  cone_half_angle_rad=math.radians(45.0), disjoint_fn=None, cost_ratio=20.0,
                  overlap_2d_fn=None, disjoint_source=None, use_ontology=True,
                  attribute_score_fn=None, attribute_reference=0.85, attribute_max_log_odds=2.0,
-                 locality_gap_m=None):
+                 locality_gap_m=None, attribute_same_kind_floor_zero=True):
+        # A same-kind pair is never penalised for wording (owner ruling 2026-09-14).
+        self.attribute_same_kind_floor_zero = attribute_same_kind_floor_zero
         # None = candidate generation uses the covariance shell alone (the pre-2026-09-14
         # behaviour); a number also offers every pair the shared geometry test accepts.
         self.locality_gap_m = locality_gap_m
@@ -1326,11 +1359,23 @@ def demo():
                          observations=[_obs(7, [2, 0, 1], [0, 0, 0.5])])
     twin_b = AssocObject("p2", bbox=_box(0.05, 0, 0.5, 0.4, 0.4, 0.2), room_id="bedroom",
                          observations=[_obs(7, [2, 0, 1], [0.05, 0, 0.5])])
-    # GA-181: co-visible AND SPATIALLY DISJOINT is the hard negative.
+    # GA-181: co-visible AND SPATIALLY DISJOINT is the hard negative. Owner ruling 2026-09-14:
+    # disjoint means disjoint in 2D *and* in 3D, so these twins must be moved apart to be the
+    # hard negative -- as written they intersect in 3D, which is now the split-object case.
+    apart_b = AssocObject("p2", bbox=_box(2.0, 0, 0.5, 0.4, 0.4, 0.2), room_id="bedroom",
+                          observations=[_obs(7, [2, 0, 1], [2.0, 0, 0.5])])
     ctx_disjoint = AssocContext(map_volume_m3=300.0, n_rooms=6, n_types=40, cost_ratio=20.0,
                                 overlap_2d_fn=lambda a, b: 0.0)
-    s2 = score_pair(twin_a, twin_b, ctx_disjoint)
+    s2 = score_pair(twin_a, apart_b, ctx_disjoint)
     assert s2.vetoed and "covisibility" in s2.vetoed_by
+    assert s2.channels["covisibility"]["boxes_intersect_3d"] is False
+    # 2D-disjoint but 3D-INTERSECTING: one object an occluder split into two detections.
+    # MEASURED on 20260914_174342: pillow#1/pillow#3, same label, attributes 0.937, 3D
+    # containment 0.20, vetoed permanently on one frame at 2D IoU 0.056.
+    s2_split = score_pair(twin_a, twin_b, ctx_disjoint)
+    assert not s2_split.vetoed, s2_split.vetoed_by
+    assert "covisibility" in s2_split.abstentions and "covisibility" in s2_split._measured_abstentions
+    print("  co-visible, 2D-disjoint, 3D-INTERSECTING -> abstains (occluder split), not vetoed")
     # ...but co-visible and OVERLAPPING is the duplicate-detection case and must ABSTAIN.
     # Measured, run 20260901_055513: 17 co-visible pairs that GT says are ONE object, e.g.
     # "sink#1 | bathroom vanity#3" at 2D IoU 0.997 and 3D distance 0.000 m. A hard veto here
@@ -1494,6 +1539,15 @@ def demo():
     assert agree == 2.0 < thr8, "perfect agreement is capped below the commit threshold"
     assert 0.0 < same_kind < agree and at_gate == 0.0
     assert other_kind == -MAX_CHANNEL_LOG_ODDS, other_kind
+    # owner ruling 2026-09-14: a SAME-KIND pair is never penalised for wording; a cross-kind
+    # pair keeps the full negative arm, which is what holds a pillow out of its sofa.
+    same_kind_low, _ = channel_attributes(0.78, 3, 0.85, 2.0, same_kind=True)
+    cross_kind_low, _ = channel_attributes(0.78, 3, 0.85, 2.0, same_kind=False)
+    assert same_kind_low == 0.0, same_kind_low
+    assert cross_kind_low < -1.5, cross_kind_low
+    opted_out, _ = channel_attributes(0.78, 3, 0.85, 2.0, same_kind=True, same_kind_floor_zero=False)
+    assert opted_out == cross_kind_low, (opted_out, cross_kind_low)
+    print(f"  same-kind floor : same kind at 0.78 -> {same_kind_low:+.2f}, cross kind -> {cross_kind_low:+.2f}")
     assert isinstance(channel_attributes(1.0, 0, 0.85, 2.0), Abstain), "label alone is not evidence"
     assert isinstance(channel_attributes(None, 3, 0.85, 2.0), Abstain)
     # wired through score_pair: a same-spot different-kind pair loses to a strong overlap
