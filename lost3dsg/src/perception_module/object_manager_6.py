@@ -327,6 +327,14 @@ TIAGO_MERGE_INTERVAL_S = float(os.environ.get(
 # longer than this would start eating the next stop.
 SCAN_MERGE_SETTLE_MAX_S = float(os.environ.get(
     "SCAN_MERGE_SETTLE_MAX_S", _ASSOC.get("scan_merge_settle_max_s", 10.0)))
+# EVENT-DRIVEN MERGE (2026-09-15). A world-model change -- admission, update, merge, box write,
+# room change -- marks the map dirty, and a short timer runs ONE full sweep when it is. This is
+# "as soon as there is new evidence", debounced, and it never floods: the timer coalesces every
+# change inside one period into one sweep, and the sweep itself was MEASURED at a median 0.6 ms
+# (max 6.7 ms) for candidate generation over 34 objects on 20260915_003535. 0.0 disables it.
+# The periodic timer above can stay on beside it; `_merge_call_lock` serialises them.
+MERGE_EVENT_DEBOUNCE_S = float(os.environ.get(
+    "MERGE_EVENT_DEBOUNCE_S", _MERGE_CONFIG.get("event_debounce_s", 0.0)))
 
 def _launch_graph_api_bridge():
     bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph_api_bridge.py")
@@ -814,6 +822,8 @@ class ObjectManagerService(Node):
         self._scan_merge_timer = None
         self._last_scan_id = None
         self._periodic_merge_timer = None
+        self._event_merge_timer = None
+        self._merge_dirty = False         # set by _note_update; cleared by the event sweep
         self._merge_call_lock = threading.Lock()
         
         # --- INIT ROOM MANAGER ---
@@ -967,6 +977,14 @@ class ObjectManagerService(Node):
                 f"Periodic merge enabled: every {TIAGO_MERGE_INTERVAL_S:.1f}s")
         else:
             self.get_logger().info("Periodic merge disabled")
+        if MERGE_EVENT_DEBOUNCE_S > 0.0:
+            self._event_merge_timer = self.create_timer(
+                MERGE_EVENT_DEBOUNCE_S, self._event_merge_callback)
+            self.get_logger().info(
+                f"Event-driven merge enabled: a sweep within {MERGE_EVENT_DEBOUNCE_S:.2f}s of any "
+                f"world-model change")
+        else:
+            self.get_logger().info("Event-driven merge disabled")
         self.get_logger().info(f"Node name={self.get_name()} ns={self.get_namespace()}")
 
         self._bbox_timer = self.create_timer(2.0, self.periodic_bbox_publisher)
@@ -1275,6 +1293,28 @@ class ObjectManagerService(Node):
                 'info',
                 f"[PERIODIC MERGE] completed: {merged_count} merge(s) applied",
             )
+        finally:
+            self._merge_call_lock.release()
+
+    def _event_merge_callback(self):
+        """One sweep, soon after ANY world-model change, and none while nothing changed.
+
+        The dirty flag is set by _note_update (admission, update, merge, box write, room
+        change). This timer fires every MERGE_EVENT_DEBOUNCE_S and does nothing when the flag
+        is clear, so an idle map costs nothing and a burst of changes costs one sweep. It
+        yields to a scan-complete or periodic sweep already in progress rather than queueing
+        behind it: the flag stays set, so the next tick runs the sweep those changes need.
+        """
+        if not self._merge_dirty:
+            return
+        if not self._merge_call_lock.acquire(blocking=False):
+            return                       # another sweep is running; the flag survives
+        try:
+            self._merge_dirty = False
+            merged_count = self.merge_duplicate_objects(scan_id=f"event-{int(time.time())}")
+            if merged_count:
+                self.object_services.log_both(
+                    'info', f"[EVENT MERGE] completed: {merged_count} merge(s) applied")
         finally:
             self._merge_call_lock.release()
 
@@ -2126,6 +2166,14 @@ class ObjectManagerService(Node):
                     # generic seam data, nothing imported from any particular filter.
                     decision_id = _ann.get("decision_id")
                     linked_id = getattr(new_obj, "object_id", None)
+                    # EVENT-DRIVEN MERGE (2026-09-15): an admission is the moment a duplicate
+                    # is born, and it was the ONE world-model change that never reached the
+                    # re-evaluation queue -- update, merge, box write and room change all
+                    # did. Noting it here makes the merge sweep fire on new evidence rather
+                    # than on a clock; the freshness rule in Hypothesis.decide still demands a
+                    # second, DIFFERENT measurement before anything commits.
+                    if linked_id:
+                        self._note_update(linked_id, reason="admitted")
                     if decision_id and linked_id:
                         self.decision_log.write("link", linked_id,
                                                 decision_id=decision_id, label=label)
@@ -3070,6 +3118,11 @@ class ObjectManagerService(Node):
             self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
             neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
         self.reeval.on_update(object_id, neighbours)
+        # Event-driven merge: new evidence exists somewhere in the map. The flag is cheap and
+        # lock-free; the event timer turns it into one sweep. A merge must NOT be run from
+        # here: this method executes inside @synchronized_world_model callbacks that already
+        # hold wm.lock, and _cb_merge_objects takes wm.lock for its apply block.
+        self._merge_dirty = True
 
     def _note_removed(self, obj):
         """GA-47. A deleted object cannot be re-examined, but what stood around its last

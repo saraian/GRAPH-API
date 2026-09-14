@@ -22,8 +22,9 @@ if [ "${DETACH:-0}" = "1" ]; then
   echo "detached pid $! log $LOG"
   exit 0
 fi
-CFG="$HERE/merge_debug_00824_${ENGINE}.yaml"
-[ -f "$CFG" ] || python3 "$HERE/make_merge_debug_config.py" --engine "$ENGINE" >/dev/null
+# VARIANT=ms1 selects the min_consecutive-1 + min_sightings-2 arm (see make_merge_debug_config.py).
+CFG="$HERE/merge_debug_00824_${ENGINE}${VARIANT:+_$VARIANT}.yaml"
+[ -f "$CFG" ] || python3 "$HERE/make_merge_debug_config.py" --engine "$ENGINE" ${VARIANT:+--variant "$VARIANT"} >/dev/null
 [ -f "$REPO/lost3dsg/test/env.local.sh" ] || { echo "!! no env.local.sh (MODAL_PERCEPTION_URL, REGOLO_API_KEY)" >&2; exit 2; }
 set -a
 # shellcheck disable=SC1091

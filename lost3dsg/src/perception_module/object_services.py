@@ -111,6 +111,16 @@ if MERGE_AABB_MARGIN_M < MERGE_MAX_DISTANCE:
 # been comparable for a merge to be allowed. 0 restores the old behaviour, where a pair
 # with nothing measurable scored 1.0000 on label agreement alone and merged.
 MERGE_MIN_EVIDENCE = CFG["association"].get("merge_min_evidence", 1)
+# THE RE-MEASUREMENT REQUIREMENT, MOVED FROM THE PAIR TO THE OBJECTS (2026-09-15). What
+# merge_min_consecutive = 2 guards against is one lucky frame: a single detection with a bad
+# box overlapping a neighbour on that one frame. An object sighted at least this many times has
+# already had its box re-measured, on the tracking path, before the merge stage sees it -- so
+# with this gate on, merge_min_consecutive can be 1 and commit on the first above-threshold
+# sweep without losing what persistence bought. 0 = off (the default; nothing changes until an
+# arm sets it). Rate-limited by re-sightings, which only happen when association MATCHES a
+# detection to an existing object: 7 tracking winners in 15 min on 20260915_003535, 1 on each
+# of the two runs before it. The gate creates no evidence; it stops waiting once evidence exists.
+MERGE_MIN_SIGHTINGS = int(CFG["association"].get("merge_min_sightings_per_side", 0))
 MERGE_MIN_SIMILARITY = CFG["association"].get(
     "merge_min_similarity", SIM_THRESHOLD + (1.0 - SIM_THRESHOLD) / 2.0)
 
@@ -2157,8 +2167,22 @@ class ObjectServices(Node):
                         decision, why = h.decide(threshold,
                                                  min_evidence=MERGE_MIN_EVIDENCE,
                                                  min_consecutive=MERGE_MIN_CONSECUTIVE)
+                        # The sightings gate (see MERGE_MIN_SIGHTINGS). A HOLD, not an
+                        # interrupt: the evidence is fine, the object has simply not been
+                        # re-measured yet. The streak is left where decide() put it.
+                        sightings_a = len(getattr(aa, "observations", None) or [])
+                        sightings_b = len(getattr(bb, "observations", None) or [])
+                        if (decision == "merge" and MERGE_MIN_SIGHTINGS > 0
+                                and min(sightings_a, sightings_b) < MERGE_MIN_SIGHTINGS):
+                            decision = "hold"
+                            why = (f"{why}; held: a side has {min(sightings_a, sightings_b)} "
+                                   f"sighting(s) < merge_min_sightings_per_side "
+                                   f"{MERGE_MIN_SIGHTINGS} -- not yet re-measured")
 
                         rec = ps.as_record()
+                        # ADDITIVE: how many times each side has been sighted, so a reader can
+                        # score the sightings gate after the fact, on or off.
+                        rec.update(sightings_a=sightings_a, sightings_b=sightings_b)
                         rec.update(distance=pair_meta.get("distance_m"),
                                    reach_m=pair_meta.get("reach_m"),
                                    offered_by=pair_meta.get("offered_by"),
