@@ -975,6 +975,11 @@ def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_de
                 request["timeout"] = timeout
             if response_format is not None:
                 request["response_format"] = response_format
+            # Pass provider-specific completion options through the OpenAI-compatible
+            # client.  In particular, Qwen-style endpoints otherwise ignore the YAML
+            # `enable_thinking: false` setting and may spend most of the request budget
+            # generating hidden reasoning before returning the structured scene result.
+            request.update(vlm_completion_kwargs())
             agent = _vlm_client().chat.completions.create(**request)
             if not getattr(agent, "choices", None) or agent.choices[0].message is None:
                 raise RuntimeError(f"malformed VLM response: {agent!r:.200}")
