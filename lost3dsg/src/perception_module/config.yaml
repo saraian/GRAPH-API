@@ -5,10 +5,19 @@
 
 vlm:
   base_url: "https://api.regolo.ai/v1"
-  model: "gemma4-31b"
+  # Owner ruling 2026-09-14: qwen3.8-27b is the default labelling VLM (was gemma4-31b).
+  # https://obs.regolo.ai/model?model=qwen3.8-27b
+  model: "qwen3.8-27b"
   api_key: ""          # empty -> OPENAI_API_KEY env, else legacy api.txt, else "ollama"
   timeout: 30.0        # seconds per request
   retries: 2           # extra attempts on timeout/malformed response, then raise
+  # REQUIRED WITH A QWEN MODEL, and it is the half that makes the reasoning fix bite.
+  # `vlm_completion_kwargs()` (config.py) returns {} unless this key is exactly False, so
+  # upstream b85a9e6 -- which passes those kwargs into the completion request -- would be
+  # inert without it. A Qwen-style endpoint otherwise ignores the setting and can spend most
+  # of the request budget on hidden reasoning before returning the structured scene result,
+  # against a 30 s timeout.
+  enable_thinking: false
 
 embedding:
   word2vec_path: "/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz"

@@ -952,6 +952,140 @@ def a7_source_frozen(expect, executed_tree=None, copy_source=None, live_roots=No
     return (not mismatches), detail
 
 
+# GA-423. a7 polices drift DURING a run: launcher stamp -> container copy -> teardown. It has
+# no opinion about whether this tree matches THE RUN THIS ONE IS BEING COMPARED AGAINST, and
+# that comparison was mechanised NOWHERE. On 2026-09-09 it existed because one lane read two
+# digests by hand and caught /DATA/FOUND dirty before run 2 -- 8 modified files, 511 insertions,
+# of which found/admission.py and found/store.py are reached by the hook the container runs.
+# Launching blind would have given run 2 three behavioural differences from run 1 and made all
+# four pre-registered readings unattributable. A person caught it. Nothing would have.
+
+
+def _recorded_roots(report):
+    """Pull {root: digest} out of a bundle's preflight.json, from a7's own recorded detail.
+
+    Reads what a7 MEASURED IN THE CONTAINER, not what the launcher stamped: the stamp says
+    what was intended and the measurement says what was there. Comparing measurements is the
+    only way to answer "did the same code run twice".
+    """
+    for row in report.get("probes", []):
+        if row.get("id") != "a7":
+            continue
+        detail = row.get("detail") or {}
+        roots = {}
+        for section in ("frozen", "live_sampled"):
+            for name, entry in (detail.get(section) or {}).items():
+                sha = (entry or {}).get("sha256_16")
+                if sha:
+                    roots[name] = sha
+        return roots, row.get("ok")
+    return None, None
+
+
+def compare_bundles(baseline_path, candidate_path):
+    """Root-by-root digest comparison of two bundles' gate records. Offline, no container.
+
+    Exposed as `--compare-bundles A,B` so the check GA-423 says is mechanised nowhere can be
+    run on two bundles that already exist, by a reader who was not there at launch.
+    """
+    out = {"baseline": str(baseline_path), "candidate": str(candidate_path)}
+    try:
+        with open(baseline_path) as fh:
+            base_report = json.load(fh)
+        with open(candidate_path) as fh:
+            cand_report = json.load(fh)
+    except (OSError, ValueError) as exc:
+        out["unreadable"] = f"{type(exc).__name__}: {exc}"
+        return out
+    base, base_ok = _recorded_roots(base_report)
+    cand, cand_ok = _recorded_roots(cand_report)
+    if base is None or cand is None:
+        out["unreadable"] = ("a bundle's preflight.json carries no a7 row, so it never recorded "
+                             "which tree it ran")
+        return out
+    out["baseline_roots"], out["candidate_roots"] = base, cand
+    # A bundle whose own a7 did not pass never established which tree it ran, so it cannot be
+    # the fixed end of a comparison. Recorded rather than silently compared.
+    out["baseline_a7"], out["candidate_a7"] = base_ok, cand_ok
+    shared = sorted(set(base) & set(cand))
+    out["differs"] = sorted(n for n in shared if base[n] != cand[n])
+    out["only_in_baseline"] = sorted(set(base) - set(cand))
+    out["only_in_candidate"] = sorted(set(cand) - set(base))
+    out["compared"] = shared
+    out["comparable"] = (not out["differs"] and not out["only_in_baseline"]
+                         and not out["only_in_candidate"] and base_ok is True)
+    return out
+
+
+def a14_source_comparable(baseline=None, live_roots=None):
+    """This run's trees must match the run it DECLARES itself comparable to.
+
+    Only in the roster when --compare-against names a baseline bundle. Declaring one IS the
+    claim of comparability, so there is no case where this probe has nothing to assert: a run
+    that declares no baseline claims no comparability and never reaches here.
+
+    ponytail: no new artefact. a7 already writes every root's measured digest into
+    preflight.json, so the baseline's own gate record is the reference.
+    """
+    if not baseline:
+        return SKIPPED, {"reason": "no --compare-against given; a14 should not have been in the "
+                                   "roster without one"}
+    path = baseline
+    if os.path.isdir(path):
+        path = os.path.join(path, "preflight.json")
+    if not os.path.isfile(path):
+        return SKIPPED, {"reason": f"declared comparison baseline has no gate record at {path}; "
+                                   "the claim that this run is comparable to it cannot be checked",
+                         "baseline": str(baseline)}
+    try:
+        with open(path) as fh:
+            base_report = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return SKIPPED, {"reason": f"baseline gate record unreadable: {type(exc).__name__}: {exc}",
+                         "baseline": path}
+    base, base_ok = _recorded_roots(base_report)
+    if not base:
+        return SKIPPED, {"reason": "baseline's preflight.json carries no a7 root digests, so it "
+                                   "never recorded which tree it ran", "baseline": path}
+
+    # Measure THIS run the same way a7 does, from the same roots, so the two sides of the
+    # comparison are the same instrument reading the same kind of thing.
+    roots = dict(FROZEN_ROOTS)
+    roots.update(live_roots if live_roots is not None else LIVE_ROOTS)
+    here = {}
+    for name, root in roots.items():
+        if os.path.isdir(root):
+            sha, _n = tree_sha(root)
+            here[name] = sha
+
+    shared = sorted(set(base) & set(here))
+    differs = {n: {"baseline": base[n], "this_run": here[n]} for n in shared if base[n] != here[n]}
+    missing_here = sorted(set(base) - set(here))
+    extra_here = sorted(set(here) - set(base))
+    detail = {"baseline": path, "baseline_roots": base, "this_run_roots": here,
+              "compared": shared, "differs": differs,
+              "in_baseline_only": missing_here, "in_this_run_only": extra_here,
+              "baseline_a7_verdict": base_ok}
+    if not shared:
+        return SKIPPED, dict(detail, reason="the two runs share no named root, so nothing was "
+                                            "compared; a verdict here would assert nothing")
+    if base_ok is not True:
+        # The fixed end of a comparison must itself be established. A baseline whose own a7
+        # did not pass never proved which tree it ran (working rule 2).
+        return False, dict(detail, why=(
+            "the declared baseline's own a7 did not pass, so it never established which tree it "
+            "ran. Comparing against it would inherit that uncertainty while reporting a pass."))
+    if differs or missing_here or extra_here:
+        moved = ", ".join(sorted(differs) + missing_here + extra_here)
+        return False, dict(detail, why=(
+            f"this run declares itself comparable to {path} and its trees differ ({moved}). A "
+            "result read against that baseline would measure SOURCE DRIFT, not the algorithm. "
+            "a7 cannot catch this: it compares this run against its own launcher stamp, so both "
+            "runs can be internally consistent and still be different systems."))
+    return True, detail
+
+
+
 # The modules the container starts as nodes. Every one has a `__main__` guard, so importing
 # them runs their top-level imports and nothing else — which is precisely the failure mode:
 # a node that cannot import dies seconds after a passing gate, and the gate says nothing.
@@ -1484,7 +1618,16 @@ PROBES = {
     "a10": ("frame_age_vs_rejected", a10_frame_age_rejected_frames),
     "a11": ("tf_buffer_outlasts_frames", a11_tf_buffer_outlasts_frame_window),
     "a12": ("gt_isolation", a12_gt_isolation),
+    # GA-423. Declared here so the two-edit registration assertion below covers it, but it
+    # joins the ROSTER only when --compare-against names a baseline (see all_probes). A run
+    # that declares no baseline claims no comparability, so there is nothing for it to assert
+    # and it must not sit in the default set recording a SKIP that fails every ordinary run.
+    "a14": ("source_comparable", a14_source_comparable),
 }
+# Probes that are declared but join the roster only when their subject is declared too.
+# Keeping them OUT of the default set is not the same as not looking: a14 blocks whenever a
+# comparison is claimed, and a run that claims none is not asserting comparability.
+CONDITIONAL_PROBES = {"a14"}
 
 # PROBES THAT ONLY MAKE SENSE AFTER THE STACK IS UP, kept in a SEPARATE dict on purpose.
 #
@@ -1521,6 +1664,32 @@ def _kv(s):
     return out
 
 
+def _kv_roots(pairs):
+    """Parse the repeatable --live-root NAME=PATH into the mapping a7 and a14 sample.
+
+    GA-423, found while adding a14. `--live-root` was accepted by argparse, printed in the
+    help, and NAMED IN a7'S OWN ERROR MESSAGE as the remedy for `live_roots_undeclared` --
+    and nothing ever read it. `LIVE_ROOTS` was {} and no caller passed the flag, so a7's
+    live-root half could not run in either direction: no root was ever sampled, and the fix
+    the message told you to apply was inert.
+    That is why the /DATA/FOUND drift of 2026-09-09 was caught by a person reading two digests
+    by hand. The tree a run mounts live is exactly the one that can change underneath it, and
+    the instrument for it was switched off while reporting its own absence as the problem
+    (working rule 26: a disabled instrument is worse than a missing one, because nobody looks
+    for it).
+    """
+    out = {}
+    for part in pairs or []:
+        if "=" not in part:
+            raise SystemExit(f"!! --live-root wants NAME=PATH, got {part!r}")
+        name, path = part.split("=", 1)
+        name, path = name.strip(), path.strip()
+        if not name or not path:
+            raise SystemExit(f"!! --live-root wants NAME=PATH, got {part!r}")
+        out[name] = path
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Class A pre-flight gate")
     ap.add_argument("--out", default="/ws/output/preflight.json")
@@ -1536,6 +1705,15 @@ def main(argv=None):
                     help="a tree this deployment mounts LIVE, which a7 must find unchanged. "
                          "Repeatable. The gate ships no default: what must stay frozen is the "
                          "caller's to declare, and a7 SKIPS (and so fails) when none is given.")
+    ap.add_argument("--compare-against", default=None, metavar="BUNDLE_OR_PREFLIGHT_JSON",
+                    help="a14: the run this one DECLARES itself comparable to. Naming it is the "
+                         "claim; a14 then refuses when the trees differ. a7 cannot catch that — "
+                         "it compares a run against its OWN launcher stamp, so two runs can each "
+                         "be internally consistent and still be different systems.")
+    ap.add_argument("--compare-bundles", default=None, metavar="A,B",
+                    help="launcher helper: print the root-by-root digest comparison of two "
+                         "bundles' preflight.json and exit. Runs on the HOST, on bundles that "
+                         "already exist, for a reader who was not there at launch.")
     ap.add_argument("--expect-config-name")
     ap.add_argument("--expect-config-sha", help="sha of the config FILE, from the launcher")
     ap.add_argument("--expect-merged-sha", help="sha of the MERGED cfg, from the launcher")
@@ -1590,6 +1768,15 @@ def main(argv=None):
             return 1
         print(f"{sha} {n}")
         return 0
+    if args.compare_bundles:
+        parts = [x.strip() for x in args.compare_bundles.split(",") if x.strip()]
+        if len(parts) != 2:
+            print("!! --compare-bundles needs exactly two paths: A,B", file=sys.stderr)
+            return 2
+        paths = [os.path.join(x, "preflight.json") if os.path.isdir(x) else x for x in parts]
+        result = compare_bundles(*paths)
+        print(json.dumps(result, indent=2, default=str))
+        return 0 if result.get("comparable") else 1
     if args.print_merged_sha:
         here = os.path.dirname(os.path.abspath(__file__))
         for cand in ("/ws/install/lost3dsg/lib/lost3dsg",
@@ -1614,7 +1801,11 @@ def main(argv=None):
     except ImportError:
         pass          # not in the container; the built-ins still run
 
-    all_probes = dict(PROBES)
+    all_probes = {pid: spec for pid, spec in PROBES.items() if pid not in CONDITIONAL_PROBES}
+    # A conditional probe joins the roster when its subject is declared. a14 without a baseline
+    # has nothing to compare; a14 WITH one blocks the launch if the trees differ.
+    if args.compare_against:
+        all_probes["a14"] = PROBES["a14"]
     # Post-start probes join the roster only when asked for by name. Without this guard they
     # would run in the pre-start gate, which is where a9's first version broke a run.
     if args.only:
@@ -1629,7 +1820,11 @@ def main(argv=None):
         "a4": a4_perception_twice,
         "a5": lambda: a5_bundle_clean(args.run_dir, args.run_start, args.scratch_dir),
         "a6": lambda: a6_camera_pose_offset(args.camera_height),
+        # live_roots was NEVER PASSED before GA-423: a7 fell through to the module-level
+        # LIVE_ROOTS, which is {} and which nothing populates. Its live-root half has been
+        # dead for the life of the flag.
         "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha),
+                                       live_roots=_kv_roots(args.live_root),
                                        found_exercised=_found_exercised(args.found_exercised),
                                        teardown=args.teardown),
         "a8": lambda: a8_stack_imports(install=args.install_tree),
@@ -1643,6 +1838,8 @@ def main(argv=None):
         "a10": lambda: a10_frame_age_rejected_frames(args.expect_cycle_s),
         "a11": a11_tf_buffer_outlasts_frame_window,
         "a12": a12_gt_isolation,
+        "a14": lambda: a14_source_comparable(args.compare_against,
+                                             live_roots=_kv_roots(args.live_root)),
     }
 
     bound.update({pid: fn for pid, (_n, fn, _s) in external.items()})

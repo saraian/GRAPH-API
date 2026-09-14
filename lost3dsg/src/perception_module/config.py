@@ -34,7 +34,12 @@ _DEFAULTS = {
         # against it. Set to 6 to re-enable; the code is unchanged and self-checking.
         "grid_cells": 0,
         "base_url": "https://api.regolo.ai/v1",
-        "model": "gemma4-31b",
+        "model": "qwen3.8-27b",          # owner ruling 2026-09-14 (was gemma4-31b)
+        # vlm_completion_kwargs() below is INERT unless this is exactly False, so a config
+        # passed through GRAPH_API_CONFIG that omits the key would fall back to a default
+        # without it and silently re-enable hidden reasoning, with nothing in the bundle to
+        # show it. Ported from the merge-algorithm branch (522c5f1), which found the hole.
+        "enable_thinking": False,
         # empty -> use OPENAI_API_KEY env if set, else the legacy api.txt next
         # to cv_utils.py if present, else "ollama" (local server ignores it)
         "api_key": "",

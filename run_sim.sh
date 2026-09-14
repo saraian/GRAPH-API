@@ -663,6 +663,32 @@ SCENE_ARG=${1:-hm3d_00861}
 # so nothing needs copying and nothing can be left behind in a scratch directory. The a5 probe is
 # unaffected: it asserts that no artefact predates run start in each directory it is given, and it
 # does not compare the two against each other.
+# GA-507, the half the sign strip does not cover. `${FEED_SPAWN_FLOOR#+}` at the two
+# run_metadata slots makes `+0.07` legal JSON, which was the reported defect and is fixed. It
+# does NOT make the value a number: `abc`, `1.2.3`, `0x10` and a leading space all still reach
+# the heredoc and abort the run at the validator -- loudly, but AFTER the bundle directory
+# exists, leaving an incomplete bundle behind. The issue's own acceptance asks for a refusal
+# BEFORE bundle creation, so the check belongs here, above RUN_DIR.
+#
+# `1e3` is the case worth naming: it is valid JSON and NOT a floor. It would have been written
+# into the bundle as 1000.0 and compared against a map directory that cannot exist. A guard
+# that accepts everything JSON accepts is not a guard on a height.
+if [ -n "${FEED_SPAWN_FLOOR:-}" ]; then
+  case "$FEED_SPAWN_FLOOR" in
+    ''|*[!0-9+.-]*|*.*.*|?*[+-]*)
+      echo "!! FEED_SPAWN_FLOOR='$FEED_SPAWN_FLOOR' is not a decimal height."
+      echo "   A floor is a signed decimal in metres, as the published map directories spell it:"
+      echo "   +0.00, +0.11, +1.21, -1.59. Refusing before any bundle directory is created, so a"
+      echo "   malformed floor leaves nothing behind to read as a failed run."
+      exit 1 ;;
+  esac
+  case "$FEED_SPAWN_FLOOR" in
+    *[0-9]*) ;;
+    *) echo "!! FEED_SPAWN_FLOOR='$FEED_SPAWN_FLOOR' carries no digit. Refusing before bundle creation."
+       exit 1 ;;
+  esac
+fi
+
 RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
 export GRAPH_API_RUN_ID="$RUN_ID"
 RESULTS_DIR=${RESULTS_DIR:-$REPO/results}
@@ -1660,12 +1686,31 @@ json.dump(d, open(path, "w"), indent=2)
 PYSTAMP
 fi
 
+# CONCURRENT PIPELINES. Three values below were hardcoded and are now environment-driven, so
+# several isolated stacks can run at once on one machine. EVERY DEFAULT IS THE OLD VALUE, so a
+# caller that sets nothing gets exactly the previous behaviour.
+#
+#   GRAPH_API_CONTAINER_NAME  was the fixed name `graphapi_live`. A second run died on
+#                             "container name already in use" -- loud, and therefore harmless.
+#   GRAPH_API_GPUS            was `all`. Every run claimed every GPU, so a second run competed
+#                             with the first for VRAM instead of taking its own card.
+#   ROS_DOMAIN_ID             was NEVER PASSED, and this is the dangerous one. With
+#                             --network=host two stacks share the host network namespace, so
+#                             with no domain set they both join DDS domain 0, discover each
+#                             other's nodes, and one run's perception can consume the other
+#                             run's frames. That does not crash: it produces a wrong result
+#                             that looks like a right one. check_env_passthrough.py:30 already
+#                             listed ROS_DOMAIN_ID as expected passthrough; nothing passed it.
+#
+# The ports are already environment-driven and must also differ per pipeline:
+# FEED_PORT (7799), FEED_CTRL_PORT (7790), BRIDGE_PORT (8081).
+#
 # NO COMMENT LINES INSIDE THIS COMMAND. Every line below is joined by a trailing backslash, so
 # a "#" line here is not a comment -- docker receives "#" and each following word as ARGUMENTS.
 # `bash -n` accepts it, because it is valid syntax; only the run fails. Done once, 2026-09-11.
-docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
+docker run --name "${GRAPH_API_CONTAINER_NAME:-graphapi_live}" --rm --entrypoint bash --gpus "${GRAPH_API_GPUS:-all}" --network=host \
   -e OPENAI_API_KEY -e CFG_NAME -e PERCEPTION_EXECUTABLE -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
-  -e GRAPH_API_RUN_ID -e FEED_GT_SEMANTIC \
+  -e GRAPH_API_RUN_ID -e FEED_GT_SEMANTIC -e ROS_DOMAIN_ID \
   -e GA493_REPLAY_CAPTURE_DIR -e GA493_REPLAY_CAPTURE_MAX_CYCLES -e GA493_REPLAY_CAPTURE_MAX_BYTES \
   -e FRAME_QUEUE_MAX -e SCAN_COMPLETE_TOPIC -e SCAN_MERGE_SETTLE_S -e MOTION_POSITION_THRESHOLD \
   -e MERGE_MIN_CONSECUTIVE \
