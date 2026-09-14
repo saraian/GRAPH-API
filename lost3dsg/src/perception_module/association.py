@@ -40,6 +40,7 @@ no container, which is the only reason its self-check below can run at all.
 Run `python3 association.py` for the self-check.
 """
 
+import hashlib
 import math
 
 import numpy as np
@@ -1223,8 +1224,32 @@ class Hypothesis:
                              "covis_witnessed": ("covisibility" in pair_score.channels
                                                  or "covisibility" in pair_score._measured_abstentions),
                              "same_kind": (bool(attrs.get("same_kind")) if attrs else False),
-                             "attributes_measured": attrs is not None})
+                             "attributes_measured": attrs is not None,
+                             # What this sweep MEASURED. `decide` advances the streak only
+                             # when this changes, so re-offering an unchanged pair cannot buy
+                             # persistence (see Hypothesis.evidence_id).
+                             "evidence_id": self.evidence_id(pair_score)})
         return self
+
+    @staticmethod
+    def evidence_id(pair_score):
+        """A short id for WHAT THIS SWEEP MEASURED, so a repeat can be told from a re-measure.
+
+        The docstring above says geometry that has not changed is not new evidence, and that
+        summing it manufactures certainty out of repetition. That was fixed for the TOTAL, by
+        recomputing it from the current state. It was NOT fixed for the STREAK: `decide`
+        counted consecutive UPDATES, so offering one unchanged pair twice satisfied
+        `min_consecutive = 2` without anything being re-measured. With the merge sweep on a
+        scan-complete hook that was rare enough to hide; on a periodic timer it would make
+        persistence free, which is the same defect one level over.
+
+        The id covers every channel's contribution at the precision the record keeps, plus the
+        veto set. Same id twice means the same measurement twice.
+        """
+        parts = [f"{name}={ch['log_odds']:.4f}"
+                 for name, ch in sorted(pair_score.channels.items()) if "log_odds" in ch]
+        parts += [f"veto={name}" for name in sorted(pair_score.vetoed_by)]
+        return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]
 
     def interrupt(self, reason, frame_id=None):
         """A sweep offered the pair but a gate refused it before scoring: the streak is broken.
@@ -1277,10 +1302,24 @@ class Hypothesis:
             return "hold", ("containment carries the decision and co-visibility was never "
                             "recorded — the hard negative that would refute it is uncollected")
         if self.total >= threshold:
-            self._streak += 1
+            # PERSISTENCE IS PRICED IN NEW EVIDENCE, NOT IN SWEEPS (2026-09-15). The streak
+            # used to advance on every update, so offering one unchanged pair twice satisfied
+            # `min_consecutive` with nothing re-measured -- and it is the merge sweep's
+            # FREQUENCY, not the pair, that decides how fast that happens. Turning on the
+            # periodic sweep would therefore have made persistence free. A repeat now holds
+            # the streak where it is: not reset (the evidence did not contradict) and not
+            # advanced (it did not change either).
+            scored = [h for h in self.history if "evidence_id" in h]
+            fresh = len(scored) < 2 or scored[-1]["evidence_id"] != scored[-2]["evidence_id"]
+            if fresh:
+                self._streak += 1
             if self._streak >= min_consecutive:
                 return "merge", (f"log-odds {self.total:.3f} >= {threshold:.3f} "
                                  f"for {self._streak} consecutive updates")
+            if not fresh:
+                return "hold", (f"log-odds {self.total:.3f} >= {threshold:.3f} at "
+                                f"{self._streak}/{min_consecutive}, and this sweep re-measured "
+                                f"nothing: same evidence as the last one")
             return "hold", (f"log-odds {self.total:.3f} >= {threshold:.3f} but only "
                             f"{self._streak}/{min_consecutive} consecutive")
         self._streak = 0
@@ -1578,17 +1617,42 @@ def demo():
     assert len(set(totals)) == 1, f"unchanged state must not accumulate: {totals}"
     assert len(many.provenance()["frames"]) == 5, "but every update is still recorded"
 
-    # Persistence, not summation, is what stops one lucky frame committing a merge.
+    # Persistence, not summation, is what stops one lucky frame committing a merge -- and
+    # CORRECTED 2026-09-15, persistence is priced in NEW EVIDENCE, not in sweeps.
     one = Hypothesis(("w1", "w2")).update(sw, frame_id=1)
     d_one = one.decide(thr, min_consecutive=3)
-    persistent = Hypothesis(("w1", "w2"))
-    for f in range(1, 4):
-        persistent.update(sw, frame_id=f)
-        d_persist = persistent.decide(thr, min_consecutive=3)
+    assert d_one[0] == "hold", d_one
+
+    # (a) THE SAME MEASUREMENT, REPEATED. This used to reach "merge" at the third update and
+    # now holds forever, because nothing was re-measured. Re-offering a pair is free and is
+    # controlled by the sweep's frequency, so counting it as persistence would let the
+    # periodic timer buy certainty -- the repetition defect this class already fixed for the
+    # TOTAL, reappearing in the STREAK.
+    repeated = Hypothesis(("w1", "w2"))
+    for f in range(1, 6):
+        repeated.update(sw, frame_id=f)
+        d_repeat = repeated.decide(thr, min_consecutive=3)
+    assert d_repeat[0] == "hold" and "re-measured nothing" in d_repeat[1], d_repeat
+    assert repeated._streak == 1, repeated._streak
+
+    # (b) EVIDENCE THAT ACTUALLY MOVES. Three sweeps, each a different measurement of the same
+    # pair, still commit at min_consecutive=3. This is the case persistence exists for.
+    # Built exactly like `weak2` above -- the duplicate-detection shape, scored through
+    # `ctx_dup` -- so co-visibility stays a MEASURED abstention and the GA-328 guard stands
+    # down. Only the box moves, which is what a real re-observation does.
+    moved = Hypothesis(("w1", "w2"))
+    for f, dx in enumerate((0.0, 0.004, 0.008), start=1):
+        w2_f = AssocObject("w2", bbox=_box(0.06 + dx, 0, 0, 0.30, 0.30, 0.30), room_id="kitchen",
+                           observations=[_obs(1, [2, 0, 0], [0.06 + dx, 0, 0])])
+        moved.update(score_pair(weak, w2_f, ctx_dup), frame_id=f)
+        d_moved = moved.decide(thr, min_consecutive=3)
+    ids = [h["evidence_id"] for h in moved.history if "evidence_id" in h]
+    assert len(set(ids)) == 3, ids
+    assert d_moved[0] == "merge", d_moved
     print(f"  no double-counting : same state x5 -> total stays {totals[0]:+.2f} "
           f"(was +47.11 when summed)")
-    print(f"  persistence : 1 update -> {d_one[0]}; 3 consecutive -> {d_persist[0]}")
-    assert d_one[0] == "hold" and d_persist[0] == "merge", (d_one, d_persist)
+    print(f"  persistence : 1 update -> {d_one[0]}; the SAME evidence x5 -> {d_repeat[0]} "
+          f"(streak {repeated._streak}); 3 CHANGED measurements -> {d_moved[0]}")
 
     # GA-328: the same geometry, but the two were NEVER in one frame together. Co-visibility
     # abstains (uncollected, not 0.0), overlap carries the decision, and the guard holds
@@ -1693,16 +1757,21 @@ def demo():
     # the total decide; a cross-kind pair with the same score stays held; attributes + room
     # with NO positive overlap stay held.
     v1 = AssocObject("v1", bbox=_box(0, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
-    v2 = AssocObject("v2", bbox=_box(0.2, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
+    # v2 is now rebuilt per sweep a few lines below, so each sweep is a real re-measurement.
     same = AssocContext(map_volume_m3=300.0, n_rooms=1, cost_ratio=20.0, use_ontology=False,
                         attribute_score_fn=lambda x, y: (1.0, 3, True))
     cross = AssocContext(map_volume_m3=300.0, n_rooms=1, cost_ratio=20.0, use_ontology=False,
                          attribute_score_fn=lambda x, y: (1.0, 3, False))
     h_same, h_cross = Hypothesis(("v1", "v2")), Hypothesis(("v1", "v2"))
-    for f in (1, 2):   # one update AND one decision per sweep, as the service does
-        h_same.update(score_pair(v1, v2, same), frame_id=f)
+    # Two sweeps, and the second is a genuine RE-MEASUREMENT: v2's box moves 4 mm, as a real
+    # re-observation moves it. Repeating the identical score twice would now hold at 1/2 and
+    # never commit -- deliberately, since 2026-09-15 the streak counts new evidence, not
+    # sweeps. A test that commits on a repeat would be asserting the defect.
+    for f, dx in ((1, 0.0), (2, 0.004)):
+        v2_f = AssocObject("v2", bbox=_box(0.2 + dx, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
+        h_same.update(score_pair(v1, v2_f, same), frame_id=f)
         d_same = h_same.decide(thr8, min_consecutive=2)
-        h_cross.update(score_pair(v1, v2, cross), frame_id=f)
+        h_cross.update(score_pair(v1, v2_f, cross), frame_id=f)
         d_cross = h_cross.decide(thr8, min_consecutive=2)
     assert d_same[0] == "merge", d_same
     assert d_cross[0] == "hold" and d_cross[1].startswith("containment carries"), d_cross
@@ -1736,13 +1805,17 @@ def demo():
     assert h_guard.total >= thr8, (h_guard.total, thr8)
     assert d_guard[0] == "hold" and d_guard[1].startswith("no positive overlap"), d_guard
     # a gate refusal between two passing sweeps breaks the streak
+    # Each sweep here is a distinct measurement, so the interrupt is the only thing that can
+    # break the streak -- which is what this case tests.
     h_gap = Hypothesis(("v1", "v2"))
-    h_gap.update(score_pair(v1, v2, same), frame_id=1)
+    gap_boxes = [AssocObject("v2", bbox=_box(0.2 + dx, 0, 0.5, 1.0, 1.0, 1.0), room_id="r")
+                 for dx in (0.0, 0.004, 0.008)]
+    h_gap.update(score_pair(v1, gap_boxes[0], same), frame_id=1)
     assert h_gap.decide(thr8, min_consecutive=2)[0] == "hold"
     h_gap.interrupt("geometry", frame_id=2)
-    h_gap.update(score_pair(v1, v2, same), frame_id=3)
+    h_gap.update(score_pair(v1, gap_boxes[1], same), frame_id=3)
     assert h_gap.decide(thr8, min_consecutive=2)[0] == "hold", "one passing sweep after an interrupt is not two consecutive"
-    h_gap.update(score_pair(v1, v2, same), frame_id=4)
+    h_gap.update(score_pair(v1, gap_boxes[2], same), frame_id=4)
     assert h_gap.decide(thr8, min_consecutive=2)[0] == "merge"
     print(f"  second witness : same kind + agreeing attributes -> {d_same[0]}; "
           f"cross kind, same score -> {d_cross[0]} (GA-328 guard kept)")

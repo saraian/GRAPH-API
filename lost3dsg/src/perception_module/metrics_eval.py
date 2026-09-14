@@ -309,12 +309,21 @@ def _centre(row):
     return None
 
 
-def object_assignment(pred, gt, threshold):
-    """Associate objects spatially by 3-D centre distance.
+def object_assignment(pred, gt, centre_tolerance_m, mask_iou_threshold=None):
+    """Associate objects spatially by 3-D centre distance, within METRES.
 
     The HOV-SG object metric uses the centre tolerance for detection.  AABB
     IoU is reported as a quality diagnostic, but must not turn two nearby
     detections into a false negative merely because their boxes do not overlap.
+    That choice is deliberate and is NOT what was repaired here.
+
+    GA-491, repaired 2026-09-15.  The parameter used to be called `threshold`
+    and every caller passed `object_iou` -- the CLI's `--object-iou`, a
+    dimensionless ratio defaulting to 0.5 -- straight into the line below, where
+    it is compared against a distance in metres.  So "IoU 0.5" silently meant
+    "centres within 0.5 m", and raising the IoU threshold would have WIDENED the
+    match radius instead of tightening the match.  The number is unchanged, so
+    no measurement moves; only the name is now the one the value has.
     """
     if not pred or not gt:
         return []
@@ -322,15 +331,21 @@ def object_assignment(pred, gt, threshold):
     if any(value is None for value in centres_p + centres_g):
         # Legacy manifests may contain masks only.  Preserve their geometric
         # association rather than silently reporting zero object matches.
-        return assignment(pred, gt, threshold)
+        #
+        # GA-491, and the reason this function now takes TWO parameters. `assignment`
+        # compares an IoU, so handing it the metre tolerance would put the same value in
+        # the wrong unit AGAIN, one branch further down -- the exact defect being repaired.
+        # The caller supplies the IoU it means; None keeps the unfiltered behaviour.
+        return assignment(pred, gt, mask_iou_threshold)
     distances = np.asarray([[float(np.linalg.norm(p - g)) if p is not None and g is not None else np.inf
                              for g in centres_g] for p in centres_p])
-    valid = np.isfinite(distances) if threshold is None else distances <= threshold
+    valid = (np.isfinite(distances) if centre_tolerance_m is None
+             else distances <= centre_tolerance_m)
     weights = distances.copy()
     finite = distances[np.isfinite(distances)]
     limit = float(finite.max() + 1.0) if finite.size else 1.0
     weights[~np.isfinite(weights)] = limit
-    if threshold is not None:
+    if centre_tolerance_m is not None:
         weights = np.where(valid, distances, limit + distances.clip(max=limit))
     try:
         from scipy.optimize import linear_sum_assignment
@@ -569,7 +584,14 @@ def _top_k_semantics(matches, pred, gt, category_embeddings, category_names,
            if ranks and auc_k else None)
     return representative_accuracy, auc, len(ranks)
 
-def objects(scenes, threshold=.5):
+# GA-491. THE CENTRE TOLERANCE, IN METRES, STATED ONCE. Its value is 0.5 m because that is
+# what the evaluator has been applying all along -- `--object-iou 0.5` reaching a distance
+# comparison. Naming it does not change any past number. It is NOT a measured quantity and
+# nobody has swept it; it is the incumbent, and it must be measured before it is defended.
+OBJECT_CENTRE_TOLERANCE_M = 0.5
+
+
+def objects(scenes, centre_tolerance_m=OBJECT_CENTRE_TOLERANCE_M, iou_report_threshold=.5):
     top_k_totals = {k: 0.0 for k in TOP_K}
     auc_total = 0.0
     classified_matches = 0
@@ -580,7 +602,7 @@ def objects(scenes, threshold=.5):
         s = filtered_scene(s)
         pred, gt = s.get("predicted_objects", []), s.get("ground_truth_objects", [])
         predicted_total += len(pred); ground_truth_total += len(gt)
-        matches = object_assignment(pred, gt, threshold)
+        matches = object_assignment(pred, gt, centre_tolerance_m)
         geometric_matches.extend(score for _, _, score in matches)
         # HOV-SG evaluates against the complete HM3DSEM label vocabulary, not
         # a scene-local closed set. Prefer the same precomputed 1,624 text
@@ -634,8 +656,25 @@ def objects(scenes, threshold=.5):
     out["object_precision_pct"] = out["precision_pct"]
     out["object_recall_pct"] = out["recall_pct"]
     out["matched_object_iou_mean"] = round(sum(geometric_matches)/len(geometric_matches),4) if geometric_matches else None
+    # ADDITIVE (GA-491). The mean is dragged by a handful of near-perfect boxes; the median
+    # is what a reader asking "how good is a typical matched box" wants, and neither existed
+    # in this file. Both are over the SAME population: pairs matched by centre distance.
+    out["matched_object_iou_median"] = (round(float(np.median(geometric_matches)), 4)
+                                        if geometric_matches else None)
     out["box_quality_mean"] = {"iou_3d": out["matched_object_iou_mean"]}
-    out["matched_objects_iou_gt_0.5"] = len(geometric_matches)
+    # GA-491, REPAIRED 2026-09-15. This read `len(geometric_matches)` -- the count of pairs
+    # matched by CENTRE DISTANCE, never filtered by IoU at all, published under a name that
+    # states an IoU threshold. Measured on the GA-493 bundle the two differ by a wide margin,
+    # because a centre-distance matcher is blind to box size and this run's fused boxes are a
+    # median 2.51x the measured volume (max 149.8x). It now counts what it says it counts.
+    # The key KEEPS ITS NAME so no reader breaks; what changes is that the number is true.
+    iou_kept = [score for score in geometric_matches if score > iou_report_threshold]
+    out["matched_objects_iou_gt_0.5"] = len(iou_kept)
+    # ADDITIVE: the threshold that was applied, and the count before it. A reader could not
+    # previously tell which of the two populations any figure described.
+    out["matched_objects_iou_threshold"] = iou_report_threshold
+    out["matched_objects_centre_only"] = len(geometric_matches)
+    out["object_centre_tolerance_m"] = centre_tolerance_m
     out["classified_matched_objects"] = classified_matches
     out["top_k_eligible_pairs"] = sum(
         len(hovsg_object_assignment(filtered_scene(s).get("predicted_objects", []),
@@ -669,7 +708,7 @@ def objects(scenes, threshold=.5):
         for s in scenes)} for distance in (.1, .25, .5, 1.0)}
     return out
 
-def room_objects(scenes, threshold=.5, region_threshold=.5):
+def room_objects(scenes, centre_tolerance_m=OBJECT_CENTRE_TOLERANCE_M, region_threshold=.5):
     """Compare object occupancy per geometrically matched room.
 
     A global object match is counted for a room only when both the predicted object
@@ -696,7 +735,7 @@ def room_objects(scenes, threshold=.5, region_threshold=.5):
             room_map[str(predicted_id)] = str(ground_truth_id)
             room_iou[str(ground_truth_id)] = float(trial.get("region_iou", 0.0))
 
-        matches = object_assignment(pred, gt, threshold)
+        matches = object_assignment(pred, gt, centre_tolerance_m)
         matched_by_room = {}
         matched_pred_ids = set()
         matched_gt_ids = set()
@@ -794,11 +833,16 @@ def sizes(scenes, base):
             "size_mb_per_scene": per, "missing_files": missing}
 
 def evaluate(scenes, base=Path.cwd(), region_iou=.5, object_iou=.5,
+             object_centre_tolerance_m=OBJECT_CENTRE_TOLERANCE_M,
              include_match_details=True, include_all_pairs=False):
     report = {"scenes":[str(s.get("scene","unknown")) for s in scenes],
               "table_ii_floor_regions":floor_regions(scenes,region_iou),
-              "table_iii_rooms":rooms(scenes), "table_iv_objects":objects(scenes, object_iou),
-              "table_vi_room_objects":room_objects(scenes, object_iou, region_iou),
+              "table_iii_rooms":rooms(scenes),
+              # `object_iou` is the IoU a MATCH must reach to be reported as a good box; the
+              # metre tolerance is what decides which prediction pairs with which GT object.
+              # Two units, two parameters. They used to be one value doing both jobs.
+              "table_iv_objects":objects(scenes, object_centre_tolerance_m, object_iou),
+              "table_vi_room_objects":room_objects(scenes, object_centre_tolerance_m, region_iou),
               "table_v_retrieval":retrieval(scenes), "table_vii_representation":sizes(scenes,base)}
     if include_match_details:
         report["match_details"] = match_details(

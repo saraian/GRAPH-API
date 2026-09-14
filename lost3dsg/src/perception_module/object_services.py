@@ -1716,6 +1716,11 @@ class ObjectServices(Node):
     def _merge_candidates(self, objects, _refused, max_distance_m=None):
         """-> (pairs, ctx, assoc_objects). Which pairs are even offered to a decision.
 
+        TIMED since 2026-09-15. "The sweep is fast" was an assumption nobody had measured,
+        and it is the assumption that decides whether the periodic sweep can run often. The
+        duration is now on the sweep line and in the summary row, so the next reader has the
+        number instead of the belief.
+
         The legacy engine uses the old merge gates, but its all-pairs enumeration is now
         narrowed by the cleanup branch's binary-search AABB index.  The index is a broad
         phase only: every candidate still goes through the unchanged room, distance,
@@ -1858,6 +1863,7 @@ class ObjectServices(Node):
         # One sweep = one hypothesis update per offered pair. The counter is the frame_id
         # in each hypothesis's history, so the provenance says WHICH sweep saw what.
         self._merge_sweep += 1
+        _sweep_started = time.monotonic()
         live = {tuple(sorted((str(getattr(a, "object_id", None) or a.label),
                               str(getattr(b, "object_id", None) or b.label))))
                 for a, b, _m in pairs}
@@ -1865,7 +1871,8 @@ class ObjectServices(Node):
         self.log_both('info', f"[ASSOC] sweep {self._merge_sweep}: {len(pairs)} offered, "
                               f"{len(excluded)} excluded, of {len(ordered)} objects "
                               f"(all-pairs would be {len(ordered) * (len(ordered) - 1) // 2}); "
-                              f"live hypotheses {len(self._hypotheses)}, dropped {dropped}")
+                              f"live hypotheses {len(self._hypotheses)}, dropped {dropped}; "
+                              f"candidate generation {(time.monotonic() - _sweep_started) * 1000.0:.1f} ms")
         self._publish_merge_pending()
         return pairs, ctx, built
 

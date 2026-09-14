@@ -42,6 +42,23 @@ OVERRIDES = {
     # module default, so the bundle records what was in force.
     "association": {"input_silence_timeout_s": 180.0, "input_silence_max_strikes": 3,
                     "input_silence_min_stops": 6},
+    # THE MERGE SWEEP RUNS ON A TIMER, NOT ONLY ON A SCAN STOP. MEASURED on the 15-minute
+    # baseline 20260915_000120: TWO sweeps in 974 s, the first seeing 0 objects and the second
+    # 34; 0 of 82 offered pairs was ever scored a second time, so merge_min_consecutive = 2
+    # was unpayable BY CONSTRUCTION and the run applied 0 merges. The machinery already
+    # existed -- object_manager_6's TIAGO_MERGE_INTERVAL_S reads merge.periodic_interval_s --
+    # and shipped at 0.0, i.e. off, with only the Tiago YAML ever setting it.
+    #
+    # 5.0 s IS THE TIAGO VALUE, the only precedent in the tree. It is NOT measured for this
+    # scene and must be swept before it is defended; the sweep now records its own duration
+    # so the cost is a number rather than a belief.
+    #
+    # SAFE ONLY BECAUSE OF THE 2026-09-15 STREAK CHANGE. Before it, `decide` advanced the
+    # streak on every update, so a 5 s timer would have let two IDENTICAL measurements satisfy
+    # merge_min_consecutive = 2 -- frequency buying persistence, which is the repetition
+    # defect `Hypothesis` already fixed for the total. The streak now advances only when the
+    # evidence changes, so raising the frequency cannot manufacture certainty.
+    "merge": {"periodic_interval_s": 5.0},
 }
 
 
