@@ -132,6 +132,14 @@ if MERGE_ENGINE not in ("legacy", "evidence"):
 # visible and repairable, a wrong merge destroys an identity, so it sits well above 1.
 # commit_threshold() turns it into log-odds -- there is no similarity constant to tune.
 MERGE_COST_RATIO = float(CFG["association"].get("merge_cost_ratio", 20.0))
+# 2026-09-14 owner ruling (merge-algorithm lane): ontology channel off for this paper; the
+# attribute score in as a bounded channel (association.channel_attributes). Both declared in
+# config.yaml beside merge_engine.
+MERGE_ONTOLOGY_CHANNEL = bool(CFG["association"].get("merge_ontology_channel", True))
+MERGE_ATTRIBUTE_MAX_LOG_ODDS = float(CFG["association"].get("merge_attribute_max_log_odds", 2.0))
+# The one locality test both stages apply: boxes intersect or their largest per-axis gap is at
+# most this. It is the association broad-phase margin, not a new constant.
+LOCALITY_GAP_M = float(CFG["association"].get("association_margin_m", 0.3))
 # How many nearest neighbours per object survive candidate generation. None = no cap, keep
 # everything inside the covariance shell. A cap that silently drops a pair is the defect
 # that lost the air-conditioner pair, so generate_candidates reports what the cap removed.
@@ -315,6 +323,33 @@ def merge_rank(o):
     ct = getattr(o, "creation_time", None)
     return (grade, filled, described, 1 if ct is None else 0, ct if ct is not None else 0.0,
             str(getattr(o, "object_id", "") or o.label))
+
+
+def pair_attribute_score(a, b):
+    """-> (score, evidence) of lost_similarity_detailed for two world-model objects.
+
+    Embeddings cache on the object, so each description is encoded once. GA-101: the score
+    alone cannot say whether four axes agreed or nothing was comparable, and those two produce
+    the SAME number when the labels match, so the evidence dict travels with it. Shared by the
+    merge loop and the evidence engine's attribute channel (2026-09-14 owner ruling).
+    """
+    if getattr(a, "embedding", None) is None:
+        a.embedding = get_embedding(world2vec, a.description)
+    if getattr(b, "embedding", None) is None:
+        b.embedding = get_embedding(world2vec, b.description)
+    a_label = a.label.split('#')[0] if '#' in a.label else a.label
+    b_label = b.label.split('#')[0] if '#' in b.label else b.label
+    return lost_similarity_detailed(world2vec, a_label, b_label, a.color, b.color,
+                                    a.material, b.material, a.embedding, b.embedding)
+
+
+def _attribute_channel_input(aa, bb):
+    """AssocContext.attribute_score_fn: (score, optional_count) from the two AssocObjects'
+    world-model sources; None when a side has no source (channel abstains)."""
+    if getattr(aa, "source", None) is None or getattr(bb, "source", None) is None:
+        return None
+    score, ev = pair_attribute_score(aa.source, bb.source)
+    return score, int(ev["optional_count"])
 
 
 def _centroid_from_bbox(bbox):
@@ -1220,6 +1255,11 @@ class ObjectServices(Node):
             n_rooms=max(len(rooms), 1),
             n_types=n_types,
             cost_ratio=MERGE_COST_RATIO,
+            # 2026-09-14 owner ruling: ontology off for this paper, attributes in, bounded.
+            use_ontology=MERGE_ONTOLOGY_CHANNEL,
+            attribute_score_fn=_attribute_channel_input,
+            attribute_reference=SIM_THRESHOLD,
+            attribute_max_log_odds=MERGE_ATTRIBUTE_MAX_LOG_ODDS,
             disjoint_fn=disjoint_fn,
             disjoint_source=(getattr(hook, "name", type(hook).__name__)
                              if disjoint_fn is not None else None),
@@ -1248,6 +1288,7 @@ class ObjectServices(Node):
                     # unaligned side rather than comparing labels the ontology never endorsed.
                     onto_type=getattr(o, "onto_type", None),
                     onto_aligned=bool(getattr(o, "onto_aligned", False)),
+                    source=o,
                 )
             except (TypeError, ValueError, KeyError) as e:
                 # A malformed object must not be silently dropped from candidate
@@ -1472,14 +1513,7 @@ class ObjectServices(Node):
                 GA-101: the score alone cannot say whether four axes agreed or nothing was
                 comparable, and those two produce the SAME number when the labels match.
                 """
-                if not hasattr(a, 'embedding') or a.embedding is None:
-                    a.embedding = get_embedding(world2vec, a.description)
-                if not hasattr(b, 'embedding') or b.embedding is None:
-                    b.embedding = get_embedding(world2vec, b.description)
-                return lost_similarity_detailed(world2vec, a_label, b_label,
-                                                a.color, b.color,
-                                                a.material, b.material,
-                                                a.embedding, b.embedding)
+                return pair_attribute_score(a, b)
 
             def _refused(a, b, reason, similarity, **extra):
                 """A refusal is a decision and belongs beside the admissions.
@@ -1596,6 +1630,33 @@ class ObjectServices(Node):
                     room_a = self.room_manager.room_at_bbox(a.bbox)
                     room_b = self.room_manager.room_at_bbox(b.bbox)
 
+                    # 2026-09-14 owner ruling, in this order: room gate, then geometry, then
+                    # the evidence decision. Both gates read the fused box when there is one.
+                    ba, bb_ = assoc.locality_bounds(a), assoc.locality_bounds(b)
+                    overlapping = (ba is not None and bb_ is not None
+                                   and assoc.intersection_volume(ba, bb_) > 0.0)
+                    if (room_a is not None and room_b is not None and room_a != room_b
+                            and not overlapping):
+                        # Two boxes that OVERLAP are one thing whichever side of a room boundary
+                        # each centre fell on. MEASURED on GA-493: 56 of 57 distinct room
+                        # refusals were one kitchen boundary (room_4/room_5) and 7 of them scored
+                        # above the merge gate. Only NON-overlapping boxes in different rooms are
+                        # refused here; the similarity is computed solely to be recorded.
+                        print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b}), boxes apart")
+                        _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
+                        _refused(a, b, "room", _room_sim,
+                                 evidence_count=_room_ev["optional_count"],
+                                 room_a=room_a, room_b=room_b)
+                        continue
+                    if assoc.geometry_compatible(ba, bb_, LOCALITY_GAP_M) is False:
+                        # The one locality test both stages apply: intersect, or a largest
+                        # per-axis gap at most LOCALITY_GAP_M. A pair that fails it is never
+                        # scored on attributes (GA-25's order, kept).
+                        _refused(a, b, "geometry", None,
+                                 gap_m=round(assoc.box_gap(ba, bb_), 3),
+                                 threshold_gap_m=LOCALITY_GAP_M, room_a=room_a, room_b=room_b)
+                        continue
+
                     if MERGE_ENGINE == "evidence":
                         # GA-186. No gate cascade and no similarity constant: every channel
                         # runs, the log-odds are fused, and the pair commits only if the
@@ -1669,21 +1730,8 @@ class ObjectServices(Node):
                         if dist is None:
                             dist = float(np.linalg.norm(
                                 np.asarray(aa.centroid) - np.asarray(bb.centroid)))
-                    if (MERGE_ENGINE == "legacy"
-                            and room_a is not None and room_b is not None and room_a != room_b):
-                        print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b})")
-                        # The similarity is computed HERE, on the refusal path only, and
-                        # solely to be recorded. The gate ORDER is unchanged -- locality
-                        # still decides before attributes (GA-25) and no similarity can
-                        # rescue a pair in two different rooms. Paying for it only on the
-                        # pairs actually refused on room keeps the early gate's saving on
-                        # every pair that passes it, and those refused pairs are exactly
-                        # the population the log needs to be able to describe.
-                        _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
-                        _refused(a, b, "room", _room_sim,
-                                 evidence_count=_room_ev["optional_count"],
-                                 room_a=room_a, room_b=room_b)
-                        continue
+                    # The legacy room gate that stood here moved ABOVE the engine switch on
+                    # 2026-09-14 and now refuses only non-overlapping boxes, for both engines.
 
                     ax = (a.bbox['x_min'] + a.bbox['x_max']) / 2.0
                     ay = (a.bbox['y_min'] + a.bbox['y_max']) / 2.0

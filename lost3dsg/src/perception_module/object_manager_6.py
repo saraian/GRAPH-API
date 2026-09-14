@@ -26,7 +26,8 @@ import cv2
 import numpy as np
 import rclpy
 import requests
-from association import AssocObject, Observation, search_radius
+from association import AssocObject, Observation, geometry_compatible, locality_bounds, search_radius
+from association import _as_bounds as assoc_as_bounds
 from bbox_fusion import add_fusion_view, fusion_http_fields
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
@@ -191,17 +192,24 @@ def _half_diagonal_m(bbox):
         return 0.0
 
 
-def locality_ok(bbox, obj, threshold):
-    """GA-04: 3D overlap gate, applied BEFORE any attribute comparison.
+def locality_ok(bbox, obj, gap_m):
+    """GA-04: the locality gate, applied BEFORE any attribute comparison.
 
     Contract G1 invariant 3: locality is evaluated before attribute similarity, and an
     object failing the gate is never compared on attributes. Absent geometry is not
     locality evidence, so a candidate without a box does not pass -- the exploration
     branch already excluded those, and D14 prefers strict.
+
+    2026-09-14, owner ruling: THE SAME TEST AS THE MERGE (association.geometry_compatible),
+    on the object's fused box when it has one -- the detection's box intersects it, or the
+    largest per-axis gap is at most `gap_m` (association_margin_m). It replaces the fixed IoU
+    floor (0.10 exploration / 0.30 tracking) on the LAST MEASURED VIEW, which MEASURED on the
+    GA-493 bundle created 25 of 119 new objects while a same-label object overlapped the
+    detection at 0 < IoU < 0.30 -- two single-view boxes of one object see different
+    surfaces and overlap little.
     """
-    if bbox is None or getattr(obj, "bbox", None) is None:
-        return False
-    return compute_iou_3d(bbox, obj.bbox) >= threshold
+    ok = geometry_compatible(assoc_as_bounds(bbox), locality_bounds(obj), gap_m)
+    return bool(ok)
 
 
 def _association_candidates(bbox):
@@ -1799,10 +1807,16 @@ class ObjectManagerService(Node):
 
             if in_exploration:
                 for obj in candidates:
+                    # Two detections of ONE cycle are two objects by construction (the detector's
+                    # NMS already separated them), so an object absorbed earlier in this cycle
+                    # cannot absorb a second detection. This is the merge engine's co-visibility
+                    # veto, applied where the frame is known for certain. 2026-09-14.
+                    if obj in current_perception_objects:
+                        continue
                     # GA-04: locality first. Previously the overlap test was conjoined with the
                     # similarity test below, so attributes were compared against every object in
                     # the map before geometry could rule any of them out.
-                    if not locality_ok(bbox, obj, EXPLORATION_IOU_THRESHOLD):
+                    if not locality_ok(bbox, obj, ASSOCIATION_MARGIN_M):
                         continue
 
                     obj_label_base = obj.label.split('#')[0] if '#' in obj.label else obj.label
@@ -1900,7 +1914,12 @@ class ObjectManagerService(Node):
                     # A candidate with no bbox no longer matches here. It did before, on
                     # similarity alone; the exploration branch always excluded it, and D14
                     # prefers strict. Deliberate behaviour change, owner-approved 30 Aug.
-                    if not locality_ok(bbox, obj, TRACKING_IOU_THRESHOLD):
+                    # 2026-09-14: same-cycle veto and the shared geometry test, as in the
+                    # exploration loop above. TRACKING_IOU_THRESHOLD (0.30 on the last measured
+                    # view) is no longer read: MEASURED on GA-493 it created 25 of 119 new objects.
+                    if obj in current_perception_objects:
+                        continue
+                    if not locality_ok(bbox, obj, ASSOCIATION_MARGIN_M):
                         continue
 
                     if not hasattr(obj, "embedding"):

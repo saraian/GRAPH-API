@@ -15,10 +15,18 @@ embedding:
   word2vec_limit: 200000   # vocabulary cap; keeps RAM bounded
 
 similarity:            # lost_similarity weights, must sum to 1.0
+  # 2026-09-14, owner ruling "C is needed", form chosen from the data (merge-algorithm lane,
+  # tools/sweep_c.py, real MiniLM, GA-493 bundle). Was 0.05/0.30/0.15/0.50. The description
+  # cosine of two VLM sentences about ONE object seen from two views is 0.36-0.83 (median
+  # 0.685, n=21 exact), so at weight 0.50 no genuine re-observation could reach the merge gate
+  # (needs >= 0.85 on that term) and the median one failed the association gate too. At 0.20
+  # true re-observations score a median 0.89-0.94 and a different KIND at the same spot (lamp
+  # on a table) stays at 0.44. Attributes still cannot separate two objects of the same kind
+  # (same-label pairs > 1.5 m apart also score ~0.91): that is geometry's job, not this score's.
   label: 0.05
-  color: 0.30
-  material: 0.15
-  description: 0.50
+  color: 0.45
+  material: 0.30
+  description: 0.20
 
 association:
   exploration_iou_threshold: 0.10
@@ -39,7 +47,18 @@ association:
   # the names object_services reads. The values below are what the code already falls back to,
   # so writing them down changes no behaviour -- note merge_min_consecutive is 2, which is what
   # every recipe stamps and every bundle ran with, not the 3 the dead key claims.
-  merge_engine: legacy        # legacy | evidence -- which merge path decides
+  # 2026-09-14, owner ruling (merge-algorithm lane): the evidence engine decides, with the
+  # ontology channel OFF (it is used in FOUND, not in this paper) and the attribute score
+  # (label/colour/material/description) IN as a bounded channel. MEASURED reason, GA-493
+  # bundle: under the legacy gate a pair with IDENTICAL fused boxes and identical label,
+  # colour and material was refused at similarity 0.889 because the gate needs the
+  # description cosine >= 0.85 and true re-observations sit at 0.36-0.83 (0 of 21 reached it).
+  merge_engine: evidence      # legacy | evidence -- which merge path decides
+  merge_ontology_channel: false   # true = channel_ontology runs; false = recorded as an abstention
+  merge_attribute_max_log_odds: 2.0   # ceiling of the attribute channel's POSITIVE contribution.
+                              # Below log(merge_cost_ratio) = 3.0 on purpose: attributes alone
+                              # can never commit a merge (GA-101); a clear disagreement still
+                              # contributes down to -8 (GA-21's red book / blue book).
   merge_cost_ratio: 20.0      # false-merge cost / missed-merge cost; the commit threshold is
                               # log(ratio), so raising it makes merging strictly harder
   merge_min_consecutive: 2    # consecutive sweeps a pair must hold before it commits. Raise it

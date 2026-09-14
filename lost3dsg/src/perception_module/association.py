@@ -322,6 +322,41 @@ def generalized_iou(a, b):
     return inter / union - (hull - union) / hull
 
 
+def box_gap(a, b):
+    """Largest per-axis separation between two AABBs in metres; 0.0 when they intersect or touch."""
+    return max(0.0, max(a[0] - b[1], b[0] - a[1]), max(a[2] - b[3], b[2] - a[3]),
+               max(a[4] - b[5], b[4] - a[5]))
+
+
+def geometry_compatible(bounds_a, bounds_b, gap_m):
+    """THE ONE LOCALITY TEST both stages apply (owner ruling 2026-09-14: geometry filters
+    boxes out). Two boxes are compatible when they intersect, or when the largest per-axis gap
+    between them is at most `gap_m`.
+
+    It replaces a fixed IoU floor on the association path (0.10 exploration / 0.30 tracking)
+    and a fixed centre distance on the merge path (0.8 m). Both refused genuine
+    re-observations by construction: two single-view boxes of one object see different
+    surfaces and overlap little, and two halves of a rug have centres further apart than any
+    fixed radius. MEASURED on the GA-493 bundle (scene 00824): 25 of 119 new objects were
+    created while a same-label object overlapped the detection at 0 < IoU < 0.30, and 46
+    same-label merge pairs were refused on centre distance at a median 1.27 m.
+
+    Returns None when either box is absent: absence is not locality evidence.
+    """
+    if bounds_a is None or bounds_b is None:
+        return None
+    return box_gap(bounds_a, bounds_b) <= float(gap_m)
+
+
+def locality_bounds(obj):
+    """The box a locality test reads for a world-model object: the multi-view fused box when
+    one exists, else the last measured view. Two views of one object overlap far more on the
+    fused box (chair pairs on GA-493: 0.78-0.91 fused against 0.44-0.61 measured)."""
+    if obj is None:
+        return None
+    return _as_bounds(getattr(obj, "fused_bbox", None) or getattr(obj, "bbox", None))
+
+
 # ---------------------------------------------------------------------------------------
 # CHANNEL 1 (PRIMARY) — containment / overlap
 # ---------------------------------------------------------------------------------------
@@ -691,6 +726,40 @@ def channel_room(room_a, room_b, n_rooms):
 # ---------------------------------------------------------------------------------------
 
 
+def channel_attributes(score, evidence_count, reference, max_log_odds, min_evidence=1):
+    """CHANNEL 7 — the attribute score (label, colour, material, description) as BOUNDED evidence.
+
+    Owner ruling 2026-09-14: keep the LSF metric in the decision. What the data allows it to say
+    (GA-493 bundle, real MiniLM, `tools/sweep_c.py`): attributes cannot tell two objects of the
+    same KIND apart -- 306 same-label pairs more than 1.5 m apart score a median 0.91 under the
+    chosen weights, the same as true re-observations (0.89-0.94). They do separate a different
+    KIND at the same spot (lamp on a table: median 0.44). So agreement is worth little and
+    disagreement is worth a lot:
+
+        score >= reference : +max_log_odds * (score - reference) / (1 - reference)
+        score <  reference : -MAX_CHANNEL_LOG_ODDS * (reference - score) / (reference - 0.5)
+
+    `reference` is the association gate (sim_threshold, 0.85), so a score that would not
+    associate contributes nothing or less. `max_log_odds` (config merge_attribute_max_log_odds,
+    2.0) is BELOW the commit threshold log(20) = 3.0 by design: attributes alone can never
+    commit a merge (GA-101), while a clear disagreement (0.44 -> -8) outweighs the overlap
+    channel on its own (GA-21's red book and blue book). Abstains when nothing optional was
+    comparable (GA-101: the label alone is not evidence).
+    """
+    if score is None:
+        return Abstain("attribute score not supplied")
+    if evidence_count < min_evidence:
+        return Abstain(f"{evidence_count} optional term(s) comparable < {min_evidence}", measured=True)
+    s = float(score)
+    ref = float(reference)
+    if s >= ref:
+        llr = float(max_log_odds) * (s - ref) / max(1.0 - ref, 1e-9)
+    else:
+        llr = -MAX_CHANNEL_LOG_ODDS * (ref - s) / max(ref - 0.5, 1e-9)
+    llr = float(np.clip(llr, -MAX_CHANNEL_LOG_ODDS, float(max_log_odds)))
+    return llr, {"score": round(s, 4), "evidence_count": int(evidence_count), "reference": ref}
+
+
 class PairScore:
     """The full record of one comparison: total log-odds, every channel, every abstention.
 
@@ -815,10 +884,21 @@ def score_pair(a, b, ctx):
     else:
         s.abstentions["separation"] = "boxes overlap; containment already answers this"
 
-    s.add("ontology", channel_ontology(
-        a.onto_type, b.onto_type, a.onto_aligned, b.onto_aligned,
-        disjoint_fn=ctx.disjoint_fn, n_types=ctx.n_types,
-        disjoint_source=getattr(ctx, "disjoint_source", None)))
+    if getattr(ctx, "use_ontology", True):
+        s.add("ontology", channel_ontology(
+            a.onto_type, b.onto_type, a.onto_aligned, b.onto_aligned,
+            disjoint_fn=ctx.disjoint_fn, n_types=ctx.n_types,
+            disjoint_source=getattr(ctx, "disjoint_source", None)))
+    else:
+        # Owner ruling 2026-09-14: the ontology stays out of this paper's decision (it is
+        # used in FOUND). Recorded as an abstention so a bundle SAYS the channel was off.
+        s.abstentions["ontology"] = "disabled by config (association.merge_ontology_channel)"
+    fn = getattr(ctx, "attribute_score_fn", None)
+    if fn is not None:
+        measured = fn(a, b)
+        score, n_ev = (None, 0) if measured is None else measured
+        s.add("attributes", channel_attributes(
+            score, n_ev, ctx.attribute_reference, ctx.attribute_max_log_odds))
     s.add("appearance", channel_appearance(
         a.descriptors, b.descriptors, ctx.cone_half_angle_rad,
         a.descriptor_spread, b.descriptor_spread))
@@ -1035,15 +1115,19 @@ class Hypothesis:
 
 class AssocObject:
     __slots__ = ("object_id", "label", "bbox", "centroid", "observations", "covariance",
-                 "descriptors", "descriptor_spread", "room_id", "onto_type", "onto_aligned")
+                 "descriptors", "descriptor_spread", "room_id", "onto_type", "onto_aligned",
+                 "source")
 
     def __init__(self, object_id, bbox=None, centroid=None, label=None, observations=None,
                  room_id=None, onto_type=None, onto_aligned=False,
                  descriptors=None, descriptor_spread=None,
-                 depth_sparsity=0.0, pose_sigma_m=0.0):
+                 depth_sparsity=0.0, pose_sigma_m=0.0, source=None):
         self.object_id = object_id
         self.label = label
         self.bbox = bbox
+        # The world-model object this was built from, for the caller's attribute scorer
+        # (channel 7). This module never reads it.
+        self.source = source
         self.observations = list(observations or [])
         b = _as_bounds(bbox)
         if centroid is not None:
@@ -1082,11 +1166,21 @@ class AssocObject:
 
 class AssocContext:
     __slots__ = ("map_volume_m3", "n_rooms", "n_types", "cone_half_angle_rad",
-                 "disjoint_fn", "disjoint_source", "cost_ratio", "overlap_2d_fn")
+                 "disjoint_fn", "disjoint_source", "cost_ratio", "overlap_2d_fn",
+                 "use_ontology", "attribute_score_fn", "attribute_reference",
+                 "attribute_max_log_odds")
 
     def __init__(self, map_volume_m3=None, n_rooms=None, n_types=None,
                  cone_half_angle_rad=math.radians(45.0), disjoint_fn=None, cost_ratio=20.0,
-                 overlap_2d_fn=None, disjoint_source=None):
+                 overlap_2d_fn=None, disjoint_source=None, use_ontology=True,
+                 attribute_score_fn=None, attribute_reference=0.85, attribute_max_log_odds=2.0):
+        # Owner ruling 2026-09-14: ontology off for this paper; attributes (channel 7) in.
+        # `attribute_score_fn(a, b) -> (score, evidence_count) | None` is supplied by the
+        # caller, which owns the models; this module stays model-free.
+        self.use_ontology = use_ontology
+        self.attribute_score_fn = attribute_score_fn
+        self.attribute_reference = attribute_reference
+        self.attribute_max_log_odds = attribute_max_log_odds
         self.map_volume_m3 = map_volume_m3
         self.n_rooms = n_rooms
         self.n_types = n_types
@@ -1287,6 +1381,41 @@ def demo():
     assert CHI2_95_3DOF == 7.815
     print(f"  constants : chi2 95%@3dof {CHI2_95_3DOF}, commit threshold "
           f"log(cost_ratio={ctx.cost_ratio:g}) = {thr:.3f}")
+
+    # --- 8. 2026-09-14: the shared geometry filter and the bounded attribute channel --------
+    a8 = _as_bounds(_box(0, 0, 0.5, 1.0, 1.0, 1.0))
+    touching = _as_bounds(_box(1.0, 0, 0.5, 1.0, 1.0, 1.0))      # faces touch: gap 0
+    near = _as_bounds(_box(1.25, 0, 0.5, 1.0, 1.0, 1.0))         # gap 0.25 on x
+    far = _as_bounds(_box(2.0, 0, 0.5, 1.0, 1.0, 1.0))           # gap 1.0 on x
+    diag = _as_bounds(_box(1.2, 1.2, 0.5, 1.0, 1.0, 1.0))        # gap 0.2 on x AND y
+    assert box_gap(a8, touching) == 0.0 and geometry_compatible(a8, touching, 0.0)
+    assert abs(box_gap(a8, near) - 0.25) < 1e-9
+    assert geometry_compatible(a8, near, 0.3) and not geometry_compatible(a8, near, 0.2)
+    assert not geometry_compatible(a8, far, 0.3)
+    assert geometry_compatible(a8, diag, 0.3) and not geometry_compatible(a8, diag, 0.1)
+    assert geometry_compatible(None, a8, 0.3) is None, "absence is not locality evidence"
+    print("  geometry filter : touching/gap 0.25/gap 1.0 -> compatible at 0.3 m: True/True/False")
+
+    thr8 = commit_threshold(20.0)
+    agree, _ = channel_attributes(1.0, 3, 0.85, 2.0)
+    same_kind, _ = channel_attributes(0.91, 3, 0.85, 2.0)
+    other_kind, _ = channel_attributes(0.44, 3, 0.85, 2.0)
+    at_gate, _ = channel_attributes(0.85, 3, 0.85, 2.0)
+    assert agree == 2.0 < thr8, "perfect agreement is capped below the commit threshold"
+    assert 0.0 < same_kind < agree and at_gate == 0.0
+    assert other_kind == -MAX_CHANNEL_LOG_ODDS, other_kind
+    assert isinstance(channel_attributes(1.0, 0, 0.85, 2.0), Abstain), "label alone is not evidence"
+    assert isinstance(channel_attributes(None, 3, 0.85, 2.0), Abstain)
+    # wired through score_pair: a same-spot different-kind pair loses to a strong overlap
+    ctx8 = AssocContext(map_volume_m3=300.0, n_rooms=6, cost_ratio=20.0, use_ontology=False,
+                        attribute_score_fn=lambda x, y: (0.44, 3))
+    lamp = AssocObject("lamp", bbox=_box(0, 0, 1.0, 0.3, 0.3, 0.4), room_id="r")
+    table = AssocObject("table", bbox=_box(0, 0, 0.8, 1.2, 0.8, 0.8), room_id="r")
+    s8 = score_pair(lamp, table, ctx8)
+    assert "ontology" in s8.abstentions and "attributes" in s8.channels, s8.as_record()
+    assert s8.channels["overlap"]["log_odds"] > 0 and s8.total < thr8, s8.as_record()
+    print(f"  attributes : agree {agree:+.1f} (cap), same kind {same_kind:+.2f}, other kind "
+          f"{other_kind:+.1f}; lamp-on-table total {s8.total:+.2f} < {thr8:+.2f} -> no merge")
 
     print("\nassociation self-check OK")
 
