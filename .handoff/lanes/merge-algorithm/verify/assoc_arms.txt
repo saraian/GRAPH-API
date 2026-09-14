@@ -1,0 +1,15 @@
+adds: 119; arms: 12; label instruments: MiniLM raw word, OWLv2 'a photo of a {label}'
+
+arm                                                 same  diff   new  different-label absorptions
+A0 old gate, old weights, no veto (control)            0     0   119  
+A1 gap 0.3, old weights, no veto (gate only)          32     1    86  latch->knob@0.854
+A2 old gate, new weights, veto (weights only)          5     2   112  pillow->cushion#1@0.882, bench#1->cabinet#3@0.886
+A3 gap 0.3, new weights, veto (the 44)                36     8    75  table->object@0.875, stove->oven@0.88, cushion#1->seat@0.903, dispenser->paper_towel_holder@0.919, artwork->painting@0.931, pillow->seat@0.89, bench#1->cabinet#3@0.886, pillow#2->cushion#3@0.899
+A4 gap 0.2, new weights, veto                         33     7    79  stove->oven@0.88, cushion#1->seat@0.903, dispenser->paper_towel_holder@0.919, artwork->painting@0.931, pillow->seat@0.89, bench#1->cabinet#3@0.886, pillow#2->cushion#3@0.899
+A5 gap 0.5, new weights, veto                         39     8    72  table->object@0.875, stove->oven@0.88, cushion#1->seat@0.903, dispenser->paper_towel_holder@0.919, artwork->painting@0.931, pillow->seat@0.89, bench#1->cabinet#3@0.886, pillow#2->cushion#3@0.899
+A6 gap 0.8, new weights, veto                         41     8    70  table->object@0.875, stove->oven@0.88, cushion#1->seat@0.903, dispenser->paper_towel_holder@0.919, artwork->painting@0.931, pillow->seat@0.89, bench#1->cabinet#3@0.886, pillow#2->cushion#3@0.899
+A7 gap 0.3, label .25 (MiniLM), veto                  41     1    77  artwork->painting@0.887
+A8 gap 0.3, label .40 (MiniLM), veto                  44     1    74  artwork->painting@0.854
+A9 gap 0.3, new weights, OWLv2 label, veto            35    10    74  sculpture->statue@0.859, table->object@0.883, stove->oven@0.887, cushion#1->seat@0.907, dispenser->paper_towel_holder@0.94, artwork->painting@0.943, pillow->cushion#1@0.896, bench#1->cabinet#3@0.895, bench#2->cabinet#4@0.888, pillow#2->cushion#3@0.913
+A10 gap 0.3, label .25 (OWLv2), veto                  41     7    71  sculpture->statue@0.873, stove->oven@0.871, cushion#1->seat@0.855, dispenser->paper_towel_holder@0.902, artwork->painting@0.946, pillow->cushion#1@0.893, pillow#2->cushion#3@0.906
+A11 gap 0.3, label .40 (OWLv2), veto                  44     6    69  sculpture->statue@0.882, stove->oven@0.858, dispenser->paper_towel_holder@0.874, artwork->painting@0.948, pillow->cushion#1@0.891, pillow#2->cushion#3@0.901

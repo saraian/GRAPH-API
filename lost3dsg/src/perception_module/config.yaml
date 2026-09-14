@@ -23,10 +23,16 @@ similarity:            # lost_similarity weights, must sum to 1.0
   # true re-observations score a median 0.89-0.94 and a different KIND at the same spot (lamp
   # on a table) stays at 0.44. Attributes still cannot separate two objects of the same kind
   # (same-label pairs > 1.5 m apart also score ~0.91): that is geometry's job, not this score's.
-  label: 0.05
-  color: 0.45
-  material: 0.30
-  description: 0.20
+  # Owner 2026-09-14 (second ruling): "label weight should be well higher". MEASURED on the same
+  # bundle (tools/../verify/assoc_arms.py, real MiniLM, 119 adds replayed): at label 0.05 the new
+  # gate associated 36 same-label detections and 8 cross-label ones, 5 of them wrong-kind
+  # (pillow->seat, stove->oven, table->object...); at label 0.25 it associated 41 same-label and
+  # 1 cross-label (artwork->painting, a synonym); at 0.40, 44 and 1. 0.25 is the smaller measured
+  # value that removes every wrong-kind absorption; the other three keep their .45/.30/.20 ratio.
+  label: 0.25
+  color: 0.36
+  material: 0.24
+  description: 0.15
 
 association:
   exploration_iou_threshold: 0.10
