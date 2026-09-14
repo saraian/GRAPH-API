@@ -1,0 +1,29 @@
+Renderer: NVIDIA GeForce RTX 4090/PCIe/SSE2 by NVIDIA Corporation
+OpenGL version: 4.6.0 NVIDIA 580.126.09
+Using optional features:
+    GL_ARB_vertex_array_object
+    GL_ARB_separate_shader_objects
+    GL_ARB_robustness
+    GL_ARB_texture_storage
+    GL_ARB_texture_view
+    GL_ARB_framebuffer_no_attachments
+    GL_ARB_invalidate_subdata
+    GL_ARB_texture_storage_multisample
+    GL_ARB_multi_bind
+    GL_ARB_direct_state_access
+    GL_ARB_get_texture_sub_image
+    GL_ARB_texture_filter_anisotropic
+    GL_KHR_debug
+    GL_KHR_parallel_shader_compile
+    GL_NV_depth_buffer_float
+Using driver workarounds:
+    no-forward-compatible-core-context
+    nv-egl-incorrect-gl11-function-pointers
+    no-layout-qualifiers-on-old-glsl
+    nv-zero-context-profile-mask
+    nv-implementation-color-read-format-dsa-broken
+    nv-cubemap-inconsistent-compressed-image-size
+    nv-cubemap-broken-full-compressed-image-query
+    nv-compressed-block-size-in-bits
+[00:28:10:660527]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00853-5cdEh9F2hJL' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+Support diagnostic: {"counts": {"semantic_objects": 332, "support_categories": 332, "no_matching_collision_surface": 566, "points": 432, "height_filter": 7}, "source": "rendered semantic+depth", "support_categories": {"cabinet": 21, "box": 10, "island": 4, "bar chair": 4, "wardrobe": 27, "towel": 2, "sink": 3, "shampoo": 2, "hanger": 1, "bathroom counter": 1, "bed": 9, "display cabinet": 17, "end table": 7, "l-shaped sofa": 7, "armchair": 8, "flower vase": 5, "table": 4, "coffee table": 2, "book": 4, "nightstand": 1, "casket": 1, "pillow": 12, "shoe": 12, "clothes hanger": 2, "hanging clothes": 9, "shelf": 5, "closet storage area": 5, "vase": 1, "storage shelving": 4, "bathroom towel": 2, "towel bar": 1, "cosmetics": 2, "bathroom cabinet": 1, "firewood holder": 1, "dining chair": 29, "air conditioner": 1, "unknown": 1, "chest drawer": 4, "seat": 1, "toilet": 1, "washing machine": 2, "kitchen counter": 4, "dishwasher": 6, "mirror frame": 2, "dining table": 1, "mirror": 2, "throw blanket": 1, "decoration": 6, "kitchen cabinet": 25, "sofa": 12, "decorative bowl": 3, "computer desk": 5, "office chair": 7, "appliance": 3, "oven and stove": 5, "monitor": 1, "pc tower": 1, "refrigerator": 9, "kitchen decoration": 2, "kitchen shelf": 1}, "categories_sample": {"dining chair": 29, "wardrobe": 27, "kitchen cabinet": 25, "cabinet": 21, "display cabinet": 17, "pillow": 12, "shoe": 12, "sofa": 12, "box": 10, "bed": 9, "hanging clothes": 9, "refrigerator": 9, "armchair": 8, "end table": 7, "l-shaped sofa": 7, "office chair": 7, "dishwasher": 6, "decoration": 6, "flower vase": 5, "shelf": 5, "closet storage area": 5, "computer desk": 5, "oven and stove": 5, "island": 4, "bar chair": 4, "table": 4, "book": 4, "storage shelving": 4, "chest drawer": 4, "kitchen counter": 4}, "aabb_samples": [{"category": "cabinet", "min": [0.15312902629375458, 0.8076155781745911, -3.889423131942749], "max": [0.8850519061088562, 0.8265759944915771, -3.5544848442077637], "size": [0.7319228798151016, 0.018960416316986084, 0.33493828773498535]}, {"category": "box", "min": [0.3928068280220032, 0.8433178663253784, -3.8305537700653076], "max": [0.7312077283859253, 0.8531445860862732, -3.8117170333862305], "size": [0.3384009003639221, 0.009826719760894775, 0.01883673667907715]}, {"category": "island", "min": [1.0436079502105713, 0.9041694402694702, -6.005784034729004], "max": [2.594303846359253, 0.9199985861778259, -4.861239433288574], "size": [1.5506958961486816, 0.015829145908355713, 1.1445446014404297]}, {"category": "island", "min": [1.0453946590423584, 0.9200032353401184, -5.987028121948242], "max": [2.5588343143463135, 0.9270995259284973, -4.907726287841797], "size": [1.513439655303955, 0.007096290588378906, 1.0793018341064453]}, {"category": "cabinet", "min": [0.30794021487236023, 0.4506567120552063, -3.860121250152588], "max": [0.8115315437316895, 0.4871622920036316, -3.593320608139038], "size": [0.5035913288593292, 0.03650557994842529, 0.2668006420135498]}, {"category": "cabinet", "min": [0.29307475686073303, 0.3241461217403412, -3.736934185028076], "max": [0.5605997443199158, 0.33577167987823486, -3.7150819301605225], "size": [0.26752498745918274, 0.011625558137893677, 0.02185225486755371]}, {"category": "bar chair", "min": [1.1388678550720215, 1.081295371055603, -6.4082441329956055], "max": [1.4103538990020752, 1.0914809703826904, -6.176998615264893], "size": [0.2714860439300537, 0.010185599327087402, 0.2312455177307129]}, {"category": "bar chair", "min": [1.2067753076553345, 1.0556097030639648, -6.3676838874816895], "max": [1.40189790725708, 1.07953941822052, -6.172133922576904], "size": [0.1951225996017456, 0.023929715156555176, 0.19554996490478516]}, {"category": "wardrobe", "min": [3.9179866313934326, 1.1641645431518555, -7.105663776397705], "max": [4.167381286621094, 1.1843823194503784, -6.6343512535095215], "size": [0.24939465522766113, 0.02021777629852295, 0.4713125228881836]}, {"category": "wardrobe", "min": [3.8543460369110107, 1.08003568649292, -4.9090375900268555], "max": [4.167757987976074, 1.104363203048706, -4.470296382904053], "size": [0.3134119510650635, 0.024327516555786133, 0.43874120712280273]}, {"category": "wardrobe", "min": [4.169242858886719, 0.766884446144104, -7.028143882751465], "max": [4.173474311828613, 0.7678893804550171, -6.633083820343018], "size": [0.004231452941894531, 0.001004934310913086, 0.39506006240844727]}, {"category": "wardrobe", "min": [3.8731768131256104, 0.7385366559028625, -4.963653087615967], "max": [4.150313854217529, 0.7566655874252319, -4.4857378005981445], "size": [0.27713704109191895, 0.018128931522369385, 0.47791528701782227]}]}

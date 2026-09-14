@@ -1,0 +1,163 @@
+{
+  "schema": "graph-api.baseline-tour-pack-validation.v3",
+  "complete": true,
+  "scope": "three-lap single-floor input pack with changes over laps 1-2 and confirmation on lap 3; planned integrity, not baseline execution certification",
+  "pack": "B",
+  "scenes": [
+    {
+      "scene_id": "00815-h1zeeAwLh9Z",
+      "complete": true,
+      "native_gt_objects": 344,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 14,
+      "maximum_trigger_object_distance_m": 3.960793,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 99.615,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0,
+        1
+      ],
+      "metric_eligible_gt_objects": 344,
+      "zero_volume_gt_objects_excluded": 0,
+      "configured_execution_laps": 3,
+      "actions_by_human_lap": {
+        "1": 6,
+        "2": 8
+      },
+      "confirmation_laps_human": [
+        3
+      ]
+    },
+    {
+      "scene_id": "00835-q3zU7Yy5E5s",
+      "complete": true,
+      "native_gt_objects": 325,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 8,
+      "maximum_trigger_object_distance_m": 3.910176,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 99.416,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0,
+        1
+      ],
+      "metric_eligible_gt_objects": 325,
+      "zero_volume_gt_objects_excluded": 0,
+      "configured_execution_laps": 3,
+      "actions_by_human_lap": {
+        "1": 3,
+        "2": 5
+      },
+      "confirmation_laps_human": [
+        3
+      ]
+    },
+    {
+      "scene_id": "00853-5cdEh9F2hJL",
+      "complete": true,
+      "native_gt_objects": 528,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 17,
+      "maximum_trigger_object_distance_m": 3.867138,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 99.406,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0,
+        1
+      ],
+      "metric_eligible_gt_objects": 525,
+      "zero_volume_gt_objects_excluded": 3,
+      "configured_execution_laps": 3,
+      "actions_by_human_lap": {
+        "1": 9,
+        "2": 8
+      },
+      "confirmation_laps_human": [
+        3
+      ]
+    },
+    {
+      "scene_id": "00861-GLAQ4DNUx5U",
+      "complete": true,
+      "native_gt_objects": 466,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 11,
+      "maximum_trigger_object_distance_m": 3.773034,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 99.247,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0,
+        1
+      ],
+      "metric_eligible_gt_objects": 461,
+      "zero_volume_gt_objects_excluded": 5,
+      "configured_execution_laps": 3,
+      "actions_by_human_lap": {
+        "1": 6,
+        "2": 5
+      },
+      "confirmation_laps_human": [
+        3
+      ]
+    },
+    {
+      "scene_id": "00877-4ok3usBNeis",
+      "complete": true,
+      "native_gt_objects": 237,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 14,
+      "maximum_trigger_object_distance_m": 3.470173,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 99.451,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0,
+        1
+      ],
+      "metric_eligible_gt_objects": 236,
+      "zero_volume_gt_objects_excluded": 1,
+      "configured_execution_laps": 3,
+      "actions_by_human_lap": {
+        "1": 6,
+        "2": 8
+      },
+      "confirmation_laps_human": [
+        3
+      ]
+    }
+  ]
+}

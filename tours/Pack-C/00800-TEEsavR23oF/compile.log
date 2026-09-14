@@ -1,0 +1,29 @@
+Renderer: NVIDIA GeForce RTX 4090/PCIe/SSE2 by NVIDIA Corporation
+OpenGL version: 4.6.0 NVIDIA 580.126.09
+Using optional features:
+    GL_ARB_vertex_array_object
+    GL_ARB_separate_shader_objects
+    GL_ARB_robustness
+    GL_ARB_texture_storage
+    GL_ARB_texture_view
+    GL_ARB_framebuffer_no_attachments
+    GL_ARB_invalidate_subdata
+    GL_ARB_texture_storage_multisample
+    GL_ARB_multi_bind
+    GL_ARB_direct_state_access
+    GL_ARB_get_texture_sub_image
+    GL_ARB_texture_filter_anisotropic
+    GL_KHR_debug
+    GL_KHR_parallel_shader_compile
+    GL_NV_depth_buffer_float
+Using driver workarounds:
+    no-forward-compatible-core-context
+    nv-egl-incorrect-gl11-function-pointers
+    no-layout-qualifiers-on-old-glsl
+    nv-zero-context-profile-mask
+    nv-implementation-color-read-format-dsa-broken
+    nv-cubemap-inconsistent-compressed-image-size
+    nv-cubemap-broken-full-compressed-image-query
+    nv-compressed-block-size-in-bits
+[00:11:11:229186]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00800-TEEsavR23oF' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+Support diagnostic: {"counts": {"semantic_objects": 208, "support_categories": 208, "points": 230, "no_matching_collision_surface": 258, "height_filter": 6}, "source": "rendered semantic+depth", "support_categories": {"armchair": 14, "tv": 2, "wardrobe": 15, "blanket": 3, "nightstand": 7, "table": 6, "decorative plate": 1, "balustrade": 18, "kitchen cabinet": 1, "oven and stove": 4, "worktop": 2, "flower": 12, "couch": 13, "unknown": 26, "fireplace": 1, "chair": 17, "bath sink": 1, "box": 6, "toy": 5, "computer desk": 1, "led tv": 1, "shirt": 1, "plate": 1, "kitchen appliance": 1, "refrigerator": 3, "sink": 1, "kitchen shelf": 2, "bicycle": 5, "cabinet": 8, "stack of papers": 10, "book": 1, "bag": 1, "bed": 6, "plush toy": 1, "frame": 1, "folder": 3, "newspaper": 1, "pad": 1, "pillow": 1, "dresser": 1, "casket": 2, "electric box": 1}, "categories_sample": {"unknown": 26, "balustrade": 18, "chair": 17, "wardrobe": 15, "armchair": 14, "couch": 13, "flower": 12, "stack of papers": 10, "cabinet": 8, "nightstand": 7, "table": 6, "box": 6, "bed": 6, "toy": 5, "bicycle": 5, "oven and stove": 4, "blanket": 3, "refrigerator": 3, "folder": 3, "tv": 2, "worktop": 2, "kitchen shelf": 2, "casket": 2, "decorative plate": 1, "kitchen cabinet": 1, "fireplace": 1, "bath sink": 1, "computer desk": 1, "led tv": 1, "shirt": 1}, "aabb_samples": [{"category": "armchair", "min": [1.3563899993896484, 4.040875434875488, -5.043458461761475], "max": [1.3563899993896484, 4.040875434875488, -5.043458461761475], "size": [0.0, 0.0, 0.0]}, {"category": "tv", "min": [-0.7731336951255798, 3.924577236175537, -4.9473748207092285], "max": [0.3808957040309906, 3.944662570953369, -4.93046760559082], "size": [1.1540293991565704, 0.02008533477783203, 0.016907215118408203]}, {"category": "wardrobe", "min": [-0.7967043519020081, 3.9153690338134766, -5.320740699768066], "max": [0.3966997563838959, 3.933210611343384, -4.933182239532471], "size": [1.193404108285904, 0.017841577529907227, 0.3875584602355957]}, {"category": "armchair", "min": [0.908900797367096, 3.720592737197876, -6.212377548217773], "max": [1.796155333518982, 3.775378942489624, -5.162013053894043], "size": [0.887254536151886, 0.05478620529174805, 1.0503644943237305]}, {"category": "armchair", "min": [0.8471055030822754, 3.657554864883423, -6.247158050537109], "max": [1.764634370803833, 3.7179083824157715, -5.511120796203613], "size": [0.9175288677215576, 0.06035351753234863, 0.7360372543334961]}, {"category": "armchair", "min": [0.9626471400260925, 3.5602991580963135, -6.237141132354736], "max": [1.723441243171692, 3.5830981731414795, -5.251782417297363], "size": [0.7607941031455994, 0.022799015045166016, 0.985358715057373]}, {"category": "armchair", "min": [0.6574274301528931, 3.488417625427246, -6.536818027496338], "max": [1.5817242860794067, 3.5595312118530273, -5.581713676452637], "size": [0.9242968559265137, 0.07111358642578125, 0.9551043510437012]}, {"category": "blanket", "min": [1.8622369766235352, 3.9601218700408936, -7.089639663696289], "max": [2.1229848861694336, 4.0220537185668945, -6.543090343475342], "size": [0.26074790954589844, 0.06193184852600098, 0.5465493202209473]}, {"category": "blanket", "min": [1.8547031879425049, 3.88405704498291, -7.033628940582275], "max": [2.240375518798828, 3.9597949981689453, -6.55789852142334], "size": [0.38567233085632324, 0.07573795318603516, 0.47573041915893555]}, {"category": "nightstand", "min": [1.269395112991333, 3.9378445148468018, -8.691047668457031], "max": [1.44375479221344, 3.9549851417541504, -8.290203094482422], "size": [0.17435967922210693, 0.017140626907348633, 0.4008445739746094]}, {"category": "table", "min": [-8.665492057800293, 0.6340471506118774, 0.14771050214767456], "max": [-8.527425765991211, 0.6431983113288879, 0.21687428653240204], "size": [0.13806629180908203, 0.009151160717010498, 0.06916378438472748]}, {"category": "decorative plate", "min": [-8.671294212341309, 0.6517186164855957, 0.1872383952140808], "max": [-8.671294212341309, 0.6517186164855957, 0.1872383952140808], "size": [0.0, 0.0, 0.0]}]}

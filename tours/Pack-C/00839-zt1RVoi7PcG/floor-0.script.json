@@ -1,0 +1,150 @@
+{
+  "steps": [
+    {
+      "action": "spawn",
+      "target_point": "surface_0152",
+      "position": [
+        -4.4471635818481445,
+        -2.104600814878941,
+        11.07352352142334
+      ],
+      "capture_eye": [
+        -3.648261547088623,
+        -1.9546009302139282,
+        11.035094261169434
+      ],
+      "target_category": "book",
+      "target_surface_point": [
+        -4.4471635818481445,
+        -2.14328932762146,
+        11.07352352142334
+      ],
+      "target_surface_group": "rendered:580:-27",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_001",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 1,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0143",
+      "position": [
+        -2.289938449859619,
+        -2.1234125176072123,
+        8.61590576171875
+      ],
+      "capture_eye": [
+        -1.489938497543335,
+        -1.9734126329421997,
+        8.61590576171875
+      ],
+      "target_category": "kitchen island",
+      "target_surface_point": [
+        -2.289938449859619,
+        -2.1621010303497314,
+        8.61590576171875
+      ],
+      "target_surface_group": "rendered:566:-27",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 5,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 8,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0078",
+      "position": [
+        -3.4152157306671143,
+        -2.258098033964634,
+        3.7185897827148438
+      ],
+      "capture_eye": [
+        -4.215215682983398,
+        -2.108098030090332,
+        3.7185897827148438
+      ],
+      "target_category": "dining table",
+      "target_surface_point": [
+        -3.4152157306671143,
+        -2.2967865467071533,
+        3.7185897827148438
+      ],
+      "target_surface_group": "rendered:729:-28",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_002",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 12,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0143",
+      "position": [
+        -2.289938449859619,
+        -2.1234125176072123,
+        8.61590576171875
+      ],
+      "capture_eye": [
+        -1.489938497543335,
+        -1.9734126329421997,
+        8.61590576171875
+      ],
+      "target_category": "kitchen island",
+      "target_surface_point": [
+        -2.289938449859619,
+        -2.1621010303497314,
+        8.61590576171875
+      ],
+      "target_surface_group": "rendered:566:-27",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_002",
+      "at_waypoint": {
+        "stop": 13,
+        "lap": 0
+      }
+    }
+  ],
+  "object_scale": 1.0,
+  "description": "One action at every scan stop: medium object spawn, relocate, remove and persistence lifecycles",
+  "scene": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00839-zt1RVoi7PcG/zt1RVoi7PcG.basis.glb",
+  "floor_height": -2.89,
+  "plan_scope": "per-floor script; multi-floor orchestration awaits certification",
+  "source_compiler": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/scene_script.py",
+    "sha256": "84e798753ff54c9e88081ef654fcf6b426f3018dd8aecb4d7513834a3a197888"
+  },
+  "trigger_parser": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/src/perception_module/script_runner.py",
+    "sha256": "9fbd94a4957e04d67eef2ad9e0998378260212014ee6a7ea33c682ecc327426c"
+  }
+}

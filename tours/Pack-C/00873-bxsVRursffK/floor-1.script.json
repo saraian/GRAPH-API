@@ -1,0 +1,369 @@
+{
+  "steps": [
+    {
+      "action": "spawn",
+      "target_point": "surface_0028",
+      "position": [
+        -8.560239791870117,
+        0.738169284760952,
+        -0.1864689439535141
+      ],
+      "capture_eye": [
+        -7.760239601135254,
+        0.8881692886352539,
+        -0.1864689439535141
+      ],
+      "target_category": "bed",
+      "target_surface_point": [
+        -8.560239791870117,
+        0.6994807720184326,
+        -0.1864689439535141
+      ],
+      "target_surface_group": "rendered:265:9",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_001",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 0,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0102",
+      "position": [
+        -4.657084941864014,
+        0.9763804396986961,
+        -1.7026896476745605
+      ],
+      "capture_eye": [
+        -3.8570849895477295,
+        1.126380443572998,
+        -1.958815097808838
+      ],
+      "target_category": "clothes dryer",
+      "target_surface_point": [
+        -4.657084941864014,
+        0.9376919269561768,
+        -1.7026896476745605
+      ],
+      "target_surface_group": "rendered:193:12",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 1,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 3,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0028",
+      "position": [
+        -8.560239791870117,
+        0.738169284760952,
+        -0.1864689439535141
+      ],
+      "capture_eye": [
+        -7.760239601135254,
+        0.8881692886352539,
+        -0.1864689439535141
+      ],
+      "target_category": "bed",
+      "target_surface_point": [
+        -8.560239791870117,
+        0.6994807720184326,
+        -0.1864689439535141
+      ],
+      "target_surface_group": "rendered:265:9",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_002",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 4,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0059",
+      "position": [
+        -5.4680657386779785,
+        0.60701057523489,
+        -5.491328716278076
+      ],
+      "capture_eye": [
+        -4.890110492706299,
+        0.7570105791091919,
+        -5.491328716278076
+      ],
+      "target_category": "table",
+      "target_surface_point": [
+        -5.4680657386779785,
+        0.5683220624923706,
+        -5.491328716278076
+      ],
+      "target_surface_group": "rendered:133:7",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_002",
+      "at_waypoint": {
+        "stop": 5,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_002",
+      "at_waypoint": {
+        "stop": 6,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0102",
+      "position": [
+        -4.657084941864014,
+        0.9763804396986961,
+        -1.7026896476745605
+      ],
+      "capture_eye": [
+        -3.8570849895477295,
+        1.126380443572998,
+        -1.958815097808838
+      ],
+      "target_category": "clothes dryer",
+      "target_surface_point": [
+        -4.657084941864014,
+        0.9376919269561768,
+        -1.7026896476745605
+      ],
+      "target_surface_group": "rendered:193:12",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_003",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 7,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0084",
+      "position": [
+        -1.3788100481033325,
+        0.7423051318526268,
+        -1.2661713361740112
+      ],
+      "capture_eye": [
+        -2.2901105880737305,
+        0.8923051357269287,
+        -1.2661713361740112
+      ],
+      "target_category": "bed",
+      "target_surface_point": [
+        -1.3788100481033325,
+        0.7036166191101074,
+        -1.2661713361740112
+      ],
+      "target_surface_group": "rendered:91:9",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_003",
+      "at_waypoint": {
+        "stop": 8,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_003",
+      "at_waypoint": {
+        "stop": 9,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0084",
+      "position": [
+        -1.3788100481033325,
+        0.7423051318526268,
+        -1.2661713361740112
+      ],
+      "capture_eye": [
+        -2.2901105880737305,
+        0.8923051357269287,
+        -1.2661713361740112
+      ],
+      "target_category": "bed",
+      "target_surface_point": [
+        -1.3788100481033325,
+        0.7036166191101074,
+        -1.2661713361740112
+      ],
+      "target_surface_group": "rendered:91:9",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_004",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 11,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0131",
+      "position": [
+        0.4348510205745697,
+        1.0104822835326195,
+        -4.238424301147461
+      ],
+      "capture_eye": [
+        -0.36514899134635925,
+        1.1604822874069214,
+        -4.238424301147461
+      ],
+      "target_category": "bathroom counter",
+      "target_surface_point": [
+        0.4348510205745697,
+        0.9717937707901001,
+        -4.238424301147461
+      ],
+      "target_surface_group": "rendered:42:12",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_004",
+      "at_waypoint": {
+        "stop": 12,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_004",
+      "at_waypoint": {
+        "stop": 13,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0126",
+      "position": [
+        0.5459778904914856,
+        1.1305288991332054,
+        -2.412442207336426
+      ],
+      "capture_eye": [
+        -0.25402212142944336,
+        1.2805289030075073,
+        -2.412442207336426
+      ],
+      "target_category": "cabinet",
+      "target_surface_point": [
+        0.5459778904914856,
+        1.091840386390686,
+        -2.412442207336426
+      ],
+      "target_surface_group": "rendered:71:14",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_005",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 14,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0004",
+      "position": [
+        -8.708151817321777,
+        0.6247682890295982,
+        -5.824721813201904
+      ],
+      "capture_eye": [
+        -7.908151626586914,
+        0.7747682929039001,
+        -5.824721813201904
+      ],
+      "target_category": "bed",
+      "target_surface_point": [
+        -8.708151817321777,
+        0.5860797762870789,
+        -5.824721813201904
+      ],
+      "target_surface_group": "rendered:173:7",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_005",
+      "at_waypoint": {
+        "stop": 16,
+        "lap": 0
+      }
+    }
+  ],
+  "object_scale": 1.0,
+  "description": "One action at every scan stop: medium object spawn, relocate, remove and persistence lifecycles",
+  "scene": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00873-bxsVRursffK/bxsVRursffK.basis.glb",
+  "floor_height": 0.02,
+  "plan_scope": "per-floor script; multi-floor orchestration awaits certification",
+  "source_compiler": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/scene_script.py",
+    "sha256": "84e798753ff54c9e88081ef654fcf6b426f3018dd8aecb4d7513834a3a197888"
+  },
+  "trigger_parser": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/src/perception_module/script_runner.py",
+    "sha256": "9fbd94a4957e04d67eef2ad9e0998378260212014ee6a7ea33c682ecc327426c"
+  }
+}

@@ -1,0 +1,442 @@
+{
+  "steps": [
+    {
+      "action": "spawn",
+      "target_point": "surface_0154",
+      "position": [
+        -1.1407279968261719,
+        1.0040572008490563,
+        2.5834860801696777
+      ],
+      "capture_eye": [
+        -0.18894195556640625,
+        1.1540571451187134,
+        2.5834860801696777
+      ],
+      "target_category": "cabinet",
+      "target_surface_point": [
+        -1.1407279968261719,
+        0.9653686881065369,
+        2.5834860801696777
+      ],
+      "target_surface_group": "rendered:119:12",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_001",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 0,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0009",
+      "position": [
+        -5.176375389099121,
+        0.5288385471701622,
+        -0.9718253016471863
+      ],
+      "capture_eye": [
+        -4.376375198364258,
+        0.6788385510444641,
+        -0.9501072764396667
+      ],
+      "target_category": "seat",
+      "target_surface_point": [
+        -5.176375389099121,
+        0.4901500344276428,
+        -0.9718253016471863
+      ],
+      "target_surface_group": "rendered:62:6",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 2,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 4,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0009",
+      "position": [
+        -5.176375389099121,
+        0.5288385471701622,
+        -0.9718253016471863
+      ],
+      "capture_eye": [
+        -4.376375198364258,
+        0.6788385510444641,
+        -0.9501072764396667
+      ],
+      "target_category": "seat",
+      "target_surface_point": [
+        -5.176375389099121,
+        0.4901500344276428,
+        -0.9718253016471863
+      ],
+      "target_surface_group": "rendered:62:6",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_002",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 5,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0014",
+      "position": [
+        0.3701941967010498,
+        0.9491355738043785,
+        0.7461487650871277
+      ],
+      "capture_eye": [
+        1.2041311264038086,
+        1.0991356372833252,
+        0.732573926448822
+      ],
+      "target_category": "bathroom cabinet",
+      "target_surface_point": [
+        0.3701941967010498,
+        0.9104470610618591,
+        0.7461487650871277
+      ],
+      "target_surface_group": "rendered:32:12",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_002",
+      "at_waypoint": {
+        "stop": 7,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_002",
+      "at_waypoint": {
+        "stop": 8,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0006",
+      "position": [
+        -7.1254448890686035,
+        0.8132539710402489,
+        0.19416555762290955
+      ],
+      "capture_eye": [
+        -6.32544469833374,
+        0.9632539749145508,
+        0.19416555762290955
+      ],
+      "target_category": "cabinet",
+      "target_surface_point": [
+        -7.1254448890686035,
+        0.7745654582977295,
+        0.19416555762290955
+      ],
+      "target_surface_group": "rendered:67:10",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_003",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 10,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0000",
+      "position": [
+        -3.6514716148376465,
+        0.9872517904639244,
+        2.4613523483276367
+      ],
+      "capture_eye": [
+        -4.45147180557251,
+        1.137251853942871,
+        2.4613523483276367
+      ],
+      "target_category": "cabinet",
+      "target_surface_point": [
+        -3.6514716148376465,
+        0.948563277721405,
+        2.4613523483276367
+      ],
+      "target_surface_group": "rendered:83:12",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_003",
+      "at_waypoint": {
+        "stop": 11,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_003",
+      "at_waypoint": {
+        "stop": 12,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0012",
+      "position": [
+        -7.12169885635376,
+        0.804110082089901,
+        3.641347646713257
+      ],
+      "capture_eye": [
+        -6.3216986656188965,
+        0.9541100859642029,
+        3.641347646713257
+      ],
+      "target_category": "cabinet",
+      "target_surface_point": [
+        -7.12169885635376,
+        0.7654215693473816,
+        3.641347646713257
+      ],
+      "target_surface_group": "rendered:69:10",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_004",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 14,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0104",
+      "position": [
+        -0.13881650567054749,
+        0.6881422719359398,
+        9.380927085876465
+      ],
+      "capture_eye": [
+        0.861058235168457,
+        0.8381422758102417,
+        9.380927085876465
+      ],
+      "target_category": "bed",
+      "target_surface_point": [
+        -0.13881650567054749,
+        0.6494537591934204,
+        9.380927085876465
+      ],
+      "target_surface_group": "rendered:194:8",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_004",
+      "at_waypoint": {
+        "stop": 16,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_004",
+      "at_waypoint": {
+        "stop": 18,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0113",
+      "position": [
+        -0.1326489895582199,
+        0.6845354160666466,
+        8.920368194580078
+      ],
+      "capture_eye": [
+        0.861058235168457,
+        0.8345354199409485,
+        8.949892044067383
+      ],
+      "target_category": "bed",
+      "target_surface_point": [
+        -0.1326489895582199,
+        0.6458469033241272,
+        8.920368194580078
+      ],
+      "target_surface_group": "rendered:194:8",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_005",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 19,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0028",
+      "position": [
+        -4.7141008377075195,
+        0.8696487268805504,
+        9.555046081542969
+      ],
+      "capture_eye": [
+        -5.514101028442383,
+        1.019648790359497,
+        9.555046081542969
+      ],
+      "target_category": "desk",
+      "target_surface_point": [
+        -4.7141008377075195,
+        0.830960214138031,
+        9.555046081542969
+      ],
+      "target_surface_group": "rendered:258:10",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_005",
+      "at_waypoint": {
+        "stop": 20,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_005",
+      "at_waypoint": {
+        "stop": 22,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0065",
+      "position": [
+        -3.062354803085327,
+        0.8609683236479759,
+        7.5878143310546875
+      ],
+      "capture_eye": [
+        -3.8623547554016113,
+        1.0109683275222778,
+        7.5878143310546875
+      ],
+      "target_category": "sink cabinet",
+      "target_surface_point": [
+        -3.062354803085327,
+        0.8222798109054565,
+        7.5878143310546875
+      ],
+      "target_surface_group": "rendered:223:10",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_006",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 23,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0175",
+      "position": [
+        0.9520588517189026,
+        0.9558735212683678,
+        6.003330230712891
+      ],
+      "capture_eye": [
+        1.7520588636398315,
+        1.1058735847473145,
+        6.349892616271973
+      ],
+      "target_category": "washing machine",
+      "target_surface_point": [
+        0.9520588517189026,
+        0.9171850085258484,
+        6.003330230712891
+      ],
+      "target_surface_group": "rendered:169:12",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_006",
+      "at_waypoint": {
+        "stop": 26,
+        "lap": 0
+      }
+    }
+  ],
+  "object_scale": 1.0,
+  "description": "One action at every scan stop: medium object spawn, relocate, remove and persistence lifecycles",
+  "scene": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00810-CrMo8WxCyVb/CrMo8WxCyVb.basis.glb",
+  "floor_height": 0.1,
+  "plan_scope": "per-floor script; multi-floor orchestration awaits certification",
+  "source_compiler": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/scene_script.py",
+    "sha256": "84e798753ff54c9e88081ef654fcf6b426f3018dd8aecb4d7513834a3a197888"
+  },
+  "trigger_parser": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/src/perception_module/script_runner.py",
+    "sha256": "9fbd94a4957e04d67eef2ad9e0998378260212014ee6a7ea33c682ecc327426c"
+  }
+}
