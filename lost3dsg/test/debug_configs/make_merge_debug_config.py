@@ -28,7 +28,20 @@ OVERRIDES = {
     "perception_parallel": {"enabled": True, "bbox_backend": "cuda", "bbox_cuda_devices": [0]},
     "archive": {"per_detection": False},
     "hooks": {"filter": ""},
-    "vlm": {"timeout": 60.0, "crop_concurrency": 4, "crop_timeout": 15.0, "grid_cells": 0},
+    # qwen3.8-27b on Regolo, SERVED THE WAY THE DGX LANE SERVES IT (their message 00002, owner
+    # ruled). MEASURED on this workstation over four runs: the VLM round trip is a median 17-23 s
+    # and reaches 31 s, against 5.9 s for gemma4-31b in the GA-493 reference. 60 s left no margin
+    # above the measured maximum; the DGX raised it to 120 s.
+    "vlm": {"timeout": 120.0, "crop_concurrency": 4, "crop_timeout": 15.0, "grid_cells": 0},
+    # WITHOUT THESE THE RUN DIES AT HALF A TOUR. object_manager_6's producer-silence watchdog
+    # calls a live producer dead after input_silence_max_strikes consecutive silent checks of
+    # input_silence_timeout_s each. The defaults are 60 s x 3 = 180 s, and a qwen cycle takes
+    # 19 s median with a 31 s tail, so a slow stretch reads as a dead producer and the node
+    # calls os._exit(1). The DGX lane hit exactly this at scan 31 of 60 and raised the three
+    # keys to 180.0 / 3 / 6 (their message 00002, item 5). Made EXPLICIT here, not left to the
+    # module default, so the bundle records what was in force.
+    "association": {"input_silence_timeout_s": 180.0, "input_silence_max_strikes": 3,
+                    "input_silence_min_stops": 6},
 }
 
 
@@ -62,7 +75,11 @@ def main():
     over = copy.deepcopy(OVERRIDES)
     over["run"]["cap_min"] = a.cap_min
     if a.engine:
-        over["association"] = {"merge_engine": a.engine}
+        # UPDATE, never assign. Assigning replaced the whole `association` override block and
+        # silently dropped the input_silence keys above -- which are the ones that keep the run
+        # alive. A generator that loses a key it was given is the same defect class as a config
+        # snapshot that goes stale.
+        over.setdefault("association", {})["merge_engine"] = a.engine
     cfg = merge(base, over)
     engine = cfg["association"]["merge_engine"]
     out = os.path.join(HERE, f"merge_debug_00824_{engine}.yaml")
