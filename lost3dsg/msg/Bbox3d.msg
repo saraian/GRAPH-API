@@ -37,10 +37,9 @@ bool has_bbox_2d
 float32[4] bbox_2d
 
 # GA-190. The crop's APPEARANCE EMBEDDING for this detection, from the detector backend.
-# It is already computed on a model the backend has loaded anyway (OWLv2 is CLIP-based, so
-# there is no extra model load) and was written to a sidecar that nothing read -- the
-# module's own note says the field "reaches only detection_types.py, client.py and
-# perception_2.py, which stores it and dumps output/clip_embeddings.json".
+# It is computed by the backend (or by the local CLIP appearance encoder on the
+# unified-VLM path) and is carried with the detection so it cannot be confused
+# with a label-keyed sidecar or with the text/description embedding.
 #
 # The association layer's appearance channel needs exactly this, per VIEW, and had been
 # falling back to a shape descriptor derived from the very box the objects already agree

@@ -39,7 +39,10 @@ def profile_requirements(object_count, scenario):
     """Return hard action constraints for the first, prompt-writing LLM call."""
     waypoint_rule = (
         " Synchronize every spawn, move, and remove with an at_waypoint object "
-        "containing a valid schedule stop (and lap when needed); do not use timed waits."
+        "containing a valid schedule stop (and lap when needed); actions happen "
+        "after that waypoint scan while the robot is leaving. For every spawn "
+        "and move, choose a destination near a later waypoint so the object is "
+        "already present when the robot reaches it; do not use timed waits."
     )
     if scenario == "relocate_remove":
         remove_count = max(1, object_count // 3)

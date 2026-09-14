@@ -125,3 +125,9 @@ class Detection:
     is_confirmed: bool = field(default=True)
     clip_embedding: Optional[List[float]] = field(default=None)
     observation: Optional[ObservationRefData] = field(default=None)
+    # The runtime CLIP sidecar's key, written by perception_2 as "<frame_id>:<index>".
+    # It is NOT the association identity: owner ruling 2026-09-14 made ObservationRef
+    # above the single identity that keys latest_bboxes and joins a box to its
+    # description. Declared here because the sidecar and the archive both read it, and
+    # an attribute that is assigned and read should not be undeclared.
+    detection_id: Optional[str] = field(default=None)

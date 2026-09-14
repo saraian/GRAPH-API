@@ -1271,16 +1271,19 @@ def test_found_exercised_auto_follows_the_configured_hook():
             sys.modules["config"] = saved
 
 
-def test_a4_asserts_every_hub_model_a_run_loads():
+def test_a4_asserts_only_active_hub_models():
     """GA-438. The cache check sat inside `backend == "local"`, so a cloud run asserted nothing.
 
-    MiniLM and both dinov2 sizes load on EVERY run whatever the backend -- nlp_utils for semantic
-    matching, visual_reid for the crop embedder, which picks -base over -small on measured VRAM, so
-    both must be present or the run downloads whichever it chooses.
+    MiniLM is the active semantic model. The local unified-VLM path also loads CLIP for the
+    per-detection appearance vector; the disabled visual-reid code does not add a model.
     """
     import os
     import tempfile
-    from preflight_gate import HF_MODELS_EVERY_RUN, _hf_models_present
+    from preflight_gate import (
+        HF_MODELS_EVERY_RUN,
+        HF_MODELS_LOCAL_BACKEND,
+        _hf_models_present,
+    )
 
     saved = {k: os.environ.get(k) for k in ("PREFLIGHT_HF_CACHE", "HF_HOME", "TRANSFORMERS_CACHE")}
     try:
@@ -1293,24 +1296,40 @@ def test_a4_asserts_every_hub_model_a_run_loads():
             check(len(missing) == len(HF_MODELS_EVERY_RUN) and not seen,
                   f"an empty cache must report every always-loaded model missing: {missing}")
 
+            _, local_missing, local_seen = _hf_models_present(local_backend=True)
+            check(len(local_missing) == len(HF_MODELS_EVERY_RUN) + len(HF_MODELS_LOCAL_BACKEND)
+                  and not local_seen,
+                  f"an empty local cache must include runtime appearance models: {local_missing}")
+
             # A DIRECTORY IS NOT A CACHED MODEL: huggingface creates it before the fetch finishes,
             # and an interrupted download leaves snapshots/ empty. That must still read as missing.
-            stem = os.path.join(td, "hub", "models--facebook--dinov2-small")
+            stem = os.path.join(td, "hub", "models--sentence-transformers--all-MiniLM-L6-v2")
             os.makedirs(os.path.join(stem, "snapshots", "abc123"))
             _, missing, seen = _hf_models_present(local_backend=False)
-            check("facebook/dinov2-small" in missing,
+            check("sentence-transformers/all-MiniLM-L6-v2" in missing,
                   "an empty snapshots/ directory must NOT count as cached")
 
             open(os.path.join(stem, "snapshots", "abc123", "config.json"), "w").write("{}")
             _, missing, seen = _hf_models_present(local_backend=False)
-            check("facebook/dinov2-small" in seen and "facebook/dinov2-small" not in missing,
+            check("sentence-transformers/all-MiniLM-L6-v2" in seen and "sentence-transformers/all-MiniLM-L6-v2" not in missing,
                   f"a snapshot holding a file must count as cached: {missing}")
 
-            # the local backend asks for one more model than a cloud backend
+            # The local unified-VLM backend has an additional runtime appearance model, but it
+            # must not be required when the configured appearance channel is explicitly disabled.
             _, m_cloud, _ = _hf_models_present(local_backend=False)
             _, m_local, _ = _hf_models_present(local_backend=True)
-            check(len(m_local) == len(m_cloud) + 1,
-                  f"the local backend must also assert the detector: {m_local} vs {m_cloud}")
+            check("openai/clip-vit-base-patch32" in m_local and m_cloud == [],
+                  f"the local backend must require its CLIP appearance model: {m_local} vs {m_cloud}")
+
+            clip_stem = os.path.join(td, "hub", "models--openai--clip-vit-base-patch32")
+            os.makedirs(os.path.join(clip_stem, "snapshots", "clip123"))
+            open(os.path.join(clip_stem, "snapshots", "clip123", "config.json"), "w").write("{}")
+            _, m_local, _ = _hf_models_present(local_backend=True)
+            check(m_local == [], f"MiniLM and CLIP snapshots must satisfy a local run: {m_local}")
+
+            _, m_disabled, _ = _hf_models_present(local_backend=True, local_models=())
+            check(m_disabled == [],
+                  f"an explicit appearance disablement must not require the CLIP cache: {m_disabled}")
     finally:
         for k, v in saved.items():
             if v is None:

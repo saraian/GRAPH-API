@@ -1,0 +1,26 @@
+{
+  "_meta": {
+    "scene": "hm3d_00337",
+    "pose_source": "simulator",
+    "building_frame": "Habitat scene coordinates after habitat_pose_to_ros axis conversion",
+    "claim": "Declared simulator-frame alignment for a teleport session-switch experiment; not evidence of RTAB-Map pose localization"
+  },
+  "floor_-2.60": [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "floor_+0.00": [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "floor_+3.00": [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0]
+  ]
+}

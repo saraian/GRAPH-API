@@ -21,6 +21,7 @@ from bbox_fusion import (
 )
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
+from box_view import box_corners_map, enclosing_box_from_points
 from cv_utils import publish_persistent_centroids, publish_pov_volume
 from detection_index import DetectionIndex
 from detection_types import observation_dict_from_msg
@@ -82,6 +83,19 @@ UNCERTAIN_MOVE_DISTANCE_M = CFG["association"].get("uncertain_move_distance_m", 
 # sim_threshold 0.85 that is 0.925. It is a knob, and it is the one to turn if the merge
 # rate is still high.
 MERGE_MAX_DISTANCE = CFG["association"].get("merge_max_distance_m", 0.8)
+# A very close, substantially overlapping re-detection of the same base label is stronger
+# identity evidence than a fluctuating VLM description. This is a separate geometry-
+# dominant lane rather than a lower global similarity threshold: distant or merely nearby
+# objects still have to satisfy the ordinary semantic gate.
+MERGE_NEAR_DISTANCE = float(CFG["association"].get("merge_near_distance_m", 0.02))
+MERGE_NEAR_IOU_THRESHOLD = float(CFG["association"].get(
+    "merge_near_iou_threshold", 0.25))
+if MERGE_NEAR_DISTANCE < 0.0:
+    raise ValueError(
+        f"association.merge_near_distance_m ({MERGE_NEAR_DISTANCE}) must be >= 0")
+if not 0.0 <= MERGE_NEAR_IOU_THRESHOLD <= 1.0:
+    raise ValueError(
+        f"association.merge_near_iou_threshold ({MERGE_NEAR_IOU_THRESHOLD}) must be in [0, 1]")
 # AABB broad-phase radius for the legacy merge criterion.  It is deliberately at least the
 # criterion's centre-distance threshold: a smaller margin could hide a valid merge before the
 # exact distance/similarity checks get to evaluate it.  This is a candidate-generation value,
@@ -107,6 +121,33 @@ if MERGE_MIN_SIMILARITY <= SIM_THRESHOLD:
         f"association.merge_min_similarity ({MERGE_MIN_SIMILARITY}) must be STRICTLY greater "
         f"than association.sim_threshold ({SIM_THRESHOLD}): merging two objects destroys an "
         f"identity and must demand more evidence than matching them, never less")
+
+
+def _merge_base_label(label):
+    """Return the identity label used by the geometry-dominant merge lane."""
+    return str(label or "").split("#", 1)[0].strip().casefold()
+
+
+def _near_geometry_duplicate(a, b, distance):
+    """Whether a close same-label pair has enough 3D overlap to bypass VLM similarity.
+
+    The distance check alone is intentionally insufficient: two small, adjacent objects can
+    have nearby centres without being the same object. Requiring AABB overlap keeps this
+    exception tied to the same measured volume rather than turning it into a broad distance
+    relaxation. Invalid geometry follows the normal gate.
+    """
+    if distance > MERGE_NEAR_DISTANCE:
+        return False, None
+    if _merge_base_label(getattr(a, "label", None)) != _merge_base_label(
+            getattr(b, "label", None)):
+        return False, None
+    try:
+        iou = float(compute_iou_3d(a.bbox, b.bbox))
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return False, None
+    if not math.isfinite(iou):
+        return False, iou
+    return iou >= MERGE_NEAR_IOU_THRESHOLD, iou
 
 # GA-186. Which association engine decides a merge.
 #
@@ -190,7 +231,135 @@ def _is_oriented(bbox):
     return bool(bbox) and "yaw" in bbox and bool(bbox.get("oriented_extents"))
 
 
-def fuse_orientation(obj, bbox):
+def _bbox_points(bbox):
+    """Return a bounded point representation that preserves the whole stored box.
+
+    An oriented box is not guaranteed to contain every corner of the separate AABB when the
+    two were produced by different stages or by an older build, so where the AABB carries
+    extent the OBB does not, BOTH corner sets are kept and the next exact enclosure is a
+    superset of both representations instead of letting the OBB path shrink the merge geometry.
+
+    A REDUNDANT AABB IS DROPPED, and that is not a refinement -- it is the difference between
+    fusion keeping the yaw and losing it. For a correctly produced box the AABB simply IS the
+    axis-aligned bound of the OBB, so its eight corners add no extent and instead surround the
+    OBB with an axis-aligned copy of itself. The union footprint is then close to square,
+    ``pca_oriented_box`` refuses it for want of anisotropy, and ``fuse_orientation`` returns a
+    box with no ``yaw`` at all. MEASURED on a 2.0 x 1.0 box: the oriented corners alone give an
+    anisotropy of 2.00 and the PCA accepts at every yaw; unioned with a derived AABB the PCA
+    REFUSES across roughly 30 to 60 degrees, so every object whose axis falls in that band
+    silently loses its orientation on the next fused view.
+    """
+    b = bbox or {}
+    points = []
+    corners, oriented = box_corners_map(b)
+    has_aabb = all(k in b for k in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max"))
+    aabb_corners = [[x, y, z]
+                    for x in (b["x_min"], b["x_max"])
+                    for y in (b["y_min"], b["y_max"])
+                    for z in (b["z_min"], b["z_max"])] if has_aabb else []
+    if corners:
+        points.extend(np.asarray(corners, dtype=np.float64))
+    if aabb_corners and not (oriented and _aabb_is_the_bound_of(aabb_corners, corners)):
+        points.extend(np.asarray(aabb_corners, dtype=np.float64))
+    if not points:
+        return np.empty((0, 3), dtype=np.float64)
+    return np.asarray(points, dtype=np.float64)
+
+
+def _aabb_is_the_bound_of(aabb_corners, obb_corners, tol=1e-6):
+    """Is this AABB just the axis-aligned bound of those oriented corners?
+
+    If so it is derivable and carries no extent of its own. If it reaches outside that bound
+    even on one axis it holds real geometry -- the case ``_bbox_points`` keeps both sets for.
+    """
+    a = np.asarray(aabb_corners, dtype=np.float64)
+    o = np.asarray(obb_corners, dtype=np.float64)
+    if a.size == 0 or o.size == 0:
+        return False
+    return bool(np.allclose(a.min(axis=0), o.min(axis=0), atol=tol)
+                and np.allclose(a.max(axis=0), o.max(axis=0), atol=tol))
+
+
+def _object_geometry_points(obj):
+    """Return bounded-size geometry retained for a persistent object.
+
+    New accumulators keep the corners of the current enclosing box, which represents all prior
+    points without growing with every frame. Older accumulators did not have ``points``; their
+    persisted box is the only geometry available after an upgrade.
+    """
+    acc = getattr(obj, "_yaw_acc", None) if obj is not None else None
+    if isinstance(acc, dict) and acc.get("points"):
+        try:
+            points = np.asarray(acc["points"], dtype=np.float64)
+            if points.ndim == 2 and points.shape[1] == 3 and len(points):
+                return points
+        except (TypeError, ValueError):
+            pass
+    return _bbox_points(getattr(obj, "bbox", None) if obj is not None else None)
+
+
+def _geometry_accumulator(box, oriented_views=0, axial=None, view=None):
+    """Build a bounded accumulator for one already coherent box.
+
+    `axial` is the running (cos 2yaw, sin 2yaw) SUM over the accepted views and `view` the
+    representative. Both are carried in, never re-derived: an accumulator that recomputes them
+    from the box it is describing reports the current yaw wearing the name of an average.
+    """
+    points = _bbox_points(box)
+    oriented = _is_oriented(box)
+    yaw = float(box.get("yaw", 0.0)) if oriented else 0.0
+    if view is None:
+        view = ({"yaw": yaw,
+                 "oriented_center": list(box["oriented_center"]),
+                 "oriented_extents": list(box["oriented_extents"])}
+                if oriented else None)
+    if axial is None:
+        axial = (oriented_views * math.cos(2.0 * yaw), oriented_views * math.sin(2.0 * yaw))
+    return {
+        # c/s are the AXIAL SUM over the accepted views, so 0.5*atan2(s, c) is the axial mean
+        # (GA-315 part 2). A box axis has period pi, which is why the doubled angle is summed
+        # rather than the yaw: a scalar mean of views either side of +-90 degrees lands on the
+        # wrong axis entirely.
+        "n": int(oriented_views),
+        "c": float(axial[0]),
+        "s": float(axial[1]),
+        "view": view,
+        "points": points.tolist(),
+    }
+
+
+def _enclose_geometry(points, include_orientation):
+    """Fit one exact AABB and, when stable, one exact PCA OBB to a point/corner union."""
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or not len(points):
+        return None
+    return enclosing_box_from_points(points, include_orientation=include_orientation)
+
+
+def _combine_object_geometry(a, b):
+    """Return a box and accumulator that enclose both object geometries."""
+    pa = _object_geometry_points(a)
+    pb = _object_geometry_points(b)
+    points = (np.concatenate((pa, pb), axis=0) if len(pa) and len(pb)
+              else (pa if len(pa) else pb))
+    include_orientation = (_is_oriented(getattr(a, "bbox", None))
+                           or _is_oriented(getattr(b, "bbox", None))
+                           or int((getattr(a, "_yaw_acc", None) or {}).get("n", 0)) > 0
+                           or int((getattr(b, "_yaw_acc", None) or {}).get("n", 0)) > 0)
+    merged = _enclose_geometry(points, include_orientation=include_orientation)
+    if merged is None:
+        # Malformed geometry must not turn a valid identity merge into a service failure.
+        merged = dict(getattr(a, "bbox", None) or getattr(b, "bbox", None) or {})
+
+    def count(obj):
+        acc = getattr(obj, "_yaw_acc", None)
+        old = int(acc.get("n", 0)) if isinstance(acc, dict) else 0
+        return old if old else int(_is_oriented(getattr(obj, "bbox", None)))
+
+    return merged, _geometry_accumulator(merged, count(a) + count(b))
+
+
+def _legacy_fuse_orientation(obj, bbox):
     """GA-315 part 2. -> (the box to store, the accumulator to store beside it as `_yaw_acc`).
 
     Replaces last-write-wins on the yaw. Measured over 20260903_230232: of 40 objects with an
@@ -277,6 +446,122 @@ def _acc_add(acc, bbox):
                 "oriented_extents": [float(v) for v in bbox["oriented_extents"]]}
     return {"n": acc["n"] + 1, "c": acc["c"] + math.cos(th), "s": acc["s"] + math.sin(th),
             "view": view}
+
+
+def _rotate_z(points, angle):
+    """Rotate (N,3) points about the world z axis. Positive angle is world -> frame-of-yaw."""
+    c, s = math.cos(angle), math.sin(angle)
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    out = np.empty_like(pts)
+    out[:, 0] = c * pts[:, 0] - s * pts[:, 1]
+    out[:, 1] = s * pts[:, 0] + c * pts[:, 1]
+    out[:, 2] = pts[:, 2]
+    return out
+
+
+def _merge_in_object_frame(points, yaw):
+    """Union geometry IN THE OBJECT'S OWN FRAME, then rotate the result back to the world.
+
+    Owner design, 2026-09-14: keep both the rotated and the unrotated representation, merge the
+    unrotated one, and re-rotate afterwards.
+
+    WHY IT MATTERS, and it is not only about the yaw. A world-axis-aligned box around a ROTATED
+    object is larger than the object -- that is what an AABB of an oriented box is. Unioning those
+    world AABBs across views compounds the excess every time, so the stored box grows with the
+    number of observations rather than converging on the object. Rotating into the object frame
+    first makes the union exact: the merged extents are the true extents along the object's own
+    axes, and re-rotating restores the oriented box with no inflation.
+
+    It also removes the PCA from this path entirely. `pca_oriented_box` declines a fit whose
+    footprint is close to square, which is exactly what a multi-view union looks like, and a
+    declined fit silently dropped the orientation. Here the axis is the axial mean that is already
+    being accumulated, so no fit can decline and no orientation can be lost.
+    """
+    local = _rotate_z(points, -yaw)
+    lo, hi = local.min(axis=0), local.max(axis=0)
+    centre_local = (lo + hi) / 2.0
+    extents = hi - lo
+    centre_world = _rotate_z(centre_local.reshape(1, 3), yaw)[0]
+    # The world AABB is the bound of the re-rotated corners, so the two representations stay
+    # consistent with each other rather than being measured independently.
+    corners_local = np.array([[x, y, z] for x in (lo[0], hi[0])
+                              for y in (lo[1], hi[1]) for z in (lo[2], hi[2])], dtype=np.float64)
+    corners_world = _rotate_z(corners_local, yaw)
+    w_lo, w_hi = corners_world.min(axis=0), corners_world.max(axis=0)
+    return {
+        "x_min": float(w_lo[0]), "x_max": float(w_hi[0]),
+        "y_min": float(w_lo[1]), "y_max": float(w_hi[1]),
+        "z_min": float(w_lo[2]), "z_max": float(w_hi[2]),
+        "yaw": float(yaw),
+        "oriented_center": [float(v) for v in centre_world],
+        "oriented_extents": [float(v) for v in extents],
+    }
+
+
+def fuse_orientation(obj, bbox):
+    """Return one coherent enclosing box for the object's retained observations.
+
+    The former implementation averaged yaw independently from the dimensions of one
+    representative view. That produced a box whose extents were measured in one orientation
+    but rendered at another. We now union the previous and incoming box corners, fit PCA once to
+    that union, and use exact projections. The accumulator retains only the current eight
+    corners, so its memory use is bounded.
+    """
+    acc = getattr(obj, "_yaw_acc", None) if obj is not None else None
+    previous = getattr(obj, "bbox", None) if obj is not None else None
+    prior_points = _object_geometry_points(obj) if obj is not None else np.empty((0, 3))
+    incoming_points = _bbox_points(bbox)
+    points = (np.concatenate((prior_points, incoming_points), axis=0)
+              if len(prior_points) and len(incoming_points)
+              else (prior_points if len(prior_points) else incoming_points))
+    old_n = int(acc.get("n", 0)) if isinstance(acc, dict) else int(_is_oriented(previous))
+    n = old_n + int(_is_oriented(bbox))
+
+    # The axial sum over every accepted view, carried forward rather than re-derived.
+    if isinstance(acc, dict) and ("c" in acc or "s" in acc):
+        axial = [float(acc.get("c", 0.0)), float(acc.get("s", 0.0))]
+        rep = acc.get("view")
+    elif _is_oriented(previous):
+        py = float(previous["yaw"])
+        axial = [math.cos(2.0 * py), math.sin(2.0 * py)]
+        rep = {"yaw": py,
+               "oriented_center": list(previous["oriented_center"]),
+               "oriented_extents": list(previous["oriented_extents"])}
+    else:
+        axial, rep = [0.0, 0.0], None
+    if _is_oriented(bbox):
+        by = float(bbox["yaw"])
+        axial = [axial[0] + math.cos(2.0 * by), axial[1] + math.sin(2.0 * by)]
+    fused_yaw = 0.5 * math.atan2(axial[1], axial[0]) if n else None
+    # The representative is a REAL measured view, replaced when an arriving one sits nearer the
+    # fused axis (GA-20: the stored extents are always some view's, never synthesised).
+    if _is_oriented(bbox) and fused_yaw is not None and (
+            rep is None or _axial_delta(float(bbox["yaw"]), fused_yaw)
+            <= _axial_delta(float(rep["yaw"]), fused_yaw)):
+        rep = {"yaw": float(bbox["yaw"]),
+               "oriented_center": [float(v) for v in bbox["oriented_center"]],
+               "oriented_extents": [float(v) for v in bbox["oriented_extents"]]}
+
+    # Merge unrotated, then re-rotate. An oriented input can no longer produce an unoriented
+    # output: the axis is the axial mean above, not a fit that may decline.
+    if len(points) == 0:
+        out = dict(bbox or previous or {})
+    elif fused_yaw is not None:
+        out = _merge_in_object_frame(points, fused_yaw)
+    else:
+        out = _enclose_geometry(points, include_orientation=False) or dict(bbox or previous or {})
+
+    new_acc = _geometry_accumulator(out, n, axial=axial, view=rep)
+    if _is_oriented(out):
+        # yaw_view names the REPRESENTATIVE view's own yaw. When the PCA fit succeeded the two
+        # agree; when it declined and the axial mean answered, they differ, and that difference
+        # is exactly the thing a reader needs to see rather than have hidden.
+        out["yaw_view"] = float(rep["yaw"]) if rep is not None else float(out["yaw"])
+        out["yaw_views"] = n
+        out["has_orientation"] = True
+    else:
+        out["has_orientation"] = False
+    return out, new_acc
 
 
 # GA-314. Credibility order of the admission grades for the merge survivor rule. An ungraded
@@ -377,6 +662,24 @@ def normalise_embedding(raw):
     if arr.size == 0:
         return None
     return arr
+
+
+def normalise_clip_embedding(raw):
+    """-> a finite runtime CLIP image vector as a list, or ``None``.
+
+    Runtime appearance vectors cross two typed boundaries (HTTP JSON and a ROS
+    ``float32[]``).  Keep their validation separate from the 300-D text embedding:
+    the two spaces have different dimensions and different consumers.
+    """
+    if raw is None:
+        return None
+    try:
+        arr = np.asarray(raw, dtype=np.float32).flatten()
+    except (TypeError, ValueError):
+        return None
+    if arr.size == 0 or not np.all(np.isfinite(arr)):
+        return None
+    return [float(value) for value in arr]
 
 
 def inside_area(o, bounds):
@@ -523,9 +826,10 @@ def save_persistent_perceptions(node):
         obj_id = obj.object_id
         current_ids.add(obj_id)
 
-        # Keep the HOV-SG appearance vector with the object's bbox.  The
+        # Keep the runtime CLIP appearance vector with the object's bbox.  The
         # evaluator works per instance; a label-keyed sidecar can associate
-        # the wrong vector when two objects share a label.
+        # the wrong vector when two objects share a label.  The offline HOV-SG
+        # vector is added later as `hovsg_embedding` by the evaluation tool.
         bbox = dict(obj.bbox) if isinstance(obj.bbox, dict) else obj.bbox
         fused_bbox = (
             dict(obj.fused_bbox)
@@ -533,11 +837,37 @@ def save_persistent_perceptions(node):
             else None
         )
         clip_embedding = getattr(obj, "clip_embedding", None)
-        if isinstance(bbox, dict) and clip_embedding is not None:
+        clip_values = None
+        if clip_embedding is not None:
             try:
-                bbox["clip_embedding"] = [float(value) for value in clip_embedding]
+                candidate = np.asarray(clip_embedding, dtype=np.float32).flatten()
             except (TypeError, ValueError):
-                pass
+                candidate = np.asarray([])
+            if candidate.size > 0 and np.all(np.isfinite(candidate)):
+                clip_values = [float(value) for value in candidate]
+                if isinstance(bbox, dict):
+                    bbox["clip_embedding"] = clip_values
+
+        # The graph's semantic matcher also maintains a text/description
+        # embedding on the persistent object.  It used to be kept only in
+        # memory, so the run bundle could not be replayed with the same
+        # semantic evidence.  Persist it under an explicit name: it is not
+        # the runtime image CLIP vector and it is not HOV-SG's offline vector.
+        description_embedding = getattr(obj, "embedding", None)
+        if description_embedding is not None:
+            try:
+                description_values = np.asarray(
+                    description_embedding, dtype=np.float32
+                ).flatten()
+            except (TypeError, ValueError):
+                description_values = np.asarray([])
+            if (description_values.size > 0
+                    and np.all(np.isfinite(description_values))):
+                description_embedding = [
+                    float(value) for value in description_values
+                ]
+            else:
+                description_embedding = None
 
         new_entry = {
             "object_id": obj_id,
@@ -570,6 +900,14 @@ def save_persistent_perceptions(node):
                 if getattr(obj, "last_perception_time", None) else None
             ),
         }
+        # Keep a top-level copy as well as the bbox copy.  The bbox copy is the
+        # association input used by the runtime; the top-level field makes the
+        # per-object appearance feature directly visible to offline consumers and
+        # preserves compatibility with cloud-backend archives.
+        if clip_values is not None:
+            new_entry["clip_embedding"] = clip_values
+        if description_embedding is not None:
+            new_entry["description_embedding"] = description_embedding
 
         old_entry = existing_by_id.get(obj_id)
         if old_entry != new_entry:
@@ -1554,6 +1892,9 @@ class ObjectServices(Node):
                         _refused(a, b, "already_condemned", None)
                         continue
 
+                    near_geometry_override = False
+                    near_geometry_iou = None
+
                     if a.bbox is None or b.bbox is None:
                         # THE LAST UNLOGGED EXIT IN THE SELECTION PATH, and it matters more
                         # than its two lines suggest. MEASURED in run 20260831_184822: a
@@ -1716,6 +2057,10 @@ class ObjectServices(Node):
                         continue
 
                     if MERGE_ENGINE == "legacy":
+                        near_geometry_override, near_geometry_iou = _near_geometry_duplicate(
+                            a, b, dist)
+
+                    if MERGE_ENGINE == "legacy":
                         # Embedding lazy; missing description embeddings are absent evidence,
                         # not a reason to skip the pair (lost_similarity renormalises).
                         # GUARDED: in evidence mode `sim` and `ev` are already the fused
@@ -1736,7 +2081,8 @@ class ObjectServices(Node):
                     # were correctly refused, and were then fused anyway. Overlap is locality,
                     # not similarity; the same confusion as GA-05, in the one operation that
                     # destroys an identity.
-                    if MERGE_ENGINE == "legacy" and sim < MIN_SIMILARITY:
+                    if (MERGE_ENGINE == "legacy" and sim < MIN_SIMILARITY
+                            and not near_geometry_override):
                         print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {MIN_SIMILARITY})")
                         # Unit-typed key (joint rename with the ontology lane, their
                         # inbox 00002/00004/00005): `threshold` was unit-polymorphic -- 0.925
@@ -1752,6 +2098,16 @@ class ObjectServices(Node):
                                  threshold_similarity=MIN_SIMILARITY,
                                  room_a=room_a, room_b=room_b)
                         continue
+
+                    decision_reason = (
+                        "near_geometry_label_iou"
+                        if near_geometry_override else
+                        ("similarity" if MERGE_ENGINE == "legacy" else "evidence"))
+                    if near_geometry_override:
+                        print(
+                            f"   ✅ GEOMETRY OVERRIDE: same label, centre distance {dist:.3f}m, "
+                            f"AABB IoU {near_geometry_iou:.3f}; similarity {sim:.3f} is non-authoritative"
+                        )
 
                     # GA-101: a score that passed the gate on NOTHING must not merge.
                     # With colour, material and description all absent the divisor is the
@@ -1777,20 +2133,11 @@ class ObjectServices(Node):
                     # order -- credibility first, then the rule `merge_rank` documents.
                     keeper, discard = (a, b) if merge_rank(a) <= merge_rank(b) else (b, a)
 
-                    # GA-20: the surviving box is the keeper's OWN OBSERVATION, not a
-                    # synthesised one. It used to be six independent face-wise means, so two
-                    # 0.20 m cubes 0.60 m apart merged into a 0.20 m cube in the empty air
-                    # between them -- extents that measure nothing, written into the room
-                    # boundary, the regression baseline and every published figure. Not a
-                    # union either: a union is also a box nobody observed, and D14 prefers
-                    # strict.
-                    #
-                    # It also silently dropped the oriented box. `yaw`, `oriented_center` and
-                    # `oriented_extents` live INSIDE the bbox dict as optional keys and were
-                    # simply absent from the synthesised one, so every merge reverted a
-                    # measured orientation to the axis-aligned box the design says
-                    # under-measures anything diagonal. Keeping an observed box keeps them.
-                    merged_bbox = keeper.bbox
+                    # The survivor's geometry must enclose both measurements. Keeping only the
+                    # keeper's box left a merged duplicate represented by whichever partial view
+                    # happened to win the identity tie-break. `_combine_object_geometry` fits one
+                    # coherent PCA box over the two measured boxes and keeps the AABB exact too.
+                    merged_bbox, merged_geometry_acc = _combine_object_geometry(keeper, discard)
 
                     vol_a = ((a.bbox['x_max']-a.bbox['x_min']) *
                             (a.bbox['y_max']-a.bbox['y_min']) *
@@ -1813,7 +2160,12 @@ class ObjectServices(Node):
                     to_remove.add(discard)
                     to_remove_pairs.append({
                         "keeper": keeper, "discard": discard, "bbox": merged_bbox,
+                        "geometry_acc": merged_geometry_acc,
                         "similarity": sim,
+                        "distance": dist,
+                        "decision_reason": decision_reason,
+                        "near_geometry_override": near_geometry_override,
+                        "near_geometry_iou": near_geometry_iou,
                         "keeper_room": room_a if keeper is a else room_b,
                         "discard_room": room_b if keeper is a else room_a,
                     })
@@ -1830,6 +2182,26 @@ class ObjectServices(Node):
                         "discarded_room": room_b if keeper is a else room_a,
                         "distance":    round(dist, 3),
                         "similarity":  round(sim, 3),
+                        "decision_reason": decision_reason,
+                        "near_geometry_override": near_geometry_override,
+                        "near_geometry_iou": (
+                            round(near_geometry_iou, 3)
+                            if near_geometry_iou is not None else None),
+                        # Keep the same evidence metadata on accepted merges that the
+                        # refusal path already records. A similarity of 1.0 is not enough
+                        # to calibrate this gate: it can come from a label-only/identical
+                        # attribute comparison, or from several genuinely agreeing fields.
+                        "evidence_count": ev.get("optional_count"),
+                        "engine": MERGE_ENGINE,
+                        "score_type": "log_odds" if MERGE_ENGINE == "evidence" else "similarity",
+                        "threshold_similarity": MIN_SIMILARITY if MERGE_ENGINE == "legacy" else None,
+                        "threshold_distance_m": MAX_DISTANCE if MERGE_ENGINE == "legacy" else None,
+                        "threshold_near_distance_m": (
+                            MERGE_NEAR_DISTANCE if MERGE_ENGINE == "legacy" else None),
+                        "threshold_near_iou": (
+                            MERGE_NEAR_IOU_THRESHOLD if MERGE_ENGINE == "legacy" else None),
+                        "threshold_log_odds": threshold if MERGE_ENGINE == "evidence" else None,
+                        "decision_details": rec if MERGE_ENGINE == "evidence" else None,
                         "merged_bbox": merged_bbox,
                         # GA-20: `merged_bbox` keeps its name -- it is still the box after the
                         # merge -- but it is now an observation rather than a synthesis, so
@@ -1857,7 +2229,16 @@ class ObjectServices(Node):
                         merged_from=getattr(discard, "object_id", discard.label),
                         keeper_label=keeper.label, discarded_label=discard.label,
                         keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
-                        similarity=pair["similarity"], dry_run=bool(dry_run))
+                        similarity=pair["similarity"],
+                        decision_reason=pair.get("decision_reason"),
+                        near_geometry_override=pair.get("near_geometry_override", False),
+                        near_geometry_iou=pair.get("near_geometry_iou"),
+                        distance=pair.get("distance"),
+                        threshold_near_distance_m=(
+                            MERGE_NEAR_DISTANCE if pair.get("near_geometry_override") else None),
+                        threshold_near_iou=(
+                            MERGE_NEAR_IOU_THRESHOLD if pair.get("near_geometry_override") else None),
+                        dry_run=bool(dry_run))
                 except Exception as e:
                     self.get_logger().error(f"decision_log merge failed: {e}")
 
@@ -1880,9 +2261,6 @@ class ObjectServices(Node):
                 with wm.lock:
                     for pair in to_remove_pairs:
                         keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
-                        # GA-20: `keeper.bbox = merged_bbox` stood here. The kept box IS the
-                        # keeper's own, so the write-back is a self-assignment; removed rather
-                        # than left as a line that looks like it changes something.
 
                         if keeper not in wm.persistent_perceptions:
                             stale += 1
@@ -1892,6 +2270,13 @@ class ObjectServices(Node):
                             # operation preserves distinct view IDs, so two
                             # tracks containing the same cycle do not count it twice.
                             merge_bbox_fusion(keeper, discard)
+                            # Recompute against the current keeper because several accepted
+                            # pairs in one sweep can share the same keeper. This makes a merge
+                            # chain enclose every member instead of letting the last pair shrink
+                            # the box back to its first two observations.
+                            merged_bbox, merged_geometry_acc = _combine_object_geometry(keeper, discard)
+                            keeper.bbox = merged_bbox
+                            keeper._yaw_acc = merged_geometry_acc
                             cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
                             cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
                             print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
@@ -1980,7 +2365,17 @@ class ObjectServices(Node):
             color       = request.color
             material    = request.material
 
+            raw_clip_embedding = getattr(request, "clip_embedding", None)
+            sent_clip_embedding = bool(getattr(request, "has_clip_embedding", True))
+            clip_embedding = (
+                normalise_clip_embedding(raw_clip_embedding)
+                if sent_clip_embedding else None
+            )
+            if clip_embedding is not None:
+                bbox["clip_embedding"] = clip_embedding
+
             new_obj = Object(label, _centroid_from_bbox(bbox), bbox, description, color, material)
+            new_obj.clip_embedding = clip_embedding
             # Identity remains stable when visual attributes are refined.
             new_obj.object_id = f"obj_{uuid.uuid4().hex}"
             new_obj.object_revision = 1
@@ -2209,6 +2604,27 @@ class ObjectServices(Node):
             bbox, yaw_acc = fuse_orientation(best_match, raw_bbox)
 
             description_embedding = getattr(request, "description_embedding", None)
+            raw_clip_embedding = getattr(request, "clip_embedding", None)
+            sent_clip_embedding = bool(getattr(request, "has_clip_embedding", True))
+            incoming_clip_embedding = (
+                normalise_clip_embedding(raw_clip_embedding)
+                if sent_clip_embedding else None
+            )
+            previous_clip_embedding = normalise_clip_embedding(
+                getattr(best_match, "clip_embedding", None)
+            )
+            if previous_clip_embedding is None and isinstance(best_match.bbox, dict):
+                previous_clip_embedding = normalise_clip_embedding(
+                    best_match.bbox.get("clip_embedding")
+                )
+            clip_embedding = incoming_clip_embedding or previous_clip_embedding
+            if clip_embedding is not None:
+                # fuse_orientation returns a newly constructed geometry dict and therefore
+                # intentionally drops arbitrary metadata. Put the appearance measurement
+                # back on both the fused box and the raw move box before any update branch
+                # can store either one.
+                raw_bbox["clip_embedding"] = clip_embedding
+                bbox["clip_embedding"] = clip_embedding
 
             updated_obj = best_match
             updated_obj.object_id = getattr(best_match, "object_id", None) or f"obj_{uuid.uuid4().hex}"
@@ -2221,6 +2637,8 @@ class ObjectServices(Node):
                     best_match.bbox = bbox
                     best_match._yaw_acc = yaw_acc   # GA-315 part 2
                     apply_request_fusion(best_match, request, label=best_match.label)
+                    if clip_embedding is not None:
+                        best_match.clip_embedding = clip_embedding
                     wm.refresh_spatial(best_match)
                     best_match.object_revision = int(
                         getattr(best_match, "object_revision", 0)) + 1
@@ -2456,6 +2874,8 @@ class ObjectServices(Node):
                 updated_obj.color = request.color
             if hasattr(request, "material") and request.material:
                 updated_obj.material = request.material
+            if clip_embedding is not None:
+                updated_obj.clip_embedding = clip_embedding
 
             # Several legacy update branches write ``best_match.bbox`` in place.  Keep the
             # derived AABB index synchronized before the next detection or scan-complete

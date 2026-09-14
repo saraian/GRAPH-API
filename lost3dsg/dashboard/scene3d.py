@@ -453,13 +453,25 @@ def scene_payload(bundle, gt_scene=None):
             b = o.get("bbox") or {}
             if not all(k in b for k in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")):
                 continue
-            out["objects"].append({
+            item = {
                 "label": o.get("label"),
                 "id": o.get("object_id"),
                 "room": o.get("room_id"),
                 "colour": o.get("color"),
                 "box": [b["x_min"], b["y_min"], b["z_min"], b["x_max"], b["y_max"], b["z_max"]],
-            })
+            }
+            # Keep the exact AABB for filtering and backwards compatibility, but send the
+            # coherent oriented box separately for rendering. `fuse_orientation` guarantees
+            # that these dimensions and this yaw describe the same enclosure; older records
+            # without the fields naturally remain axis-aligned.
+            if (b.get("yaw") is not None and len(b.get("oriented_center") or []) == 3
+                    and len(b.get("oriented_extents") or []) == 3):
+                item["oriented"] = {
+                    "center": [float(v) for v in b["oriented_center"]],
+                    "extents": [float(v) for v in b["oriented_extents"]],
+                    "yaw": float(b["yaw"]),
+                }
+            out["objects"].append(item)
 
     # GA-259. The run's own occupancy map, as the ground plane. The boxes floated over
     # nothing before; the map is the thing that says WHERE they are.
@@ -924,14 +936,19 @@ function hueOf(name) {
 // blends instead of the nearest one erasing the ones behind it -- which is what the old
 // painter's-algorithm sort could not do at all.
 function addBox(group, lo, hi, colour, opacity, edgeColour, edgeOpacity, userData) {
-  const sx = Math.max(1e-4, hi[0] - lo[0]);
-  const sy = Math.max(1e-4, hi[1] - lo[1]);
-  const sz = Math.max(1e-4, hi[2] - lo[2]);
+  const ob = userData && userData.oriented_box;
+  const size = ob ? ob.extents : [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+  const centre = ob ? ob.center : [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2,
+                                      (lo[2] + hi[2]) / 2];
+  const sx = Math.max(1e-4, size[0]);
+  const sy = Math.max(1e-4, size[1]);
+  const sz = Math.max(1e-4, size[2]);
   const g = new THREE.BoxGeometry(sx, sy, sz);
   const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
     color: colour, transparent: true, opacity: opacity, depthWrite: false,
     side: THREE.DoubleSide}));
-  m.position.set((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2);
+  m.position.set(centre[0], centre[1], centre[2]);
+  if (ob) m.rotation.z = ob.yaw;
   const e = new THREE.LineSegments(new THREE.EdgesGeometry(g),
     new THREE.LineBasicMaterial({color: edgeColour, transparent: true, opacity: edgeOpacity}));
   m.add(e);
@@ -959,7 +976,8 @@ function addObject(o) {
   const h = hueOf(o.label);
   const c = new THREE.Color().setHSL(h / 360, 0.80, 0.55);
   const m = addBox(G.obj, [b[0], b[1], b[2]], [b[3], b[4], b[5]], c, 0.30, c, 1.0,
-                   {o: o, hue: h, floor: o.floor, key: objKey(o)});
+                   {o: o, oriented_box: o.oriented || null,
+                    hue: h, floor: o.floor, key: objKey(o)});
   OBJMESH.push(m);
   OBJBY.set(objKey(o), m);
   return m;
@@ -2137,7 +2155,9 @@ function reconcile(q) {
     keys.add(k);
     const m = OBJBY.get(k);
     if (!m) { addObject(o); added++; continue; }
-    if (String(m.userData.o.box) !== String(o.box)) { dropObject(k); addObject(o); moved++; }
+    const oldGeometry = JSON.stringify([m.userData.o.box, m.userData.o.oriented || null]);
+    const newGeometry = JSON.stringify([o.box, o.oriented || null]);
+    if (oldGeometry !== newGeometry) { dropObject(k); addObject(o); moved++; }
     else { m.userData.o = o; m.userData.floor = o.floor; }
   }
   for (const k of [...OBJBY.keys()]) if (!keys.has(k)) { dropObject(k); gone++; }

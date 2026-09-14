@@ -132,7 +132,7 @@ To run the full pipeline, start the following two modules in separate terminals.
 
 ### Running the Perception Module
 
-The perception module performs real-time object detection and segmentation using Vision-Language Models (VLMs). It identifies objects in the camera view, generates 3D bounding boxes, extracts visual features (color, material, shape), and publishes point clouds and semantic descriptions.
+The perception module performs real-time object detection and segmentation using a Vision-Language Model (VLM). One structured VLM call identifies every object and returns its 2D bounding box, description, color, material, and shape. The boxes seed SAM segmentation, and the masks plus camera depth are projected into 3D bounding boxes and point clouds.
 
 ```bash
 # Source the workspace
@@ -156,8 +156,7 @@ ros2 run lost3dsg object_manager.py
 ## Configuration
 
 Configuration files and prompts are located in:
-- Object identification prompt: `src/perception_module/object_identification_prompt.txt`
-- Visual prompt: `src/perception_module/visual_prompt.txt`
+- Unified scene-analysis prompt: `src/perception_module/scene_analysis_prompt.txt`
 
 ## Troubleshooting
 
@@ -175,4 +174,3 @@ If you get module import errors:
 source /opt/ros/humble/setup.bash
 source ~/ros2_ws/install/setup.bash
 ```
-

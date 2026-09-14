@@ -23,6 +23,13 @@ class Object:
         self.color= color
         self.material=material
         self.shape=shape
+        # Keep the two vector channels explicit on every object.  The text vector is
+        # used by the semantic matcher; the image vector is the runtime CLIP appearance
+        # feature.  They have different models, dimensions and consumers, so neither
+        # should appear only as an incidental dynamic attribute or be serialized under
+        # the other's name.
+        self.embedding = None
+        self.clip_embedding = None
         # GA-186. One entry per SIGHTING: which perception frame, from where, at what
         # centroid. `association.py` has needed this since it was written and the tree
         # recorded it nowhere, which is why co-visibility could not be used as a constraint

@@ -9,6 +9,7 @@ from scipy.spatial import KDTree
 from std_msgs.msg import ColorRGBA
 import config 
 from rclpy.time import Time
+from scene_analysis import clip_pixel_bbox
 
 bridge = CvBridge()
 
@@ -229,6 +230,63 @@ class SyncedCameraData:
             depth_array = depth_to_metres(
                 self.bridge.imgmsg_to_cv2(self.cached_depth, desired_encoding='passthrough'))
 
+            rgb_height, rgb_width = rgb_cv.shape[:2]
+            if depth_array.ndim != 2 or depth_array.shape != (rgb_height, rgb_width):
+                self.node.get_logger().warn(
+                    "RGB/depth dimensions differ "
+                    f"(rgb={rgb_width}x{rgb_height}, depth={getattr(depth_array, 'shape', None)}); "
+                    "discarding the frame"
+                )
+                self.cached_rgb = None
+                self.cached_depth = None
+                self.cached_transform = None
+                self.all_ready = False
+                return None
+
+            info_width = int(getattr(self.cached_camera_info, "width", 0) or 0)
+            info_height = int(getattr(self.cached_camera_info, "height", 0) or 0)
+            if ((info_width and info_width != rgb_width)
+                    or (info_height and info_height != rgb_height)):
+                self.node.get_logger().warn(
+                    "CameraInfo dimensions do not match RGB "
+                    f"(info={info_width}x{info_height}, rgb={rgb_width}x{rgb_height}); "
+                    "discarding the frame"
+                )
+                self.cached_rgb = None
+                self.cached_depth = None
+                self.cached_transform = None
+                self.all_ready = False
+                return None
+
+            rgb_frame = self.cached_rgb.header.frame_id or self.default_camera_frame
+            info_frame = getattr(self.cached_camera_info.header, "frame_id", "") or ""
+            if info_frame and rgb_frame and info_frame != rgb_frame:
+                self.node.get_logger().warn(
+                    "CameraInfo frame does not match RGB "
+                    f"(info={info_frame!r}, rgb={rgb_frame!r}); discarding the frame"
+                )
+                self.cached_rgb = None
+                self.cached_depth = None
+                self.cached_transform = None
+                self.all_ready = False
+                return None
+
+            info_stamp = Time.from_msg(self.cached_camera_info.header.stamp)
+            info_ns = info_stamp.nanoseconds
+            if info_ns:
+                info_delta = abs(rgb_stamp.nanoseconds - info_ns) / 1e9
+                if info_delta > self.sync_tolerance_sec:
+                    self.node.get_logger().warn(
+                        "RGB/CameraInfo timestamps differ "
+                        f"({info_delta:.3f}s > {self.sync_tolerance_sec:.3f}s); "
+                        "discarding the frame"
+                    )
+                    self.cached_rgb = None
+                    self.cached_depth = None
+                    self.cached_transform = None
+                    self.all_ready = False
+                    return None
+
             if config.simulation:
                 depth_array = np.nan_to_num(depth_array, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -238,7 +296,7 @@ class SyncedCameraData:
                 'camera_info': self.cached_camera_info,
                 'transform': self.cached_transform,
                 'timestamp': self.cached_rgb.header.stamp,
-                'camera_frame': self.cached_rgb.header.frame_id
+                'camera_frame': rgb_frame
             }
 
             # Invalida dopo il consumo, per forzare l'attesa di un nuovo frame
@@ -493,14 +551,28 @@ def draw_detections(img, detections):
     occupied_regions = [] 
     
     for detection in detections:
-        x1, y1, x2, y2 = map(int, detection.bbox)
+        # Detection boxes are half-open pixel intervals, just like NumPy crops and
+        # the VLM/SAM coordinate contract. OpenCV's rectangle endpoint is inclusive,
+        # so convert only the far corner when drawing. Invalid boxes are skipped
+        # instead of drawing a wrapped rectangle or raising during an empty cycle.
+        try:
+            clipped = clip_pixel_bbox(detection.bbox, img.shape[1], img.shape[0])
+            if clipped is None:
+                continue
+            x0, y0, x1_exclusive, y1_exclusive = clipped
+            x1 = int(np.floor(x0))
+            y1 = int(np.floor(y0))
+            x2 = max(x1, int(np.ceil(x1_exclusive) - 1))
+            y2 = max(y1, int(np.ceil(y1_exclusive) - 1))
+        except (TypeError, ValueError):
+            continue
         
         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
         # Unified scene boxes carry no calibrated confidence. Showing 1.00 would
         # invent one; omit the suffix when the producing model supplied no score.
-        text = (detection.label if detection.score is None
-                else f"{detection.label}: {detection.score:.2f}")
+        score = getattr(detection, "score", None)
+        text = detection.label if score is None else f"{detection.label}: {score:.2f}"
         (text_width, text_height), baseline = cv2.getTextSize(
             text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2
         )

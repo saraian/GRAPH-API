@@ -43,7 +43,7 @@ def compute_fov_volume_from_depth(
     depth_image,
     camera_info,
     node,
-    depth_threshold=4.0,
+    depth_threshold=None,
     stride=4,
     output_frame=None,
     stamp=None,
@@ -65,7 +65,15 @@ def compute_fov_volume_from_depth(
             return None
 
         depth_m = depth_image.astype(np.float32) / 1000.0 if depth_image.dtype == np.uint16 else depth_image.astype(np.float32)
-        max_depth = min(depth_threshold, float(CFG['perception'].get('fov_max_depth_m', 1.8)))
+
+        # The original 1.8 m default was tuned for the Habitat camera and made the
+        # physical Tiago's view volume empty: most of the objects in front of the
+        # robot are farther away than that.  Keep an explicit function argument as
+        # an optional upper bound, but let the active configuration choose a larger
+        # sensor range when the caller does not provide one.
+        configured_max_depth = float(CFG['perception'].get('fov_max_depth_m', 1.8))
+        max_depth = configured_max_depth if depth_threshold is None else min(
+            float(depth_threshold), configured_max_depth)
         sampled_depth = depth_m[::stride, ::stride]
         valid_mask = (sampled_depth > 0.1) & (sampled_depth < max_depth) & np.isfinite(sampled_depth)
 

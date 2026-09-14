@@ -532,6 +532,22 @@ def merge_path():
     assert "threshold" not in sr, "the legacy key is retired on the similarity arm"
     assert "threshold_distance_m" not in sr, "the similarity arm must not carry the distance key"
 
+    # Geometry-dominant lane: the same base label, coincident overlapping boxes, and
+    # disagreeing VLM attributes must merge even when semantic similarity is below the
+    # configured floor. The optional-evidence requirement remains active.
+    e = object_info.Object("chair", None, BOX, description="a chair", color="red", material="wood")
+    f = object_info.Object("chair", None, BOX, description="a table", color="blue", material="metal")
+    e.object_id, f.object_id = "obj_e", "obj_f"
+    e.creation_time, f.creation_time = 100.0, 200.0
+    wm.persistent_perceptions.clear()
+    wm.persistent_perceptions.extend([e, f])
+    object_services.ObjectServices._cb_merge_objects(svc, req, resp)
+    assert resp.success and resp.merged_count == 1, resp.message
+    accepted = json.loads(resp.merge_log_json)[0]
+    assert accepted["near_geometry_override"] is True, accepted
+    assert accepted["decision_reason"] == "near_geometry_label_iou", accepted
+    assert accepted["near_geometry_iou"] == 1.0, accepted
+
 
 def merge_request_distance_survives_the_broad_phase():
     """The AABB broad phase must WIDEN to the request's distance, never narrow it.
@@ -1372,7 +1388,15 @@ def orientation_fusion():
                   if k not in ("yaw", "oriented_center", "oriented_extents")}
     unoriented["has_orientation"] = False
     o.bbox, o._yaw_acc = fuse_orientation(o, unoriented)
-    assert o.bbox["x_min"] == 0.3 and abs(math.degrees(o.bbox["yaw"]) - pulled) < 1e-9
+    # CONTRACT CHANGED, owner 2026-09-14: geometry is merged in the OBJECT'S OWN FRAME and
+    # re-rotated, so a yaw-less view is ENCLOSED rather than allowed to replace the extents.
+    # This assertion used to read `o.bbox["x_min"] == 0.3` -- the old "extents from one measured
+    # view" rule. MEASURED on five partial views each seeing ~45% of a 2.0 x 1.0 object: the
+    # replace rule recovers 1.0 m of the 2.0 m long axis (it can never exceed what one view saw),
+    # the enclose rule recovers 2.0 x 1.0 x 0.5 exactly. The axis must still be untouched by a
+    # view that carries none, which is the half of this check that has not changed.
+    assert o.bbox["x_min"] <= 0.3 and abs(math.degrees(o.bbox["yaw"]) - pulled) < 1e-9, \
+        f'the clipped view must be enclosed, not replace the box: x_min={o.bbox["x_min"]}'
     assert o.bbox["yaw_views"] == 5 and o.bbox["has_orientation"] is True and "oriented_extents" in o.bbox
 
     # the wrap: +85 and -85 are the SAME axis, 10 degrees apart; a scalar mean says 0

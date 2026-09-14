@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -124,6 +125,37 @@ def _text(value: Any, default: str = "unknown") -> str:
     return value if value else default
 
 
+def clip_pixel_bbox(bbox: Any, image_width: int, image_height: int):
+    """Validate and clip an ``(x_min, y_min, x_max, y_max)`` pixel box.
+
+    The pipeline uses half-open image intervals: ``x_max == image_width`` and
+    ``y_max == image_height`` are valid right/bottom edges, while the first pixel
+    inside the box is ``x_min, y_min``. Keeping that convention in one helper avoids
+    the old mixture of inclusive OpenCV endpoints and exclusive crop endpoints.
+    """
+    if image_width <= 0 or image_height <= 0:
+        return None
+    try:
+        values = tuple(float(value) for value in bbox)
+    except (TypeError, ValueError):
+        return None
+    if len(values) != 4 or not all(math.isfinite(value) for value in values):
+        return None
+    x_min, y_min, x_max, y_max = values
+    if x_min >= x_max or y_min >= y_max:
+        return None
+    # Intersect both endpoints with the half-open image domain. In particular, a
+    # box wholly to the right/bottom must become ``x_min == x_max == width``
+    # (and be rejected below), rather than a fake one-pixel strip at the edge.
+    x_min = max(0.0, min(x_min, float(image_width)))
+    y_min = max(0.0, min(y_min, float(image_height)))
+    x_max = max(0.0, min(x_max, float(image_width)))
+    y_max = max(0.0, min(y_max, float(image_height)))
+    if x_min >= x_max or y_min >= y_max:
+        return None
+    return x_min, y_min, x_max, y_max
+
+
 def _pixel_bbox(bbox: Any, image_width: int, image_height: int):
     if not isinstance(bbox, dict) or image_width <= 0 or image_height <= 0:
         return None
@@ -143,12 +175,15 @@ def _pixel_bbox(bbox: Any, image_width: int, image_height: int):
         return None
 
     # Max coordinates may equal the image dimensions: SAM accepts a box whose
-    # right or bottom edge lies on the image boundary.
-    return (
-        max(0.0, min(x_min * image_width / NORMALIZED_COORDINATE_MAX, image_width - 1.0)),
-        max(0.0, min(y_min * image_height / NORMALIZED_COORDINATE_MAX, image_height - 1.0)),
-        max(1.0, min(x_max * image_width / NORMALIZED_COORDINATE_MAX, float(image_width))),
-        max(1.0, min(y_max * image_height / NORMALIZED_COORDINATE_MAX, float(image_height))),
+    # right or bottom edge lies on the image boundary. The returned pixel box
+    # remains half-open, matching NumPy crops and the SAM prompt transform.
+    return clip_pixel_bbox(
+        (x_min * image_width / NORMALIZED_COORDINATE_MAX,
+         y_min * image_height / NORMALIZED_COORDINATE_MAX,
+         x_max * image_width / NORMALIZED_COORDINATE_MAX,
+         y_max * image_height / NORMALIZED_COORDINATE_MAX),
+        image_width,
+        image_height,
     )
 
 

@@ -37,6 +37,11 @@ import math
 import os
 from pathlib import Path
 
+try:
+    from .box_view import BOX_EDGES, box_corners_map
+except ImportError:  # launched as a top-level script by the bridge
+    from box_view import BOX_EDGES, box_corners_map
+
 # Objects further than this are drawn thinner: past a few metres a projected cuboid is a
 # handful of pixels and a full-strength outline is noise rather than information.
 FAR_M = float(os.environ.get("BRIDGE_OVERLAY_FAR", "6.0"))
@@ -70,22 +75,24 @@ def _world_to_cam(R, rel):
 
 
 def box_corners(b):
-    return [(x, y, z)
-            for x in (b["x_min"], b["x_max"])
-            for y in (b["y_min"], b["y_max"])
-            for z in (b["z_min"], b["z_max"])]
+    """Return the same oriented corners used by the ROS and Habitat renderers."""
+    corners, _ = box_corners_map(b)
+    return [tuple(float(v) for v in corner) for corner in corners]
 
 
-def project_box(bbox, cam_pos, cam_quat_xyzw, intr, width, height):
-    """-> (u0, v0, u1, v1, depth_m) in pixels, or None when the box is not drawable.
+def _project_box(bbox, cam_pos, cam_quat_xyzw, intr, width, height):
+    """-> envelope, projected corners and orientation, or None when not drawable.
 
     None means one of: any corner is behind or on the image plane, the projection lands
     entirely off-screen, or it covers more than MAX_FRAC of the frame. Each of those draws
     something misleading rather than something wrong-looking, which is worse.
     """
+    corners = box_corners(bbox)
+    if len(corners) != 8:
+        return None
     R = quat_to_R(*cam_quat_xyzw)
     us, vs, zs = [], [], []
-    for p in box_corners(bbox):
+    for p in corners:
         rel = [p[i] - cam_pos[i] for i in range(3)]
         X, Y, Z = _world_to_cam(R, rel)
         if Z <= 0.05:
@@ -98,7 +105,20 @@ def project_box(bbox, cam_pos, cam_quat_xyzw, intr, width, height):
         return None                           # entirely off screen
     if (u1 - u0) > MAX_FRAC * width and (v1 - v0) > MAX_FRAC * height:
         return None                           # straddling the camera; would cover everything
-    return (u0, v0, u1, v1, sum(zs) / len(zs))
+    _, oriented = box_corners_map(bbox)
+    return (u0, v0, u1, v1, sum(zs) / len(zs),
+            list(zip(us, vs)), oriented)
+
+
+def project_box(bbox, cam_pos, cam_quat_xyzw, intr, width, height):
+    """-> (u0, v0, u1, v1, depth_m) in pixels, or None when the box is not drawable.
+
+    The public five-value return shape is preserved for callers and archived self-checks. The
+    live overlay internally uses `_project_box` so it can draw the actual projected cuboid edges
+    instead of an axis-aligned 2D rectangle.
+    """
+    result = _project_box(bbox, cam_pos, cam_quat_xyzw, intr, width, height)
+    return None if result is None else result[:5]
 
 
 def frustum_rays(intr, width, height, depth=2.0):
@@ -132,13 +152,14 @@ def visible_boxes(objects, cam_pos, cam_quat_xyzw, intr, width, height):
         b = o.get("bbox") or o.get("bbox_3d")
         if not b or not all(k in b for k in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")):
             continue
-        r = project_box(b, cam_pos, cam_quat_xyzw, intr, width, height)
+        r = _project_box(b, cam_pos, cam_quat_xyzw, intr, width, height)
         if r is None:
             continue
         if r[4] > MAX_M:
             continue
         out.append({"label": o.get("label") or o.get("object_id") or "?",
                     "u0": r[0], "v0": r[1], "u1": r[2], "v1": r[3], "depth": r[4],
+                    "points": r[5], "oriented": r[6],
                     "verdict": (o.get("annotation") or {}).get("verdict", {}).get("grade")
                     if isinstance(o.get("annotation"), dict) else o.get("verdict")})
     out.sort(key=lambda d: -d["depth"])
@@ -165,7 +186,13 @@ def draw(frame_bgr, boxes, cv2, mask_layer=None):
         x1, y1 = int(min(w - 1, b["u1"])), int(min(h - 1, b["v1"]))
         if x1 <= x0 or y1 <= y0:
             continue
-        cv2.rectangle(frame_bgr, (x0, y0), (x1, y1), colour, thick)
+        points = b.get("points")
+        if points and len(points) == 8:
+            points = [(int(round(x)), int(round(y))) for x, y in points]
+            for i, j in BOX_EDGES:
+                cv2.line(frame_bgr, points[i], points[j], colour, thick, cv2.LINE_AA)
+        else:
+            cv2.rectangle(frame_bgr, (x0, y0), (x1, y1), colour, thick)
         text = f"{b['label']} {b['depth']:.1f}m"
         scale = 0.45 if thick == 2 else 0.38
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
