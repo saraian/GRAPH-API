@@ -1471,6 +1471,12 @@ A12_ALLOWED_FILES = {
         "generated debug configuration declares gt_semantic false",
     "test/debug_configs/merge_debug_00824_legacy.yaml":
         "generated debug configuration declares gt_semantic false",
+    # 2026-09-15: the --variant ms1 arm (merge_min_consecutive 1 + merge_min_sightings_per_side
+    # 2). Same generator, same declared-false switch. a12 refused BOTH machines' launches within
+    # a minute of this file existing, which is the gate working: a new full config dump is a new
+    # file with the token in it, and the allow-list is by exact name on purpose.
+    "test/debug_configs/merge_debug_00824_evidence_ms1.yaml":
+        "generated debug configuration declares gt_semantic false",
     "test/ga493_debug_run.sh":
         "debug entry point enforces FEED_GT_SEMANTIC=0 before launch",
     "test/test_ga493_execution_mode.py":
