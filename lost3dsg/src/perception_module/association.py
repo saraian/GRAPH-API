@@ -553,29 +553,18 @@ def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30,
                        f"duplicate-detection case, not evidence of two objects",
                        measured=True)
     if bounds_a is not None and bounds_b is not None:
-        # OWNER RULING 2026-09-14: THE VETO NEEDS 3D SEPARATION TOO. Disjoint 2D boxes in one
-        # frame say the two detections cover different pixels; they do not say the two boxes
-        # are different objects, because one object split by an occluder (or by the detector)
-        # yields exactly that picture. MEASURED on 20260914_174342: pillow#1 and pillow#3, same
-        # base label, attribute score 0.937, 3D containment 0.20 -- vetoed permanently on a
-        # single frame whose 2D IoU was 0.056. Requiring the 3D boxes to be disjoint as well
-        # keeps the veto for genuinely separate neighbours (which is all of the GA-181 corpus:
-        # every one of those pairs is 3D-disjoint too) and spares the split-object case.
-        if intersection_volume(bounds_a, bounds_b) > 0.0:
-            detail = {**detail, "boxes_intersect_3d": True}
-            # measured=False ON PURPOSE. `measured=True` means "the 2D boxes were compared and
-            # they overlap", which is the duplicate-detection case containment is RIGHT about,
-            # and PairScore.containment_unchecked / Hypothesis.decide treat it as a WITNESS.
-            # This case is the opposite: co-visibility looked and could not discriminate, so
-            # nothing here refutes a containment merge. Marking it measured let a CROSS-KIND
-            # pillow-in-sofa pair (containment 1.0) be decided by its total instead of held by
-            # the unwitnessed-overlap rule -- the GA-328 failure, re-armed by the very change
-            # that spared the split-object case (working rule 15).
-            return Abstain("co-visible and 2D-disjoint, but the 3D boxes intersect — an "
-                           "occluder can split one object into two disjoint detections; "
-                           "co-visibility cannot discriminate here",
-                           measured=False)
-        detail = {**detail, "boxes_intersect_3d": False}
+        # WITHDRAWN ON EVIDENCE, 2026-09-14. A version of this vetoed only when the 3D boxes were
+        # ALSO disjoint, on the reasoning that an occluder can split one object into two
+        # 2D-disjoint detections -- from one local pair (pillow#1/pillow#3, 3D containment 0.20,
+        # 2D IoU 0.056). GROUND TRUTH ON THE 144-STOP TOUR 20260914_172628 OVERTURNED IT: of the
+        # same-base-label pairs this veto blocked, 22 distinct pairs are DIFFERENT GT objects and
+        # 6 are the same one (15 unscoreable), so the relaxation would trade 6 recoveries for
+        # exposure on 22 -- three stools really are three stools. The criterion was stated before
+        # the measurement and the measurement went the other way. Owner ruling: revert.
+        # The flag is still recorded, because the next reader will ask the same question and the
+        # answer is in the bundle rather than in an argument.
+        detail = {**detail,
+                  "boxes_intersect_3d": intersection_volume(bounds_a, bounds_b) > 0.0}
     return VETO, detail
 
 
@@ -1368,40 +1357,21 @@ def demo():
                          observations=[_obs(7, [2, 0, 1], [0, 0, 0.5])])
     twin_b = AssocObject("p2", bbox=_box(0.05, 0, 0.5, 0.4, 0.4, 0.2), room_id="bedroom",
                          observations=[_obs(7, [2, 0, 1], [0.05, 0, 0.5])])
-    # GA-181: co-visible AND SPATIALLY DISJOINT is the hard negative. Owner ruling 2026-09-14:
-    # disjoint means disjoint in 2D *and* in 3D, so these twins must be moved apart to be the
-    # hard negative -- as written they intersect in 3D, which is now the split-object case.
-    apart_b = AssocObject("p2", bbox=_box(2.0, 0, 0.5, 0.4, 0.4, 0.2), room_id="bedroom",
-                          observations=[_obs(7, [2, 0, 1], [2.0, 0, 0.5])])
+    # GA-181: co-visible AND SPATIALLY DISJOINT IN 2D is the hard negative, whether or not the
+    # 3D boxes intersect. A 2026-09-14 version also required 3D disjointness; GT on the 144-stop
+    # tour said 22 of the 28 scoreable same-label pairs it would have spared are different true
+    # objects, and it was withdrawn. The 3D relation is still recorded on the row.
     ctx_disjoint = AssocContext(map_volume_m3=300.0, n_rooms=6, n_types=40, cost_ratio=20.0,
                                 overlap_2d_fn=lambda a, b: 0.0)
-    s2 = score_pair(twin_a, apart_b, ctx_disjoint)
+    s2 = score_pair(twin_a, twin_b, ctx_disjoint)          # these two intersect in 3D
     assert s2.vetoed and "covisibility" in s2.vetoed_by
-    assert s2.channels["covisibility"]["boxes_intersect_3d"] is False
-    # 2D-disjoint but 3D-INTERSECTING: one object an occluder split into two detections.
-    # MEASURED on 20260914_174342: pillow#1/pillow#3, same label, attributes 0.937, 3D
-    # containment 0.20, vetoed permanently on one frame at 2D IoU 0.056.
-    s2_split = score_pair(twin_a, twin_b, ctx_disjoint)
-    assert not s2_split.vetoed, s2_split.vetoed_by
-    assert "covisibility" in s2_split.abstentions
-    # ...and it must NOT count as a witness: co-visibility looked and could not discriminate, so
-    # the unwitnessed-overlap rule still has to hold a cross-kind containment pair.
-    assert "covisibility" not in s2_split._measured_abstentions
-    assert s2_split.containment_unchecked, "overlap is unsupported when co-visibility abstained"
-    cross = AssocContext(map_volume_m3=52.6, n_rooms=6, cost_ratio=20.0, use_ontology=False,
-                         overlap_2d_fn=lambda a, b: 0.05,
-                         attribute_score_fn=lambda a, b: (0.90, 3, False))
-    sofa = AssocObject("sofa", bbox=_box(0, 0, 0.4, 1.8, 0.9, 0.8), room_id="r",
-                       observations=[_obs(7, [3, 0, 1], [0, 0, 0.4])])
-    pil = AssocObject("pillow", bbox=_box(0.3, 0, 0.5, 0.35, 0.3, 0.2), room_id="r",
-                      observations=[_obs(7, [3, 0, 1], [0.3, 0, 0.5])])
-    h_x = Hypothesis(("sofa", "pillow"))
-    for f in (1, 2):
-        h_x.update(score_pair(sofa, pil, cross), frame_id=f)
-        d_x = h_x.decide(thr, min_consecutive=2)
-    assert d_x[0] == "hold" and d_x[1].startswith("containment carries"), (d_x, h_x.total)
-    print("  co-visible, 2D-disjoint, 3D-INTERSECTING -> abstains (occluder split), not vetoed, "
-          "and NOT a witness: cross-kind pillow-in-sofa stays held")
+    assert s2.channels["covisibility"]["boxes_intersect_3d"] is True
+    apart_b = AssocObject("p2", bbox=_box(2.0, 0, 0.5, 0.4, 0.4, 0.2), room_id="bedroom",
+                          observations=[_obs(7, [2, 0, 1], [2.0, 0, 0.5])])
+    s2_apart = score_pair(twin_a, apart_b, ctx_disjoint)   # and these do not
+    assert s2_apart.vetoed and s2_apart.channels["covisibility"]["boxes_intersect_3d"] is False
+    print("  co-visible + 2D-disjoint -> VETO whether or not the 3D boxes intersect "
+          "(the 3D relation is recorded, not acted on)")
     # ...but co-visible and OVERLAPPING is the duplicate-detection case and must ABSTAIN.
     # Measured, run 20260901_055513: 17 co-visible pairs that GT says are ONE object, e.g.
     # "sink#1 | bathroom vanity#3" at 2D IoU 0.997 and 3D distance 0.000 m. A hard veto here
