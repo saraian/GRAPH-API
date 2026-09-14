@@ -12,6 +12,7 @@ of a frame shares one stamp, so TF-at-image-stamp lookups resolve exactly.
 import json
 import array
 import base64
+import colorsys
 import io
 import math
 import os
@@ -135,6 +136,43 @@ def _tf(stamp, parent, child, pos, quat):
     return t
 
 
+def _habitat_aabb_to_ros(low, high):
+    """Convert a Habitat [x, y, z] AABB to a ROS [x, y, z] AABB.
+
+    ``habitat_pose_to_ros`` maps coordinates as ``(-z, -x, y)``.  Since the first two
+    axes are negated, the extrema swap as well; doing that explicitly is what keeps all
+    marker scales positive and puts the box in the same map frame as the live detections.
+    """
+    low = np.asarray(low, dtype=np.float64)
+    high = np.asarray(high, dtype=np.float64)
+    return (
+        np.asarray([-high[2], -high[0], low[1]], dtype=np.float64),
+        np.asarray([-low[2], -low[0], high[1]], dtype=np.float64),
+    )
+
+
+_AABB_EDGES = (
+    (0, 1), (0, 2), (0, 4),
+    (1, 3), (1, 5),
+    (2, 3), (2, 6),
+    (3, 7),
+    (4, 5), (4, 6),
+    (5, 7),
+    (6, 7),
+)
+
+
+def _ground_truth_color(semantic_id, fallback_index):
+    """Return a repeatable high-saturation color for one semantic instance."""
+    try:
+        identity = int(semantic_id)
+    except (TypeError, ValueError):
+        identity = int(fallback_index) + 1
+    hue = (identity * 0.618033988749895) % 1.0
+    red, green, blue = colorsys.hsv_to_rgb(hue, 0.82, 0.96)
+    return red, green, blue, 0.98
+
+
 class HabitatFeedNode(Node):
     def __init__(self):
         super().__init__("habitat_feed_node")
@@ -174,6 +212,13 @@ class HabitatFeedNode(Node):
         # in run 20260906_234050. The payload is gt_codec's lossless run-length form (~3% of
         # raw, milliseconds each way); the perception node decodes it with the same module.
         self.pub_gt_semantic = self.create_publisher(CompressedImage, "/gt/semantic_instance", qos)
+        # GT-ONLY VISUAL CHANNEL. The host sends semantic-GLB AABBs once per connection; this
+        # publisher latches one independently colored wireframe layer so RViz can subscribe after
+        # the first frame. Each GT box has a thick dark border and a thinner colored inner line.
+        # No perception or object-manager node subscribes to this topic.
+        self.pub_ground_truth_bbox = self.create_publisher(
+            MarkerArray, "/ground_truth_bbox", catalog_qos)
+        self._ground_truth_bbox_published = False
         # GA-479 (owner 2026-09-10). THE EXPLORATION SCHEDULE IN RVIZ. The feed host sends it once,
         # on the first frame of a connection; this publishes it as markers in the map frame.
         #
@@ -262,6 +307,88 @@ class HabitatFeedNode(Node):
         self.pub_object_catalog.publish(msg)
         self.get_logger().info(
             f"object catalog relayed: {len(catalog.get('templates', []))} templates")
+
+    def _publish_ground_truth_bboxes(self, objects, stamp):
+        """Publish all supplied GT AABBs as an independently toggleable RViz layer.
+
+        Each semantic instance gets two markers in separate namespaces: a thick dark outline and
+        a thinner stable color. This makes the GT layer identifiable when it overlaps a persistent
+        box, while the semantic ID keeps the color attached to the same object across runs.
+        """
+        arr = MarkerArray()
+        clear = Marker()
+        clear.header.frame_id = FRAME_MAP
+        clear.header.stamp = stamp
+        clear.ns = "ground_truth_bbox"
+        clear.action = Marker.DELETEALL
+        arr.markers.append(clear)
+
+        valid = 0
+        for index, item in enumerate(objects or []):
+            try:
+                low, high = _habitat_aabb_to_ros(
+                    item["aabb_min_m"], item["aabb_max_m"])
+                if low.shape != (3,) or high.shape != (3,):
+                    continue
+                if not np.all(np.isfinite(low)) or not np.all(np.isfinite(high)):
+                    continue
+                if np.any(high <= low):
+                    continue
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+
+            corners = np.asarray([
+                [low[0], low[1], low[2]], [high[0], low[1], low[2]],
+                [low[0], high[1], low[2]], [high[0], high[1], low[2]],
+                [low[0], low[1], high[2]], [high[0], low[1], high[2]],
+                [low[0], high[1], high[2]], [high[0], high[1], high[2]],
+            ])
+            edge_points = []
+            for start, end in _AABB_EDGES:
+                for corner in (corners[start], corners[end]):
+                    point = Point()
+                    point.x, point.y, point.z = (float(v) for v in corner)
+                    edge_points.append(point)
+
+            try:
+                semantic_id = int(item.get("semantic_id", item.get("object_id", index + 1)))
+            except (AttributeError, TypeError, ValueError):
+                semantic_id = index + 1
+            marker_id = semantic_id & 0x7FFFFFFF or (index + 1)
+
+            border = Marker()
+            border.header.frame_id = FRAME_MAP
+            border.header.stamp = stamp
+            border.ns = "ground_truth_bbox_border"
+            border.id = marker_id
+            border.type = Marker.LINE_LIST
+            border.action = Marker.ADD
+            border.pose.orientation.w = 1.0
+            border.scale.x = 0.090
+            border.color.r, border.color.g, border.color.b, border.color.a = (
+                0.015, 0.015, 0.015, 0.95)
+            border.points = edge_points
+            arr.markers.append(border)
+
+            inner = Marker()
+            inner.header.frame_id = FRAME_MAP
+            inner.header.stamp = stamp
+            inner.ns = "ground_truth_bbox"
+            inner.id = marker_id
+            inner.type = Marker.LINE_LIST
+            inner.action = Marker.ADD
+            inner.pose.orientation.w = 1.0
+            inner.scale.x = 0.045
+            inner.color.r, inner.color.g, inner.color.b, inner.color.a = _ground_truth_color(
+                semantic_id, index)
+            inner.points = edge_points
+            arr.markers.append(inner)
+            valid += 1
+
+        self.pub_ground_truth_bbox.publish(arr)
+        self._ground_truth_bbox_published = True
+        self.get_logger().info(
+            f"ground-truth boxes: published {valid} valid AABBs on /ground_truth_bbox")
 
     def _forward_object_command(self, action, msg):
         """Forward run_habitat_script commands to the host-side simulator."""
@@ -502,6 +629,8 @@ class HabitatFeedNode(Node):
         stamp = self.get_clock().now().to_msg()
         if not self._schedule_published and frame.get("schedule"):
             self._publish_schedule(frame["schedule"], stamp)
+        if not self._ground_truth_bbox_published and "ground_truth_objects" in frame:
+            self._publish_ground_truth_bboxes(frame.get("ground_truth_objects"), stamp)
         w, h = frame["w"], frame["h"]
 
         # The host-side runner owns Habitat motion, so it carries the completion hook in the

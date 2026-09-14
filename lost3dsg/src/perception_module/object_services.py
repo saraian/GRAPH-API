@@ -21,8 +21,15 @@ from bbox_fusion import (
 )
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
-from box_view import box_corners_map, enclosing_box_from_points
-from cv_utils import publish_persistent_centroids, publish_pov_volume, set_marker_from_bbox
+from box_view import BOX_EDGES, box_corners_map, enclosing_box_from_points
+from geometry_msgs.msg import Point
+from cv_utils import (
+    persistent_bbox_color,
+    publish_persistent_centroids,
+    publish_pov_volume,
+    stable_bbox_marker_id,
+    set_marker_from_bbox,
+)
 from detection_index import DetectionIndex
 from detection_types import observation_dict_from_msg
 from hooks import DecisionLog, load_store
@@ -956,6 +963,12 @@ def _stamp_from_seconds(timestamp_sec):
 
 def publish_persistent_bboxes(node, wm, pub):
     marker_array = MarkerArray()
+    clear = Marker()
+    clear.header.frame_id = world_frame()
+    clear.header.stamp = node.get_clock().now().to_msg()
+    clear.ns = "persistent_bboxes"
+    clear.action = Marker.DELETEALL
+    marker_array.markers.append(clear)
     for i, obj in enumerate(wm.persistent_perceptions):
         if obj.bbox is None or "door" in obj.label.lower():
              continue
@@ -964,16 +977,38 @@ def publish_persistent_bboxes(node, wm, pub):
         marker.header.frame_id = world_frame()
         obj_stamp = getattr(obj, "last_perception_time", None)
         marker.header.stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
-        marker.id = i
+        marker_id = stable_bbox_marker_id(obj, i)
+        marker.id = marker_id
         marker.type = Marker.CUBE
         marker.action = Marker.ADD
+        marker.ns = "persistent_bboxes"
         # display_bbox, not obj.bbox: the fused multi-view box is the one the evaluator
         # scores (bbox_source), so RViz must show the same geometry the numbers come from.
         if not set_marker_from_bbox(marker, display_bbox):
             continue
-        marker.color.a = 0.5
-        marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
+        marker.color = persistent_bbox_color(obj, i)
         marker_array.markers.append(marker)
+
+        corners, _ = box_corners_map(display_bbox)
+        if len(corners) == 8:
+            outline = Marker()
+            outline.header.frame_id = world_frame()
+            outline.header.stamp = marker.header.stamp
+            outline.ns = "persistent_bboxes_outline"
+            outline.id = marker_id
+            outline.type = Marker.LINE_LIST
+            outline.action = Marker.ADD
+            outline.pose.orientation.w = 1.0
+            outline.scale.x = 0.055
+            outline.color.r, outline.color.g, outline.color.b, outline.color.a = (
+                0.02, 0.02, 0.02, 0.90)
+            outline.points = [
+                Point(x=float(corners[index][0]), y=float(corners[index][1]),
+                      z=float(corners[index][2]))
+                for start, end in BOX_EDGES
+                for index in (start, end)
+            ]
+            marker_array.markers.append(outline)
     pub.publish(marker_array)
     
 def bbox_centroid_in_volume(bbox, volume):

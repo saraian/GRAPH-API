@@ -821,6 +821,23 @@ def _stable_marker_id(obj, fallback_index):
     return marker_id or (fallback_index + 1)
 
 
+def persistent_bbox_color(obj, fallback_index, alpha=0.38):
+    """Return a stable, per-object color for a persistent RViz box.
+
+    The object ID, rather than the current list position, selects the hue.  This means a
+    merge, deletion, or reordering of the world-model list does not make every remaining box
+    change color on the next publication.
+    """
+    color = get_distinct_color(stable_bbox_marker_id(obj, fallback_index))
+    color.a = float(alpha)
+    return color
+
+
+def stable_bbox_marker_id(obj, fallback_index):
+    """Public stable ID helper shared by all persistent-box rendering paths."""
+    return _stable_marker_id(obj, fallback_index)
+
+
 def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix="",
                               prefer_fused=False):
     if not pub:
@@ -881,28 +898,57 @@ def publish_uncertain_centroids(node, uncertain_objects, uncertain_centroids_pub
     _publish_centroid_markers(node, uncertain_objects, uncertain_centroids_pub,
                               "uncertain_centroids", (1.0, 0.6, 0.0, 1.0), label_suffix="[?]")
 
-def _publish_bbox_markers(node, objects, pub, ns, color, prefer_fused=False):
+def _publish_bbox_markers(node, objects, pub, ns, color, prefer_fused=False, distinct=False):
     if not pub:
         return
     ma = MarkerArray()
+    clear = Marker()
+    clear.header.frame_id = world_frame()
+    clear.header.stamp = node.get_clock().now().to_msg()
+    clear.ns = ns
+    clear.action = Marker.DELETEALL
+    ma.markers.append(clear)
     for i, obj in enumerate(objects):
         bbox = (getattr(obj, "fused_bbox", None) if prefer_fused else None) or obj.bbox
         if bbox is None:
             continue
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
-        m = _make_marker(world_frame(), stamp, ns, i * 2, Marker.CUBE, None, color,
+        marker_id = stable_bbox_marker_id(obj, i) if distinct else i * 2
+        m = _make_marker(world_frame(), stamp, ns, marker_id, Marker.CUBE, None,
+                         persistent_bbox_color(obj, i) if distinct else color,
                          (0.0, 0.0, 0.0))
         if not set_marker_from_bbox(m, bbox):
             continue
         ma.markers.append(m)
-    if ma.markers:
-        pub.publish(ma)
+        if distinct:
+            # Add a dark outline over the translucent colored cube. This keeps adjacent boxes
+            # separable in RViz and also makes the persistent layer remain readable over the map
+            # cloud. The outline uses the same stable ID in a separate namespace, so updates and
+            # deletions cannot leave stale borders behind.
+            corners, _ = box_corners_map(bbox)
+            if len(corners) == 8:
+                outline = _make_marker(
+                    world_frame(), stamp, ns + "_outline", marker_id,
+                    Marker.LINE_LIST, 0.055, (0.02, 0.02, 0.02, 0.90), (0.0, 0.0, 0.0))
+                # LINE_LIST needs two points per edge; construct the paired list explicitly so the
+                # outline follows the same AABB/OBB corner ordering as set_marker_from_bbox().
+                outline.points = [
+                    Point(x=float(corners[index][0]), y=float(corners[index][1]),
+                          z=float(corners[index][2]))
+                    for start, end in BOX_EDGES
+                    for index in (start, end)
+                ]
+                ma.markers.append(outline)
+    # Publish the DELETEALL even when the world model is temporarily empty, so a deleted or
+    # merged object's colored cube and outline cannot remain visible in the latched RViz topic.
+    pub.publish(ma)
 
 
 def publish_persistent_bboxes(node, wm, persistent_bboxes_pub=None):
     _publish_bbox_markers(node, wm.persistent_perceptions, persistent_bboxes_pub,
-                          "persistent_bboxes", (0.0, 1.0, 0.0, 0.3), prefer_fused=True)
+                          "persistent_bboxes", (0.0, 1.0, 0.0, 0.3),
+                          prefer_fused=True, distinct=True)
 
 
 def publish_uncertain_bboxes(node, uncertain_objects, uncertain_bbox_pub):

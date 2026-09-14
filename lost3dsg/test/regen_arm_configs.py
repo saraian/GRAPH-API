@@ -66,11 +66,14 @@ ARMS = [
         "refusing anything. Compare its hook_decisions against 01 to see what the envelopes would",
         "have said.",
     ]),
-    ("04_ground_truth_pose", {"habitat.localization_mode": "ground_truth"}, [
-        "GROUND-TRUTH POSE. Separates localisation error from perception error: every box position",
-        "in the archive rests on a pose the real robot will never have, and this arm is the upper",
-        "bound the rtabmap arm is measured against. NOT a base run -- the owner's regime is",
-        "rtabmap.",
+    ("04_ground_truth_pose", {"habitat.localization_mode": "ground_truth",
+                              "size_check.enabled": False,
+                              "hooks.filter": ""}, [
+        "GROUND-TRUTH POSE WITHOUT AN ADMISSION FILTER. Separates localisation error from",
+        "perception error: every box position in the archive rests on a pose the real robot will",
+        "never have, and no Found/ontology or size filter can refuse the detector's proposals.",
+        "The filter seam remains pass-through so the normal object-manager path and its audit log",
+        "stay active, but every proposal is admitted.",
     ]),
     ("05_noise_floor", {}, [
         "THE NOISE FLOOR, and it needs `repeat: 3` in the schedule. Identical to the reference on",
@@ -235,6 +238,10 @@ def _selfcheck():
     assert six["vlm"]["base_url"] == "https://api.regolo.ai/v1", six["vlm"]
     assert six["vlm"]["model"] == "gemma4-31b", six["vlm"]
     assert six["habitat"]["localization_mode"] == "rtabmap", six["habitat"]
+    four = yaml.safe_load(files["04_ground_truth_pose"])
+    assert four["habitat"]["localization_mode"] == "ground_truth", four
+    assert four["hooks"]["filter"] == "", four["hooks"]
+    assert four["size_check"]["enabled"] is False, four["size_check"]
     # THE WHOLE REASON THIS SCRIPT EXISTS: a key added to the tracked config reaches every arm.
     # Exercised on frame_queue_max itself, because its module default is 0 and 0 means OFF, so an
     # arm that omits it runs with the queue disabled and looks like a test of the queue.

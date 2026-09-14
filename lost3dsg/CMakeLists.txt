@@ -156,6 +156,11 @@ install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
 
+# habitat_launch.py loads this installed configuration through the package share path.
+install(FILES test/live.rviz
+  DESTINATION share/${PROJECT_NAME}/rviz
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
