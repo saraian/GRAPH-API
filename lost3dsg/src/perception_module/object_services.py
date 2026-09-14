@@ -698,6 +698,40 @@ def _centroid_from_bbox(bbox):
     return [float(v) for v in assoc.box_centroid(b)]
 
 
+MAX_OBSERVATIONS_PER_OBJECT = int(CFG["association"].get("max_observations_per_object", 64))
+
+
+def _absorb_into_keeper(keeper, discard, merged_bbox):
+    """What the SURVIVOR of a merge must inherit besides the geometry.
+
+    THE MOVE PATH ALREADY DOES THIS and the merge path never did. When the merge removed the
+    discarded object from the map it dropped that object's `observations` with it -- and
+    `observations` is the SOLE input of three things: `association.position_covariance` (so
+    the survivor's position uncertainty is measured from half the evidence),
+    `association.channel_covisibility` (so a frame that would veto a later wrong merge is
+    forgotten), and the appearance descriptors (so a re-identification loses half its views).
+    A merge made the map LESS able to reason about the object it had just consolidated.
+
+    The centroid is rewritten for the same reason: `Object.centroid` is assigned once, when
+    the object is created, and by no later code, so without this line the survivor's centre
+    stays at its pre-merge position for the rest of the run while its box grows.
+
+    Dedup on `frame_id`: the keeper and the discard detected in ONE frame is one view of one
+    object, not two. The cap and the drop-oldest rule are the ones `_record_sighting` in
+    object_manager_6 already applies, reading the same config key, so no second constant
+    exists to drift.
+    """
+    keeper.centroid = _centroid_from_bbox(merged_bbox) or keeper.centroid
+    kept = list(getattr(keeper, "observations", None) or [])
+    seen = {getattr(o, "frame_id", None) for o in kept}
+    inherited = [o for o in (getattr(discard, "observations", None) or [])
+                 if getattr(o, "frame_id", None) not in seen]
+    if inherited:
+        kept.extend(inherited)
+        kept.sort(key=lambda o: getattr(o, "stamp", 0) or 0)
+        keeper.observations = kept[-MAX_OBSERVATIONS_PER_OBJECT:]
+
+
 def synchronized_world_model(callback):
     """Serialize callbacks that read/write the shared world model."""
     @wraps(callback)
@@ -1656,7 +1690,13 @@ class ObjectServices(Node):
                     # shell and the gap test read the measured box while the gates read the
                     # fused one, so a pair the gate would accept could never be offered.
                     bbox=assoc.locality_box(o),
-                    centroid=getattr(o, "centroid", None),
+                    # E3, 2026-09-14: `centroid=` is NOT passed, so AssocObject derives it
+                    # from the box on the line above -- the one box this sweep scores.
+                    # `o.centroid` is written once when the object is created and by no later
+                    # code, so passing it meant the candidate shell and the separation channel
+                    # measured from where the object was FIRST seen while every other channel
+                    # measured the current box. MEASURED on the GA-493 bundle: the two differ
+                    # by more than 1 cm on 7 of 40 scored pairs, by up to 0.18 m.
                     observations=getattr(o, "observations", None) or [],
                     room_id=getattr(o, "room_id", None),
                     # GA-192: the type the extension aligned this object to, and whether that
@@ -2350,11 +2390,18 @@ class ObjectServices(Node):
                         "threshold_log_odds": threshold if MERGE_ENGINE == "evidence" else None,
                         "decision_details": rec if MERGE_ENGINE == "evidence" else None,
                         "merged_bbox": merged_bbox,
-                        # GA-20: `merged_bbox` keeps its name -- it is still the box after the
-                        # merge -- but it is now an observation rather than a synthesis, so
-                        # record WHOSE. Added, not renamed: a reader that does not look for
-                        # this key cannot break on it.
-                        "bbox_source": "keeper",
+                        # CORRECTED 2026-09-14. This read "keeper", which was true when the
+                        # key was added on 2026-09-01 and the merge really did keep the
+                        # keeper's own box. It is not true now: the box written onto the
+                        # keeper is the AABB enclosing BOTH objects' corner clouds
+                        # (`_combine_object_geometry` above). A row that names the wrong
+                        # source is worse than no row, because the next reader acts on it.
+                        # `bbox_from_object_id` below stays the keeper's id, and correctly:
+                        # the hull IS written onto the keeper. No reader consumes this value
+                        # (the only other `bbox_source` in the tree is an unrelated key in
+                        # build_hm3d_eval_manifest.py), so this corrects a value, not a
+                        # meaning.
+                        "bbox_source": "union_hull",
                         "bbox_from_object_id": getattr(keeper, "object_id", None) or keeper.label,
                         # THE DISCARDED SIDE'S GEOMETRY, BECAUSE THE MERGE DESTROYS IT.
                         # MEASURED by the DGX lane on the 144-stop tour 20260914_172628: of 51
@@ -2438,6 +2485,9 @@ class ObjectServices(Node):
                         merged_bbox, merged_geometry_acc = _combine_object_geometry(keeper, discard)
                         keeper.bbox = merged_bbox
                         keeper._yaw_acc = merged_geometry_acc
+                        # BEFORE the discard leaves the map below: the survivor inherits the
+                        # sightings, or the merge destroys the evidence it was made from.
+                        _absorb_into_keeper(keeper, discard, merged_bbox)
                         cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
                         cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
                         print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")

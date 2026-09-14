@@ -230,16 +230,35 @@ def position_covariance(observations, depth_sparsity=0.0, pose_sigma_m=0.0):
     sigma_range = mean_range * float(depth_sparsity) + float(pose_sigma_m)
     model_cov = np.eye(3) * max(sigma_range ** 2, 1e-9)
 
+    # E1, 2026-09-14. `measured` answers the question this function is asked: did ANYTHING
+    # measure this object's position uncertainty? A caller that supplies neither
+    # depth_sparsity nor pose_sigma_m supplies no sensor model, and `model_cov` is then the
+    # 1e-9 floor on line 231 rather than a measurement.
+    measured = sigma_range > 0.0
     if n >= 2:
         # Measured spread of the actual observations. np.cov wants variables in rows.
         sample_cov = np.cov(centroids.T, ddof=1)
         sample_cov = np.atleast_2d(sample_cov)
+        # INFORMATIVE means the spread is above the same 1e-9 floor this function already
+        # uses at :231 and below -- about 32 micrometres of standard deviation. Below it the
+        # "measurement" is the floor itself, and the floor is not a measurement.
+        measured = measured or bool(np.any(np.diag(sample_cov) > 1e-9))
         # Take the elementwise maximum so a lucky run of near-identical detections cannot
         # claim more precision than the sensor model supports, and a genuinely scattered
         # object is not flattered by the model.
         cov = np.maximum(sample_cov, model_cov)
     else:
         cov = model_cov
+
+    if not measured:
+        # MEASURED, 2026-09-14, two runs, 97 scored merge rows: returning the 1e-9 floor here
+        # made `channel_separation` a 0.47 mm equality test that emitted its full -8.0 cap on
+        # 41 of 41 non-intersecting pairs, and shrank `search_radius`'s uncertainty term to
+        # 0.15 mm. The docstring above already forbids this; the code did it anyway.
+        # Every consumer already has a written path for None and says so in its own words:
+        # `channel_separation` abstains, `search_radius` falls back to extent only, and
+        # object_manager_6.tracking_reach_m restores TRACKING_FALLBACK_RADIUS_M.
+        return None
 
     cov = cov / float(n)
     # Keep it symmetric positive-definite for the inversion below.
@@ -780,9 +799,31 @@ def channel_attributes(score, evidence_count, reference, max_log_odds, min_evide
         return Abstain(f"{evidence_count} optional term(s) comparable < {min_evidence}", measured=True)
     s = float(score)
     ref = float(reference)
-    if s >= ref:
+    if same_kind:
+        # MUTED ON SAME-KIND PAIRS, 2026-09-14. The owner's floor below already removed the
+        # negative arm here; this removes the POSITIVE one too, because it was not evidence
+        # either. MEASURED on the GA-493 final map (104 objects, real MiniLM) and on runs
+        # 20260914_174342 and _180343: on a same-label pair the composite is 0.85 + 0.15*c by
+        # construction -- label 0.25 + colour 0.36 + material 0.24 = 0.85 is EXACTLY the
+        # reference (config.yaml association weights against sim_threshold) and reads 1.0 on
+        # 244 of 312 known-different same-label pairs -- so the score could never fall below
+        # the reference and the channel could only vote FOR the merge. It did, on 249 of those
+        # 312 known-DIFFERENT pairs, at a median +1.13 nats, 37.8 % of the commit threshold;
+        # a pair whose descriptions were not comparable scored exactly 1.0 and took the full
+        # +2.0 ceiling, so the LEAST informed pair received the LARGEST vote. As an instance
+        # discriminator the score reaches AUC 0.5324 (geometry proxy), 0.5127 (ground truth)
+        # and 0.3461 (ground truth with an IoU floor of 0.1) -- at or below chance.
+        #
+        # MUTED, NOT REMOVED: the detail dict below still carries `same_kind`, so
+        # `attributes_measured` stays true for the GA-328 guard in `Hypothesis.decide`.
+        # The CROSS-KIND arms are untouched; that is where this channel does separate.
+        llr = 0.0
+    elif s >= ref:
         llr = float(max_log_odds) * (s - ref) / max(1.0 - ref, 1e-9)
     elif same_kind and same_kind_floor_zero:
+        # SUBSUMED by the same-kind mute above and kept only as the record of the ruling it
+        # implemented; `same_kind_floor_zero` and its config key are deliberately NOT removed,
+        # so nothing downstream changes meaning.
         # OWNER RULING 2026-09-14, after measuring on 20260914_174342: a SAME-KIND pair is never
         # penalised for wording. Two views of one object described by the VLM score ~0.78 with
         # qwen3.8-27b, below the 0.85 reference, so the negative arm cancelled the geometry that
@@ -804,7 +845,10 @@ def channel_attributes(score, evidence_count, reference, max_log_odds, min_evide
     # (pillow/cushion 0.61, painting/picture 0.41 against pillow/bed 0.54, cushion/sofa 0.63),
     # so a floor on it would be a false instrument. Equal strings, or unknown.
     return llr, {"score": round(s, 4), "evidence_count": int(evidence_count), "reference": ref,
-                 "same_kind": same_kind}
+                 "same_kind": same_kind,
+                 # ADDITIVE: a bundle must be able to say the channel was MUTED rather than
+                 # that it looked and scored zero. Those are different facts (working rule 5).
+                 "same_kind_muted": bool(same_kind)}
 
 
 class PairScore:
@@ -903,11 +947,22 @@ class PairScore:
     def as_record(self):
         return {
             "total_log_odds": None if self.vetoed else round(self.total, 4),
+            # ADDITIVE: what the other channels said with the veto set aside. `total_log_odds`
+            # keeps its meaning exactly -- None when vetoed. Without this a vetoed row records
+            # no number at all, so nobody can ask afterwards how close the pair came.
+            "total_if_unvetoed": round(self.total, 4),
             "vetoed": self.vetoed,
             "vetoed_by": list(self.vetoed_by),
             "evidence_count": self.evidence_count,
             "channels": self.channels,
             "abstentions": self.abstentions,
+            # ADDITIVE, 2026-09-14. `abstentions` is a name -> reason-text map and does not say
+            # which abstention MEASURED. `Hypothesis.decide` branches on `covis_witnessed`, which
+            # is "covisibility in channels OR in _measured_abstentions", so without this key no
+            # bundle can be replayed through that branch: an evaluator has to match the reason
+            # string, which is a copy of the producer's wording and rots the moment it is edited.
+            # A new key cannot break a reader that does not look for it (working rule 6).
+            "measured_abstentions": sorted(self._measured_abstentions),
         }
 
 
@@ -1116,15 +1171,26 @@ class Hypothesis:
         return float(sum(self.state.values()))
 
     def update(self, pair_score, frame_id=None):
-        if pair_score.vetoed:
-            # A veto is permanent for this pair: co-visibility and ontological disjointness
-            # are facts about the world, not evidence that later evidence can outweigh.
-            for name in pair_score.vetoed_by:
-                if name not in self.vetoed_by:
-                    self.vetoed_by.append(name)
+        # A VETO IS RE-MEASURED, NOT REMEMBERED (2026-09-14). It used to be APPENDED to a list
+        # that nothing ever cleared, so "reject" was permanent inside one Hypothesis object --
+        # while `_hypothesis_gc` in object_services.py deletes the whole hypothesis, veto
+        # included, for any pair not re-offered on the next sweep. Two contradictory
+        # persistence policies, and which one applied was decided by re-offer luck. The veto
+        # is a measurement of the pair's CURRENT state, exactly like every other channel, so
+        # it follows the same replace rule as `self.state` below.
+        #
+        # IT STILL WINS ON THE SWEEP IT FIRES: `total` returns -inf while `vetoed_by` is
+        # non-empty, `decide` answers "reject" on its first line, and the streak is broken.
+        # It no longer outlives the measurement that produced it.
+        #
+        # MEASURED on the two 2026-09-14 runs: the veto fires on 41 of 97 scored rows (42.3%),
+        # covering 37 of 116 distinct pairs. Effect on today's outcomes: 0 of 41 -- no pair it
+        # blocked reaches the threshold on the other channels (maximum 2.60 against 2.9957).
+        # The population this repairs -- a pair whose 2D overlap crosses the bar on a later
+        # sweep -- has size ZERO in every bundle on disk, because no bundle has enough sweeps.
+        self.vetoed_by = list(pair_score.vetoed_by)
+        if self.vetoed_by:
             self._streak = 0
-            self.history.append({"frame": frame_id, "veto": list(pair_score.vetoed_by)})
-            return self
         # REPLACE, never accumulate: each channel reports on the current state.
         #
         # A previous implementation only overwrote channels present in this update.  That
@@ -1140,7 +1206,13 @@ class Hypothesis:
         }
         attrs = pair_score.channels.get("attributes")
         self.history.append({"frame": frame_id,
-                             "total": round(self.total, 4),
+                             # NOT `self.total`: that is -inf on a vetoed sweep, and -inf is
+                             # not valid JSON for a strict reader of the decision log. This is
+                             # what the channels said with the veto set aside.
+                             "total": round(float(sum(self.state.values())), 4),
+                             # Present on EVERY entry now, empty when nothing vetoed. It keeps
+                             # the meaning it had in the old veto-only entry.
+                             "veto": list(self.vetoed_by),
                              "containment_unchecked": pair_score.containment_unchecked,
                              "evidence_count": pair_score.evidence_count,
                              "channels": {k: v.get("log_odds")
@@ -1276,7 +1348,13 @@ class AssocObject:
         self.descriptor_spread = descriptor_spread
         if self.descriptor_spread is None and len(self.descriptors) >= 2:
             vs = np.array([d.vector for d in self.descriptors])
-            self.descriptor_spread = float(np.mean(np.std(vs, axis=0)))
+            # E4, 2026-09-14. SAME UNITS AS THE QUANTITY IT DIVIDES. `channel_appearance`
+            # forms its distance as the FULL-VECTOR L2 norm and divides by this scale, so the
+            # scale must be the L2 norm of the per-component standard deviations, not their
+            # mean. The mean is smaller by about sqrt(dimension) -- 22.6 on a 512-d CLIP
+            # vector -- which floored the channel at -8.0 on 3 of 3 measured rows whatever
+            # the position data said.
+            self.descriptor_spread = float(np.linalg.norm(np.std(vs, axis=0)))
 
 
 class AssocContext:
@@ -1395,6 +1473,22 @@ def demo():
     print(f"  two detections, one frame : VETO ({s2.channels['covisibility']['n_covisible']} "
           f"shared frame) -> {h.decide(thr)[1]}")
 
+    # --- 2b. a veto is RE-MEASURED, not remembered ---------------------------------------
+    # The veto used to be appended to a list nothing cleared, so one sweep's measurement
+    # decided the pair forever -- while _hypothesis_gc deleted the same veto for any pair not
+    # re-offered. It still wins on the sweep it fires; it no longer outlives it.
+    h_flip = Hypothesis(("p1", "p2"))
+    h_flip.update(s2, frame_id=7)                       # co-visible + 2D-disjoint -> VETO
+    assert h_flip.decide(thr)[0] == "reject", h_flip.decide(thr)
+    assert h_flip.total == float("-inf")
+    assert h_flip.history[-1]["veto"] == ["covisibility"], h_flip.history[-1]
+    h_flip.update(score_pair(twin_a, twin_b, ctx_dup), frame_id=8)   # 2D IoU .997 -> abstain
+    assert h_flip.vetoed_by == [], h_flip.vetoed_by
+    assert h_flip.total > float("-inf"), h_flip.total
+    assert h_flip.history[-1]["veto"] == [], h_flip.history[-1]
+    assert h_flip.history[-1]["total"] == round(float(sum(h_flip.state.values())), 4)
+    print("  veto re-measured : vetoed sweep -> reject; the next clean sweep clears it")
+
     # --- 3. GA-101's rule in the new channels: nothing measurable => ABSTAIN, not 1.0 -----
     bare_a = AssocObject("b1", bbox=None, centroid=[0, 0, 0])
     bare_b = AssocObject("b2", bbox=None, centroid=[0.1, 0, 0])
@@ -1421,6 +1515,25 @@ def demo():
     assert s3b.channels["appearance"]["comparable_pairs"] == 1, s3b.channels["appearance"]
     print(f"  appearance scored  : kind={s3b.channels['appearance']['kind']}, "
           f"log_odds {s3b.channels['appearance']['log_odds']:+.2f}")
+
+    # --- 3c. SELF-SCALE: a scale nothing measured is None, not a floor --------------------
+    # Every one of these fails on the code as it stood on 2026-09-14 before this block was
+    # written, which is why they are here: the first returned a 1e-9 matrix instead of None,
+    # and the last was smaller by sqrt(512).
+    frozen = [_obs(1, [0, 0, 0], [1, 0, 0]), _obs(2, [0, 1, 0], [1, 0, 0])]
+    assert position_covariance(frozen) is None, "no sensor terms, no spread -> unmeasurable"
+    assert position_covariance(frozen, pose_sigma_m=0.05) is not None, "a sensor model IS a measurement"
+    moving = [_obs(1, [0, 0, 0], [1, 0, 0]), _obs(2, [0, 1, 0], [1.05, 0.02, 0])]
+    assert position_covariance(moving) is not None, "an observed spread IS a measurement"
+    sep_unmeasurable = channel_separation([0, 0, 0], None, [1.15, 0, 0], None, 300.0)
+    assert isinstance(sep_unmeasurable, Abstain), "separation abstains rather than emitting its floor"
+    vs_e4 = np.array([np.ones(512), np.ones(512) * 1.1])
+    ao_e4 = AssocObject("u", bbox=None, centroid=[0, 0, 0],
+                        descriptors=[ViewDescriptor(np.array([1.0, 0.0, 0.0]), v, kind="visual")
+                                     for v in vs_e4])
+    assert abs(ao_e4.descriptor_spread - float(np.linalg.norm(np.std(vs_e4, axis=0)))) < 1e-12, \
+        "the appearance scale is the L2 norm, the same unit as the distance it divides"
+    print("  self-scale         : unmeasured -> None; separation abstains; appearance scale in L2")
 
     # --- 4. the search radius WIDENS with uncertainty -------------------------------------
     tight = AssocObject("t", bbox=_box(0, 0, 0, 0.2, 0.2, 0.2),
@@ -1541,9 +1654,28 @@ def demo():
     cross_kind_low, _ = channel_attributes(0.78, 3, 0.85, 2.0, same_kind=False)
     assert same_kind_low == 0.0, same_kind_low
     assert cross_kind_low < -1.5, cross_kind_low
+    # SUBSUMED 2026-09-14: the same-kind mute runs BEFORE this parameter is consulted, so
+    # opting out of the floor no longer restores the negative arm. The parameter and its
+    # config key are kept so nothing downstream changes meaning. This assertion used to read
+    # `opted_out == cross_kind_low`; it is corrected here rather than deleted, so the record
+    # says the behaviour moved.
     opted_out, _ = channel_attributes(0.78, 3, 0.85, 2.0, same_kind=True, same_kind_floor_zero=False)
-    assert opted_out == cross_kind_low, (opted_out, cross_kind_low)
+    assert opted_out == 0.0, (opted_out, "same_kind_floor_zero no longer gates anything")
     print(f"  same-kind floor : same kind at 0.78 -> {same_kind_low:+.2f}, cross kind -> {cross_kind_low:+.2f}")
+
+    # --- 8b. the attribute channel is MUTED on same-kind pairs, in BOTH directions --------
+    # MEASURED: on a same-label pair the composite is 0.85 + 0.15*c by construction, so the
+    # score cannot fall below the reference and the channel could only ever vote FOR a merge.
+    # It voted for 249 of 312 known-DIFFERENT same-label pairs at a median +1.13 nats.
+    muted_hi, det_hi = channel_attributes(0.99, 3, 0.85, 2.0, same_kind=True)
+    assert muted_hi == 0.0, muted_hi                    # the positive arm is gone too
+    assert det_hi["same_kind_muted"] is True, det_hi    # and the bundle SAYS it was muted
+    ceil_case, _ = channel_attributes(1.0, 3, 0.85, 2.0, same_kind=True)
+    assert ceil_case == 0.0, ceil_case                  # the least-informed pair no longer wins
+    cross_hi, det_cross = channel_attributes(0.99, 3, 0.85, 2.0, same_kind=False)
+    assert cross_hi > 0.0 and det_cross["same_kind_muted"] is False, (cross_hi, det_cross)
+    print(f"  same-kind mute  : same kind at 0.99 -> {muted_hi:+.2f} (was {2.0 * (0.99 - 0.85) / 0.15:+.2f}), "
+          f"cross kind at 0.99 -> {cross_hi:+.2f}")
     assert isinstance(channel_attributes(1.0, 0, 0.85, 2.0), Abstain), "label alone is not evidence"
     assert isinstance(channel_attributes(None, 3, 0.85, 2.0), Abstain)
     # wired through score_pair: a same-spot different-kind pair loses to a strong overlap
@@ -1584,7 +1716,25 @@ def demo():
     for f in (1, 2):
         h_apart.update(score_pair(w1, w2, apart), frame_id=f)
         d_apart2 = h_apart.decide(thr8, min_consecutive=2)
-    assert d_apart2[0] == "hold" and d_apart2[1].startswith("no positive overlap"), d_apart2
+    # CORRECTED 2026-09-14, and the correction is the point. This used to assert the
+    # "no positive overlap" GUARD fired here, because attributes contributed +2.0 and carried
+    # a same-kind pair over the threshold on room evidence alone. The same-kind mute removes
+    # that contribution, so this pair no longer REACHES the threshold and the guard is never
+    # consulted -- a stronger refusal by a different route (working rule 15: the fix removed
+    # what made the neighbouring branch reachable). Both facts are asserted, so neither the
+    # mute nor the guard can regress unnoticed.
+    assert d_apart2[0] == "hold" and d_apart2[1].startswith("log-odds"), d_apart2
+    # ... and the guard ITSELF still fires, on a pair that does reach the threshold without
+    # any positive overlap. Room evidence alone does it when the map has enough rooms:
+    # log(25) = 3.22 > log(20) = 2.996.
+    many_rooms = AssocContext(map_volume_m3=300.0, n_rooms=25, cost_ratio=20.0,
+                              use_ontology=False, attribute_score_fn=lambda x, y: (1.0, 3, True))
+    h_guard = Hypothesis(("w1", "w2"))
+    for f in (1, 2):
+        h_guard.update(score_pair(w1, w2, many_rooms), frame_id=f)
+        d_guard = h_guard.decide(thr8, min_consecutive=2)
+    assert h_guard.total >= thr8, (h_guard.total, thr8)
+    assert d_guard[0] == "hold" and d_guard[1].startswith("no positive overlap"), d_guard
     # a gate refusal between two passing sweeps breaks the streak
     h_gap = Hypothesis(("v1", "v2"))
     h_gap.update(score_pair(v1, v2, same), frame_id=1)

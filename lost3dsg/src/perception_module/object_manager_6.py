@@ -177,8 +177,14 @@ def tracking_reach_m(obj, fallback_m=None):
     """
     if fallback_m is None:
         fallback_m = TRACKING_FALLBACK_RADIUS_M
+    # E3, 2026-09-14: `centroid=` is NOT passed. `obj.centroid` is the object's creation-time
+    # point and never moves afterwards, so passing it made the reach test and the separation
+    # channel measure from a stale position. With the argument absent AssocObject derives the
+    # centroid from the box handed in just above -- the box actually being compared. MEASURED
+    # on the GA-493 bundle: on 7 of 40 scored pairs the engine's recorded distance differed
+    # from the distance between the two persisted box centres by more than 1 cm, up to 0.18 m.
     ao = AssocObject(object_id=getattr(obj, "object_id", None) or getattr(obj, "label", None),
-                     bbox=getattr(obj, "bbox", None), centroid=getattr(obj, "centroid", None),
+                     bbox=getattr(obj, "bbox", None),
                      observations=getattr(obj, "observations", None) or [])
     reach, basis = search_radius(ao, None)
     if ao.covariance is None:
@@ -1545,7 +1551,15 @@ class ObjectManagerService(Node):
         pose = getattr(self, "latest_agent_pose", None)
         if pose is None:
             return
-        centroid = getattr(obj, "centroid", None)
+        # E2, 2026-09-14. The Observation records where this object was measured IN THIS
+        # FRAME. `obj.centroid` is written once, when the object is created, and by no later
+        # code, so reading it here put ONE identical point into every Observation of the
+        # object and the sample covariance in association.position_covariance came out
+        # exactly zero -- which is the root of the separation channel's -8.0 floor on 41 of
+        # 41 scored pairs. `obj.bbox` at this point is THIS view's box, so its centre is the
+        # per-view position the spread term was written to consume. The old value stays as
+        # the fallback for an object with no box.
+        centroid = _bbox_centre(getattr(obj, "bbox", None)) or getattr(obj, "centroid", None)
         if centroid is None:
             return
         try:
