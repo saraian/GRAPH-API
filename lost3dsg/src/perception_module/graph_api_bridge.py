@@ -130,16 +130,44 @@ _node = None
 app.mount("/viewer", StaticFiles(directory=str(VIEWER_DIR)), name="viewer")
 
 
+def _truthy(value):
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _viewer_path():
-    """Use the robot dashboard only for a physical run."""
-    try:
-        from config import CFG as runtime_cfg
-        physical = not bool(runtime_cfg.get("simulation", True))
-    except (ImportError, AttributeError, TypeError):
-        physical = os.environ.get("PAL_ROBOT_CONNECTED", "").lower() in (
-            "1", "true", "yes", "on")
+    """The TIAGO dashboard is OPT-IN. Everything else gets the normal viewer.
+
+    THE BUG THIS REPLACES, and it is a default being read as a decision. The old test was
+    `physical = not bool(CFG.get("simulation", True))`. The `True` default says the author
+    meant "assume a simulation unless told otherwise" -- but `config.py` ships
+    `"simulation": False` in its own `_DEFAULTS`, so the key ALWAYS exists and the default is
+    never reached. Nothing anywhere sets it: no `simulation` key in `config.yaml`, none in the
+    launcher, no environment variable. Measured on a plain checkout: `CFG["simulation"]` is
+    `False`, so `physical` is `True`, so EVERY run -- every Habitat simulation included --
+    was served `tiago_viewer.html`.
+    That file has no SPATIAL 3D tab and no `scene3d` at all, which is where "the live
+    dashboard with the 3D viz" went: shadowed, never removed.
+    The `PAL_ROBOT_CONNECTED` fallback could not help, because it sat in the `except
+    ImportError` branch and the import succeeds.
+
+    SO THE SIGNAL IS POSITIVE NOW. A robot dashboard appears when something SAYS there is a
+    robot -- `PAL_ROBOT_CONNECTED` in the environment, or `robot_dashboard: true` in the
+    config -- and the absence of a signal means the ordinary viewer. `simulation` is left
+    alone deliberately: `object_manager_6.py`, `perception_2.py` and `utils.py` read it for
+    the agent pose, and changing its default to fix a dashboard would move perception
+    behaviour with it.
+    """
     tiago = VIEWER_DIR / "tiago_viewer.html"
-    return tiago if physical and tiago.exists() else VIEWER_DIR / "viewer.html"
+    if not tiago.exists():
+        return VIEWER_DIR / "viewer.html"
+    on_robot = _truthy(os.environ.get("PAL_ROBOT_CONNECTED", ""))
+    if not on_robot:
+        try:
+            from config import CFG as runtime_cfg
+            on_robot = _truthy(runtime_cfg.get("robot_dashboard", False))
+        except (ImportError, AttributeError, TypeError):
+            on_robot = False
+    return tiago if on_robot else VIEWER_DIR / "viewer.html"
 
 @app.get("/", include_in_schema=False)
 def viewer(request: Request = None):

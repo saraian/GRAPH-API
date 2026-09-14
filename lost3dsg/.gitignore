@@ -12,6 +12,8 @@ output/
 # the runtime config and the test config are part of the package
 !src/perception_module/config.yaml
 !test/smoke_config.yaml
+# the on-robot config ships too: it is the only way to reach the TIAGO dashboard from a file
+!test/tiago.yaml
 *.rviz
 docker
 dockerfiles

@@ -12,6 +12,13 @@ import sys
 _DEFAULTS = {
     # pre-existing flag (this module used to contain only this line)
     "simulation": False,
+    # THE ROBOT DASHBOARD IS OPT-IN (2026-09-14). `tiago_viewer.html` used to be chosen by
+    # `not simulation`, and because the line above ships False and nothing ever sets it, every
+    # run -- simulations included -- got the physical-TIAGO dashboard, which has no SPATIAL 3D
+    # tab. A separate positive key, so the choice is made by something SAYING there is a robot
+    # rather than by the absence of a flag. `PAL_ROBOT_CONNECTED` in the environment does the
+    # same thing. `simulation` is untouched: perception reads it for the agent pose.
+    "robot_dashboard": False,
     "vlm": {
         # GA-209. Crops per VLM request. 0 or 1 keeps the previous behaviour, one call per
         # crop at crop_concurrency. Measured 2026-09-01: five separate calls at concurrency

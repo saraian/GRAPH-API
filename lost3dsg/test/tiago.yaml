@@ -1,0 +1,31 @@
+# ON-ROBOT RUN CONFIG — the physical TIAGO.
+#
+# Select it at launch:
+#     ./run_sim.sh --config lost3dsg/test/tiago.yaml
+# or point the loader straight at it:
+#     GRAPH_API_CONFIG=/graph_api/lost3dsg/test/tiago.yaml
+#
+# THIS IS AN OVERLAY, not a whole configuration. `config.py` merges it onto its own
+# `_DEFAULTS`, so every key left out here keeps the default. Only the keys that differ for a
+# physical robot belong in this file.
+
+# THE ROBOT DASHBOARD. `tiago_viewer.html` instead of the ordinary `viewer.html`.
+#
+# THE ONLY KEY THIS FILE REALLY NEEDS, and the reason it exists (owner, 2026-09-14: "the tiago
+# viewer should be tied to the TIAGO mode (so the on-robot mode), but not be the default mode").
+# Until then the bridge picked the dashboard with `not simulation`, and `simulation` ships False
+# and is set by nothing, so EVERY run got the robot dashboard -- Habitat simulations included.
+# The signal is positive now: the robot dashboard appears when a config or the environment says
+# there is a robot. `PAL_ROBOT_CONNECTED=1` does the same thing without a config file.
+robot_dashboard: true
+
+# STATED, NOT CHANGED. This is already the value in `config.py`'s defaults; it is written here
+# because an on-robot config that is silent about it reads as an oversight. Perception uses it
+# for the configured agent pose (`object_manager_6.py`, `perception_2.py`, `utils.py`) -- it is
+# NOT what selects the dashboard, and it has not selected it since 2026-09-14.
+simulation: false
+
+# NOTHING ELSE IS SET ON PURPOSE. Endpoints, camera topics, frames and the map belong to a
+# particular robot and a particular network, and inventing plausible values here would produce a
+# file that looks configured and is wrong. Put them in `config.local.yaml` beside this file --
+# it is gitignored, merges key by key over this one, and announces which keys it touched.
