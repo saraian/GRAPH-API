@@ -128,6 +128,12 @@ def generate_launch_description():
         description="Secondi di attesa prima di avviare i nodi di percezione",
     )
 
+    perception_executable_arg = DeclareLaunchArgument(
+        'perception_executable',
+        default_value='perception_2.py',
+        description="Eseguibile di percezione installato dal pacchetto lost3dsg",
+    )
+
     bridge_delay_arg = DeclareLaunchArgument(
         'bridge_delay',
         default_value='5.0',
@@ -149,6 +155,20 @@ def generate_launch_description():
         description="Sorgente della posa: SLAM RGB-D RTAB-Map oppure ground truth Habitat",
     )
 
+    rtabmap_session_mode_arg = DeclareLaunchArgument(
+        'rtabmap_session_mode',
+        default_value=EnvironmentVariable('RTABMAP_SESSION_MODE', default_value='mapping'),
+        choices=['mapping', 'localization'],
+        description="Mapping su un database nuovo oppure localizzazione su una copia dichiarata",
+    )
+
+    rtabmap_database_path_arg = DeclareLaunchArgument(
+        'rtabmap_database_path',
+        default_value=EnvironmentVariable(
+            'RTABMAP_DATABASE_PATH', default_value='/root/.ros/rtabmap.db'),
+        description="Database scrivibile della sessione RTAB-Map corrente",
+    )
+
     odom_args_arg = DeclareLaunchArgument(
         'odom_args',
         default_value='--Odom/Strategy 1 --Odom/GuessMotion false --Odom/ResetCountdown 0',
@@ -161,11 +181,22 @@ def generate_launch_description():
     collect_metrics = LaunchConfiguration('collect_metrics')
     metrics_output_dir = LaunchConfiguration('metrics_output_dir')
     perception_delay = LaunchConfiguration('perception_delay')
+    perception_executable = LaunchConfiguration('perception_executable')
     bridge_delay = LaunchConfiguration('bridge_delay')
     rtabmap_output = LaunchConfiguration('rtabmap_output')
     localization_mode = LaunchConfiguration('localization_mode')
+    rtabmap_session_mode = LaunchConfiguration('rtabmap_session_mode')
+    rtabmap_database_path = LaunchConfiguration('rtabmap_database_path')
     use_rtabmap_tf = PythonExpression([
         "'true' if '", localization_mode, "' == 'rtabmap' else 'false'"
+    ])
+    use_existing_rtabmap_database = PythonExpression([
+        "'true' if '", rtabmap_session_mode, "' == 'localization' else 'false'"
+    ])
+    rtabmap_args = PythonExpression([
+        "'--RGBD/NeighborLinkRefining false' + ",
+        "('' if '", rtabmap_session_mode,
+        "' == 'localization' else ' --delete_db_on_start')",
     ])
 
     # ------------------------------------------------------------
@@ -198,8 +229,9 @@ def generate_launch_description():
             'rtabmap_viz': 'false',
             'publish_tf_odom': 'false',
             'publish_tf_map': use_rtabmap_tf,
-            'database_path': '/root/.ros/rtabmap.db',
-            'rtabmap_args': '--delete_db_on_start --RGBD/NeighborLinkRefining false',
+            'database_path': rtabmap_database_path,
+            'localization': use_existing_rtabmap_database,
+            'rtabmap_args': rtabmap_args,
             'output': rtabmap_output,
         }.items(),
     )
@@ -209,7 +241,7 @@ def generate_launch_description():
     # ------------------------------------------------------------
     perception_node = Node(
         package='lost3dsg',
-        executable='perception_2.py',
+        executable=perception_executable,
         name='perception_2',
         output='screen',
     )
@@ -302,6 +334,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         localization_mode_arg,
+        rtabmap_session_mode_arg,
+        rtabmap_database_path_arg,
         odom_args_arg,
         graph_api_bridge_dir_arg,
         use_rviz_arg,
@@ -309,6 +343,7 @@ def generate_launch_description():
         collect_metrics_arg,
         metrics_output_dir_arg,
         perception_delay_arg,
+        perception_executable_arg,
         bridge_delay_arg,
         rtabmap_output_arg,
         SetEnvironmentVariable('GRAPH_API_OUTPUT_DIR', metrics_output_dir),

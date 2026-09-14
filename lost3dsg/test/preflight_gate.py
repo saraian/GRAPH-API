@@ -346,31 +346,28 @@ def a3_policy_reached_container(expect_policy):
     return (not mismatches), {"checked": seen, "mismatches": mismatches}
 
 
-# GA-438 (2026-09-10). THE HUB MODELS A RUN LOADS, enumerated from the source because no list
-# existed anywhere. Owner policy, 2026-09-10: "models should be already downloaded and cached
-# beforehand", so a download DURING a run is a fault and a4 asserts these instead of recording them.
-# The previous note here -- "a cache miss is a first-run download and not a fault" -- was right when
-# it was written and is not right now.
-#
-# THREE OF THE FOUR LOAD ON EVERY RUN, WHATEVER THE BACKEND, and that is the part the old check
-# missed: it sat inside `if backend == "local"`, so a cloud-backend run could pass a4 and then
-# download three models. visual_reid picks dinov2-base over dinov2-small on MEASURED VRAM, so both
-# must be present or the run downloads whichever one it chooses.
+# GA-438 (2026-09-10), corrected 2026-09-12. The gate asserts only models on the active runtime
+# path. The unified Regolo VLM supplies the 2-D detections, VitSAM supplies the local masks, and
+# the local path computes its per-detection appearance vector with CLIP. The visual-reid module is
+# disabled and unimported, so its DINOv2 checkpoints are not run dependencies. MiniLM remains the
+# first-choice semantic embedder in nlp_utils.py and must be cached before an offline run;
+# Word2Vec is its fallback.
 HF_MODELS_EVERY_RUN = (
     ("sentence-transformers/all-MiniLM-L6-v2", "nlp_utils.py, semantic matching"),
-    ("facebook/dinov2-small", "visual_reid.py, crop embedder (ViT-S/14)"),
-    ("facebook/dinov2-base", "visual_reid.py, chosen over -small on measured VRAM"),
 )
+# Kept as a named tuple for callers/tests that distinguish common and backend-specific models.
+# The current local backend uses the unified VLM plus VitSAM ONNX files and a local CLIP appearance
+# encoder; it does not use a separate HF detector.
 HF_MODELS_LOCAL_BACKEND = (
-    ("google/owlv2-base-patch16-ensemble", "models.py, the in-line detector"),
+    ("openai/clip-vit-base-patch32", "clip_embedder.py, runtime appearance embeddings"),
 )
 
 
-def _hf_models_present(local_backend):
+def _hf_models_present(local_backend, local_models=None):
     """-> (cache root, [missing model ids], {present model id: snapshot path}).
 
-    FILES ON DISK, never a load: a4 runs before the stack and loading OWLv2 plus the SAM pair would
-    cost minutes and a lot of memory in the one probe whose job is to be cheap.
+    FILES ON DISK, never a load: a4 runs before the stack and verifies the cache the node will use
+    without starting another model instance.
 
     A DIRECTORY IS NOT A CACHED MODEL. huggingface creates models--<org>--<name> before it has
     finished fetching, and an interrupted download leaves the directory with an empty snapshots/.
@@ -384,7 +381,8 @@ def _hf_models_present(local_backend):
     # catch, and a probe that reads the wrong cache becomes the defect it was written for. Same
     # shape as a8's install-tree test: outside the container, assert nothing rather than assert
     # about the wrong machine. PREFLIGHT_HF_CACHE names the cache explicitly when it is known.
-    wanted = list(HF_MODELS_EVERY_RUN) + (list(HF_MODELS_LOCAL_BACKEND) if local_backend else [])
+    backend_models = HF_MODELS_LOCAL_BACKEND if local_models is None else tuple(local_models)
+    wanted = list(HF_MODELS_EVERY_RUN) + (list(backend_models) if local_backend else [])
     missing, seen = [], {}
     # THE LOADER READS $HF_HOME/hub, SO ONLY THAT COUNTS. A recursive search found a stale
     # sentence-transformers directory at the cache ROOT -- blobs and refs, no snapshots dir the
@@ -405,8 +403,9 @@ def _hf_models_present(local_backend):
     return hf, missing, seen
 
 
-def _hub_why(missing, hf):
-    why = {m: w for m, w in list(HF_MODELS_EVERY_RUN) + list(HF_MODELS_LOCAL_BACKEND)}
+def _hub_why(missing, hf, local_models=None):
+    backend_models = HF_MODELS_LOCAL_BACKEND if local_models is None else tuple(local_models)
+    why = {m: w for m, w in list(HF_MODELS_EVERY_RUN) + list(backend_models)}
     return ("these hub models are NOT cached under " + hf + ": "
             + "; ".join(f"{m} ({why.get(m, 'loaded by this stack')})" for m in missing)
             + ". Owner policy 2026-09-10: models are cached beforehand, so a download inside a run "
@@ -430,11 +429,8 @@ def a4_perception_twice(frame=None):
     backend = get_perception_backend(cfgmod.CFG)
     name = type(backend).__name__
 
-    # GA-438. THE ALWAYS-LOADED MODELS ARE ASSERTED FOR EVERY BACKEND, above the local/cloud split.
-    # The cache check used to sit INSIDE `backend == "local"`, so a cloud run asserted nothing about
-    # models it loads regardless: nlp_utils loads MiniLM on every run and visual_reid loads one of
-    # the two dinov2 sizes on every run. A cloud-backend run could pass a4 and then download three
-    # models inside its first perception cycle.
+    # GA-438. MiniLM is the only always-loaded hub model. Local perception additionally loads the
+    # configured CLIP appearance encoder; no disabled visual-reid model is part of the active path.
     _hf_root, _always_missing, _always_seen = _hf_models_present(local_backend=False)
     _in_container = os.path.isdir(INSTALL_TREE)
     if _always_missing and _in_container:
@@ -455,26 +451,38 @@ def a4_perception_twice(frame=None):
     # GA-434 (finding: experiment lane, 2026-09-09; verified in the source here). THE NAME CHECK
     # BELOW WOULD REFUSE A LEGITIMATE LOCAL RUN. On `perception.backend: "local"` the factory returns
     # LocalPerceptionBackend, but the pipeline NEVER ASKS IT ANYTHING: detection_pipeline gates the
-    # backend call on `backend_type != "local"`, and perception_2 builds OWLv2() and VitSam() in-line
-    # instead. So the stub's empty return is not on the detection path, and a4's premise is true of
-    # the OBJECT it inspects and false of the CODE that runs (rule 51).
+    # backend call on `backend_type != "local"`, and perception_2 uses the unified VLM plus VitSAM
+    # in-line instead. So the stub's empty return is not on the detection path, and a4's premise is
+    # true of the OBJECT it inspects and false of the CODE that runs (rule 51).
     #
     # What the local path actually depends on is FILES, so that is what is asserted. Deliberately NOT
-    # by loading the models: a4 runs before the stack, and loading OWLv2 and the SAM pair here would
-    # cost minutes and a lot of memory in the one probe whose job is to be cheap.
+    # by loading the models: a4 runs before the stack, and loading the semantic model and SAM pair
+    # here would cost time and memory in the one probe whose job is to be cheap.
     local_cfg = (getattr(cfgmod, "CFG", {}) or {}).get("perception", {}).get("backend", "local")
     if str(local_cfg).lower() == "local":
         paths = (cfgmod.CFG.get("paths") or {})
         want = {"vitsam_encoder": paths.get("vitsam_encoder"), "vitsam_decoder": paths.get("vitsam_decoder")}
         missing = {k: v for k, v in want.items() if not (v and os.path.isfile(v) and os.path.getsize(v) > 0)}
-        hf, hub_missing, hub_seen = _hf_models_present(local_backend=True)
-        cached = "google/owlv2-base-patch16-ensemble" not in hub_missing
-        detail = {"backend": name, "path": "in-line (OWLv2 + VitSam), the stub is never called",
+        appearance = (getattr(cfgmod, "CFG", {}) or {}).get("appearance") or {}
+        appearance_enabled = str(appearance.get("enabled", True)).strip().lower() not in (
+            "0", "false", "off", "no"
+        )
+        appearance_model = str(
+            appearance.get("model_id", "openai/clip-vit-base-patch32")
+        )
+        local_models = (
+            ((appearance_model, "clip_embedder.py, runtime appearance embeddings"),)
+            if appearance_enabled else ()
+        )
+        hf, hub_missing, hub_seen = _hf_models_present(
+            local_backend=True, local_models=local_models
+        )
+        detail = {"backend": name, "path": "in-line (unified VLM + VitSAM + CLIP), the stub is never called",
                   "vitsam": {k: (v, os.path.getsize(v) if v and os.path.isfile(v) else None)
                              for k, v in want.items()},
-                  "owlv2_weights_cached": cached, "hf_cache_root": hf,
+                  "appearance": {"enabled": appearance_enabled, "model_id": appearance_model},
                   "hub_models_present": hub_seen, "hub_models_missing": hub_missing,
-                  "note": "the segmenter's files and the hub models are ASSERTED, both from disk and "
+                  "note": "the segmenter's files and the required hub models are ASSERTED, both from disk and "
                           "never by loading them. Whether the models actually detect is the first "
                           "cycle's answer, not this probe's."}
         if missing:
@@ -486,7 +494,7 @@ def a4_perception_twice(frame=None):
         # path can start at all, and it was a4's contract before today; putting the hub check first
         # would change which reason a4 gives for a fault it already caught.
         if hub_missing and _in_container:
-            detail["why"] = _hub_why(hub_missing, hf)
+            detail["why"] = _hub_why(hub_missing, hf, local_models=local_models)
             return False, detail
         return True, detail
 
@@ -944,6 +952,140 @@ def a7_source_frozen(expect, executed_tree=None, copy_source=None, live_roots=No
     return (not mismatches), detail
 
 
+# GA-423. a7 polices drift DURING a run: launcher stamp -> container copy -> teardown. It has
+# no opinion about whether this tree matches THE RUN THIS ONE IS BEING COMPARED AGAINST, and
+# that comparison was mechanised NOWHERE. On 2026-09-09 it existed because one lane read two
+# digests by hand and caught /DATA/FOUND dirty before run 2 -- 8 modified files, 511 insertions,
+# of which found/admission.py and found/store.py are reached by the hook the container runs.
+# Launching blind would have given run 2 three behavioural differences from run 1 and made all
+# four pre-registered readings unattributable. A person caught it. Nothing would have.
+
+
+def _recorded_roots(report):
+    """Pull {root: digest} out of a bundle's preflight.json, from a7's own recorded detail.
+
+    Reads what a7 MEASURED IN THE CONTAINER, not what the launcher stamped: the stamp says
+    what was intended and the measurement says what was there. Comparing measurements is the
+    only way to answer "did the same code run twice".
+    """
+    for row in report.get("probes", []):
+        if row.get("id") != "a7":
+            continue
+        detail = row.get("detail") or {}
+        roots = {}
+        for section in ("frozen", "live_sampled"):
+            for name, entry in (detail.get(section) or {}).items():
+                sha = (entry or {}).get("sha256_16")
+                if sha:
+                    roots[name] = sha
+        return roots, row.get("ok")
+    return None, None
+
+
+def compare_bundles(baseline_path, candidate_path):
+    """Root-by-root digest comparison of two bundles' gate records. Offline, no container.
+
+    Exposed as `--compare-bundles A,B` so the check GA-423 says is mechanised nowhere can be
+    run on two bundles that already exist, by a reader who was not there at launch.
+    """
+    out = {"baseline": str(baseline_path), "candidate": str(candidate_path)}
+    try:
+        with open(baseline_path) as fh:
+            base_report = json.load(fh)
+        with open(candidate_path) as fh:
+            cand_report = json.load(fh)
+    except (OSError, ValueError) as exc:
+        out["unreadable"] = f"{type(exc).__name__}: {exc}"
+        return out
+    base, base_ok = _recorded_roots(base_report)
+    cand, cand_ok = _recorded_roots(cand_report)
+    if base is None or cand is None:
+        out["unreadable"] = ("a bundle's preflight.json carries no a7 row, so it never recorded "
+                             "which tree it ran")
+        return out
+    out["baseline_roots"], out["candidate_roots"] = base, cand
+    # A bundle whose own a7 did not pass never established which tree it ran, so it cannot be
+    # the fixed end of a comparison. Recorded rather than silently compared.
+    out["baseline_a7"], out["candidate_a7"] = base_ok, cand_ok
+    shared = sorted(set(base) & set(cand))
+    out["differs"] = sorted(n for n in shared if base[n] != cand[n])
+    out["only_in_baseline"] = sorted(set(base) - set(cand))
+    out["only_in_candidate"] = sorted(set(cand) - set(base))
+    out["compared"] = shared
+    out["comparable"] = (not out["differs"] and not out["only_in_baseline"]
+                         and not out["only_in_candidate"] and base_ok is True)
+    return out
+
+
+def a14_source_comparable(baseline=None, live_roots=None):
+    """This run's trees must match the run it DECLARES itself comparable to.
+
+    Only in the roster when --compare-against names a baseline bundle. Declaring one IS the
+    claim of comparability, so there is no case where this probe has nothing to assert: a run
+    that declares no baseline claims no comparability and never reaches here.
+
+    ponytail: no new artefact. a7 already writes every root's measured digest into
+    preflight.json, so the baseline's own gate record is the reference.
+    """
+    if not baseline:
+        return SKIPPED, {"reason": "no --compare-against given; a14 should not have been in the "
+                                   "roster without one"}
+    path = baseline
+    if os.path.isdir(path):
+        path = os.path.join(path, "preflight.json")
+    if not os.path.isfile(path):
+        return SKIPPED, {"reason": f"declared comparison baseline has no gate record at {path}; "
+                                   "the claim that this run is comparable to it cannot be checked",
+                         "baseline": str(baseline)}
+    try:
+        with open(path) as fh:
+            base_report = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return SKIPPED, {"reason": f"baseline gate record unreadable: {type(exc).__name__}: {exc}",
+                         "baseline": path}
+    base, base_ok = _recorded_roots(base_report)
+    if not base:
+        return SKIPPED, {"reason": "baseline's preflight.json carries no a7 root digests, so it "
+                                   "never recorded which tree it ran", "baseline": path}
+
+    # Measure THIS run the same way a7 does, from the same roots, so the two sides of the
+    # comparison are the same instrument reading the same kind of thing.
+    roots = dict(FROZEN_ROOTS)
+    roots.update(live_roots if live_roots is not None else LIVE_ROOTS)
+    here = {}
+    for name, root in roots.items():
+        if os.path.isdir(root):
+            sha, _n = tree_sha(root)
+            here[name] = sha
+
+    shared = sorted(set(base) & set(here))
+    differs = {n: {"baseline": base[n], "this_run": here[n]} for n in shared if base[n] != here[n]}
+    missing_here = sorted(set(base) - set(here))
+    extra_here = sorted(set(here) - set(base))
+    detail = {"baseline": path, "baseline_roots": base, "this_run_roots": here,
+              "compared": shared, "differs": differs,
+              "in_baseline_only": missing_here, "in_this_run_only": extra_here,
+              "baseline_a7_verdict": base_ok}
+    if not shared:
+        return SKIPPED, dict(detail, reason="the two runs share no named root, so nothing was "
+                                            "compared; a verdict here would assert nothing")
+    if base_ok is not True:
+        # The fixed end of a comparison must itself be established. A baseline whose own a7
+        # did not pass never proved which tree it ran (working rule 2).
+        return False, dict(detail, why=(
+            "the declared baseline's own a7 did not pass, so it never established which tree it "
+            "ran. Comparing against it would inherit that uncertainty while reporting a pass."))
+    if differs or missing_here or extra_here:
+        moved = ", ".join(sorted(differs) + missing_here + extra_here)
+        return False, dict(detail, why=(
+            f"this run declares itself comparable to {path} and its trees differ ({moved}). A "
+            "result read against that baseline would measure SOURCE DRIFT, not the algorithm. "
+            "a7 cannot catch this: it compares this run against its own launcher stamp, so both "
+            "runs can be internally consistent and still be different systems."))
+    return True, detail
+
+
+
 # The modules the container starts as nodes. Every one has a `__main__` guard, so importing
 # them runs their top-level imports and nothing else — which is precisely the failure mode:
 # a node that cannot import dies seconds after a passing gate, and the gate says nothing.
@@ -1285,8 +1427,6 @@ A12_ALLOWED_FILES = {
     "src/perception_module/gt_codec.py": "the run-length codec",
     "src/perception_module/detection_archive.py": "the archive join: habitat_gt_* row keys, validation only",
     "src/perception_module/perception_2.py": "subscription + cache + hand-off to the archive; functions audited below",
-    "src/perception_module/perception_parallel.py":
-        "maintained perception_2.py mirror; the same archive functions are audited below",
     "src/perception_module/ga493_replay_capture.py":
         "opt-in replay recorder; reads only the GT enable switch to refuse capture and rejects GT-shaped keys",
     "src/perception_module/test_perception_smoke.py": "smoke test",
@@ -1372,7 +1512,10 @@ def a12_gt_isolation(root=None):
         files = sorted(files + ["../run_sim.sh"])
     not_allowed = [f for f in files if f not in A12_ALLOWED_FILES]
     bad_functions_by_file = {}
-    for filename in ("perception_2.py", "perception_parallel.py"):
+    # perception_parallel.py was folded into perception_2.py (one node, backend chosen by
+    # perception_parallel.enabled). Auditing a file that no longer exists would make half of
+    # this probe pass vacuously forever, which reads exactly like an earned pass.
+    for filename in ("perception_2.py",):
         path = os.path.join(root, "src", "perception_module", filename)
         bad_functions = {}
         if not os.path.isfile(path):
@@ -1389,19 +1532,16 @@ def a12_gt_isolation(root=None):
                     bad_functions[node.name] = node.lineno
         bad_functions_by_file[filename] = bad_functions
     p2_bad_functions = bad_functions_by_file["perception_2.py"]
-    parallel_bad_functions = bad_functions_by_file["perception_parallel.py"]
-    ok = not not_allowed and not p2_bad_functions and not parallel_bad_functions
+    ok = not not_allowed and not p2_bad_functions
     return ok, {
         "root": root,
         "files_with_gt_tokens": files,
         "not_allowed_files": not_allowed,
         "perception_2_functions_not_allowed": p2_bad_functions,
-        "perception_parallel_functions_not_allowed": parallel_bad_functions,
         "pose_source": "simulator odometry (habitat_feed_node /odom + TF) re-anchored by rtabmap map->odom; NOT asserted (design question 1)",
         "reason": "" if ok else (
             f"ground-truth tokens outside the allow-list: files {not_allowed}, "
-            f"perception_2 functions {p2_bad_functions}, "
-            f"perception_parallel functions {parallel_bad_functions}"),
+            f"perception_2 functions {p2_bad_functions}"),
     }
 
 
@@ -1476,7 +1616,16 @@ PROBES = {
     "a10": ("frame_age_vs_rejected", a10_frame_age_rejected_frames),
     "a11": ("tf_buffer_outlasts_frames", a11_tf_buffer_outlasts_frame_window),
     "a12": ("gt_isolation", a12_gt_isolation),
+    # GA-423. Declared here so the two-edit registration assertion below covers it, but it
+    # joins the ROSTER only when --compare-against names a baseline (see all_probes). A run
+    # that declares no baseline claims no comparability, so there is nothing for it to assert
+    # and it must not sit in the default set recording a SKIP that fails every ordinary run.
+    "a14": ("source_comparable", a14_source_comparable),
 }
+# Probes that are declared but join the roster only when their subject is declared too.
+# Keeping them OUT of the default set is not the same as not looking: a14 blocks whenever a
+# comparison is claimed, and a run that claims none is not asserting comparability.
+CONDITIONAL_PROBES = {"a14"}
 
 # PROBES THAT ONLY MAKE SENSE AFTER THE STACK IS UP, kept in a SEPARATE dict on purpose.
 #
@@ -1513,6 +1662,32 @@ def _kv(s):
     return out
 
 
+def _kv_roots(pairs):
+    """Parse the repeatable --live-root NAME=PATH into the mapping a7 and a14 sample.
+
+    GA-423, found while adding a14. `--live-root` was accepted by argparse, printed in the
+    help, and NAMED IN a7'S OWN ERROR MESSAGE as the remedy for `live_roots_undeclared` --
+    and nothing ever read it. `LIVE_ROOTS` was {} and no caller passed the flag, so a7's
+    live-root half could not run in either direction: no root was ever sampled, and the fix
+    the message told you to apply was inert.
+    That is why the /DATA/FOUND drift of 2026-09-09 was caught by a person reading two digests
+    by hand. The tree a run mounts live is exactly the one that can change underneath it, and
+    the instrument for it was switched off while reporting its own absence as the problem
+    (working rule 26: a disabled instrument is worse than a missing one, because nobody looks
+    for it).
+    """
+    out = {}
+    for part in pairs or []:
+        if "=" not in part:
+            raise SystemExit(f"!! --live-root wants NAME=PATH, got {part!r}")
+        name, path = part.split("=", 1)
+        name, path = name.strip(), path.strip()
+        if not name or not path:
+            raise SystemExit(f"!! --live-root wants NAME=PATH, got {part!r}")
+        out[name] = path
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Class A pre-flight gate")
     ap.add_argument("--out", default="/ws/output/preflight.json")
@@ -1528,6 +1703,15 @@ def main(argv=None):
                     help="a tree this deployment mounts LIVE, which a7 must find unchanged. "
                          "Repeatable. The gate ships no default: what must stay frozen is the "
                          "caller's to declare, and a7 SKIPS (and so fails) when none is given.")
+    ap.add_argument("--compare-against", default=None, metavar="BUNDLE_OR_PREFLIGHT_JSON",
+                    help="a14: the run this one DECLARES itself comparable to. Naming it is the "
+                         "claim; a14 then refuses when the trees differ. a7 cannot catch that — "
+                         "it compares a run against its OWN launcher stamp, so two runs can each "
+                         "be internally consistent and still be different systems.")
+    ap.add_argument("--compare-bundles", default=None, metavar="A,B",
+                    help="launcher helper: print the root-by-root digest comparison of two "
+                         "bundles' preflight.json and exit. Runs on the HOST, on bundles that "
+                         "already exist, for a reader who was not there at launch.")
     ap.add_argument("--expect-config-name")
     ap.add_argument("--expect-config-sha", help="sha of the config FILE, from the launcher")
     ap.add_argument("--expect-merged-sha", help="sha of the MERGED cfg, from the launcher")
@@ -1582,6 +1766,15 @@ def main(argv=None):
             return 1
         print(f"{sha} {n}")
         return 0
+    if args.compare_bundles:
+        parts = [x.strip() for x in args.compare_bundles.split(",") if x.strip()]
+        if len(parts) != 2:
+            print("!! --compare-bundles needs exactly two paths: A,B", file=sys.stderr)
+            return 2
+        paths = [os.path.join(x, "preflight.json") if os.path.isdir(x) else x for x in parts]
+        result = compare_bundles(*paths)
+        print(json.dumps(result, indent=2, default=str))
+        return 0 if result.get("comparable") else 1
     if args.print_merged_sha:
         here = os.path.dirname(os.path.abspath(__file__))
         for cand in ("/ws/install/lost3dsg/lib/lost3dsg",
@@ -1606,7 +1799,11 @@ def main(argv=None):
     except ImportError:
         pass          # not in the container; the built-ins still run
 
-    all_probes = dict(PROBES)
+    all_probes = {pid: spec for pid, spec in PROBES.items() if pid not in CONDITIONAL_PROBES}
+    # A conditional probe joins the roster when its subject is declared. a14 without a baseline
+    # has nothing to compare; a14 WITH one blocks the launch if the trees differ.
+    if args.compare_against:
+        all_probes["a14"] = PROBES["a14"]
     # Post-start probes join the roster only when asked for by name. Without this guard they
     # would run in the pre-start gate, which is where a9's first version broke a run.
     if args.only:
@@ -1621,7 +1818,11 @@ def main(argv=None):
         "a4": a4_perception_twice,
         "a5": lambda: a5_bundle_clean(args.run_dir, args.run_start, args.scratch_dir),
         "a6": lambda: a6_camera_pose_offset(args.camera_height),
+        # live_roots was NEVER PASSED before GA-423: a7 fell through to the module-level
+        # LIVE_ROOTS, which is {} and which nothing populates. Its live-root half has been
+        # dead for the life of the flag.
         "a7": lambda: a7_source_frozen(_kv(args.expect_src_sha),
+                                       live_roots=_kv_roots(args.live_root),
                                        found_exercised=_found_exercised(args.found_exercised),
                                        teardown=args.teardown),
         "a8": lambda: a8_stack_imports(install=args.install_tree),
@@ -1635,6 +1836,8 @@ def main(argv=None):
         "a10": lambda: a10_frame_age_rejected_frames(args.expect_cycle_s),
         "a11": a11_tf_buffer_outlasts_frame_window,
         "a12": a12_gt_isolation,
+        "a14": lambda: a14_source_comparable(args.compare_against,
+                                             live_roots=_kv_roots(args.live_root)),
     }
 
     bound.update({pid: fn for pid, (_n, fn, _s) in external.items()})
