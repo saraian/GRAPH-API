@@ -45,6 +45,7 @@ install(PROGRAMS
   # node dies at startup with ModuleNotFoundError (GA-128).
   src/perception_module/build_hm3d_eval_manifest.py
   src/perception_module/object_metrics.py
+  src/perception_module/script_ledger.py
   src/perception_module/metrics_eval_visualize.py
   src/perception_module/extract_hovsg_object_embeddings.py
   src/perception_module/perception_2.py

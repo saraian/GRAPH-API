@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+
+import script_ledger
 import re
 from pathlib import Path
 
@@ -297,6 +299,18 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
                "room_id": obj.get("room_id"),
                "bbox_source": "fused_bbox" if isinstance(fused, dict) else "bbox",
                "aabb_min_m": box[0].tolist(), "aabb_max_m": box[1].tolist()}
+        # WHEN this object was last seen. The world model has carried it all along as
+        # `last_perception_timestamp`; the manifest used to drop it, which is why a scripted scene
+        # could not be scored -- a prediction with no time cannot be placed against a ground truth
+        # that changes. Absent on an object that was never perceived, and absent is left absent
+        # rather than defaulted, because a fabricated time would match the wrong window silently.
+        observed = obj.get("last_perception_timestamp")
+        try:
+            observed = float(observed)
+        except (TypeError, ValueError):
+            observed = None
+        if observed is not None and observed == observed:
+            row["observed_at"] = observed
         # Keep both appearance channels visible in the adapter output.  The
         # runtime CLIP vector is useful for auditing/association, while only
         # the offline HOV-SG vector belongs in the evaluator's historical
@@ -312,6 +326,23 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
             row["embedding"] = embedding
         predicted_objects.append(row)
     result["predicted_objects"] = predicted_objects
+
+    # A scripted scene's objects are NOT in the HM3D semantic mesh -- they are created at run time
+    # -- so they cannot come from the static ground truth. The runner's ledger supplies them, each
+    # pose carrying the window it was true for (script_ledger). A run with no ledger adds nothing
+    # and behaves exactly as before.
+    ledger = script_ledger.load_ledger(str(run_dir))
+    scripted_gt = script_ledger.ground_truth_rows(ledger)
+    if scripted_gt:
+        result["ground_truth_objects"] = list(result.get("ground_truth_objects") or []) + scripted_gt
+    result["scene_script"] = {
+        "present": ledger is not None,
+        "steps_recorded": len(((ledger or {}).get("steps")) or []),
+        "ground_truth_poses": len(scripted_gt),
+        "note": ("present=false means a STATIC scene and the evaluation is unchanged. "
+                 "present=true with ground_truth_poses=0 means the script ran and moved nothing, "
+                 "which is a different state from no script at all."),
+    }
 
     # Una matrice categorie è valida solo se ogni categoria GT ha un embedding
     # con la stessa dimensionalità. Non vengono fabbricati vettori mancanti.
