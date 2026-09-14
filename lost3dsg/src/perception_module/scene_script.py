@@ -52,6 +52,7 @@ MAX_STEPS = 64
 MAX_COMPILED_STEPS = MAX_STEPS * 2 - 1
 MAX_WAIT_SECONDS = 200.0
 DEFAULT_SETTLE_SECONDS = 10.0
+DEFAULT_WAYPOINT_OBJECT_DISTANCE = 3.0
 MAX_SEMANTIC_SURFACE_SAMPLES = 80
 
 
@@ -1976,7 +1977,199 @@ def fallback_plan(request, points, sim, objects_dir, template_catalog=None):
     }
 
 
-def ask_llm_for_plan(request, points, objects_dir, correction="", template_catalog=None):
+def load_schedule_info(schedule_path):
+    """Load the valid stop/lap domain from a schedule JSON."""
+    if not schedule_path:
+        return None
+    path = Path(schedule_path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    entries = [item for item in document.get("schedule", []) if "skipped" not in item]
+    stops = [
+        int(point["stop"])
+        for item in entries
+        for point in (item.get("trajectory") or [])
+        if point.get("scan_deg") is not None and point.get("stop") is not None
+    ]
+    if not stops:
+        raise ValueError(f"la schedule non contiene waypoint di scansione: {path}")
+    laps = int(document.get("settings", {}).get("laps", 1))
+    if laps < 1:
+        raise ValueError(f"numero di lap non valido nella schedule: {path}")
+    return {
+        "path": str(path),
+        "stops": sorted(set(stops)),
+        "laps": laps,
+        "waypoints": {
+            int(point["stop"]): [float(value) for value in point["xyz"]]
+            for item in entries
+            for point in (item.get("trajectory") or [])
+            if point.get("scan_deg") is not None
+            and point.get("stop") is not None
+            and isinstance(point.get("xyz"), (list, tuple))
+            and len(point["xyz"]) == 3
+        },
+    }
+
+
+def validate_schedule_waypoints(plan, schedule_info):
+    """Reject actions that cannot be performed safely during the tour.
+
+    A scan-complete event is emitted after the robot has reached and observed a
+    waypoint.  The runner waits for that event *before* publishing the physical
+    action, so an action attached to a waypoint happens while leaving it.  The
+    order check below also prevents a later script step from trying to act at a
+    waypoint that the tour has already passed.
+    """
+    if schedule_info is None:
+        return
+    valid_stops = set(schedule_info["stops"])
+    max_lap = schedule_info["laps"] - 1
+    previous_visit = None
+    for index, step in enumerate(plan.get("steps", [])):
+        if step.get("action") not in {"spawn", "move", "remove"}:
+            continue
+        trigger = step.get("at_waypoint")
+        if not isinstance(trigger, dict):
+            raise ValueError(f"step {index}: at_waypoint obbligatorio con schedule")
+        stop = int(trigger.get("stop", -1))
+        lap = int(trigger.get("lap", 0))
+        if stop not in valid_stops:
+            raise ValueError(f"step {index}: stop {stop} non presente nella schedule")
+        if not 0 <= lap <= max_lap:
+            raise ValueError(f"step {index}: lap {lap} fuori range 0..{max_lap}")
+        visit = (lap, stop)
+        if previous_visit is not None and visit < previous_visit:
+            raise ValueError(
+                f"step {index}: il waypoint {visit} precede il waypoint precedente "
+                f"{previous_visit}; un'azione non può essere eseguita dopo che "
+                "il robot ha già superato quel punto"
+            )
+        previous_visit = visit
+
+
+def validate_schedule_object_locations(compiled, points, schedule_info):
+    """Ensure object locations are close to the tour waypoint of each action.
+
+    ``validate_schedule_waypoints`` checks the temporal barrier. This check is
+    deliberately separate because target points are assigned/compiled only
+    after the logical plan has been validated. The distance is horizontal (X/Z)
+    since table and shelf heights must not affect proximity to the robot.
+
+    A spawn or move is performed after the current waypoint scan, therefore its
+    destination must be close to a *future* waypoint. This makes the object
+    exist before the robot reaches the waypoint where it will be observed. A
+    remove has no spatial requirement: it only removes the referenced object.
+    """
+    if schedule_info is None:
+        return
+    try:
+        maximum_distance = float(os.environ.get(
+            "HABITAT_WAYPOINT_OBJECT_DISTANCE",
+            DEFAULT_WAYPOINT_OBJECT_DISTANCE,
+        ))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "HABITAT_WAYPOINT_OBJECT_DISTANCE deve essere un numero positivo"
+        ) from exc
+    if not math.isfinite(maximum_distance) or maximum_distance <= 0:
+        raise ValueError(
+            "HABITAT_WAYPOINT_OBJECT_DISTANCE deve essere un numero positivo"
+        )
+
+    waypoints = schedule_info.get("waypoints", {})
+    max_lap = int(schedule_info["laps"]) - 1
+    object_locations = {}
+
+    def visit_of(step, index):
+        trigger = step.get("at_waypoint")
+        if not isinstance(trigger, dict):
+            raise ValueError(f"step {index}: at_waypoint obbligatorio con schedule")
+        return int(trigger.get("lap", 0)), int(trigger["stop"])
+
+    def location_of(step, index):
+        target_point = step.get("target_point")
+        if isinstance(target_point, str) and target_point in points:
+            location = points[target_point].get("surface_point")
+        else:
+            location = step.get("position")
+        if not isinstance(location, (list, tuple)) or len(location) != 3:
+            raise ValueError(
+                f"step {index}: con schedule ogni azione fisica deve avere "
+                "un target_point/position associabile al tour"
+            )
+        try:
+            location = [float(value) for value in location]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"step {index}: posizione oggetto non valida") from exc
+        if not all(math.isfinite(value) for value in location):
+            raise ValueError(f"step {index}: posizione oggetto non valida")
+        return location
+
+    def distance_to_future_waypoint(location, visit):
+        """Return the distance to the closest waypoint after this visit."""
+        lap, stop = visit
+        future = [
+            point for point_stop, point in waypoints.items()
+            if (lap, int(point_stop)) > (lap, stop)
+            or (lap < max_lap and int(point_stop) >= 0)
+        ]
+        if not future:
+            return float("inf")
+        return min(
+            math.hypot(location[0] - point[0], location[2] - point[2])
+            for point in future
+        )
+
+    for index, step in enumerate(compiled.get("steps", [])):
+        action = step.get("action")
+        if action == "wait":
+            continue
+        visit = visit_of(step, index)
+        waypoint = waypoints.get(int(step["at_waypoint"]["stop"]))
+        if waypoint is None:
+            raise ValueError(
+                f"step {index}: la schedule non contiene le coordinate del "
+                f"waypoint {step['at_waypoint']['stop']}"
+            )
+        location = None
+        if action == "spawn":
+            location = location_of(step, index)
+        elif action in {"spawn", "move"}:
+            name = str(step.get("name") or step.get("object") or "")
+            if action == "move" and name not in object_locations:
+                raise ValueError(
+                    f"step {index}: posizione precedente non disponibile per "
+                    f"l'oggetto '{name}'"
+                )
+            location = location_of(step, index)
+            future_distance = distance_to_future_waypoint(location, visit)
+            if future_distance > maximum_distance:
+                raise ValueError(
+                    f"step {index}: la nuova posizione di '{name}' non è vicina "
+                    f"a nessun waypoint futuro (distanza minima "
+                    f"{future_distance:.2f} m, limite {maximum_distance:.2f} m)"
+                )
+        elif action == "remove":
+            name = str(step.get("object", ""))
+            if name not in object_locations:
+                raise ValueError(
+                    f"step {index}: posizione precedente non disponibile per "
+                    f"l'oggetto '{name}'"
+                )
+            location = None
+
+        if action == "spawn":
+            object_locations[str(step["name"])] = location
+        elif action == "move":
+            object_locations[str(step["object"])] = location
+        elif action == "remove":
+            object_locations.pop(str(step["object"]), None)
+
+
+def ask_llm_for_plan(
+    request, points, objects_dir, correction="", template_catalog=None,
+    schedule_info=None,
+):
     """Chiede a Ollama un piano logico usando esclusivamente punti validi."""
 
     templates = available_template_names(objects_dir)
@@ -2029,6 +2222,16 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
         "required": ["stop"],
         "additionalProperties": False,
     }
+    schedule_description = ""
+    if schedule_info is not None:
+        schedule_description = (
+            "The effective schedule is loaded from " + schedule_info["path"] + ". "
+            "Every physical action MUST include at_waypoint. Valid schedule stops are "
+            + json.dumps(schedule_info["stops"]) + "; valid lap values are 0.."
+            + str(schedule_info["laps"] - 1) + ".\n"
+        )
+        waypoint_schema["properties"]["stop"]["enum"] = schedule_info["stops"]
+        waypoint_schema["properties"]["lap"]["maximum"] = schedule_info["laps"] - 1
     schema = {
         "type": "object",
         "properties": {
@@ -2053,7 +2256,9 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
                                 "template": {"type": "string", "enum": templates},
                                 "at_waypoint": waypoint_schema,
                             },
-                            "required": ["action", "name", "template"],
+                            "required": ["action", "name", "template"] + (
+                                ["at_waypoint"] if schedule_info is not None else []
+                            ),
                             "additionalProperties": False,
                         },
                         {
@@ -2066,7 +2271,9 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
                                 },
                                 "at_waypoint": waypoint_schema,
                             },
-                            "required": ["action", "object"],
+                            "required": ["action", "object"] + (
+                                ["at_waypoint"] if schedule_info is not None else []
+                            ),
                             "additionalProperties": False,
                         },
                         {
@@ -2079,7 +2286,9 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
                                 },
                                 "at_waypoint": waypoint_schema,
                             },
-                            "required": ["action", "object"],
+                            "required": ["action", "object"] + (
+                                ["at_waypoint"] if schedule_info is not None else []
+                            ),
                             "additionalProperties": False,
                         },
                         {
@@ -2112,7 +2321,8 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
         "never reuse a name and never use the literal name 'spawn'. For a "
         "singular request, create exactly one spawn.\n"
         "User request: " + request + "\n"
-        "Available templates: " + json.dumps(templates, ensure_ascii=False) + "\n"
+        + schedule_description
+        + "Available templates: " + json.dumps(templates, ensure_ascii=False) + "\n"
         "For every spawn, template must be copied EXACTLY from Available templates. "
         "Do not translate, abbreviate, simplify, or invent template names. "
         "For example, if the user says 'tazza', choose the matching available "
@@ -2131,6 +2341,9 @@ def ask_llm_for_plan(request, points, objects_dir, correction="", template_catal
         "When the user asks for an action at a trajectory waypoint, attach "
         "at_waypoint={stop:N,lap:L} to that spawn/move/remove. stop is the "
         "zero-based schedule stop number and lap is optional and zero-based. "
+        "The action is published after that waypoint's scan, while the robot "
+        "is leaving. For spawn and move, choose a target_point near a later "
+        "waypoint, so the object is already there when the robot observes it. "
         "Do not add a timed wait as a substitute for a waypoint.\n"
         "Set distinct_destinations=true only when the user explicitly requires "
         "different destinations. Include move steps only for objects the user asks "
@@ -2300,6 +2513,10 @@ def main():
     )
     parser.add_argument("--navmesh", default=os.environ.get("HABITAT_NAVMESH", DEFAULT_NAVMESH))
     parser.add_argument("--objects-dir", default=os.environ.get("HABITAT_EXAMPLE_OBJECTS_DIR", DEFAULT_OBJECTS))
+    parser.add_argument(
+        "--schedule", default=None,
+        help="schedule JSON effettiva: limita stop/lap validi per at_waypoint",
+    )
     parser.add_argument("--step", type=float, default=0.25)
     parser.add_argument(
         "--object-scale", type=float, default=None,
@@ -2307,6 +2524,7 @@ def main():
     )
     parser.add_argument("--output", default=None, help="file JSON finale compilato")
     args = parser.parse_args()
+    schedule_info = load_schedule_info(args.schedule)
 
     if args.object_scale is not None:
         if not math.isfinite(args.object_scale) or args.object_scale <= 0:
@@ -2361,6 +2579,7 @@ def main():
                 plan = ask_llm_for_plan(
                     args.request, planning_points, args.objects_dir,
                     correction=correction, template_catalog=template_catalog,
+                    schedule_info=schedule_info,
                 )
                 if normalize_empty_support_constraints(plan):
                     print(
@@ -2376,6 +2595,7 @@ def main():
                 )
                 try:
                     validate_plan_intent(plan, args.request)
+                    validate_schedule_waypoints(plan, schedule_info)
                     assign_valid_placements(
                         plan, planning_points, sim, args.objects_dir
                     )
@@ -2409,6 +2629,7 @@ def main():
                             plan, planning_points, sim, args.objects_dir
                         )
                         validate_plan_intent(plan, args.request)
+                        validate_schedule_waypoints(plan, schedule_info)
                         compiled = compile_plan(
                             plan, planning_points, sim, args.objects_dir,
                             request_text=args.request, template_catalog=template_catalog,
@@ -2422,11 +2643,17 @@ def main():
             assert compiled is not None
         elif args.plan:
             plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+            # Anche gli script JSON già esistenti devono rispettare la stessa
+            # barriera usata dai piani generati dalla LLM. Senza questo
+            # controllo il percorso --plan potrebbe modificare la scena mentre
+            # il robot sta ancora arrivando al supporto osservato.
+            validate_schedule_waypoints(plan, schedule_info)
             compiled = compile_plan(
                 plan, points, sim, args.objects_dir, request_text=""
             )
         else:
             parser.error("indica un piano JSON, --request oppure usa --list-points")
+        validate_schedule_object_locations(compiled, points, schedule_info)
     finally:
         sim.close()
 

@@ -29,8 +29,9 @@ def _run(command: list[str]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("scene", help="ID scena HM3D, per esempio 824 o 00824")
     parser.add_argument("--ground-truth", type=Path,
-                        default=HERE / "manifest_gt_00824.json",
+                        default=None,
                         help="manifest ground truth")
     parser.add_argument("--run-dir", type=Path, default=RUN_OUTPUT,
                         help="directory con gli artefatti del run")
@@ -47,6 +48,9 @@ def main() -> int:
                         help="pagina HTML con le visualizzazioni (default: output del progetto)")
     args = parser.parse_args()
 
+    scene = str(args.scene).strip().lower().removeprefix("scene_").lstrip("0") or "0"
+    if args.ground_truth is None:
+        args.ground_truth = HERE / f"manifest_gt_{int(scene):05d}.json"
     ground_truth = args.ground_truth.resolve()
     run_dir = args.run_dir.resolve()
     if not ground_truth.is_file():

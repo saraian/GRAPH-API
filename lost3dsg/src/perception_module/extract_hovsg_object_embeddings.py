@@ -184,9 +184,14 @@ def enrich_persistent(objects: list[dict[str, Any]],
             # different model/dimensionality from HOV-SG's offline ViT-H/14.
             # Keep it intact and give the offline vector an unambiguous key.
             bbox.pop("hovsg_embedding", None)
+            bbox.pop("hovsg_embedding_model", None)
             vector = vectors.get(str(row.get("object_id")))
             if vector is not None:
                 bbox["hovsg_embedding"] = vector
+                bbox["hovsg_embedding_model"] = {
+                    "architecture": MODEL_NAME, "pretrained": PRETRAINED,
+                    "library": "open_clip", "dimension": 1024,
+                }
                 attached += 1
             row["bbox"] = bbox
         enriched.append(row)

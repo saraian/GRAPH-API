@@ -750,6 +750,9 @@ class ObjectManagerService(Node):
             map_topic='/rtabmap/map',
             cloud_map_topic='/rtabmap/cloud_map',
         )
+        # Room VLM images must come from the frame bucket of the exact current
+        # room. This avoids leaking the latest camera view from another room.
+        self.room_manager._room_frame_provider = self._room_frames_for
         self.object_services = ObjectServices(self.room_manager)
         self.object_services.on_object_removed = self._note_removed   # GA-47
         self.last_room_check_time = time.time()

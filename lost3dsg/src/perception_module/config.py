@@ -147,6 +147,12 @@ _DEFAULTS = {
         "max_misses_before_delete": 5,       # unseen sweeps before a tracked object is dropped
         "delete_undetected": True,           # remove an object that goes unseen in its own view
         "max_observations_per_object": 64,   # sightings kept per object; the oldest are dropped
+        # Multi-observation object geometry. Values were selected offline on
+        # 20260911_173938_hm3d_00861 and remain explicit so a later run records
+        # the exact reconstruction policy it used.
+        "bbox_fusion_voxel_m": 0.03,
+        "bbox_fusion_min_views": 2,
+        "bbox_fusion_agreement_start_views": 4,
         # A box larger than these is refused as implausible. Both entered as bare literals and
         # have no measured basis; with a reference box they scale to the admitted size (GA-365).
         "suspicious_max_extent_m": 3.0,
@@ -633,6 +639,18 @@ _DEFAULTS = {
         # out of the whole-scene VLM response; set [] to let the model return them.
         "excluded_labels": ["wall", "floor", "ceiling", "door", "doorway",
                             "door frame", "doorframe"],
+    },
+    # Execution settings used only by perception_parallel.py. The existing launch
+    # still starts perception_2.py. Four spawned CPU processes are the portable
+    # measured candidate; CUDA remains an explicit calibration arm.
+    "perception_parallel": {
+        "bbox_backend": "cpu_processes",  # sequential | cpu_processes | cuda
+        "bbox_cpu_workers": 4,
+        "bbox_cpu_chunksize": 1,
+        "bbox_cuda_devices": [0],
+        # 0 packs all eligible objects from the current frame into one tensor.
+        # A positive value starts a new batch before this point count is exceeded.
+        "bbox_cuda_max_batch_points": 0,
     },
 }
 

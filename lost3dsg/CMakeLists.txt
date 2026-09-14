@@ -71,6 +71,8 @@ install(PROGRAMS
   # sibling modules the nodes import at runtime — without these the installed
   # copies die with ImportError under `ros2 run`
   src/perception_module/config.py
+  src/perception_module/bbox_fusion.py
+  src/perception_module/bbox_fusion_parallel.py
   src/perception_module/box_view.py
   src/perception_module/hooks.py
   src/perception_module/nlp_utils.py
