@@ -1,0 +1,4322 @@
+{
+  "scene": "00829-QaLdnwvtxbs",
+  "ground_truth_objects": [
+    {
+      "object_id": "floor_1",
+      "semantic_id": 1,
+      "category_name": "floor",
+      "region_id": "0",
+      "aabb_min_m": [
+        0.9167981147766113,
+        -0.035293642431497574,
+        -2.568061351776123
+      ],
+      "aabb_max_m": [
+        6.627769947052002,
+        0.1321643553674221,
+        3.891941547393799
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_2",
+      "semantic_id": 2,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        0.8756990432739258,
+        -0.007882356643676758,
+        -2.508060097694397
+      ],
+      "aabb_max_m": [
+        6.050032138824463,
+        2.5318689346313477,
+        -2.423770308494568
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "air vent_3",
+      "semantic_id": 3,
+      "category_name": "air vent",
+      "region_id": "0",
+      "aabb_min_m": [
+        3.476794958114624,
+        2.272165060043335,
+        -2.477866530418396
+      ],
+      "aabb_max_m": [
+        3.6967990398406982,
+        2.512192964553833,
+        -2.4668384790420532
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_4",
+      "semantic_id": 4,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        0.8548809587955475,
+        -0.004888296127319336,
+        -2.4680721163749695
+      ],
+      "aabb_max_m": [
+        0.976796954870224,
+        2.517261028289795,
+        -1.301002323627472
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door_5",
+      "semantic_id": 5,
+      "category_name": "door",
+      "region_id": "0",
+      "aabb_min_m": [
+        0.8671249449253082,
+        -0.004888296127319336,
+        -2.263420283794403
+      ],
+      "aabb_max_m": [
+        1.136783927679062,
+        2.2171618938446045,
+        -1.2481082081794739
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door knob_6",
+      "semantic_id": 6,
+      "category_name": "door knob",
+      "region_id": "0",
+      "aabb_min_m": [
+        1.015544056892395,
+        1.0048118233680725,
+        -2.170725703239441
+      ],
+      "aabb_max_m": [
+        1.0749119520187378,
+        1.1121658682823181,
+        -2.068191647529602
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling_7",
+      "semantic_id": 7,
+      "category_name": "ceiling",
+      "region_id": "0",
+      "aabb_min_m": [
+        0.8768529891967773,
+        2.4321662187576294,
+        -2.468108296394348
+      ],
+      "aabb_max_m": [
+        6.656796932220459,
+        2.541547656059265,
+        3.7719401121139526
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_8",
+      "semantic_id": 8,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        0.8719429969787598,
+        0.005754947662353516,
+        -1.3480603694915771
+      ],
+      "aabb_max_m": [
+        2.296799898147583,
+        2.5194718837738037,
+        -1.2680583000183105
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_9",
+      "semantic_id": 9,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        5.9967968463897705,
+        -0.008162260055541992,
+        -2.4880722165107727
+      ],
+      "aabb_max_m": [
+        6.096796751022339,
+        2.5283210277557373,
+        -1.626074492931366
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "fire extinguisher_10",
+      "semantic_id": 10,
+      "category_name": "fire extinguisher",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.007102966308594,
+        0.3921688497066498,
+        -2.2880775928497314
+      ],
+      "aabb_max_m": [
+        6.1547040939331055,
+        1.1321679651737213,
+        -1.9080493450164795
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "smoke detector_11",
+      "semantic_id": 11,
+      "category_name": "smoke detector",
+      "region_id": "0",
+      "aabb_min_m": [
+        5.991084098815918,
+        2.3321640491485596,
+        -2.208060383796692
+      ],
+      "aabb_max_m": [
+        6.06025505065918,
+        2.512183904647827,
+        -2.008060336112976
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "unknown_12",
+      "semantic_id": 12,
+      "category_name": "unknown",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.028172254562378,
+        2.112159013748169,
+        -2.1880606412887573
+      ],
+      "aabb_max_m": [
+        6.0552990436553955,
+        2.2721641063690186,
+        -2.0480605363845825
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "unknown_13",
+      "semantic_id": 13,
+      "category_name": "unknown",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.013505220413208,
+        1.4521639347076416,
+        -2.1880664825439453
+      ],
+      "aabb_max_m": [
+        6.0498740673065186,
+        1.5921659469604492,
+        -2.0280604362487793
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_14",
+      "semantic_id": 14,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.036057233810425,
+        -0.007973194122314453,
+        -1.6857593655586243
+      ],
+      "aabb_max_m": [
+        6.636800050735474,
+        2.5121660232543945,
+        -1.5680591464042664
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_15",
+      "semantic_id": 15,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.576797962188721,
+        0.552166223526001,
+        -1.6690134406089783
+      ],
+      "aabb_max_m": [
+        6.696796894073486,
+        2.5269815921783447,
+        2.1119399666786194
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bed table_16",
+      "semantic_id": 16,
+      "category_name": "bed table",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.0907018184661865,
+        0.03216284513473511,
+        -1.6775352358818054
+      ],
+      "aabb_max_m": [
+        6.782945871353149,
+        0.7321669459342957,
+        -0.7559531331062317
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "clock_17",
+      "semantic_id": 17,
+      "category_name": "clock",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.39987587928772,
+        0.6521659791469574,
+        -1.1680602431297302
+      ],
+      "aabb_max_m": [
+        6.54915976524353,
+        0.7279349863529205,
+        -1.0180602669715881
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "unknown_18",
+      "semantic_id": 18,
+      "category_name": "unknown",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.465874195098877,
+        0.6321658790111542,
+        -1.3407531380653381
+      ],
+      "aabb_max_m": [
+        6.616796970367432,
+        0.7167008221149445,
+        -1.2153162360191345
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall lamp_19",
+      "semantic_id": 19,
+      "category_name": "wall lamp",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.426931858062744,
+        0.9921659231185913,
+        -1.328060269355774
+      ],
+      "aabb_max_m": [
+        6.6684889793396,
+        1.352167010307312,
+        -1.124672293663025
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bed_20",
+      "semantic_id": 20,
+      "category_name": "bed",
+      "region_id": "0",
+      "aabb_min_m": [
+        4.368412733078003,
+        -0.020675063133239746,
+        -0.8738192021846771
+      ],
+      "aabb_max_m": [
+        6.698952913284302,
+        1.3732562065124512,
+        1.3017591536045074
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ottoman_21",
+      "semantic_id": 21,
+      "category_name": "ottoman",
+      "region_id": "0",
+      "aabb_min_m": [
+        4.011650085449219,
+        -0.005481064319610596,
+        -0.49408508837223053
+      ],
+      "aabb_max_m": [
+        4.561200141906738,
+        0.4721691608428955,
+        0.8965680450201035
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bed table_22",
+      "semantic_id": 22,
+      "category_name": "bed table",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.603713750839233,
+        0.23216618597507477,
+        1.151940107345581
+      ],
+      "aabb_max_m": [
+        6.707746744155884,
+        0.6521673053503036,
+        2.1119401454925537
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall lamp_23",
+      "semantic_id": 23,
+      "category_name": "wall lamp",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.076787948608398,
+        -0.006024837493896484,
+        1.2319390773773193
+      ],
+      "aabb_max_m": [
+        6.665284156799316,
+        0.11216224730014801,
+        2.0473623275756836
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_24",
+      "semantic_id": 24,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.056798219680786,
+        0.0017261505126953125,
+        2.031942129135132
+      ],
+      "aabb_max_m": [
+        6.682652235031128,
+        2.5321664810180664,
+        2.181941270828247
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_25",
+      "semantic_id": 25,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        5.936797857284546,
+        0.0015573501586914062,
+        2.082994222640991
+      ],
+      "aabb_max_m": [
+        6.196796655654907,
+        2.5321617126464844,
+        3.8156702518463135
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "air vent_26",
+      "semantic_id": 26,
+      "category_name": "air vent",
+      "region_id": "0",
+      "aabb_min_m": [
+        6.053297281265259,
+        1.8921664953231812,
+        2.71193790435791
+      ],
+      "aabb_max_m": [
+        6.086141347885132,
+        2.172167420387268,
+        3.1319422721862793
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "floor lamp_27",
+      "semantic_id": 27,
+      "category_name": "floor lamp",
+      "region_id": "0",
+      "aabb_min_m": [
+        5.732395172119141,
+        0.49217140674591064,
+        3.256481170654297
+      ],
+      "aabb_max_m": [
+        6.088250160217285,
+        1.5739177465438843,
+        3.582184314727783
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "sofa_28",
+      "semantic_id": 28,
+      "category_name": "sofa",
+      "region_id": "0",
+      "aabb_min_m": [
+        3.6694730520248413,
+        -0.02366262674331665,
+        2.1372601985931396
+      ],
+      "aabb_max_m": [
+        5.996798157691956,
+        0.9260883927345276,
+        3.1858255863189697
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "curtain_29",
+      "semantic_id": 29,
+      "category_name": "curtain",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.2967971563339233,
+        -0.0077626705169677734,
+        3.531940460205078
+      ],
+      "aabb_max_m": [
+        6.076797127723694,
+        2.5121657848358154,
+        3.988450527191162
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_30",
+      "semantic_id": 30,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.3067758083343506,
+        2.4266237020492554,
+        3.6519432067871094
+      ],
+      "aabb_max_m": [
+        6.074037790298462,
+        2.5326496362686157,
+        3.811941146850586
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_31",
+      "semantic_id": 31,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.316796064376831,
+        0.012312422040849924,
+        3.3319402933120728
+      ],
+      "aabb_max_m": [
+        2.3367979526519775,
+        0.02210039785131812,
+        3.5519403219223022
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_32",
+      "semantic_id": 32,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.293256163597107,
+        0.018630266189575195,
+        3.04362416267395
+      ],
+      "aabb_max_m": [
+        3.0812851190567017,
+        2.5360827445983887,
+        3.171940565109253
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_33",
+      "semantic_id": 33,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        3.036797046661377,
+        0.032134294509887695,
+        2.1519371271133423
+      ],
+      "aabb_max_m": [
+        3.085484027862549,
+        2.5414185523986816,
+        3.091957449913025
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_34",
+      "semantic_id": 34,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.2906090021133423,
+        0.02020120620727539,
+        2.1019400358200073
+      ],
+      "aabb_max_m": [
+        3.0826371908187866,
+        2.5415475368499756,
+        2.193083882331848
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_35",
+      "semantic_id": 35,
+      "category_name": "wall",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.2444170713424683,
+        0.0009160041809082031,
+        -1.3198821544647217
+      ],
+      "aabb_max_m": [
+        2.3967992067337036,
+        2.5325675010681152,
+        2.1879141330718994
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "desk_36",
+      "semantic_id": 36,
+      "category_name": "desk",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.2644710540771484,
+        -0.0014880895614624023,
+        -0.7080600261688232
+      ],
+      "aabb_max_m": [
+        3.0863471031188965,
+        0.813036322593689,
+        2.185316324234009
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall lamp_37",
+      "semantic_id": 37,
+      "category_name": "wall lamp",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.2874820232391357,
+        0.9121633768081665,
+        1.9159431457519531
+      ],
+      "aabb_max_m": [
+        2.5568339824676514,
+        1.712166428565979,
+        2.1519460678100586
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_38",
+      "semantic_id": 38,
+      "category_name": "chair",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.336798071861267,
+        0.2599422037601471,
+        0.9183570444583893
+      ],
+      "aabb_max_m": [
+        3.338694214820862,
+        0.9571453034877777,
+        1.8302811086177826
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bin_39",
+      "semantic_id": 39,
+      "category_name": "bin",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.376797914505005,
+        0.008907109498977661,
+        0.6442320346832275
+      ],
+      "aabb_max_m": [
+        2.962907075881958,
+        0.29662713408470154,
+        0.8905971050262451
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "telephone_40",
+      "semantic_id": 40,
+      "category_name": "telephone",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.287796974182129,
+        0.7521693706512451,
+        1.5918281078338623
+      ],
+      "aabb_max_m": [
+        2.55679988861084,
+        0.8540123701095581,
+        1.8319401741027832
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "panel_41",
+      "semantic_id": 41,
+      "category_name": "panel",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.2536832094192505,
+        0.748549222946167,
+        -0.6528492867946625
+      ],
+      "aabb_max_m": [
+        2.436797022819519,
+        2.3846542835235596,
+        1.091937929391861
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "tv_42",
+      "semantic_id": 42,
+      "category_name": "tv",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.263611078262329,
+        1.0921650528907776,
+        -0.3880602568387985
+      ],
+      "aabb_max_m": [
+        2.451935052871704,
+        1.812166154384613,
+        0.768393948674202
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "unknown_43",
+      "semantic_id": 43,
+      "category_name": "unknown",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.408911943435669,
+        0.7521480321884155,
+        -0.6177292168140411
+      ],
+      "aabb_max_m": [
+        2.5469319820404053,
+        0.9521660804748535,
+        -0.4463171660900116
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "sign_44",
+      "semantic_id": 44,
+      "category_name": "sign",
+      "region_id": "0",
+      "aabb_min_m": [
+        2.27518892288208,
+        1.1521660685539246,
+        -1.0280802249908447
+      ],
+      "aabb_max_m": [
+        2.286530017852783,
+        1.5721691250801086,
+        -0.668059229850769
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door frame_45",
+      "semantic_id": 45,
+      "category_name": "door frame",
+      "region_id": "0",
+      "aabb_min_m": [
+        3.787772059440613,
+        0.01216578483581543,
+        -2.6523821353912354
+      ],
+      "aabb_max_m": [
+        5.149295926094055,
+        2.092165946960449,
+        -2.4429872035980225
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "floor_46",
+      "semantic_id": 46,
+      "category_name": "floor",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.1405107975006104,
+        -0.04359346628189087,
+        -4.828065276145935
+      ],
+      "aabb_max_m": [
+        6.31679892539978,
+        0.0721656084060669,
+        -2.4280611276626587
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling_47",
+      "semantic_id": 47,
+      "category_name": "ceiling",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.6367827653884888,
+        2.2521657943725586,
+        -5.1080368757247925
+      ],
+      "aabb_max_m": [
+        6.3314207792282104,
+        2.303304672241211,
+        -2.600333333015442
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_48",
+      "semantic_id": 48,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        4.056797981262207,
+        2.1121588945388794,
+        -2.6535024642944336
+      ],
+      "aabb_max_m": [
+        4.256796836853027,
+        2.1521729230880737,
+        -2.5994224548339844
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_49",
+      "semantic_id": 49,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.606842041015625,
+        2.0721659660339355,
+        -3.5680606365203857
+      ],
+      "aabb_max_m": [
+        2.696805953979492,
+        2.2898941040039062,
+        -2.60805344581604
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "mirror_50",
+      "semantic_id": 50,
+      "category_name": "mirror",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.545689105987549,
+        0.5921547412872314,
+        -3.5881974697113037
+      ],
+      "aabb_max_m": [
+        2.654231071472168,
+        2.112175941467285,
+        -2.6224005222320557
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "cabinet_51",
+      "semantic_id": 51,
+      "category_name": "cabinet",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.6367979049682617,
+        -0.002756357192993164,
+        -3.6080665588378906
+      ],
+      "aabb_max_m": [
+        3.2379980087280273,
+        0.592170774936676,
+        -2.6047401428222656
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_52",
+      "semantic_id": 52,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.605775237083435,
+        -0.003042459487915039,
+        -3.6540156602859497
+      ],
+      "aabb_max_m": [
+        3.3132930994033813,
+        2.2884957790374756,
+        -3.528063654899597
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_53",
+      "semantic_id": 53,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.2567981481552124,
+        0.012164592742919922,
+        -3.748060464859009
+      ],
+      "aabb_max_m": [
+        3.32125723361969,
+        2.2837228775024414,
+        -3.5880606174468994
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_54",
+      "semantic_id": 54,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.6167980432510376,
+        0.03216552734375,
+        -3.7880595922470093
+      ],
+      "aabb_max_m": [
+        3.309830069541931,
+        2.288214683532715,
+        -3.6880604028701782
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_55",
+      "semantic_id": 55,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.612228035926819,
+        0.10073554515838623,
+        -4.848065376281738
+      ],
+      "aabb_max_m": [
+        2.7167972326278687,
+        1.7987107038497925,
+        -3.740205764770508
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "hanger_56",
+      "semantic_id": 56,
+      "category_name": "hanger",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.625515937805176,
+        1.506909728050232,
+        -3.8380227088928223
+      ],
+      "aabb_max_m": [
+        3.172175884246826,
+        1.805338740348816,
+        -3.728060722351074
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shelf_57",
+      "semantic_id": 57,
+      "category_name": "shelf",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.587865114212036,
+        1.7521658539772034,
+        -4.865129709243774
+      ],
+      "aabb_max_m": [
+        3.0367939472198486,
+        1.912169873714447,
+        -3.7135980129241943
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_58",
+      "semantic_id": 58,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.6168848276138306,
+        0.012165546417236328,
+        -4.9126574993133545
+      ],
+      "aabb_max_m": [
+        3.2968229055404663,
+        2.2968556880950928,
+        -3.7480671405792236
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "hanger_59",
+      "semantic_id": 59,
+      "category_name": "hanger",
+      "region_id": "1",
+      "aabb_min_m": [
+        2.6200557947158813,
+        1.4921644926071167,
+        -4.869638442993164
+      ],
+      "aabb_max_m": [
+        3.156797766685486,
+        1.7321656942367554,
+        -4.736593246459961
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_60",
+      "semantic_id": 60,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.356797933578491,
+        0.01092839241027832,
+        -4.608060121536255
+      ],
+      "aabb_max_m": [
+        3.5803520679473877,
+        2.2721657752990723,
+        -4.481772184371948
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_61",
+      "semantic_id": 61,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.536782145500183,
+        0.018242359161376953,
+        -5.107926368713379
+      ],
+      "aabb_max_m": [
+        3.5869752168655396,
+        2.292771816253662,
+        -4.504110336303711
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_62",
+      "semantic_id": 62,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.5397979021072388,
+        1.0721665024757385,
+        -5.121536493301392
+      ],
+      "aabb_max_m": [
+        5.376767039299011,
+        2.291996419429779,
+        -5.028075933456421
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "picture_63",
+      "semantic_id": 63,
+      "category_name": "picture",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.6167941093444824,
+        1.352137565612793,
+        -5.115460395812988
+      ],
+      "aabb_max_m": [
+        4.196796894073486,
+        1.9121665954589844,
+        -5.05316162109375
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "picture_64",
+      "semantic_id": 64,
+      "category_name": "picture",
+      "region_id": "1",
+      "aabb_min_m": [
+        4.156792402267456,
+        1.3432375192642212,
+        -5.1156463623046875
+      ],
+      "aabb_max_m": [
+        4.7368080615997314,
+        1.892168641090393,
+        -5.060534477233887
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "picture_65",
+      "semantic_id": 65,
+      "category_name": "picture",
+      "region_id": "1",
+      "aabb_min_m": [
+        4.73679780960083,
+        1.3321624994277954,
+        -5.117885589599609
+      ],
+      "aabb_max_m": [
+        5.336801052093506,
+        1.8921695947647095,
+        -5.070086479187012
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "cabinet_66",
+      "semantic_id": 66,
+      "category_name": "cabinet",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.55142080783844,
+        0.003909468650817871,
+        -5.118168115615845
+      ],
+      "aabb_max_m": [
+        5.382131934165955,
+        1.1012694835662842,
+        -4.586942434310913
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "magazine_67",
+      "semantic_id": 67,
+      "category_name": "magazine",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.736785888671875,
+        1.0721625089645386,
+        -5.108387470245361
+      ],
+      "aabb_max_m": [
+        4.036798000335693,
+        1.1121655702590942,
+        -4.808056354522705
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "magazine_68",
+      "semantic_id": 68,
+      "category_name": "magazine",
+      "region_id": "1",
+      "aabb_min_m": [
+        4.936798334121704,
+        1.0418425798416138,
+        -5.116542339324951
+      ],
+      "aabb_max_m": [
+        5.2767980098724365,
+        1.1090434789657593,
+        -4.788064479827881
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "unknown_69",
+      "semantic_id": 69,
+      "category_name": "unknown",
+      "region_id": "1",
+      "aabb_min_m": [
+        4.396798133850098,
+        1.0721635222434998,
+        -5.068060636520386
+      ],
+      "aabb_max_m": [
+        4.572775840759277,
+        1.0972924828529358,
+        -4.888060808181763
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_70",
+      "semantic_id": 70,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.356782913208008,
+        -0.0005304813385009766,
+        -5.1170196533203125
+      ],
+      "aabb_max_m": [
+        5.402565956115723,
+        2.2894084453582764,
+        -4.501161575317383
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_71",
+      "semantic_id": 71,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.376776218414307,
+        0.0009794235229492188,
+        -4.531421661376953
+      ],
+      "aabb_max_m": [
+        5.536797046661377,
+        2.2856898307800293,
+        -4.4880170822143555
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_72",
+      "semantic_id": 72,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.42712140083313,
+        -0.007837533950805664,
+        -4.870254755020142
+      ],
+      "aabb_max_m": [
+        5.6167991161346436,
+        2.2856898307800293,
+        -4.495361089706421
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_73",
+      "semantic_id": 73,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.476780891418457,
+        -0.007990598678588867,
+        -4.877258062362671
+      ],
+      "aabb_max_m": [
+        6.331917762756348,
+        2.27878475189209,
+        -4.728060007095337
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_74",
+      "semantic_id": 74,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        6.276795864105225,
+        -0.008984565734863281,
+        -4.808060646057129
+      ],
+      "aabb_max_m": [
+        6.345491886138916,
+        1.7921706438064575,
+        -3.765753746032715
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shelf_75",
+      "semantic_id": 75,
+      "category_name": "shelf",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.90838098526001,
+        1.7521657347679138,
+        -4.874745488166809
+      ],
+      "aabb_max_m": [
+        6.342480182647705,
+        1.9121657013893127,
+        -3.7662848234176636
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "clothes_76",
+      "semantic_id": 76,
+      "category_name": "clothes",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.770476579666138,
+        -0.016886472702026367,
+        -4.942009329795837
+      ],
+      "aabb_max_m": [
+        6.392914533615112,
+        1.7721656560897827,
+        -3.8880573511123657
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_77",
+      "semantic_id": 77,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.649596452713013,
+        -0.018422365188598633,
+        -3.881455659866333
+      ],
+      "aabb_max_m": [
+        6.360907316207886,
+        2.282536745071411,
+        -3.668060541152954
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_78",
+      "semantic_id": 78,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.596793174743652,
+        -0.011124372482299805,
+        -3.7880595922470093
+      ],
+      "aabb_max_m": [
+        5.6767988204956055,
+        2.2820348739624023,
+        -3.6080604791641235
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_79",
+      "semantic_id": 79,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.636797189712524,
+        -0.014610528945922852,
+        -3.7130244970321655
+      ],
+      "aabb_max_m": [
+        6.321916341781616,
+        2.280205726623535,
+        -3.553929924964905
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall lamp_80",
+      "semantic_id": 80,
+      "category_name": "wall lamp",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.936796188354492,
+        1.1321656703948975,
+        -3.619938611984253
+      ],
+      "aabb_max_m": [
+        6.136797904968262,
+        1.3921656608581543,
+        -3.4833858013153076
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_81",
+      "semantic_id": 81,
+      "category_name": "wall",
+      "region_id": "1",
+      "aabb_min_m": [
+        6.20850396156311,
+        0.012165606021881104,
+        -3.7880643606185913
+      ],
+      "aabb_max_m": [
+        6.489276647567749,
+        0.6521656513214111,
+        -2.748055100440979
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "mirror_82",
+      "semantic_id": 82,
+      "category_name": "mirror",
+      "region_id": "1",
+      "aabb_min_m": [
+        6.23679780960083,
+        0.810068666934967,
+        -3.6230915784835815
+      ],
+      "aabb_max_m": [
+        6.342589855194092,
+        2.1521777510643005,
+        -2.6157723665237427
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "table_83",
+      "semantic_id": 83,
+      "category_name": "table",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.696797609329224,
+        0.5921656489372253,
+        -3.828062415122986
+      ],
+      "aabb_max_m": [
+        6.358652830123901,
+        0.8128086924552917,
+        -2.6064621210098267
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_84",
+      "semantic_id": 84,
+      "category_name": "chair",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.539140462875366,
+        -0.017820417881011963,
+        -3.528060555458069
+      ],
+      "aabb_max_m": [
+        6.3522303104400635,
+        0.7795467376708984,
+        -2.900875449180603
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall lamp_85",
+      "semantic_id": 85,
+      "category_name": "wall lamp",
+      "region_id": "1",
+      "aabb_min_m": [
+        5.956817150115967,
+        1.1331937909126282,
+        -2.745721697807312
+      ],
+      "aabb_max_m": [
+        6.116796970367432,
+        1.3921768069267273,
+        -2.58806049823761
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ottoman_86",
+      "semantic_id": 86,
+      "category_name": "ottoman",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.876796841621399,
+        -0.01197749376296997,
+        -4.1380614042282104
+      ],
+      "aabb_max_m": [
+        4.97679603099823,
+        0.49212759733200073,
+        -3.098296284675598
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling lamp_87",
+      "semantic_id": 87,
+      "category_name": "ceiling lamp",
+      "region_id": "1",
+      "aabb_min_m": [
+        4.333874464035034,
+        2.1824716329574585,
+        -3.768073797225952
+      ],
+      "aabb_max_m": [
+        4.636800050735474,
+        2.2777706384658813,
+        -3.5817177295684814
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling lamp_88",
+      "semantic_id": 88,
+      "category_name": "ceiling lamp",
+      "region_id": "1",
+      "aabb_min_m": [
+        4.976797819137573,
+        2.2772927284240723,
+        -4.888028144836426
+      ],
+      "aabb_max_m": [
+        5.096890687942505,
+        2.2982168197631836,
+        -4.78790283203125
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling lamp_89",
+      "semantic_id": 89,
+      "category_name": "ceiling lamp",
+      "region_id": "1",
+      "aabb_min_m": [
+        3.876797080039978,
+        2.2857518196105957,
+        -4.888046026229858
+      ],
+      "aabb_max_m": [
+        3.996797204017639,
+        2.2992796897888184,
+        -4.748041391372681
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door frame_90",
+      "semantic_id": 90,
+      "category_name": "door frame",
+      "region_id": "1",
+      "aabb_min_m": [
+        1.3767980933189392,
+        -0.00019121170043945312,
+        -2.6293410062789917
+      ],
+      "aabb_max_m": [
+        2.2968130707740784,
+        2.0914039611816406,
+        -2.4395781755447388
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_91",
+      "semantic_id": 91,
+      "category_name": "wall",
+      "region_id": "2",
+      "aabb_min_m": [
+        2.5814929008483887,
+        -0.010549306869506836,
+        -2.768059253692627
+      ],
+      "aabb_max_m": [
+        6.388556003570557,
+        2.2893319129943848,
+        -2.52805757522583
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_92",
+      "semantic_id": 92,
+      "category_name": "wall",
+      "region_id": "2",
+      "aabb_min_m": [
+        2.4367960691452026,
+        0.009302616119384766,
+        -5.074111580848694
+      ],
+      "aabb_max_m": [
+        2.525920033454895,
+        2.2991628646850586,
+        -2.6013416051864624
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "floor_93",
+      "semantic_id": 93,
+      "category_name": "floor",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.1114819645881653,
+        -0.06264132261276245,
+        -5.008060455322266
+      ],
+      "aabb_max_m": [
+        2.479273021221161,
+        0.05216650664806366,
+        -2.5880613327026367
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling_94",
+      "semantic_id": 94,
+      "category_name": "ceiling",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.0794350504875183,
+        2.252165675163269,
+        -5.092169880867004
+      ],
+      "aabb_max_m": [
+        2.4822409749031067,
+        2.3057109117507935,
+        -2.3882006406784058
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "picture_95",
+      "semantic_id": 95,
+      "category_name": "picture",
+      "region_id": "2",
+      "aabb_min_m": [
+        2.3667701482772827,
+        0.6921617984771729,
+        -3.92806077003479
+      ],
+      "aabb_max_m": [
+        2.496799111366272,
+        2.1121597290039062,
+        -2.6280434131622314
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "unknown_96",
+      "semantic_id": 96,
+      "category_name": "unknown",
+      "region_id": "2",
+      "aabb_min_m": [
+        2.170971989631653,
+        -0.005180478096008301,
+        -4.148060202598572
+      ],
+      "aabb_max_m": [
+        2.5085848569869995,
+        0.6652905941009521,
+        -3.7182213068008423
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "hanger_97",
+      "semantic_id": 97,
+      "category_name": "hanger",
+      "region_id": "2",
+      "aabb_min_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "aabb_max_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_98",
+      "semantic_id": 98,
+      "category_name": "wall",
+      "region_id": "2",
+      "aabb_min_m": [
+        0.6464810371398926,
+        0.28817248344421387,
+        -5.110278129577637
+      ],
+      "aabb_max_m": [
+        2.497843027114868,
+        2.300600528717041,
+        -5.048059463500977
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bathtub_99",
+      "semantic_id": 99,
+      "category_name": "bathtub",
+      "region_id": "2",
+      "aabb_min_m": [
+        0.3040480613708496,
+        -0.020429611206054688,
+        -5.1048712730407715
+      ],
+      "aabb_max_m": [
+        2.4968020915985107,
+        0.5763205289840698,
+        -4.0320725440979
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bathtub utensil_100",
+      "semantic_id": 100,
+      "category_name": "bathtub utensil",
+      "region_id": "2",
+      "aabb_min_m": [
+        0.649848997592926,
+        0.35216546058654785,
+        -5.108060598373413
+      ],
+      "aabb_max_m": [
+        0.876800000667572,
+        0.8921655416488647,
+        -5.052442789077759
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bathroom mat_101",
+      "semantic_id": 101,
+      "category_name": "bathroom mat",
+      "region_id": "2",
+      "aabb_min_m": [
+        1.0967480540275574,
+        -0.001049430575221777,
+        -4.228060364723206
+      ],
+      "aabb_max_m": [
+        2.016794979572296,
+        0.016639521811157465,
+        -3.6080516576766968
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_102",
+      "semantic_id": 102,
+      "category_name": "wall",
+      "region_id": "2",
+      "aabb_min_m": [
+        0.6367979943752289,
+        0.008415460586547852,
+        -5.102260112762451
+      ],
+      "aabb_max_m": [
+        0.6837109625339508,
+        2.2935187816619873,
+        -4.448060512542725
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_103",
+      "semantic_id": 103,
+      "category_name": "wall",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.097273975610733,
+        0.009474515914916992,
+        -4.488047122955322
+      ],
+      "aabb_max_m": [
+        0.6767970025539398,
+        2.3012516498565674,
+        -4.3470234870910645
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door_104",
+      "semantic_id": 104,
+      "category_name": "door",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.46326597034931183,
+        0.012099504470825195,
+        -4.504862308502197
+      ],
+      "aabb_max_m": [
+        0.4968229979276657,
+        2.172170877456665,
+        -4.403224468231201
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door knob_105",
+      "semantic_id": 105,
+      "category_name": "door knob",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.42323800921440125,
+        1.0121657252311707,
+        -4.47943377494812
+      ],
+      "aabb_max_m": [
+        -0.26318100094795227,
+        1.1121657490730286,
+        -4.44506573677063
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_106",
+      "semantic_id": 106,
+      "category_name": "wall",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.1168178915977478,
+        0.8721396923065186,
+        -4.42806088924408
+      ],
+      "aabb_max_m": [
+        -1.035522997379303,
+        2.3012516498565674,
+        -2.5795360803604126
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "mirror_107",
+      "semantic_id": 107,
+      "category_name": "mirror",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.0989920496940613,
+        0.9921647906303406,
+        -4.408054351806641
+      ],
+      "aabb_max_m": [
+        -1.0178731083869934,
+        2.152172863483429,
+        -2.6280593872070312
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "washbasin counter_108",
+      "semantic_id": 108,
+      "category_name": "washbasin counter",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.1259609460830688,
+        0.005126476287841797,
+        -4.470152378082275
+      ],
+      "aabb_max_m": [
+        -0.5032010078430176,
+        0.9321656823158264,
+        -2.5668392181396484
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "washbasin_109",
+      "semantic_id": 109,
+      "category_name": "washbasin",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.003201961517334,
+        0.6521656215190887,
+        -4.408060431480408
+      ],
+      "aabb_max_m": [
+        -0.6032019853591919,
+        0.8772037327289581,
+        -3.6480613946914673
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "washbasin_110",
+      "semantic_id": 110,
+      "category_name": "washbasin",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.9432020485401154,
+        0.6416456997394562,
+        -3.368059277534485
+      ],
+      "aabb_max_m": [
+        -0.6013860404491425,
+        0.8766936957836151,
+        -2.74806010723114
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "tap_111",
+      "semantic_id": 111,
+      "category_name": "tap",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.0925540328025818,
+        0.8630107939243317,
+        -3.1880606412887573
+      ],
+      "aabb_max_m": [
+        -0.9632020592689514,
+        0.9921837747097015,
+        -2.868059277534485
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "tap_112",
+      "semantic_id": 112,
+      "category_name": "tap",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.1168179512023926,
+        0.8590816557407379,
+        -4.168059349060059
+      ],
+      "aabb_max_m": [
+        -0.9632019996643066,
+        0.9921656548976898,
+        -3.968059539794922
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "soap_113",
+      "semantic_id": 113,
+      "category_name": "soap",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.02320197224617,
+        0.8775427043437958,
+        -3.728060483932495
+      ],
+      "aabb_max_m": [
+        -0.9232020080089569,
+        0.9170737564563751,
+        -3.6480605602264404
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "cosmetics_114",
+      "semantic_id": 114,
+      "category_name": "cosmetics",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.0632019937038422,
+        0.8702987134456635,
+        -3.623177647590637
+      ],
+      "aabb_max_m": [
+        -0.7809299528598785,
+        1.0543908178806305,
+        -3.3880594968795776
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "towel_115",
+      "semantic_id": 115,
+      "category_name": "towel",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.9432039856910706,
+        1.0179045796394348,
+        -4.448060750961304
+      ],
+      "aabb_max_m": [
+        -0.7336040139198303,
+        1.2042805552482605,
+        -4.335342645645142
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "towel bar_116",
+      "semantic_id": 116,
+      "category_name": "towel bar",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.0432020127773285,
+        1.1521656513214111,
+        -4.458713531494141
+      ],
+      "aabb_max_m": [
+        -0.9232019484043121,
+        1.1921656131744385,
+        -4.428060531616211
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "toilet paper_117",
+      "semantic_id": 117,
+      "category_name": "toilet paper",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.7369679510593414,
+        0.23216553777456284,
+        -4.378068447113037
+      ],
+      "aabb_max_m": [
+        -0.5632019937038422,
+        0.36187151819467545,
+        -4.2248215675354
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "towel_118",
+      "semantic_id": 118,
+      "category_name": "towel",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.9578149914741516,
+        0.19216570258140564,
+        -2.9366302490234375
+      ],
+      "aabb_max_m": [
+        -0.5417609810829163,
+        0.49216774106025696,
+        -2.6480603218078613
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "towel_119",
+      "semantic_id": 119,
+      "category_name": "towel",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.7969659864902496,
+        0.2521646320819855,
+        -3.2155367136001587
+      ],
+      "aabb_max_m": [
+        -0.5632019937038422,
+        0.41050466895103455,
+        -2.9958614110946655
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "towel_120",
+      "semantic_id": 120,
+      "category_name": "towel",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.7770349979400635,
+        0.22236263751983643,
+        -3.4280595779418945
+      ],
+      "aabb_max_m": [
+        -0.5632020235061646,
+        0.31343162059783936,
+        -3.2587413787841797
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bag_121",
+      "semantic_id": 121,
+      "category_name": "bag",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.9964020550251007,
+        0.13825155049562454,
+        -4.042789340019226
+      ],
+      "aabb_max_m": [
+        -0.6178300082683563,
+        0.34318356961011887,
+        -3.704703450202942
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "pipe_122",
+      "semantic_id": 122,
+      "category_name": "pipe",
+      "region_id": "2",
+      "aabb_min_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "aabb_max_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_123",
+      "semantic_id": 123,
+      "category_name": "wall",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.0862270295619965,
+        -0.058312416076660156,
+        -2.6321065425872803
+      ],
+      "aabb_max_m": [
+        -0.23319998383522034,
+        2.2928590774536133,
+        -2.548060178756714
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "towel_124",
+      "semantic_id": 124,
+      "category_name": "towel",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.9170220196247101,
+        1.0021657943725586,
+        -2.734552502632141
+      ],
+      "aabb_max_m": [
+        -0.7017910182476044,
+        1.2121667861938477,
+        -2.587868571281433
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "towel bar_125",
+      "semantic_id": 125,
+      "category_name": "towel bar",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.0432020425796509,
+        1.1321658492088318,
+        -2.6080604791641235
+      ],
+      "aabb_max_m": [
+        -0.8294479846954346,
+        1.1921668648719788,
+        -2.5778335332870483
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "hanger_126",
+      "semantic_id": 126,
+      "category_name": "hanger",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.38320301473140717,
+        1.492165744304657,
+        -2.608060359954834
+      ],
+      "aabb_max_m": [
+        -0.3129400163888931,
+        1.592165768146515,
+        -2.5809144973754883
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bathroom mat_127",
+      "semantic_id": 127,
+      "category_name": "bathroom mat",
+      "region_id": "2",
+      "aabb_min_m": [
+        -0.2631959915161133,
+        -0.015582373831421137,
+        -3.208063244819641
+      ],
+      "aabb_max_m": [
+        0.7168009877204895,
+        0.015515682753175497,
+        -2.619541049003601
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower ceiling_128",
+      "semantic_id": 128,
+      "category_name": "shower ceiling",
+      "region_id": "3",
+      "aabb_min_m": [
+        -1.0432430505752563,
+        2.272145986557007,
+        -2.8280726075172424
+      ],
+      "aabb_max_m": [
+        0.7168580293655396,
+        2.3008720874786377,
+        -1.3080543875694275
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower ceiling lamp_129",
+      "semantic_id": 129,
+      "category_name": "shower ceiling lamp",
+      "region_id": "3",
+      "aabb_min_m": [
+        -0.043202001601457596,
+        2.290380120277405,
+        -1.9280654788017273
+      ],
+      "aabb_max_m": [
+        0.056797001510858536,
+        2.304642081260681,
+        -1.8080585598945618
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower wall_130",
+      "semantic_id": 130,
+      "category_name": "shower wall",
+      "region_id": "3",
+      "aabb_min_m": [
+        -1.0694270133972168,
+        0.03953981399536133,
+        -2.468090295791626
+      ],
+      "aabb_max_m": [
+        -0.2534329891204834,
+        2.2874770164489746,
+        -2.409456491470337
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower wall_131",
+      "semantic_id": 131,
+      "category_name": "shower wall",
+      "region_id": "3",
+      "aabb_min_m": [
+        -1.075073003768921,
+        0.04708576202392578,
+        -2.4443792700767517
+      ],
+      "aabb_max_m": [
+        -1.0431649684906006,
+        2.288127899169922,
+        -1.277912199497223
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower wall_132",
+      "semantic_id": 132,
+      "category_name": "shower wall",
+      "region_id": "3",
+      "aabb_min_m": [
+        -1.0572140216827393,
+        0.04982495307922363,
+        -1.328060269355774
+      ],
+      "aabb_max_m": [
+        0.7408130168914795,
+        2.2923688888549805,
+        -1.2417031526565552
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower wall_133",
+      "semantic_id": 133,
+      "category_name": "shower wall",
+      "region_id": "3",
+      "aabb_min_m": [
+        0.6967949867248535,
+        0.03216361999511719,
+        -2.62805438041687
+      ],
+      "aabb_max_m": [
+        0.8026859760284424,
+        2.2907769680023193,
+        -1.2900142669677734
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "handrail_134",
+      "semantic_id": 134,
+      "category_name": "handrail",
+      "region_id": "3",
+      "aabb_min_m": [
+        0.1967960000038147,
+        0.6921658515930176,
+        -1.3604901432991028
+      ],
+      "aabb_max_m": [
+        0.2967979907989502,
+        1.432168960571289,
+        -1.2895471453666687
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower shelf_135",
+      "semantic_id": 135,
+      "category_name": "shower shelf",
+      "region_id": "3",
+      "aabb_min_m": [
+        0.556797981262207,
+        1.4121559262275696,
+        -1.448063313961029
+      ],
+      "aabb_max_m": [
+        0.7387980222702026,
+        1.5321680903434753,
+        -1.2902823090553284
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower cosmetics_136",
+      "semantic_id": 136,
+      "category_name": "shower cosmetics",
+      "region_id": "3",
+      "aabb_min_m": [
+        0.5767980217933655,
+        1.432163953781128,
+        -1.4382073283195496
+      ],
+      "aabb_max_m": [
+        0.7386400103569031,
+        1.6921651363372803,
+        -1.2904914021492004
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower tap_137",
+      "semantic_id": 137,
+      "category_name": "shower tap",
+      "region_id": "3",
+      "aabb_min_m": [
+        0.710830956697464,
+        1.0321658849716187,
+        -1.9680634140968323
+      ],
+      "aabb_max_m": [
+        0.7767979800701141,
+        1.2721668481826782,
+        -1.7880544066429138
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "showerhead_138",
+      "semantic_id": 138,
+      "category_name": "showerhead",
+      "region_id": "3",
+      "aabb_min_m": [
+        0.6567969620227814,
+        2.2721428871154785,
+        -1.8880504369735718
+      ],
+      "aabb_max_m": [
+        0.7329749763011932,
+        2.292480945587158,
+        -1.7480584383010864
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower door frame_139",
+      "semantic_id": 139,
+      "category_name": "shower door frame",
+      "region_id": "3",
+      "aabb_min_m": [
+        -0.2832019627094269,
+        -0.0015463829040527344,
+        -2.668060302734375
+      ],
+      "aabb_max_m": [
+        0.7767979800701141,
+        2.289900064468384,
+        -2.388063430786133
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "shower floor_140",
+      "semantic_id": 140,
+      "category_name": "shower floor",
+      "region_id": "3",
+      "aabb_min_m": [
+        -1.0659940540790558,
+        -0.0016272738575935364,
+        -2.4505143761634827
+      ],
+      "aabb_max_m": [
+        0.728460043668747,
+        0.11220382153987885,
+        -1.248060166835785
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling lamp_141",
+      "semantic_id": 141,
+      "category_name": "ceiling lamp",
+      "region_id": "2",
+      "aabb_min_m": [
+        0.13680600374937057,
+        2.2862659692764282,
+        -3.5480597019195557
+      ],
+      "aabb_max_m": [
+        0.21679700165987015,
+        2.2997039556503296,
+        -3.4480607509613037
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "air vent_142",
+      "semantic_id": 142,
+      "category_name": "air vent",
+      "region_id": "2",
+      "aabb_min_m": [
+        -1.0870009064674377,
+        2.132142663002014,
+        -3.2613437175750732
+      ],
+      "aabb_max_m": [
+        -1.0686859488487244,
+        2.2721675634384155,
+        -3.0280606746673584
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "fire sprinkler_143",
+      "semantic_id": 143,
+      "category_name": "fire sprinkler",
+      "region_id": "2",
+      "aabb_min_m": [
+        0.7367980182170868,
+        2.269592761993408,
+        -3.5279626846313477
+      ],
+      "aabb_max_m": [
+        0.8367970287799835,
+        2.2861857414245605,
+        -3.4479966163635254
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door frame_144",
+      "semantic_id": 144,
+      "category_name": "door frame",
+      "region_id": "3",
+      "aabb_min_m": [
+        1.034083902835846,
+        0.011926889419555664,
+        -1.3206852674484253
+      ],
+      "aabb_max_m": [
+        2.036796987056732,
+        2.1721689701080322,
+        -1.1190441846847534
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "floor_145",
+      "semantic_id": 145,
+      "category_name": "floor",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.548799991607666,
+        -0.03925671614706516,
+        -1.6480672359466553
+      ],
+      "aabb_max_m": [
+        2.1245408058166504,
+        0.09216727875173092,
+        3.691943407058716
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_146",
+      "semantic_id": 146,
+      "category_name": "wall",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.5755510330200195,
+        -0.005073070526123047,
+        -1.1880632638931274
+      ],
+      "aabb_max_m": [
+        2.1590023040771484,
+        2.4492459297180176,
+        -1.0631943941116333
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling_147",
+      "semantic_id": 147,
+      "category_name": "ceiling",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.543214797973633,
+        1.872166633605957,
+        -1.1480712890625
+      ],
+      "aabb_max_m": [
+        2.136798858642578,
+        2.4599556922912598,
+        3.671934127807617
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "sign_148",
+      "semantic_id": 148,
+      "category_name": "sign",
+      "region_id": "4",
+      "aabb_min_m": [
+        0.6567990481853485,
+        1.1521660089492798,
+        -1.1477051973342896
+      ],
+      "aabb_max_m": [
+        0.7767980396747589,
+        1.3721660375595093,
+        -1.138060212135315
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "air vent_149",
+      "semantic_id": 149,
+      "category_name": "air vent",
+      "region_id": "4",
+      "aabb_min_m": [
+        -0.6232020258903503,
+        2.272154927253723,
+        -1.1680553555488586
+      ],
+      "aabb_max_m": [
+        -0.30320000648498535,
+        2.432268977165222,
+        -1.1398293375968933
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "picture_150",
+      "semantic_id": 150,
+      "category_name": "picture",
+      "region_id": "4",
+      "aabb_min_m": [
+        -0.7232009768486023,
+        1.5121290683746338,
+        -1.1549403071403503
+      ],
+      "aabb_max_m": [
+        0.07679897546768188,
+        2.0521650314331055,
+        -1.0992572903633118
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "picture_151",
+      "semantic_id": 151,
+      "category_name": "picture",
+      "region_id": "4",
+      "aabb_min_m": [
+        -1.403207004070282,
+        1.5121111273765564,
+        -1.1614524126052856
+      ],
+      "aabb_max_m": [
+        -0.6831920742988586,
+        2.0522270798683167,
+        -1.0971263647079468
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "picture_152",
+      "semantic_id": 152,
+      "category_name": "picture",
+      "region_id": "4",
+      "aabb_min_m": [
+        -0.6832090020179749,
+        0.9321640431880951,
+        -1.1564322113990784
+      ],
+      "aabb_max_m": [
+        0.05444300174713135,
+        1.4521709978580475,
+        -1.1010121703147888
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "picture_153",
+      "semantic_id": 153,
+      "category_name": "picture",
+      "region_id": "4",
+      "aabb_min_m": [
+        -1.4032290279865265,
+        0.9321650862693787,
+        -1.1522272229194641
+      ],
+      "aabb_max_m": [
+        -0.703201025724411,
+        1.4521990418434143,
+        -1.1000592112541199
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "unknown_154",
+      "semantic_id": 154,
+      "category_name": "unknown",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.0832040309906006,
+        2.012166142463684,
+        -1.162743330001831
+      ],
+      "aabb_max_m": [
+        -1.9032020568847656,
+        2.1921671628952026,
+        -1.1251773834228516
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "smoke detector_155",
+      "semantic_id": 155,
+      "category_name": "smoke detector",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.083201825618744,
+        2.247375011444092,
+        -1.1567153930664062
+      ],
+      "aabb_max_m": [
+        -1.9119969010353088,
+        2.412166118621826,
+        -1.0848393440246582
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "switch_156",
+      "semantic_id": 156,
+      "category_name": "switch",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.0832239389419556,
+        1.4521600008010864,
+        -1.162983238697052
+      ],
+      "aabb_max_m": [
+        -1.9232019186019897,
+        1.5921660661697388,
+        -1.1231862902641296
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "air vent_157",
+      "semantic_id": 157,
+      "category_name": "air vent",
+      "region_id": "4",
+      "aabb_min_m": [
+        -3.2032021284103394,
+        2.292165160179138,
+        -1.1780282855033875
+      ],
+      "aabb_max_m": [
+        -2.903202176094055,
+        2.4378591775894165,
+        -1.1480572819709778
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_158",
+      "semantic_id": 158,
+      "category_name": "wall",
+      "region_id": "4",
+      "aabb_min_m": [
+        2.096971869468689,
+        0.007844924926757812,
+        -1.1548442840576172
+      ],
+      "aabb_max_m": [
+        2.1713539361953735,
+        2.4469094276428223,
+        3.6819052696228027
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "painting_159",
+      "semantic_id": 159,
+      "category_name": "painting",
+      "region_id": "4",
+      "aabb_min_m": [
+        2.0739619731903076,
+        0.7721663117408752,
+        0.5718998908996582
+      ],
+      "aabb_max_m": [
+        2.170914888381958,
+        2.1921672224998474,
+        1.9175050258636475
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_160",
+      "semantic_id": 160,
+      "category_name": "wall",
+      "region_id": "4",
+      "aabb_min_m": [
+        -1.383206069469452,
+        0.0036275386810302734,
+        3.5546051263809204
+      ],
+      "aabb_max_m": [
+        2.1405799984931946,
+        2.4463746547698975,
+        3.6916040182113647
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "curtain_161",
+      "semantic_id": 161,
+      "category_name": "curtain",
+      "region_id": "4",
+      "aabb_min_m": [
+        -1.6032020449638367,
+        -0.003454446792602539,
+        3.4934576749801636
+      ],
+      "aabb_max_m": [
+        1.5768030285835266,
+        2.396671772003174,
+        3.809958577156067
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_162",
+      "semantic_id": 162,
+      "category_name": "wall",
+      "region_id": "4",
+      "aabb_min_m": [
+        -1.5832020044326782,
+        -0.0032224655151367188,
+        2.811940312385559
+      ],
+      "aabb_max_m": [
+        -1.3631969690322876,
+        2.4334824085235596,
+        3.6138113737106323
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_163",
+      "semantic_id": 163,
+      "category_name": "wall",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.663203001022339,
+        0.004820346832275391,
+        2.801688313484192
+      ],
+      "aabb_max_m": [
+        -1.3832080364227295,
+        2.4394655227661133,
+        2.911941409111023
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_164",
+      "semantic_id": 164,
+      "category_name": "wall",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.591955065727234,
+        0.7921664714813232,
+        2.8719398975372314
+      ],
+      "aabb_max_m": [
+        -2.5281440019607544,
+        2.4121665954589844,
+        3.5470001697540283
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "air vent_165",
+      "semantic_id": 165,
+      "category_name": "air vent",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.563201904296875,
+        1.9121655225753784,
+        2.931941032409668
+      ],
+      "aabb_max_m": [
+        -2.5344491004943848,
+        2.172192692756653,
+        3.3919472694396973
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "curtain_166",
+      "semantic_id": 166,
+      "category_name": "curtain",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.415541052818298,
+        -0.005242586135864258,
+        3.2172181606292725
+      ],
+      "aabb_max_m": [
+        -2.5451399087905884,
+        2.4306297302246094,
+        3.667506456375122
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_167",
+      "semantic_id": 167,
+      "category_name": "chair",
+      "region_id": "4",
+      "aabb_min_m": [
+        -0.7832019925117493,
+        0.22867417335510254,
+        0.7898220419883728
+      ],
+      "aabb_max_m": [
+        -0.18320196866989136,
+        0.9258512258529663,
+        1.3719401955604553
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_168",
+      "semantic_id": 168,
+      "category_name": "chair",
+      "region_id": "4",
+      "aabb_min_m": [
+        -0.22443199902772903,
+        0.21899816393852234,
+        0.7805780172348022
+      ],
+      "aabb_max_m": [
+        0.37679897993803024,
+        0.9152322113513947,
+        1.2719391584396362
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_169",
+      "semantic_id": 169,
+      "category_name": "chair",
+      "region_id": "4",
+      "aabb_min_m": [
+        0.3367980420589447,
+        0.23216721415519714,
+        0.7720719873905182
+      ],
+      "aabb_max_m": [
+        0.9167980253696442,
+        0.9147322475910187,
+        1.3119400441646576
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_170",
+      "semantic_id": 170,
+      "category_name": "chair",
+      "region_id": "4",
+      "aabb_min_m": [
+        0.792121022939682,
+        0.11216616630554199,
+        1.0499631762504578
+      ],
+      "aabb_max_m": [
+        1.544840008020401,
+        0.9268252849578857,
+        1.694355309009552
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_171",
+      "semantic_id": 171,
+      "category_name": "chair",
+      "region_id": "4",
+      "aabb_min_m": [
+        0.21679797768592834,
+        0.22688621282577515,
+        1.4319391250610352
+      ],
+      "aabb_max_m": [
+        0.8167979419231415,
+        0.9192283749580383,
+        2.0621261596679688
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_172",
+      "semantic_id": 172,
+      "category_name": "chair",
+      "region_id": "4",
+      "aabb_min_m": [
+        -0.24320198595523834,
+        0.22794225811958313,
+        1.5119332671165466
+      ],
+      "aabb_max_m": [
+        0.37679897248744965,
+        0.9167973697185516,
+        2.082989275455475
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_173",
+      "semantic_id": 173,
+      "category_name": "chair",
+      "region_id": "4",
+      "aabb_min_m": [
+        -0.7975829839706421,
+        0.19216018915176392,
+        1.4719402194023132
+      ],
+      "aabb_max_m": [
+        -0.18320202827453613,
+        0.9237343668937683,
+        2.071940243244171
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "chair_174",
+      "semantic_id": 174,
+      "category_name": "chair",
+      "region_id": "4",
+      "aabb_min_m": [
+        -1.4584289491176605,
+        -0.0008818507194519043,
+        1.071940004825592
+      ],
+      "aabb_max_m": [
+        -0.623201996088028,
+        0.9121602773666382,
+        1.6919412016868591
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "table_175",
+      "semantic_id": 175,
+      "category_name": "table",
+      "region_id": "4",
+      "aabb_min_m": [
+        -1.2081400156021118,
+        0.010711133480072021,
+        0.8289759159088135
+      ],
+      "aabb_max_m": [
+        1.3089350461959839,
+        0.8121662735939026,
+        1.8819401264190674
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bowl of sweets_176",
+      "semantic_id": 176,
+      "category_name": "bowl of sweets",
+      "region_id": "4",
+      "aabb_min_m": [
+        -0.1702600046992302,
+        0.786252349615097,
+        1.1098029613494873
+      ],
+      "aabb_max_m": [
+        0.30301500111818314,
+        0.8984643518924713,
+        1.5870251655578613
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling lamp_177",
+      "semantic_id": 177,
+      "category_name": "ceiling lamp",
+      "region_id": "4",
+      "aabb_min_m": [
+        0.268887996673584,
+        1.6010273694992065,
+        0.9820599257946014
+      ],
+      "aabb_max_m": [
+        0.5398849844932556,
+        1.9257203340530396,
+        1.1606729328632355
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling lamp_178",
+      "semantic_id": 178,
+      "category_name": "ceiling lamp",
+      "region_id": "4",
+      "aabb_min_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "aabb_max_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "desk_179",
+      "semantic_id": 179,
+      "category_name": "desk",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.603204846382141,
+        -0.005038738250732422,
+        0.4719400405883789
+      ],
+      "aabb_max_m": [
+        -2.047617793083191,
+        0.7721664309501648,
+        2.398130178451538
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "table lamp_180",
+      "semantic_id": 180,
+      "category_name": "table lamp",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.5156418085098267,
+        1.1025892496109009,
+        0.4253159165382385
+      ],
+      "aabb_max_m": [
+        -2.1743777990341187,
+        1.5612183809280396,
+        0.9613019824028015
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "table lamp_181",
+      "semantic_id": 181,
+      "category_name": "table lamp",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.57292377948761,
+        1.105953335762024,
+        1.89994615316391
+      ],
+      "aabb_max_m": [
+        -2.2574127912521362,
+        1.5421785116195679,
+        2.4445701241493225
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "decoration_182",
+      "semantic_id": 182,
+      "category_name": "decoration",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.41386878490448,
+        0.746127188205719,
+        1.1119389533996582
+      ],
+      "aabb_max_m": [
+        -2.2951079607009888,
+        0.8521662354469299,
+        1.2319400310516357
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "decoration_183",
+      "semantic_id": 183,
+      "category_name": "decoration",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.403201937675476,
+        0.7418992519378662,
+        1.3319389820098877
+      ],
+      "aabb_max_m": [
+        -2.2967978715896606,
+        0.8559262752532959,
+        1.4519410133361816
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "decoration_184",
+      "semantic_id": 184,
+      "category_name": "decoration",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.3832021951675415,
+        0.748706191778183,
+        1.59194016456604
+      ],
+      "aabb_max_m": [
+        -2.2887920141220093,
+        0.8349882662296295,
+        1.6919381618499756
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "sofa_185",
+      "semantic_id": 185,
+      "category_name": "sofa",
+      "region_id": "4",
+      "aabb_min_m": [
+        -5.412775039672852,
+        0.005438327789306641,
+        0.4489009380340576
+      ],
+      "aabb_max_m": [
+        -2.5232019424438477,
+        0.9580683708190918,
+        3.2919414043426514
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "bin_186",
+      "semantic_id": 186,
+      "category_name": "bin",
+      "region_id": "4",
+      "aabb_min_m": [
+        -2.55800998210907,
+        -0.0023349225521087646,
+        0.5519340336322784
+      ],
+      "aabb_max_m": [
+        -2.0518637895584106,
+        0.3321670889854431,
+        0.7981440722942352
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "table_187",
+      "semantic_id": 187,
+      "category_name": "table",
+      "region_id": "4",
+      "aabb_min_m": [
+        -3.3232059478759766,
+        -0.003475010395050049,
+        -0.12805300951004028
+      ],
+      "aabb_max_m": [
+        -2.5832009315490723,
+        0.5921761393547058,
+        0.5319400429725647
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "table_188",
+      "semantic_id": 188,
+      "category_name": "table",
+      "region_id": "4",
+      "aabb_min_m": [
+        -4.963204741477966,
+        -0.06426088511943817,
+        0.7119400501251221
+      ],
+      "aabb_max_m": [
+        -3.9144798517227173,
+        0.45216722786426544,
+        1.8019402027130127
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "remote control_189",
+      "semantic_id": 189,
+      "category_name": "remote control",
+      "region_id": "4",
+      "aabb_min_m": [
+        -4.535884857177734,
+        0.4273841828107834,
+        1.2719391584396362
+      ],
+      "aabb_max_m": [
+        -4.283203125,
+        0.46807320415973663,
+        1.3919421434402466
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ottoman_190",
+      "semantic_id": 190,
+      "category_name": "ottoman",
+      "region_id": "4",
+      "aabb_min_m": [
+        -4.423203825950623,
+        0.0058980584144592285,
+        0.06965398788452148
+      ],
+      "aabb_max_m": [
+        -3.875860810279846,
+        0.5338931083679199,
+        0.6008710861206055
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ottoman_191",
+      "semantic_id": 191,
+      "category_name": "ottoman",
+      "region_id": "4",
+      "aabb_min_m": [
+        -4.971867799758911,
+        0.005802035331726074,
+        0.10858798027038574
+      ],
+      "aabb_max_m": [
+        -4.400736570358276,
+        0.5267351269721985,
+        0.640051007270813
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_192",
+      "semantic_id": 192,
+      "category_name": "wall",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.5849928855896,
+        -0.01106405258178711,
+        -1.15811425447464
+      ],
+      "aabb_max_m": [
+        -6.513906955718994,
+        2.449359178543091,
+        2.3185660243034363
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_193",
+      "semantic_id": 193,
+      "category_name": "wall",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.5664002895355225,
+        0.4521663188934326,
+        2.281940221786499
+      ],
+      "aabb_max_m": [
+        -6.159647226333618,
+        2.4377505779266357,
+        2.3362462520599365
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_194",
+      "semantic_id": 194,
+      "category_name": "wall",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.213122606277466,
+        0.030150175094604492,
+        2.289001226425171
+      ],
+      "aabb_max_m": [
+        -6.120264768600464,
+        2.4330453872680664,
+        3.3119404315948486
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "floor lamp_195",
+      "semantic_id": 195,
+      "category_name": "floor lamp",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.063201189041138,
+        0.005621433258056641,
+        2.8519372940063477
+      ],
+      "aabb_max_m": [
+        -5.703200101852417,
+        1.1629225015640259,
+        3.251946449279785
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "tv_196",
+      "semantic_id": 196,
+      "category_name": "tv",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.5124831199646,
+        0.6521661877632141,
+        0.48300498723983765
+      ],
+      "aabb_max_m": [
+        -6.083176136016846,
+        1.619757354259491,
+        2.0048940777778625
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "tv stand_197",
+      "semantic_id": 197,
+      "category_name": "tv stand",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.583200931549072,
+        -0.0065879225730896,
+        0.36373287439346313
+      ],
+      "aabb_max_m": [
+        -5.874697208404541,
+        0.7150663137435913,
+        2.311938226222992
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "statue_198",
+      "semantic_id": 198,
+      "category_name": "statue",
+      "region_id": "4",
+      "aabb_min_m": [
+        -6.568602085113525,
+        0.672166258096695,
+        2.1119372844696045
+      ],
+      "aabb_max_m": [
+        -6.343201160430908,
+        0.9147473275661469,
+        2.213811159133911
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_199",
+      "semantic_id": 199,
+      "category_name": "wall",
+      "region_id": "5",
+      "aabb_min_m": [
+        -2.4032061100006104,
+        -0.003277301788330078,
+        -2.225302517414093
+      ],
+      "aabb_max_m": [
+        -2.360379934310913,
+        2.276292085647583,
+        -1.1511542201042175
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_200",
+      "semantic_id": 200,
+      "category_name": "wall",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.266839981079102,
+        0.0002257823944091797,
+        -2.208973467350006
+      ],
+      "aabb_max_m": [
+        -4.17436408996582,
+        2.2737560272216797,
+        -1.1480602622032166
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling_201",
+      "semantic_id": 201,
+      "category_name": "ceiling",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.251983165740967,
+        2.2657121419906616,
+        -2.215705454349518
+      ],
+      "aabb_max_m": [
+        -2.3682971000671387,
+        2.285956025123596,
+        -1.1680473685264587
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_202",
+      "semantic_id": 202,
+      "category_name": "wall",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.260416030883789,
+        0.9642648696899414,
+        -2.2394285202026367
+      ],
+      "aabb_max_m": [
+        -2.370328903198242,
+        2.2836780548095703,
+        -2.1680545806884766
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "kitchen cabinet_203",
+      "semantic_id": 203,
+      "category_name": "kitchen cabinet",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.26786994934082,
+        -0.013979196548461914,
+        -2.226729154586792
+      ],
+      "aabb_max_m": [
+        -2.365488052368164,
+        0.972200870513916,
+        -1.5080602169036865
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "washbasin_204",
+      "semantic_id": 204,
+      "category_name": "washbasin",
+      "region_id": "5",
+      "aabb_min_m": [
+        -2.9032191038131714,
+        0.6521658301353455,
+        -2.128060281276703
+      ],
+      "aabb_max_m": [
+        -2.483200192451477,
+        0.8565979599952698,
+        -1.7080603241920471
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "tap_205",
+      "semantic_id": 205,
+      "category_name": "tap",
+      "region_id": "5",
+      "aabb_min_m": [
+        -2.7432020902633667,
+        0.8511649072170258,
+        -2.2280606031417847
+      ],
+      "aabb_max_m": [
+        -2.5632020235061646,
+        1.092158943414688,
+        -2.128060460090637
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "kitchen utensil_206",
+      "semantic_id": 206,
+      "category_name": "kitchen utensil",
+      "region_id": "5",
+      "aabb_min_m": [
+        -3.5432018041610718,
+        0.8562178611755371,
+        -2.226729154586792
+      ],
+      "aabb_max_m": [
+        -3.3010908365249634,
+        1.052169919013977,
+        -2.0610363483428955
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "box_207",
+      "semantic_id": 207,
+      "category_name": "box",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.163200855255127,
+        0.8053598701953888,
+        -2.2225013375282288
+      ],
+      "aabb_max_m": [
+        -3.7090559005737305,
+        1.064622849225998,
+        -1.9430384039878845
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "painting_208",
+      "semantic_id": 208,
+      "category_name": "painting",
+      "region_id": "5",
+      "aabb_min_m": [
+        -3.6632161140441895,
+        1.2321789264678955,
+        -2.2191855907440186
+      ],
+      "aabb_max_m": [
+        -3.003201961517334,
+        2.2122089862823486,
+        -2.1691744327545166
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling lamp_209",
+      "semantic_id": 209,
+      "category_name": "ceiling lamp",
+      "region_id": "5",
+      "aabb_min_m": [
+        -3.383198857307434,
+        2.2806060314178467,
+        -1.768057405948639
+      ],
+      "aabb_max_m": [
+        -3.283203959465027,
+        2.2934811115264893,
+        -1.668057382106781
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "sprinkler_210",
+      "semantic_id": 210,
+      "category_name": "sprinkler",
+      "region_id": "5",
+      "aabb_min_m": [
+        -3.3832108974456787,
+        2.2696070671081543,
+        -2.2080494165420532
+      ],
+      "aabb_max_m": [
+        -3.303201913833618,
+        2.283205032348633,
+        -2.0280593633651733
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling_211",
+      "semantic_id": 211,
+      "category_name": "ceiling",
+      "region_id": "5",
+      "aabb_min_m": [
+        -6.555330038070679,
+        -0.014766186475753784,
+        -5.228095531463623
+      ],
+      "aabb_max_m": [
+        -4.2387964725494385,
+        0.033585380762815475,
+        -1.0880579948425293
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_212",
+      "semantic_id": 212,
+      "category_name": "wall",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.471084117889404,
+        0.0006518363952636719,
+        -5.233180522918701
+      ],
+      "aabb_max_m": [
+        -4.312407970428467,
+        2.2722010612487793,
+        -1.108060359954834
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_213",
+      "semantic_id": 213,
+      "category_name": "wall",
+      "region_id": "5",
+      "aabb_min_m": [
+        -6.588442802429199,
+        -0.014451265335083008,
+        -5.228064060211182
+      ],
+      "aabb_max_m": [
+        -6.480213165283203,
+        2.27343487739563,
+        -1.0880522727966309
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling_214",
+      "semantic_id": 214,
+      "category_name": "ceiling",
+      "region_id": "5",
+      "aabb_min_m": [
+        -6.5833258628845215,
+        2.232165217399597,
+        -5.242079734802246
+      ],
+      "aabb_max_m": [
+        -4.383202075958252,
+        2.288918614387512,
+        -1.1280345916748047
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling lamp_215",
+      "semantic_id": 215,
+      "category_name": "ceiling lamp",
+      "region_id": "5",
+      "aabb_min_m": [
+        -5.563201189041138,
+        2.2660170793533325,
+        -1.7480624914169312
+      ],
+      "aabb_max_m": [
+        -5.423201322555542,
+        2.2842921018600464,
+        -1.6461864709854126
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "fire sprinkler_216",
+      "semantic_id": 216,
+      "category_name": "fire sprinkler",
+      "region_id": "5",
+      "aabb_min_m": [
+        -5.523192644119263,
+        2.271866798400879,
+        -3.7280646562576294
+      ],
+      "aabb_max_m": [
+        -5.423174619674683,
+        2.292165756225586,
+        -3.6280325651168823
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door_217",
+      "semantic_id": 217,
+      "category_name": "door",
+      "region_id": "5",
+      "aabb_min_m": [
+        -6.57165265083313,
+        -0.011785268783569336,
+        -2.368098199367523
+      ],
+      "aabb_max_m": [
+        -6.483200788497925,
+        2.152174949645996,
+        -1.3680601716041565
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door knob_218",
+      "semantic_id": 218,
+      "category_name": "door knob",
+      "region_id": "5",
+      "aabb_min_m": [
+        -6.553548812866211,
+        0.8921719193458557,
+        -1.5680622458457947
+      ],
+      "aabb_max_m": [
+        -6.515460014343262,
+        0.9921689629554749,
+        -1.4280372262001038
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_219",
+      "semantic_id": 219,
+      "category_name": "wall",
+      "region_id": "5",
+      "aabb_min_m": [
+        -6.103200912475586,
+        0.027005434036254883,
+        -5.251486778259277
+      ],
+      "aabb_max_m": [
+        -4.397360801696777,
+        2.2822914123535156,
+        -5.168059349060059
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door_220",
+      "semantic_id": 220,
+      "category_name": "door",
+      "region_id": "5",
+      "aabb_min_m": [
+        -6.4232118129730225,
+        0.029702425003051758,
+        -5.236392021179199
+      ],
+      "aabb_max_m": [
+        -5.4632017612457275,
+        2.1921615600585938,
+        -5.19240665435791
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "self-closing mechanism_221",
+      "semantic_id": 221,
+      "category_name": "self-closing mechanism",
+      "region_id": "5",
+      "aabb_min_m": [
+        -6.259740829467773,
+        2.0704516172409058,
+        -5.228031873703003
+      ],
+      "aabb_max_m": [
+        -5.883212089538574,
+        2.2755566835403442,
+        -4.940203905105591
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door knob_222",
+      "semantic_id": 222,
+      "category_name": "door knob",
+      "region_id": "5",
+      "aabb_min_m": [
+        -5.663200616836548,
+        0.9121655225753784,
+        -5.227771043777466
+      ],
+      "aabb_max_m": [
+        -5.523200750350952,
+        1.0521655082702637,
+        -5.192406415939331
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "note_223",
+      "semantic_id": 223,
+      "category_name": "note",
+      "region_id": "5",
+      "aabb_min_m": [
+        -6.103196144104004,
+        1.272156536579132,
+        -5.220398426055908
+      ],
+      "aabb_max_m": [
+        -5.803214073181152,
+        1.552165687084198,
+        -5.213008403778076
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "mirror_224",
+      "semantic_id": 224,
+      "category_name": "mirror",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.41438364982605,
+        1.3521665930747986,
+        -4.968060493469238
+      ],
+      "aabb_max_m": [
+        -4.284453630447388,
+        2.024245798587799,
+        -4.2080583572387695
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "decoration_225",
+      "semantic_id": 225,
+      "category_name": "decoration",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.410160779953003,
+        1.3721657395362854,
+        -4.618005275726318
+      ],
+      "aabb_max_m": [
+        -4.332495927810669,
+        1.4817666411399841,
+        -4.448060512542725
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "decoration_226",
+      "semantic_id": 226,
+      "category_name": "decoration",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.4632017612457275,
+        1.0521636009216309,
+        -5.0880595445632935
+      ],
+      "aabb_max_m": [
+        -4.363200902938843,
+        2.252166748046875,
+        -3.9480608701705933
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "table lamp_227",
+      "semantic_id": 227,
+      "category_name": "table lamp",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.870491027832031,
+        0.9003964960575104,
+        -5.2381813526153564
+      ],
+      "aabb_max_m": [
+        -4.434945106506348,
+        1.6121695935726166,
+        -4.794047117233276
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "table_228",
+      "semantic_id": 228,
+      "category_name": "table",
+      "region_id": "5",
+      "aabb_min_m": [
+        -4.892275810241699,
+        0.0014954805374145508,
+        -5.256543755531311
+      ],
+      "aabb_max_m": [
+        -4.362006187438965,
+        0.9321655035018921,
+        -3.8480666875839233
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door frame_229",
+      "semantic_id": 229,
+      "category_name": "door frame",
+      "region_id": "7",
+      "aabb_min_m": [
+        -4.416515827178955,
+        0.001964569091796875,
+        -3.688064455986023
+      ],
+      "aabb_max_m": [
+        -4.203200817108154,
+        2.172166109085083,
+        -2.7180291414260864
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "floor_230",
+      "semantic_id": 230,
+      "category_name": "floor",
+      "region_id": "7",
+      "aabb_min_m": [
+        -4.403180956840515,
+        -0.010430313646793365,
+        -5.536429524421692
+      ],
+      "aabb_max_m": [
+        -2.3831998109817505,
+        0.072165347635746,
+        -2.5993183851242065
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling_231",
+      "semantic_id": 231,
+      "category_name": "ceiling",
+      "region_id": "7",
+      "aabb_min_m": [
+        -4.244926810264587,
+        2.2721660137176514,
+        -5.5507508516311646
+      ],
+      "aabb_max_m": [
+        -2.3742939233779907,
+        2.3005006313323975,
+        -2.584903597831726
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_232",
+      "semantic_id": 232,
+      "category_name": "wall",
+      "region_id": "7",
+      "aabb_min_m": [
+        -4.2781901359558105,
+        0.0021486282348632812,
+        -5.538529276847839
+      ],
+      "aabb_max_m": [
+        -4.203199863433838,
+        2.2983384132385254,
+        -2.6031962633132935
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_233",
+      "semantic_id": 233,
+      "category_name": "wall",
+      "region_id": "7",
+      "aabb_min_m": [
+        -4.267594814300537,
+        0.02384638786315918,
+        -5.569647550582886
+      ],
+      "aabb_max_m": [
+        -2.3789401054382324,
+        2.2983384132385254,
+        -5.501122713088989
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "painting_234",
+      "semantic_id": 234,
+      "category_name": "painting",
+      "region_id": "7",
+      "aabb_min_m": [
+        -3.68323290348053,
+        1.1197853684425354,
+        -5.549795627593994
+      ],
+      "aabb_max_m": [
+        -2.9657739400863647,
+        2.0062045454978943,
+        -5.481018543243408
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "ceiling lamp_235",
+      "semantic_id": 235,
+      "category_name": "ceiling lamp",
+      "region_id": "7",
+      "aabb_min_m": [
+        -3.394830107688904,
+        2.290438413619995,
+        -5.128060817718506
+      ],
+      "aabb_max_m": [
+        -3.2632042169570923,
+        2.309189558029175,
+        -5.008059024810791
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "toilet paper_236",
+      "semantic_id": 236,
+      "category_name": "toilet paper",
+      "region_id": "7",
+      "aabb_min_m": [
+        -3.0982571840286255,
+        0.6023374199867249,
+        -5.551982641220093
+      ],
+      "aabb_max_m": [
+        -2.8631972074508667,
+        0.738171398639679,
+        -5.425447702407837
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "toilet_237",
+      "semantic_id": 237,
+      "category_name": "toilet",
+      "region_id": "7",
+      "aabb_min_m": [
+        -3.169129967689514,
+        -0.007833600044250488,
+        -5.328061819076538
+      ],
+      "aabb_max_m": [
+        -2.3534778356552124,
+        0.7950354814529419,
+        -4.852325677871704
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "utensil_238",
+      "semantic_id": 238,
+      "category_name": "utensil",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.583201766014099,
+        0.03064936399459839,
+        -5.556022882461548
+      ],
+      "aabb_max_m": [
+        -2.373491883277893,
+        0.2721664011478424,
+        -5.343793630599976
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_239",
+      "semantic_id": 239,
+      "category_name": "wall",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.4232048988342285,
+        -0.007831335067749023,
+        -5.557307124137878
+      ],
+      "aabb_max_m": [
+        -2.3531060218811035,
+        2.299694538116455,
+        -2.571820378303528
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "air vent_240",
+      "semantic_id": 240,
+      "category_name": "air vent",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.373241901397705,
+        2.112164616584778,
+        -3.9079478979110718
+      ],
+      "aabb_max_m": [
+        -2.3631958961486816,
+        2.2721985578536987,
+        -3.1680599451065063
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "mirror_241",
+      "semantic_id": 241,
+      "category_name": "mirror",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.4163352251052856,
+        0.9921666979789734,
+        -3.968059778213501
+      ],
+      "aabb_max_m": [
+        -2.3642061948776245,
+        2.1521647572517395,
+        -2.728060483932495
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "washbasin counter_242",
+      "semantic_id": 242,
+      "category_name": "washbasin counter",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.963229775428772,
+        0.31574565172195435,
+        -4.148060321807861
+      ],
+      "aabb_max_m": [
+        -2.2199538946151733,
+        0.9121657013893127,
+        -2.539736270904541
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "washbasin_243",
+      "semantic_id": 243,
+      "category_name": "washbasin",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.8307348489761353,
+        0.7121656835079193,
+        -3.6080665588378906
+      ],
+      "aabb_max_m": [
+        -2.503200888633728,
+        0.8652977049350739,
+        -3.088057518005371
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "tap_244",
+      "semantic_id": 244,
+      "category_name": "tap",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.4832029342651367,
+        0.8659456968307495,
+        -3.388059377670288
+      ],
+      "aabb_max_m": [
+        -2.3616480827331543,
+        0.9921677112579346,
+        -3.168060541152954
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "soap_245",
+      "semantic_id": 245,
+      "category_name": "soap",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.523207902908325,
+        0.8643787205219269,
+        -3.808059573173523
+      ],
+      "aabb_max_m": [
+        -2.369826078414917,
+        0.9081537425518036,
+        -3.6880656480789185
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "cosmetics_246",
+      "semantic_id": 246,
+      "category_name": "cosmetics",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.593445062637329,
+        0.8669218122959137,
+        -2.855553150177002
+      ],
+      "aabb_max_m": [
+        -2.38319993019104,
+        1.0409906804561615,
+        -2.668060302734375
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "wall_247",
+      "semantic_id": 247,
+      "category_name": "wall",
+      "region_id": "7",
+      "aabb_min_m": [
+        -4.250424861907959,
+        -0.00568842887878418,
+        -2.648060441017151
+      ],
+      "aabb_max_m": [
+        -2.3632020950317383,
+        2.293483018875122,
+        -2.5397361516952515
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door_248",
+      "semantic_id": 248,
+      "category_name": "door",
+      "region_id": "7",
+      "aabb_min_m": [
+        -4.2431960105896,
+        3.266334533691406e-05,
+        -2.828059434890747
+      ],
+      "aabb_max_m": [
+        -3.275175094604492,
+        2.184122085571289,
+        -2.7183005809783936
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "door knob_249",
+      "semantic_id": 249,
+      "category_name": "door knob",
+      "region_id": "7",
+      "aabb_min_m": [
+        -3.4940989017486572,
+        1.0121657252311707,
+        -2.858453631401062
+      ],
+      "aabb_max_m": [
+        -3.323077917098999,
+        1.1121657490730286,
+        -2.7880746126174927
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "towel_250",
+      "semantic_id": 250,
+      "category_name": "towel",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.8432068824768066,
+        0.9521657824516296,
+        -2.7104984521865845
+      ],
+      "aabb_max_m": [
+        -2.5632009506225586,
+        1.212165653705597,
+        -2.5691083669662476
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    },
+    {
+      "object_id": "towel bar_251",
+      "semantic_id": 251,
+      "category_name": "towel bar",
+      "region_id": "7",
+      "aabb_min_m": [
+        -2.5832018852233887,
+        1.132165789604187,
+        -2.5997005701065063
+      ],
+      "aabb_max_m": [
+        -2.403203010559082,
+        1.192165732383728,
+        -2.578182578086853
+      ],
+      "geometry_source": "semantic_object_obb_to_aabb"
+    }
+  ],
+  "geometry_space": {
+    "coordinate_frame": "Habitat: x,z horizontal; y up"
+  },
+  "ground_truth_source": {
+    "scene": "/home/phd_student/Argenziano/habitat-MP3D/data/scene_datasets/hm3d/val/00829-QaLdnwvtxbs/QaLdnwvtxbs.basis.glb",
+    "selected_floor_index": null,
+    "object_geometry_source": "semantic_object_obb_to_aabb",
+    "native_object_count": 251,
+    "full_scene_native_object_count": 251,
+    "descriptor_object_count": 251,
+    "floor_scope": null,
+    "assets": {
+      "scene": {
+        "path": "/home/phd_student/Argenziano/habitat-MP3D/data/scene_datasets/hm3d/val/00829-QaLdnwvtxbs/QaLdnwvtxbs.basis.glb",
+        "sha256": "acfabc0994b4e2769d0c53a6542166800892df084a3d9611d4ab4aa73d2a8b0e"
+      },
+      "navmesh": {
+        "path": "/home/phd_student/Argenziano/habitat-MP3D/data/scene_datasets/hm3d/val/00829-QaLdnwvtxbs/QaLdnwvtxbs.basis.navmesh",
+        "sha256": "ae924e79c38bb155f323209ec6330d58b09e5e8e72da4f776735c785a2d81baa"
+      },
+      "semantic_mesh": {
+        "path": "/home/phd_student/Argenziano/habitat-MP3D/data/scene_datasets/hm3d/val/00829-QaLdnwvtxbs/QaLdnwvtxbs.semantic.glb",
+        "sha256": "0cdbdb9f2fc49f5450f7dcffdf11051b74ac04b2f5aa1f19e4d4ec6da7a5ce0f"
+      },
+      "annotations": {
+        "path": "/home/phd_student/Argenziano/habitat-MP3D/data/scene_datasets/hm3d/val/00829-QaLdnwvtxbs/QaLdnwvtxbs.semantic.txt",
+        "sha256": "dfb30256661106c9632c0adf72869bbdef3877b8c172aeef4970572f37b633e5"
+      },
+      "original_schedule": {
+        "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/schedules/00829-QaLdnwvtxbs.schedule.json",
+        "sha256": "f80d752034f33caddcba7d0ed61524a54cccbbcd1cdac898bd8390ef4851b2e5"
+      },
+      "schedule": {
+        "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/replan-v3/Pack-A/00829-QaLdnwvtxbs/00829-QaLdnwvtxbs.schedule.json",
+        "sha256": "bdb880d73f862e3bffaef8dbe4e3f595e307209001464e422978402cb14220eb"
+      },
+      "dataset_config": {
+        "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json",
+        "sha256": "c16fa23b09e36d528c3f12c9799eaa9cf0d733dcd22c9f329c0508d551b640a4"
+      },
+      "resolved_dataset_config": {
+        "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/replan-v3/Pack-A/00829-QaLdnwvtxbs/00829-QaLdnwvtxbs.scene_dataset_config.json",
+        "sha256": "a1dec19607cdcdbc1236d918b822a6533612fd5aab6e5568d5ce84e5d47d4107"
+      }
+    },
+    "extractor": {
+      "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/src/perception_module/hm3d_ground_truth_manifest.py",
+      "sha256": "16173415ec721ddbb9c22bfd6988fd1943520e9182c00a930dec40b663ee8f3e"
+    }
+  }
+}

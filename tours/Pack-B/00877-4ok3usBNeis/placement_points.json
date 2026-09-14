@@ -1,0 +1,6305 @@
+{
+  "surface_0000": {
+    "id": "surface_0000",
+    "surface_point": [
+      -0.5533452033996582,
+      3.1835310459136963,
+      -0.7507069110870361
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "statue/art",
+    "room_categories": [],
+    "surface_group": "rendered:422:40",
+    "support_bounds": [
+      [
+        -0.5770456790924072,
+        3.187833786010742,
+        -0.7507069110870361
+      ],
+      [
+        -0.5329999923706055,
+        3.2039954662323,
+        -0.6830607652664185
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "statue_art_39",
+    "surface_id": "statue_art_39_surface_01",
+    "placement_id": "statue_art_39::statue_art_39_surface_01"
+  },
+  "surface_0001": {
+    "id": "surface_0001",
+    "surface_point": [
+      -0.3809431791305542,
+      3.1708643436431885,
+      -0.6314672827720642
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "cloth",
+    "room_categories": [],
+    "surface_group": "rendered:423:40",
+    "support_bounds": [
+      [
+        -0.5672615766525269,
+        3.1600098609924316,
+        -1.0921601057052612
+      ],
+      [
+        -0.18759089708328247,
+        3.1873409748077393,
+        -0.5471590161323547
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "cloth_11",
+    "surface_id": "cloth_11_surface_02",
+    "placement_id": "cloth_11::cloth_11_surface_02"
+  },
+  "surface_0002": {
+    "id": "surface_0002",
+    "surface_point": [
+      -0.3469771146774292,
+      2.589329242706299,
+      1.6718413829803467
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "alarm clock",
+    "room_categories": [],
+    "surface_group": "rendered:415:32",
+    "support_bounds": [
+      [
+        -0.4966450333595276,
+        2.567780017852783,
+        1.507531762123108
+      ],
+      [
+        -0.22628942131996155,
+        2.5999581813812256,
+        1.7264212369918823
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "alarm_clock_01",
+    "surface_id": "alarm_clock_01_surface_01",
+    "placement_id": "alarm_clock_01::alarm_clock_01_surface_01"
+  },
+  "surface_0003": {
+    "id": "surface_0003",
+    "surface_point": [
+      -0.3719305396080017,
+      2.59920072555542,
+      1.6627721786499023
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "alarm clock",
+    "room_categories": [],
+    "surface_group": "rendered:415:33",
+    "support_bounds": [
+      [
+        -0.4054989814758301,
+        2.6013946533203125,
+        1.5408570766448975
+      ],
+      [
+        -0.267342746257782,
+        2.610173225402832,
+        1.6930475234985352
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "alarm_clock_01",
+    "surface_id": "alarm_clock_01_surface_02",
+    "placement_id": "alarm_clock_01::alarm_clock_01_surface_02"
+  },
+  "surface_0004": {
+    "id": "surface_0004",
+    "surface_point": [
+      0.7727357149124146,
+      2.6511898040771484,
+      0.3446417450904846
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0005": {
+    "id": "surface_0005",
+    "surface_point": [
+      1.35947847366333,
+      2.65701961517334,
+      1.2109771966934204
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0006": {
+    "id": "surface_0006",
+    "surface_point": [
+      0.1137511283159256,
+      2.650753974914551,
+      1.0693676471710205
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0007": {
+    "id": "surface_0007",
+    "surface_point": [
+      -0.19116254150867462,
+      2.6696839332580566,
+      0.3097265064716339
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0008": {
+    "id": "surface_0008",
+    "surface_point": [
+      1.3884398937225342,
+      2.64182710647583,
+      0.5169100761413574
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0009": {
+    "id": "surface_0009",
+    "surface_point": [
+      0.6415096521377563,
+      2.649076461791992,
+      1.0748268365859985
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0010": {
+    "id": "surface_0010",
+    "surface_point": [
+      0.3658410310745239,
+      2.6598148345947266,
+      0.3292534053325653
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0011": {
+    "id": "surface_0011",
+    "surface_point": [
+      1.098483681678772,
+      2.642918586730957,
+      0.2900755703449249
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0012": {
+    "id": "surface_0012",
+    "surface_point": [
+      1.2999517917633057,
+      2.663694381713867,
+      0.8985203504562378
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0013": {
+    "id": "surface_0013",
+    "surface_point": [
+      0.08596992492675781,
+      2.6604158878326416,
+      0.3285374641418457
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:33",
+    "support_bounds": [
+      [
+        -0.34157565236091614,
+        2.6225643157958984,
+        0.24011898040771484
+      ],
+      [
+        1.4182628393173218,
+        2.67985200881958,
+        1.286077857017517
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_01",
+    "placement_id": "bed_05::bed_05_surface_01"
+  },
+  "surface_0014": {
+    "id": "surface_0014",
+    "surface_point": [
+      -0.5212435126304626,
+      2.847761869430542,
+      0.3516950309276581
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bedframe",
+    "room_categories": [],
+    "surface_group": "rendered:418:36",
+    "support_bounds": [
+      [
+        -0.5637912750244141,
+        2.855046033859253,
+        0.2658911943435669
+      ],
+      [
+        -0.5212435126304626,
+        2.8771023750305176,
+        0.3516950011253357
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bedframe_06",
+    "surface_id": "bedframe_06_surface_02",
+    "placement_id": "bedframe_06::bedframe_06_surface_02"
+  },
+  "surface_0015": {
+    "id": "surface_0015",
+    "surface_point": [
+      -0.27906522154808044,
+      2.707378387451172,
+      0.370712012052536
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:34",
+    "support_bounds": [
+      [
+        -0.5265198945999146,
+        2.6800284385681152,
+        0.27146515250205994
+      ],
+      [
+        -0.036012809723615646,
+        2.7323954105377197,
+        1.1415293216705322
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_02",
+    "placement_id": "bed_05::bed_05_surface_02"
+  },
+  "surface_0016": {
+    "id": "surface_0016",
+    "surface_point": [
+      -0.2678166627883911,
+      2.6733765602111816,
+      1.125830888748169
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bed",
+    "room_categories": [],
+    "surface_group": "rendered:417:34",
+    "support_bounds": [
+      [
+        -0.5265198945999146,
+        2.6800284385681152,
+        0.27146515250205994
+      ],
+      [
+        -0.036012809723615646,
+        2.7323954105377197,
+        1.1415293216705322
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bed_05",
+    "surface_id": "bed_05_surface_02",
+    "placement_id": "bed_05::bed_05_surface_02"
+  },
+  "surface_0017": {
+    "id": "surface_0017",
+    "surface_point": [
+      -0.22486834228038788,
+      3.1557393074035645,
+      -0.5777232050895691
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "cloth",
+    "room_categories": [],
+    "surface_group": "rendered:423:39",
+    "support_bounds": [
+      [
+        -0.5584807395935059,
+        3.1437461376190186,
+        -1.1922259330749512
+      ],
+      [
+        -0.1431061178445816,
+        3.159916400909424,
+        -0.5218947529792786
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "cloth_11",
+    "surface_id": "cloth_11_surface_01",
+    "placement_id": "cloth_11::cloth_11_surface_01"
+  },
+  "surface_0018": {
+    "id": "surface_0018",
+    "surface_point": [
+      -0.30589422583580017,
+      3.1488497257232666,
+      -1.1922258138656616
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "cloth",
+    "room_categories": [],
+    "surface_group": "rendered:423:39",
+    "support_bounds": [
+      [
+        -0.5584807395935059,
+        3.1437461376190186,
+        -1.1922259330749512
+      ],
+      [
+        -0.1431061178445816,
+        3.159916400909424,
+        -0.5218947529792786
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "cloth_11",
+    "surface_id": "cloth_11_surface_01",
+    "placement_id": "cloth_11::cloth_11_surface_01"
+  },
+  "surface_0019": {
+    "id": "surface_0019",
+    "surface_point": [
+      -0.548279881477356,
+      3.158099889755249,
+      -0.6303888559341431
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "cloth",
+    "room_categories": [],
+    "surface_group": "rendered:423:39",
+    "support_bounds": [
+      [
+        -0.5584807395935059,
+        3.1437461376190186,
+        -1.1922259330749512
+      ],
+      [
+        -0.1431061178445816,
+        3.159916400909424,
+        -0.5218947529792786
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "cloth_11",
+    "surface_id": "cloth_11_surface_01",
+    "placement_id": "cloth_11::cloth_11_surface_01"
+  },
+  "surface_0020": {
+    "id": "surface_0020",
+    "surface_point": [
+      -0.23174132406711578,
+      3.1476686000823975,
+      -1.109756350517273
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dresser",
+    "room_categories": [],
+    "surface_group": "rendered:419:39",
+    "support_bounds": [
+      [
+        -0.30952775478363037,
+        3.145397424697876,
+        -1.2738151550292969
+      ],
+      [
+        -0.17022617161273956,
+        3.1563057899475098,
+        -0.8077707290649414
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dresser_21",
+    "surface_id": "dresser_21_surface_01",
+    "placement_id": "dresser_21::dresser_21_surface_01"
+  },
+  "surface_0021": {
+    "id": "surface_0021",
+    "surface_point": [
+      -0.17022618651390076,
+      3.154719114303589,
+      -0.8077707290649414
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dresser",
+    "room_categories": [],
+    "surface_group": "rendered:419:39",
+    "support_bounds": [
+      [
+        -0.30952775478363037,
+        3.145397424697876,
+        -1.2738151550292969
+      ],
+      [
+        -0.17022617161273956,
+        3.1563057899475098,
+        -0.8077707290649414
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dresser_21",
+    "surface_id": "dresser_21_surface_01",
+    "placement_id": "dresser_21::dresser_21_surface_01"
+  },
+  "surface_0022": {
+    "id": "surface_0022",
+    "surface_point": [
+      -0.3114723265171051,
+      3.1824488639831543,
+      -0.8365110158920288
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "cloth",
+    "room_categories": [],
+    "surface_group": "rendered:424:40",
+    "support_bounds": [
+      [
+        -0.37162894010543823,
+        3.1726174354553223,
+        -0.9976053237915039
+      ],
+      [
+        -0.21055898070335388,
+        3.1990036964416504,
+        -0.7316167950630188
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "cloth_12",
+    "surface_id": "cloth_12_surface_01",
+    "placement_id": "cloth_12::cloth_12_surface_01"
+  },
+  "surface_0023": {
+    "id": "surface_0023",
+    "surface_point": [
+      -0.22255201637744904,
+      2.5697898864746094,
+      1.5773301124572754
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "nightstand",
+    "room_categories": [],
+    "surface_group": "rendered:414:32",
+    "support_bounds": [
+      [
+        -0.4410014748573303,
+        2.5434558391571045,
+        1.4452874660491943
+      ],
+      [
+        -0.19156034290790558,
+        2.5887815952301025,
+        1.8253368139266968
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "nightstand_30",
+    "surface_id": "nightstand_30_surface_01",
+    "placement_id": "nightstand_30::nightstand_30_surface_01"
+  },
+  "surface_0024": {
+    "id": "surface_0024",
+    "surface_point": [
+      0.4634820520877838,
+      3.0502943992614746,
+      5.385544776916504
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk chair",
+    "room_categories": [],
+    "surface_group": "rendered:474:38",
+    "support_bounds": [
+      [
+        0.44932058453559875,
+        3.029244899749756,
+        5.256299018859863
+      ],
+      [
+        0.5654969811439514,
+        3.0704386234283447,
+        5.687869548797607
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_chair_15",
+    "surface_id": "desk_chair_15_surface_02",
+    "placement_id": "desk_chair_15::desk_chair_15_surface_02"
+  },
+  "surface_0025": {
+    "id": "surface_0025",
+    "surface_point": [
+      0.5371444225311279,
+      3.0282082557678223,
+      5.687869548797607
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk chair",
+    "room_categories": [],
+    "surface_group": "rendered:474:38",
+    "support_bounds": [
+      [
+        0.44932058453559875,
+        3.029244899749756,
+        5.256299018859863
+      ],
+      [
+        0.5654969811439514,
+        3.0704386234283447,
+        5.687869548797607
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_chair_15",
+    "surface_id": "desk_chair_15_surface_02",
+    "placement_id": "desk_chair_15::desk_chair_15_surface_02"
+  },
+  "surface_0026": {
+    "id": "surface_0026",
+    "surface_point": [
+      -0.2970488369464874,
+      2.6169304847717285,
+      6.1083760261535645
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:33",
+    "support_bounds": [
+      [
+        -0.2970488667488098,
+        2.6002237796783447,
+        5.286037445068359
+      ],
+      [
+        -0.057922739535570145,
+        2.67942476272583,
+        6.262008190155029
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_02",
+    "placement_id": "desk_14::desk_14_surface_02"
+  },
+  "surface_0027": {
+    "id": "surface_0027",
+    "surface_point": [
+      -0.06353005021810532,
+      2.6738815307617188,
+      5.361809253692627
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:33",
+    "support_bounds": [
+      [
+        -0.2970488667488098,
+        2.6002237796783447,
+        5.286037445068359
+      ],
+      [
+        -0.057922739535570145,
+        2.67942476272583,
+        6.262008190155029
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_02",
+    "placement_id": "desk_14::desk_14_surface_02"
+  },
+  "surface_0028": {
+    "id": "surface_0028",
+    "surface_point": [
+      -0.07157247513532639,
+      2.6751723289489746,
+      5.340919494628906
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:34",
+    "support_bounds": [
+      [
+        -0.2600708305835724,
+        2.6811819076538086,
+        4.863237380981445
+      ],
+      [
+        -0.003000017488375306,
+        2.759988784790039,
+        6.273563385009766
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_03",
+    "placement_id": "desk_14::desk_14_surface_03"
+  },
+  "surface_0029": {
+    "id": "surface_0029",
+    "surface_point": [
+      -0.15936855971813202,
+      2.694979190826416,
+      5.909628868103027
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:34",
+    "support_bounds": [
+      [
+        -0.2600708305835724,
+        2.6811819076538086,
+        4.863237380981445
+      ],
+      [
+        -0.003000017488375306,
+        2.759988784790039,
+        6.273563385009766
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_03",
+    "placement_id": "desk_14::desk_14_surface_03"
+  },
+  "surface_0030": {
+    "id": "surface_0030",
+    "surface_point": [
+      -0.14804209768772125,
+      2.753404378890991,
+      4.864165306091309
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:34",
+    "support_bounds": [
+      [
+        -0.2600708305835724,
+        2.6811819076538086,
+        4.863237380981445
+      ],
+      [
+        -0.003000017488375306,
+        2.759988784790039,
+        6.273563385009766
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_03",
+    "placement_id": "desk_14::desk_14_surface_03"
+  },
+  "surface_0031": {
+    "id": "surface_0031",
+    "surface_point": [
+      -0.1564842313528061,
+      2.7359540462493896,
+      5.600374221801758
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:34",
+    "support_bounds": [
+      [
+        -0.2600708305835724,
+        2.6811819076538086,
+        4.863237380981445
+      ],
+      [
+        -0.003000017488375306,
+        2.759988784790039,
+        6.273563385009766
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_03",
+    "placement_id": "desk_14::desk_14_surface_03"
+  },
+  "surface_0032": {
+    "id": "surface_0032",
+    "surface_point": [
+      2.3281407356262207,
+      2.4584317207336426,
+      5.98906135559082
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:487:31",
+    "support_bounds": [
+      [
+        2.1109373569488525,
+        2.4668233394622803,
+        5.700784683227539
+      ],
+      [
+        2.392508029937744,
+        2.485496997833252,
+        6.124624729156494
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_03",
+    "surface_id": "armchair_03_surface_01",
+    "placement_id": "armchair_03::armchair_03_surface_01"
+  },
+  "surface_0033": {
+    "id": "surface_0033",
+    "surface_point": [
+      -0.12476512044668198,
+      2.755356788635254,
+      5.380945205688477
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:35",
+    "support_bounds": [
+      [
+        -0.24319162964820862,
+        2.760291337966919,
+        5.145500659942627
+      ],
+      [
+        -0.11137080192565918,
+        2.7742297649383545,
+        6.27882194519043
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_04",
+    "placement_id": "desk_14::desk_14_surface_04"
+  },
+  "surface_0034": {
+    "id": "surface_0034",
+    "surface_point": [
+      0.2784663736820221,
+      2.724259614944458,
+      5.241335391998291
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk chair",
+    "room_categories": [],
+    "surface_group": "rendered:474:34",
+    "support_bounds": [
+      [
+        0.1836172640323639,
+        2.715311050415039,
+        5.222017765045166
+      ],
+      [
+        0.38972529768943787,
+        2.732107162475586,
+        5.25305700302124
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_chair_15",
+    "surface_id": "desk_chair_15_surface_01",
+    "placement_id": "desk_chair_15::desk_chair_15_surface_01"
+  },
+  "surface_0035": {
+    "id": "surface_0035",
+    "surface_point": [
+      -0.06354115903377533,
+      2.6970202922821045,
+      5.9014716148376465
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:32",
+    "support_bounds": [
+      [
+        -0.29730740189552307,
+        2.525792121887207,
+        4.928255081176758
+      ],
+      [
+        -0.06354115903377533,
+        2.5960476398468018,
+        6.13876485824585
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_01",
+    "placement_id": "desk_14::desk_14_surface_01"
+  },
+  "surface_0036": {
+    "id": "surface_0036",
+    "surface_point": [
+      -0.2592879831790924,
+      2.5413851737976074,
+      4.928255081176758
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:32",
+    "support_bounds": [
+      [
+        -0.29730740189552307,
+        2.525792121887207,
+        4.928255081176758
+      ],
+      [
+        -0.06354115903377533,
+        2.5960476398468018,
+        6.13876485824585
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_01",
+    "placement_id": "desk_14::desk_14_surface_01"
+  },
+  "surface_0037": {
+    "id": "surface_0037",
+    "surface_point": [
+      -0.18243977427482605,
+      2.593048095703125,
+      6.13876485824585
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "desk",
+    "room_categories": [],
+    "surface_group": "rendered:473:32",
+    "support_bounds": [
+      [
+        -0.29730740189552307,
+        2.525792121887207,
+        4.928255081176758
+      ],
+      [
+        -0.06354115903377533,
+        2.5960476398468018,
+        6.13876485824585
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "desk_14",
+    "surface_id": "desk_14_surface_01",
+    "placement_id": "desk_14::desk_14_surface_01"
+  },
+  "surface_0038": {
+    "id": "surface_0038",
+    "surface_point": [
+      -0.17569950222969055,
+      2.5993947982788086,
+      4.828851222991943
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "file cabinet",
+    "room_categories": [],
+    "surface_group": "rendered:472:33",
+    "support_bounds": [
+      [
+        -0.3690524995326996,
+        2.6007936000823975,
+        4.4619622230529785
+      ],
+      [
+        -0.17569950222969055,
+        2.6081156730651855,
+        4.832678318023682
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "file_cabinet_24",
+    "surface_id": "file_cabinet_24_surface_02",
+    "placement_id": "file_cabinet_24::file_cabinet_24_surface_02"
+  },
+  "surface_0039": {
+    "id": "surface_0039",
+    "surface_point": [
+      -0.36225590109825134,
+      2.5992650985717773,
+      4.495255470275879
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "file cabinet",
+    "room_categories": [],
+    "surface_group": "rendered:472:33",
+    "support_bounds": [
+      [
+        -0.3690524995326996,
+        2.6007936000823975,
+        4.4619622230529785
+      ],
+      [
+        -0.17569950222969055,
+        2.6081156730651855,
+        4.832678318023682
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "file_cabinet_24",
+    "surface_id": "file_cabinet_24_surface_02",
+    "placement_id": "file_cabinet_24::file_cabinet_24_surface_02"
+  },
+  "surface_0040": {
+    "id": "surface_0040",
+    "surface_point": [
+      1.3342366218566895,
+      2.6597845554351807,
+      3.429210662841797
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "recycle bin",
+    "room_categories": [],
+    "surface_group": "rendered:481:33",
+    "support_bounds": [
+      [
+        1.1340538263320923,
+        2.633516550064087,
+        3.3668525218963623
+      ],
+      [
+        1.3917847871780396,
+        2.678152322769165,
+        3.5935776233673096
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "recycle_bin_34",
+    "surface_id": "recycle_bin_34_surface_01",
+    "placement_id": "recycle_bin_34::recycle_bin_34_surface_01"
+  },
+  "surface_0041": {
+    "id": "surface_0041",
+    "surface_point": [
+      1.3026725053787231,
+      2.681194305419922,
+      3.4967267513275146
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "recycle bin",
+    "room_categories": [],
+    "surface_group": "rendered:481:34",
+    "support_bounds": [
+      [
+        1.2155526876449585,
+        2.6800789833068848,
+        3.43194842338562
+      ],
+      [
+        1.3072302341461182,
+        2.690220832824707,
+        3.59246563911438
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "recycle_bin_34",
+    "surface_id": "recycle_bin_34_surface_02",
+    "placement_id": "recycle_bin_34::recycle_bin_34_surface_02"
+  },
+  "surface_0042": {
+    "id": "surface_0042",
+    "surface_point": [
+      -0.3332841396331787,
+      2.671994686126709,
+      4.21380090713501
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "brochure",
+    "room_categories": [],
+    "surface_group": "rendered:470:33",
+    "support_bounds": [
+      [
+        -0.3722849190235138,
+        2.6503241062164307,
+        4.095583915710449
+      ],
+      [
+        -0.15183791518211365,
+        2.679917097091675,
+        4.374725341796875
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "brochure_09",
+    "surface_id": "brochure_09_surface_01",
+    "placement_id": "brochure_09::brochure_09_surface_01"
+  },
+  "surface_0043": {
+    "id": "surface_0043",
+    "surface_point": [
+      -0.28466230630874634,
+      2.6739866733551025,
+      4.218191146850586
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "brochure",
+    "room_categories": [],
+    "surface_group": "rendered:470:34",
+    "support_bounds": [
+      [
+        -0.28474661707878113,
+        2.680196762084961,
+        4.170971393585205
+      ],
+      [
+        -0.18216998875141144,
+        2.683279514312744,
+        4.318338394165039
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "brochure_09",
+    "surface_id": "brochure_09_surface_02",
+    "placement_id": "brochure_09::brochure_09_surface_02"
+  },
+  "surface_0044": {
+    "id": "surface_0044",
+    "surface_point": [
+      -0.20902785658836365,
+      2.66691255569458,
+      4.103598594665527
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "file cabinet",
+    "room_categories": [],
+    "surface_group": "rendered:469:33",
+    "support_bounds": [
+      [
+        -0.3549450933933258,
+        2.601221799850464,
+        4.069220066070557
+      ],
+      [
+        -0.12742595374584198,
+        2.669883966445923,
+        4.423980712890625
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "file_cabinet_23",
+    "surface_id": "file_cabinet_23_surface_01",
+    "placement_id": "file_cabinet_23::file_cabinet_23_surface_01"
+  },
+  "surface_0045": {
+    "id": "surface_0045",
+    "surface_point": [
+      -0.20856741070747375,
+      2.598081588745117,
+      4.423980712890625
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "file cabinet",
+    "room_categories": [],
+    "surface_group": "rendered:469:33",
+    "support_bounds": [
+      [
+        -0.3549450933933258,
+        2.601221799850464,
+        4.069220066070557
+      ],
+      [
+        -0.12742595374584198,
+        2.669883966445923,
+        4.423980712890625
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "file_cabinet_23",
+    "surface_id": "file_cabinet_23_surface_01",
+    "placement_id": "file_cabinet_23::file_cabinet_23_surface_01"
+  },
+  "surface_0046": {
+    "id": "surface_0046",
+    "surface_point": [
+      -0.35313302278518677,
+      2.6445937156677246,
+      4.345847129821777
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "brochure",
+    "room_categories": [],
+    "surface_group": "rendered:471:33",
+    "support_bounds": [
+      [
+        -0.35313302278518677,
+        2.6500227451324463,
+        4.345847129821777
+      ],
+      [
+        -0.35313302278518677,
+        2.6500227451324463,
+        4.345847129821777
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "brochure_10",
+    "surface_id": "brochure_10_surface_01",
+    "placement_id": "brochure_10::brochure_10_surface_01"
+  },
+  "surface_0047": {
+    "id": "surface_0047",
+    "surface_point": [
+      6.898063659667969,
+      0.36429429054260254,
+      4.841637134552002
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "machine",
+    "room_categories": [],
+    "surface_group": "rendered:145:5",
+    "support_bounds": [
+      [
+        6.87183952331543,
+        0.3758383095264435,
+        4.84112024307251
+      ],
+      [
+        7.054975509643555,
+        0.4085109829902649,
+        4.937890529632568
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "machine_29",
+    "surface_id": "machine_29_surface_01",
+    "placement_id": "machine_29::machine_29_surface_01"
+  },
+  "surface_0048": {
+    "id": "surface_0048",
+    "surface_point": [
+      -0.5197196006774902,
+      2.686387777328491,
+      0.2914210557937622
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bedframe",
+    "room_categories": [],
+    "surface_group": "rendered:418:34",
+    "support_bounds": [
+      [
+        -0.557728111743927,
+        2.692718029022217,
+        0.27706190943717957
+      ],
+      [
+        -0.5197196006774902,
+        2.7156131267547607,
+        0.3003346621990204
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bedframe_06",
+    "surface_id": "bedframe_06_surface_01",
+    "placement_id": "bedframe_06::bedframe_06_surface_01"
+  },
+  "surface_0049": {
+    "id": "surface_0049",
+    "surface_point": [
+      1.2100311517715454,
+      2.748138427734375,
+      -1.4800208806991577
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "unknown",
+    "room_categories": [],
+    "surface_group": "rendered:0:34",
+    "support_bounds": [
+      [
+        1.2100311517715454,
+        2.6948087215423584,
+        -1.4800208806991577
+      ],
+      [
+        6.254839897155762,
+        2.756814956665039,
+        0.19166439771652222
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "unknown_47",
+    "surface_id": "unknown_47_surface_02",
+    "placement_id": "unknown_47::unknown_47_surface_02"
+  },
+  "surface_0050": {
+    "id": "surface_0050",
+    "surface_point": [
+      6.236614227294922,
+      2.701484203338623,
+      0.19166439771652222
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "unknown",
+    "room_categories": [],
+    "surface_group": "rendered:0:34",
+    "support_bounds": [
+      [
+        1.2100311517715454,
+        2.6948087215423584,
+        -1.4800208806991577
+      ],
+      [
+        6.254839897155762,
+        2.756814956665039,
+        0.19166439771652222
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "unknown_47",
+    "surface_id": "unknown_47_surface_02",
+    "placement_id": "unknown_47::unknown_47_surface_02"
+  },
+  "surface_0051": {
+    "id": "surface_0051",
+    "surface_point": [
+      4.014942646026611,
+      2.836380958557129,
+      4.40230655670166
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "washbasin",
+    "room_categories": [],
+    "surface_group": "rendered:386:36",
+    "support_bounds": [
+      [
+        3.9763364791870117,
+        2.840040445327759,
+        3.7629165649414062
+      ],
+      [
+        4.39483118057251,
+        2.8450849056243896,
+        4.689431190490723
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "washbasin_48",
+    "surface_id": "washbasin_48_surface_02",
+    "placement_id": "washbasin_48::washbasin_48_surface_02"
+  },
+  "surface_0052": {
+    "id": "surface_0052",
+    "surface_point": [
+      4.394154071807861,
+      2.8411386013031006,
+      3.7651519775390625
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "washbasin",
+    "room_categories": [],
+    "surface_group": "rendered:386:36",
+    "support_bounds": [
+      [
+        3.9763364791870117,
+        2.840040445327759,
+        3.7629165649414062
+      ],
+      [
+        4.39483118057251,
+        2.8450849056243896,
+        4.689431190490723
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "washbasin_48",
+    "surface_id": "washbasin_48_surface_02",
+    "placement_id": "washbasin_48::washbasin_48_surface_02"
+  },
+  "surface_0053": {
+    "id": "surface_0053",
+    "surface_point": [
+      3.9763364791870117,
+      2.8348548412323,
+      3.7983195781707764
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "washbasin",
+    "room_categories": [],
+    "surface_group": "rendered:386:36",
+    "support_bounds": [
+      [
+        3.9763364791870117,
+        2.840040445327759,
+        3.7629165649414062
+      ],
+      [
+        4.39483118057251,
+        2.8450849056243896,
+        4.689431190490723
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "washbasin_48",
+    "surface_id": "washbasin_48_surface_02",
+    "placement_id": "washbasin_48::washbasin_48_surface_02"
+  },
+  "surface_0054": {
+    "id": "surface_0054",
+    "surface_point": [
+      4.132620334625244,
+      2.8356175422668457,
+      4.6893768310546875
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "washbasin",
+    "room_categories": [],
+    "surface_group": "rendered:386:36",
+    "support_bounds": [
+      [
+        3.9763364791870117,
+        2.840040445327759,
+        3.7629165649414062
+      ],
+      [
+        4.39483118057251,
+        2.8450849056243896,
+        4.689431190490723
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "washbasin_48",
+    "surface_id": "washbasin_48_surface_02",
+    "placement_id": "washbasin_48::washbasin_48_surface_02"
+  },
+  "surface_0055": {
+    "id": "surface_0055",
+    "surface_point": [
+      4.04019832611084,
+      2.815377950668335,
+      4.316807746887207
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "washbasin",
+    "room_categories": [],
+    "surface_group": "rendered:386:35",
+    "support_bounds": [
+      [
+        3.99049973487854,
+        2.8225274085998535,
+        3.792360544204712
+      ],
+      [
+        4.346643447875977,
+        2.839979410171509,
+        4.461595058441162
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "washbasin_48",
+    "surface_id": "washbasin_48_surface_01",
+    "placement_id": "washbasin_48::washbasin_48_surface_01"
+  },
+  "surface_0056": {
+    "id": "surface_0056",
+    "surface_point": [
+      4.3459601402282715,
+      2.835759401321411,
+      3.796895980834961
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "washbasin",
+    "room_categories": [],
+    "surface_group": "rendered:386:35",
+    "support_bounds": [
+      [
+        3.99049973487854,
+        2.8225274085998535,
+        3.792360544204712
+      ],
+      [
+        4.346643447875977,
+        2.839979410171509,
+        4.461595058441162
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "washbasin_48",
+    "surface_id": "washbasin_48_surface_01",
+    "placement_id": "washbasin_48::washbasin_48_surface_01"
+  },
+  "surface_0057": {
+    "id": "surface_0057",
+    "surface_point": [
+      3.99049973487854,
+      2.8364596366882324,
+      3.8343822956085205
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "washbasin",
+    "room_categories": [],
+    "surface_group": "rendered:386:35",
+    "support_bounds": [
+      [
+        3.99049973487854,
+        2.8225274085998535,
+        3.792360544204712
+      ],
+      [
+        4.346643447875977,
+        2.839979410171509,
+        4.461595058441162
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "washbasin_48",
+    "surface_id": "washbasin_48_surface_01",
+    "placement_id": "washbasin_48::washbasin_48_surface_01"
+  },
+  "surface_0058": {
+    "id": "surface_0058",
+    "surface_point": [
+      -0.2722935080528259,
+      2.5889084339141846,
+      4.455575942993164
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "file cabinet",
+    "room_categories": [],
+    "surface_group": "rendered:472:32",
+    "support_bounds": [
+      [
+        -0.2722935378551483,
+        2.5915839672088623,
+        4.455575942993164
+      ],
+      [
+        -0.20004922151565552,
+        2.598376512527466,
+        4.870034217834473
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "file_cabinet_24",
+    "surface_id": "file_cabinet_24_surface_01",
+    "placement_id": "file_cabinet_24::file_cabinet_24_surface_01"
+  },
+  "surface_0059": {
+    "id": "surface_0059",
+    "surface_point": [
+      -0.304135262966156,
+      2.3765058517456055,
+      3.84379506111145
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "safe",
+    "room_categories": [],
+    "surface_group": "rendered:468:30",
+    "support_bounds": [
+      [
+        -0.35174742341041565,
+        2.366117000579834,
+        3.7052104473114014
+      ],
+      [
+        -0.16968685388565063,
+        2.397217273712158,
+        3.913003444671631
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "safe_36",
+    "surface_id": "safe_36_surface_01",
+    "placement_id": "safe_36::safe_36_surface_01"
+  },
+  "surface_0060": {
+    "id": "surface_0060",
+    "surface_point": [
+      2.9966046810150146,
+      3.2128853797912598,
+      5.113028526306152
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "towel",
+    "room_categories": [],
+    "surface_group": "rendered:395:40",
+    "support_bounds": [
+      [
+        2.96097993850708,
+        3.212808847427368,
+        4.742377758026123
+      ],
+      [
+        3.018402338027954,
+        3.2265191078186035,
+        5.332797050476074
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "towel_43",
+    "surface_id": "towel_43_surface_01",
+    "placement_id": "towel_43::towel_43_surface_01"
+  },
+  "surface_0061": {
+    "id": "surface_0061",
+    "surface_point": [
+      2.9941606521606445,
+      3.211456775665283,
+      4.827205181121826
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "towel",
+    "room_categories": [],
+    "surface_group": "rendered:395:40",
+    "support_bounds": [
+      [
+        2.96097993850708,
+        3.212808847427368,
+        4.742377758026123
+      ],
+      [
+        3.018402338027954,
+        3.2265191078186035,
+        5.332797050476074
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "towel_43",
+    "surface_id": "towel_43_surface_01",
+    "placement_id": "towel_43::towel_43_surface_01"
+  },
+  "surface_0062": {
+    "id": "surface_0062",
+    "surface_point": [
+      -0.19634048640727997,
+      2.599811315536499,
+      4.425506114959717
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "unknown",
+    "room_categories": [],
+    "surface_group": "rendered:0:33",
+    "support_bounds": [
+      [
+        -0.19634048640727997,
+        2.6056160926818848,
+        0.12447088956832886
+      ],
+      [
+        6.23115348815918,
+        2.675590991973877,
+        4.425506114959717
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "unknown_47",
+    "surface_id": "unknown_47_surface_01",
+    "placement_id": "unknown_47::unknown_47_surface_01"
+  },
+  "surface_0063": {
+    "id": "surface_0063",
+    "surface_point": [
+      6.23115348815918,
+      2.670896291732788,
+      0.12447088956832886
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "unknown",
+    "room_categories": [],
+    "surface_group": "rendered:0:33",
+    "support_bounds": [
+      [
+        -0.19634048640727997,
+        2.6056160926818848,
+        0.12447088956832886
+      ],
+      [
+        6.23115348815918,
+        2.675590991973877,
+        4.425506114959717
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "unknown_47",
+    "surface_id": "unknown_47_surface_01",
+    "placement_id": "unknown_47::unknown_47_surface_01"
+  },
+  "surface_0064": {
+    "id": "surface_0064",
+    "surface_point": [
+      4.434207439422607,
+      3.3552401065826416,
+      5.058292865753174
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "box of tissues",
+    "room_categories": [],
+    "surface_group": "rendered:375:42",
+    "support_bounds": [
+      [
+        4.4266815185546875,
+        3.3562378883361816,
+        5.000433444976807
+      ],
+      [
+        4.444942474365234,
+        3.376939296722412,
+        5.158886432647705
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "box_of_tissues_08",
+    "surface_id": "box_of_tissues_08_surface_01",
+    "placement_id": "box_of_tissues_08::box_of_tissues_08_surface_01"
+  },
+  "surface_0065": {
+    "id": "surface_0065",
+    "surface_point": [
+      8.613021850585938,
+      2.937828302383423,
+      5.648631572723389
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:339:37",
+    "support_bounds": [
+      [
+        7.602682113647461,
+        2.931678295135498,
+        5.358922004699707
+      ],
+      [
+        9.696807861328125,
+        2.9605000019073486,
+        6.261480808258057
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_25",
+    "surface_id": "kitchen_counter_25_surface_01",
+    "placement_id": "kitchen_counter_25::kitchen_counter_25_surface_01"
+  },
+  "surface_0066": {
+    "id": "surface_0066",
+    "surface_point": [
+      9.647956848144531,
+      2.9406487941741943,
+      5.488530158996582
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:339:37",
+    "support_bounds": [
+      [
+        7.602682113647461,
+        2.931678295135498,
+        5.358922004699707
+      ],
+      [
+        9.696807861328125,
+        2.9605000019073486,
+        6.261480808258057
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_25",
+    "surface_id": "kitchen_counter_25_surface_01",
+    "placement_id": "kitchen_counter_25::kitchen_counter_25_surface_01"
+  },
+  "surface_0067": {
+    "id": "surface_0067",
+    "surface_point": [
+      7.804139614105225,
+      2.938591480255127,
+      6.178239822387695
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:339:37",
+    "support_bounds": [
+      [
+        7.602682113647461,
+        2.931678295135498,
+        5.358922004699707
+      ],
+      [
+        9.696807861328125,
+        2.9605000019073486,
+        6.261480808258057
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_25",
+    "surface_id": "kitchen_counter_25_surface_01",
+    "placement_id": "kitchen_counter_25::kitchen_counter_25_surface_01"
+  },
+  "surface_0068": {
+    "id": "surface_0068",
+    "surface_point": [
+      8.059876441955566,
+      2.938838481903076,
+      5.652655124664307
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:339:37",
+    "support_bounds": [
+      [
+        7.602682113647461,
+        2.931678295135498,
+        5.358922004699707
+      ],
+      [
+        9.696807861328125,
+        2.9605000019073486,
+        6.261480808258057
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_25",
+    "surface_id": "kitchen_counter_25_surface_01",
+    "placement_id": "kitchen_counter_25::kitchen_counter_25_surface_01"
+  },
+  "surface_0069": {
+    "id": "surface_0069",
+    "surface_point": [
+      9.15795612335205,
+      2.9396414756774902,
+      5.6921892166137695
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:339:37",
+    "support_bounds": [
+      [
+        7.602682113647461,
+        2.931678295135498,
+        5.358922004699707
+      ],
+      [
+        9.696807861328125,
+        2.9605000019073486,
+        6.261480808258057
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_25",
+    "surface_id": "kitchen_counter_25_surface_01",
+    "placement_id": "kitchen_counter_25::kitchen_counter_25_surface_01"
+  },
+  "surface_0070": {
+    "id": "surface_0070",
+    "surface_point": [
+      7.6708292961120605,
+      2.9403324127197266,
+      5.659738540649414
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:339:37",
+    "support_bounds": [
+      [
+        7.602682113647461,
+        2.931678295135498,
+        5.358922004699707
+      ],
+      [
+        9.696807861328125,
+        2.9605000019073486,
+        6.261480808258057
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_25",
+    "surface_id": "kitchen_counter_25_surface_01",
+    "placement_id": "kitchen_counter_25::kitchen_counter_25_surface_01"
+  },
+  "surface_0071": {
+    "id": "surface_0071",
+    "surface_point": [
+      8.346941947937012,
+      2.9390697479248047,
+      5.698732852935791
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:339:37",
+    "support_bounds": [
+      [
+        7.602682113647461,
+        2.931678295135498,
+        5.358922004699707
+      ],
+      [
+        9.696807861328125,
+        2.9605000019073486,
+        6.261480808258057
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_25",
+    "surface_id": "kitchen_counter_25_surface_01",
+    "placement_id": "kitchen_counter_25::kitchen_counter_25_surface_01"
+  },
+  "surface_0072": {
+    "id": "surface_0072",
+    "surface_point": [
+      5.662217140197754,
+      2.8026065826416016,
+      4.400997638702393
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining table",
+    "room_categories": [],
+    "surface_group": "rendered:298:35",
+    "support_bounds": [
+      [
+        5.361087322235107,
+        2.7677102088928223,
+        4.190927505493164
+      ],
+      [
+        6.425976276397705,
+        2.814913511276245,
+        5.525356769561768
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_table_20",
+    "surface_id": "dining_table_20_surface_01",
+    "placement_id": "dining_table_20::dining_table_20_surface_01"
+  },
+  "surface_0073": {
+    "id": "surface_0073",
+    "surface_point": [
+      6.136822700500488,
+      2.7874903678894043,
+      5.250308990478516
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining table",
+    "room_categories": [],
+    "surface_group": "rendered:298:35",
+    "support_bounds": [
+      [
+        5.361087322235107,
+        2.7677102088928223,
+        4.190927505493164
+      ],
+      [
+        6.425976276397705,
+        2.814913511276245,
+        5.525356769561768
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_table_20",
+    "surface_id": "dining_table_20_surface_01",
+    "placement_id": "dining_table_20::dining_table_20_surface_01"
+  },
+  "surface_0074": {
+    "id": "surface_0074",
+    "surface_point": [
+      6.345608711242676,
+      2.7943007946014404,
+      4.580184459686279
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining table",
+    "room_categories": [],
+    "surface_group": "rendered:298:35",
+    "support_bounds": [
+      [
+        5.361087322235107,
+        2.7677102088928223,
+        4.190927505493164
+      ],
+      [
+        6.425976276397705,
+        2.814913511276245,
+        5.525356769561768
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_table_20",
+    "surface_id": "dining_table_20_surface_01",
+    "placement_id": "dining_table_20::dining_table_20_surface_01"
+  },
+  "surface_0075": {
+    "id": "surface_0075",
+    "surface_point": [
+      5.3911452293396,
+      2.7811269760131836,
+      5.0366058349609375
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining table",
+    "room_categories": [],
+    "surface_group": "rendered:298:35",
+    "support_bounds": [
+      [
+        5.361087322235107,
+        2.7677102088928223,
+        4.190927505493164
+      ],
+      [
+        6.425976276397705,
+        2.814913511276245,
+        5.525356769561768
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_table_20",
+    "surface_id": "dining_table_20_surface_01",
+    "placement_id": "dining_table_20::dining_table_20_surface_01"
+  },
+  "surface_0076": {
+    "id": "surface_0076",
+    "surface_point": [
+      5.361837387084961,
+      2.7482755184173584,
+      4.618381500244141
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining table",
+    "room_categories": [],
+    "surface_group": "rendered:298:35",
+    "support_bounds": [
+      [
+        5.361087322235107,
+        2.7677102088928223,
+        4.190927505493164
+      ],
+      [
+        6.425976276397705,
+        2.814913511276245,
+        5.525356769561768
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_table_20",
+    "surface_id": "dining_table_20_surface_01",
+    "placement_id": "dining_table_20::dining_table_20_surface_01"
+  },
+  "surface_0077": {
+    "id": "surface_0077",
+    "surface_point": [
+      6.129563331604004,
+      2.801727533340454,
+      4.294844627380371
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining table",
+    "room_categories": [],
+    "surface_group": "rendered:298:35",
+    "support_bounds": [
+      [
+        5.361087322235107,
+        2.7677102088928223,
+        4.190927505493164
+      ],
+      [
+        6.425976276397705,
+        2.814913511276245,
+        5.525356769561768
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_table_20",
+    "surface_id": "dining_table_20_surface_01",
+    "placement_id": "dining_table_20::dining_table_20_surface_01"
+  },
+  "surface_0078": {
+    "id": "surface_0078",
+    "surface_point": [
+      6.353726863861084,
+      2.790468454360962,
+      5.006034851074219
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining table",
+    "room_categories": [],
+    "surface_group": "rendered:298:35",
+    "support_bounds": [
+      [
+        5.361087322235107,
+        2.7677102088928223,
+        4.190927505493164
+      ],
+      [
+        6.425976276397705,
+        2.814913511276245,
+        5.525356769561768
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_table_20",
+    "surface_id": "dining_table_20_surface_01",
+    "placement_id": "dining_table_20::dining_table_20_surface_01"
+  },
+  "surface_0079": {
+    "id": "surface_0079",
+    "surface_point": [
+      3.912724494934082,
+      2.4768149852752686,
+      5.111948490142822
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "toilet",
+    "room_categories": [],
+    "surface_group": "rendered:379:31",
+    "support_bounds": [
+      [
+        3.7290050983428955,
+        2.4574496746063232,
+        4.916234016418457
+      ],
+      [
+        4.035142421722412,
+        2.4910125732421875,
+        5.243522644042969
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "toilet_41",
+    "surface_id": "toilet_41_surface_01",
+    "placement_id": "toilet_41::toilet_41_surface_01"
+  },
+  "surface_0080": {
+    "id": "surface_0080",
+    "surface_point": [
+      6.448066711425781,
+      0.36526310443878174,
+      5.567227363586426
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "laundry machine",
+    "room_categories": [],
+    "surface_group": "rendered:115:5",
+    "support_bounds": [
+      [
+        6.448066711425781,
+        0.3746201694011688,
+        5.567227840423584
+      ],
+      [
+        6.448066711425781,
+        0.3746201694011688,
+        5.567227840423584
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "laundry_machine_28",
+    "surface_id": "laundry_machine_28_surface_01",
+    "placement_id": "laundry_machine_28::laundry_machine_28_surface_01"
+  },
+  "surface_0081": {
+    "id": "surface_0081",
+    "surface_point": [
+      9.013193130493164,
+      2.5876855850219727,
+      2.6753439903259277
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:32",
+    "support_bounds": [
+      [
+        8.197325706481934,
+        2.523447036743164,
+        2.2679965496063232
+      ],
+      [
+        9.03594970703125,
+        2.5972304344177246,
+        2.768723487854004
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_03",
+    "placement_id": "armchair_02::armchair_02_surface_03"
+  },
+  "surface_0082": {
+    "id": "surface_0082",
+    "surface_point": [
+      9.03594970703125,
+      2.509594202041626,
+      2.2679965496063232
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:32",
+    "support_bounds": [
+      [
+        8.197325706481934,
+        2.523447036743164,
+        2.2679965496063232
+      ],
+      [
+        9.03594970703125,
+        2.5972304344177246,
+        2.768723487854004
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_03",
+    "placement_id": "armchair_02::armchair_02_surface_03"
+  },
+  "surface_0083": {
+    "id": "surface_0083",
+    "surface_point": [
+      8.918777465820312,
+      2.4926137924194336,
+      2.245762348175049
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:31",
+    "support_bounds": [
+      [
+        8.352018356323242,
+        2.44106388092041,
+        1.9952973127365112
+      ],
+      [
+        8.98568344116211,
+        2.5166642665863037,
+        2.888172149658203
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_02",
+    "placement_id": "armchair_02::armchair_02_surface_02"
+  },
+  "surface_0084": {
+    "id": "surface_0084",
+    "surface_point": [
+      8.83765983581543,
+      2.454893112182617,
+      2.862295389175415
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:31",
+    "support_bounds": [
+      [
+        8.352018356323242,
+        2.44106388092041,
+        1.9952973127365112
+      ],
+      [
+        8.98568344116211,
+        2.5166642665863037,
+        2.888172149658203
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_02",
+    "placement_id": "armchair_02::armchair_02_surface_02"
+  },
+  "surface_0085": {
+    "id": "surface_0085",
+    "surface_point": [
+      8.61579704284668,
+      2.497810125350952,
+      2.0124688148498535
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:31",
+    "support_bounds": [
+      [
+        8.352018356323242,
+        2.44106388092041,
+        1.9952973127365112
+      ],
+      [
+        8.98568344116211,
+        2.5166642665863037,
+        2.888172149658203
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_02",
+    "placement_id": "armchair_02::armchair_02_surface_02"
+  },
+  "surface_0086": {
+    "id": "surface_0086",
+    "surface_point": [
+      4.430911064147949,
+      2.940354108810425,
+      3.915867567062378
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "washbasin",
+    "room_categories": [],
+    "surface_group": "rendered:386:37",
+    "support_bounds": [
+      [
+        4.430911064147949,
+        2.944490432739258,
+        3.915867328643799
+      ],
+      [
+        4.430911064147949,
+        2.944490432739258,
+        3.915867328643799
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "washbasin_48",
+    "surface_id": "washbasin_48_surface_03",
+    "placement_id": "washbasin_48::washbasin_48_surface_03"
+  },
+  "surface_0087": {
+    "id": "surface_0087",
+    "surface_point": [
+      2.9765396118164062,
+      3.2183661460876465,
+      4.725951671600342
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "towel bar",
+    "room_categories": [],
+    "surface_group": "rendered:401:40",
+    "support_bounds": [
+      [
+        2.9765396118164062,
+        3.220783233642578,
+        4.725951671600342
+      ],
+      [
+        2.9765396118164062,
+        3.220783233642578,
+        4.725951671600342
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "towel_bar_44",
+    "surface_id": "towel_bar_44_surface_01",
+    "placement_id": "towel_bar_44::towel_bar_44_surface_01"
+  },
+  "surface_0088": {
+    "id": "surface_0088",
+    "surface_point": [
+      4.446750640869141,
+      3.312826633453369,
+      5.2215046882629395
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "bathroom cabinet",
+    "room_categories": [],
+    "surface_group": "rendered:374:41",
+    "support_bounds": [
+      [
+        4.42707633972168,
+        3.2978122234344482,
+        4.920721054077148
+      ],
+      [
+        4.446750640869141,
+        3.3146018981933594,
+        5.2763776779174805
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "bathroom_cabinet_04",
+    "surface_id": "bathroom_cabinet_04_surface_01",
+    "placement_id": "bathroom_cabinet_04::bathroom_cabinet_04_surface_01"
+  },
+  "surface_0089": {
+    "id": "surface_0089",
+    "surface_point": [
+      4.4417290687561035,
+      3.2151598930358887,
+      4.603388786315918
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "towel",
+    "room_categories": [],
+    "surface_group": "rendered:384:40",
+    "support_bounds": [
+      [
+        4.436711311340332,
+        3.214984178543091,
+        4.58521842956543
+      ],
+      [
+        4.445992946624756,
+        3.2190451622009277,
+        4.622027397155762
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "towel_42",
+    "surface_id": "towel_42_surface_01",
+    "placement_id": "towel_42::towel_42_surface_01"
+  },
+  "surface_0090": {
+    "id": "surface_0090",
+    "surface_point": [
+      6.388481616973877,
+      3.034855842590332,
+      1.569730281829834
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:38",
+    "support_bounds": [
+      [
+        6.372315883636475,
+        3.0044052600860596,
+        -0.12527558207511902
+      ],
+      [
+        6.579902648925781,
+        3.0632119178771973,
+        1.7638487815856934
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_05",
+    "placement_id": "couch_13::couch_13_surface_05"
+  },
+  "surface_0091": {
+    "id": "surface_0091",
+    "surface_point": [
+      6.489734649658203,
+      3.0023140907287598,
+      -0.12527558207511902
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:38",
+    "support_bounds": [
+      [
+        6.372315883636475,
+        3.0044052600860596,
+        -0.12527558207511902
+      ],
+      [
+        6.579902648925781,
+        3.0632119178771973,
+        1.7638487815856934
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_05",
+    "placement_id": "couch_13::couch_13_surface_05"
+  },
+  "surface_0092": {
+    "id": "surface_0092",
+    "surface_point": [
+      7.287458896636963,
+      2.5125386714935303,
+      0.6662783026695251
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:32",
+    "support_bounds": [
+      [
+        6.629217624664307,
+        2.520419120788574,
+        -0.025735020637512207
+      ],
+      [
+        7.2961039543151855,
+        2.575070381164551,
+        1.9642300605773926
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_02",
+    "placement_id": "couch_13::couch_13_surface_02"
+  },
+  "surface_0093": {
+    "id": "surface_0093",
+    "surface_point": [
+      7.258864402770996,
+      2.5192482471466064,
+      1.7232648134231567
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:32",
+    "support_bounds": [
+      [
+        6.629217624664307,
+        2.520419120788574,
+        -0.025735020637512207
+      ],
+      [
+        7.2961039543151855,
+        2.575070381164551,
+        1.9642300605773926
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_02",
+    "placement_id": "couch_13::couch_13_surface_02"
+  },
+  "surface_0094": {
+    "id": "surface_0094",
+    "surface_point": [
+      7.242877960205078,
+      2.538378953933716,
+      0.014232158660888672
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:32",
+    "support_bounds": [
+      [
+        6.629217624664307,
+        2.520419120788574,
+        -0.025735020637512207
+      ],
+      [
+        7.2961039543151855,
+        2.575070381164551,
+        1.9642300605773926
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_02",
+    "placement_id": "couch_13::couch_13_surface_02"
+  },
+  "surface_0095": {
+    "id": "surface_0095",
+    "surface_point": [
+      7.154609680175781,
+      2.5436882972717285,
+      1.1962127685546875
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:32",
+    "support_bounds": [
+      [
+        6.629217624664307,
+        2.520419120788574,
+        -0.025735020637512207
+      ],
+      [
+        7.2961039543151855,
+        2.575070381164551,
+        1.9642300605773926
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_02",
+    "placement_id": "couch_13::couch_13_surface_02"
+  },
+  "surface_0096": {
+    "id": "surface_0096",
+    "surface_point": [
+      7.176504611968994,
+      2.5381109714508057,
+      0.33267495036125183
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:32",
+    "support_bounds": [
+      [
+        6.629217624664307,
+        2.520419120788574,
+        -0.025735020637512207
+      ],
+      [
+        7.2961039543151855,
+        2.575070381164551,
+        1.9642300605773926
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_02",
+    "placement_id": "couch_13::couch_13_surface_02"
+  },
+  "surface_0097": {
+    "id": "surface_0097",
+    "surface_point": [
+      7.188016414642334,
+      2.5466623306274414,
+      1.4675726890563965
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:32",
+    "support_bounds": [
+      [
+        6.629217624664307,
+        2.520419120788574,
+        -0.025735020637512207
+      ],
+      [
+        7.2961039543151855,
+        2.575070381164551,
+        1.9642300605773926
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_02",
+    "placement_id": "couch_13::couch_13_surface_02"
+  },
+  "surface_0098": {
+    "id": "surface_0098",
+    "surface_point": [
+      8.412882804870605,
+      2.649740695953369,
+      2.285461187362671
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:33",
+    "support_bounds": [
+      [
+        8.233864784240723,
+        2.604250192642212,
+        2.055966377258301
+      ],
+      [
+        9.166338920593262,
+        2.679370403289795,
+        2.608914852142334
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_04",
+    "placement_id": "armchair_02::armchair_02_surface_04"
+  },
+  "surface_0099": {
+    "id": "surface_0099",
+    "surface_point": [
+      9.138049125671387,
+      2.6370434761047363,
+      2.4193007946014404
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:33",
+    "support_bounds": [
+      [
+        8.233864784240723,
+        2.604250192642212,
+        2.055966377258301
+      ],
+      [
+        9.166338920593262,
+        2.679370403289795,
+        2.608914852142334
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_04",
+    "placement_id": "armchair_02::armchair_02_surface_04"
+  },
+  "surface_0100": {
+    "id": "surface_0100",
+    "surface_point": [
+      8.27090835571289,
+      2.6137895584106445,
+      2.515988349914551
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:33",
+    "support_bounds": [
+      [
+        8.233864784240723,
+        2.604250192642212,
+        2.055966377258301
+      ],
+      [
+        9.166338920593262,
+        2.679370403289795,
+        2.608914852142334
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_04",
+    "placement_id": "armchair_02::armchair_02_surface_04"
+  },
+  "surface_0101": {
+    "id": "surface_0101",
+    "surface_point": [
+      5.703014373779297,
+      3.028379201889038,
+      4.02514123916626
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:38",
+    "support_bounds": [
+      [
+        5.5296735763549805,
+        3.002344846725464,
+        4.001400947570801
+      ],
+      [
+        5.957955837249756,
+        3.047254800796509,
+        4.098461151123047
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_06",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_06"
+  },
+  "surface_0102": {
+    "id": "surface_0102",
+    "surface_point": [
+      7.3048906326293945,
+      2.493853807449341,
+      0.5358718037605286
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:31",
+    "support_bounds": [
+      [
+        7.151682376861572,
+        2.447599411010742,
+        0.08216524124145508
+      ],
+      [
+        7.336508274078369,
+        2.5195813179016113,
+        1.906761646270752
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_01",
+    "placement_id": "couch_13::couch_13_surface_01"
+  },
+  "surface_0103": {
+    "id": "surface_0103",
+    "surface_point": [
+      7.267733573913574,
+      2.511525869369507,
+      1.7512446641921997
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:31",
+    "support_bounds": [
+      [
+        7.151682376861572,
+        2.447599411010742,
+        0.08216524124145508
+      ],
+      [
+        7.336508274078369,
+        2.5195813179016113,
+        1.906761646270752
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_01",
+    "placement_id": "couch_13::couch_13_surface_01"
+  },
+  "surface_0104": {
+    "id": "surface_0104",
+    "surface_point": [
+      7.251120090484619,
+      2.5150952339172363,
+      0.08216523379087448
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:31",
+    "support_bounds": [
+      [
+        7.151682376861572,
+        2.447599411010742,
+        0.08216524124145508
+      ],
+      [
+        7.336508274078369,
+        2.5195813179016113,
+        1.906761646270752
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_01",
+    "placement_id": "couch_13::couch_13_surface_01"
+  },
+  "surface_0105": {
+    "id": "surface_0105",
+    "surface_point": [
+      5.1356916427612305,
+      2.8813862800598145,
+      4.7465057373046875
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:302:37",
+    "support_bounds": [
+      [
+        5.053164958953857,
+        2.9478204250335693,
+        4.670987129211426
+      ],
+      [
+        5.202736854553223,
+        2.999051570892334,
+        5.190540313720703
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_19",
+    "surface_id": "dining_chair_19_surface_04",
+    "placement_id": "dining_chair_19::dining_chair_19_surface_04"
+  },
+  "surface_0106": {
+    "id": "surface_0106",
+    "surface_point": [
+      5.141212463378906,
+      2.984027862548828,
+      5.105404853820801
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:302:37",
+    "support_bounds": [
+      [
+        5.053164958953857,
+        2.9478204250335693,
+        4.670987129211426
+      ],
+      [
+        5.202736854553223,
+        2.999051570892334,
+        5.190540313720703
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_19",
+    "surface_id": "dining_chair_19_surface_04",
+    "placement_id": "dining_chair_19::dining_chair_19_surface_04"
+  },
+  "surface_0107": {
+    "id": "surface_0107",
+    "surface_point": [
+      5.975522994995117,
+      2.7514028549194336,
+      4.08845329284668
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:35",
+    "support_bounds": [
+      [
+        5.5771331787109375,
+        2.762406349182129,
+        4.067671775817871
+      ],
+      [
+        6.0221099853515625,
+        2.828976631164551,
+        4.165436744689941
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_04",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_04"
+  },
+  "surface_0108": {
+    "id": "surface_0108",
+    "surface_point": [
+      5.114609241485596,
+      3.006713390350342,
+      5.046689987182617
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:302:38",
+    "support_bounds": [
+      [
+        5.017241477966309,
+        3.007828712463379,
+        4.782196044921875
+      ],
+      [
+        5.163329601287842,
+        3.0430309772491455,
+        5.168740272521973
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_19",
+    "surface_id": "dining_chair_19_surface_05",
+    "placement_id": "dining_chair_19::dining_chair_19_surface_05"
+  },
+  "surface_0109": {
+    "id": "surface_0109",
+    "surface_point": [
+      5.584425926208496,
+      2.7538599967956543,
+      4.170397758483887
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:34",
+    "support_bounds": [
+      [
+        5.584425449371338,
+        2.7315585613250732,
+        4.095119953155518
+      ],
+      [
+        5.979431629180908,
+        2.75607967376709,
+        4.171686172485352
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_03",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_03"
+  },
+  "surface_0110": {
+    "id": "surface_0110",
+    "surface_point": [
+      5.979431629180908,
+      2.7187485694885254,
+      4.1166582107543945
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:34",
+    "support_bounds": [
+      [
+        5.584425449371338,
+        2.7315585613250732,
+        4.095119953155518
+      ],
+      [
+        5.979431629180908,
+        2.75607967376709,
+        4.171686172485352
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_03",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_03"
+  },
+  "surface_0111": {
+    "id": "surface_0111",
+    "surface_point": [
+      5.217103481292725,
+      2.524568557739258,
+      4.846280574798584
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:302:32",
+    "support_bounds": [
+      [
+        5.205265998840332,
+        2.5200657844543457,
+        4.677443027496338
+      ],
+      [
+        5.484221458435059,
+        2.5425777435302734,
+        4.913766860961914
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_19",
+    "surface_id": "dining_chair_19_surface_01",
+    "placement_id": "dining_chair_19::dining_chair_19_surface_01"
+  },
+  "surface_0112": {
+    "id": "surface_0112",
+    "surface_point": [
+      5.484221458435059,
+      2.5247838497161865,
+      4.677443027496338
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:302:32",
+    "support_bounds": [
+      [
+        5.205265998840332,
+        2.5200657844543457,
+        4.677443027496338
+      ],
+      [
+        5.484221458435059,
+        2.5425777435302734,
+        4.913766860961914
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_19",
+    "surface_id": "dining_chair_19_surface_01",
+    "placement_id": "dining_chair_19::dining_chair_19_surface_01"
+  },
+  "surface_0113": {
+    "id": "surface_0113",
+    "surface_point": [
+      8.238578796386719,
+      3.081822395324707,
+      2.897481918334961
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:39",
+    "support_bounds": [
+      [
+        8.181869506835938,
+        3.080355405807495,
+        2.8216240406036377
+      ],
+      [
+        8.272173881530762,
+        3.0922932624816895,
+        2.900237798690796
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_10",
+    "placement_id": "armchair_02::armchair_02_surface_10"
+  },
+  "surface_0114": {
+    "id": "surface_0114",
+    "surface_point": [
+      7.913295269012451,
+      2.9388389587402344,
+      4.185756206512451
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:341:37",
+    "support_bounds": [
+      [
+        7.600095748901367,
+        2.925825595855713,
+        3.691802501678467
+      ],
+      [
+        9.669706344604492,
+        2.9502992630004883,
+        4.54038143157959
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_26",
+    "surface_id": "kitchen_counter_26_surface_01",
+    "placement_id": "kitchen_counter_26::kitchen_counter_26_surface_01"
+  },
+  "surface_0115": {
+    "id": "surface_0115",
+    "surface_point": [
+      9.376220703125,
+      2.9353432655334473,
+      4.221643447875977
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:341:37",
+    "support_bounds": [
+      [
+        7.600095748901367,
+        2.925825595855713,
+        3.691802501678467
+      ],
+      [
+        9.669706344604492,
+        2.9502992630004883,
+        4.54038143157959
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_26",
+    "surface_id": "kitchen_counter_26_surface_01",
+    "placement_id": "kitchen_counter_26::kitchen_counter_26_surface_01"
+  },
+  "surface_0116": {
+    "id": "surface_0116",
+    "surface_point": [
+      7.612625598907471,
+      2.927692174911499,
+      3.732194185256958
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:341:37",
+    "support_bounds": [
+      [
+        7.600095748901367,
+        2.925825595855713,
+        3.691802501678467
+      ],
+      [
+        9.669706344604492,
+        2.9502992630004883,
+        4.54038143157959
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_26",
+    "surface_id": "kitchen_counter_26_surface_01",
+    "placement_id": "kitchen_counter_26::kitchen_counter_26_surface_01"
+  },
+  "surface_0117": {
+    "id": "surface_0117",
+    "surface_point": [
+      9.075639724731445,
+      2.9347054958343506,
+      4.207249641418457
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:341:37",
+    "support_bounds": [
+      [
+        7.600095748901367,
+        2.925825595855713,
+        3.691802501678467
+      ],
+      [
+        9.669706344604492,
+        2.9502992630004883,
+        4.54038143157959
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_26",
+    "surface_id": "kitchen_counter_26_surface_01",
+    "placement_id": "kitchen_counter_26::kitchen_counter_26_surface_01"
+  },
+  "surface_0118": {
+    "id": "surface_0118",
+    "surface_point": [
+      7.69474983215332,
+      2.9350357055664062,
+      3.9775876998901367
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen counter",
+    "room_categories": [],
+    "surface_group": "rendered:341:37",
+    "support_bounds": [
+      [
+        7.600095748901367,
+        2.925825595855713,
+        3.691802501678467
+      ],
+      [
+        9.669706344604492,
+        2.9502992630004883,
+        4.54038143157959
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_counter_26",
+    "surface_id": "kitchen_counter_26_surface_01",
+    "placement_id": "kitchen_counter_26::kitchen_counter_26_surface_01"
+  },
+  "surface_0119": {
+    "id": "surface_0119",
+    "surface_point": [
+      7.630879878997803,
+      2.934896945953369,
+      4.096062660217285
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen lower cabinet",
+    "room_categories": [],
+    "surface_group": "rendered:333:35",
+    "support_bounds": [
+      [
+        7.630443096160889,
+        2.7846908569335938,
+        4.096062660217285
+      ],
+      [
+        7.746635437011719,
+        2.8151915073394775,
+        4.310647964477539
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_lower_cabinet_27",
+    "surface_id": "kitchen_lower_cabinet_27_surface_02",
+    "placement_id": "kitchen_lower_cabinet_27::kitchen_lower_cabinet_27_surface_02"
+  },
+  "surface_0120": {
+    "id": "surface_0120",
+    "surface_point": [
+      7.631123065948486,
+      2.862109422683716,
+      3.8817577362060547
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen lower cabinet",
+    "room_categories": [],
+    "surface_group": "rendered:333:34",
+    "support_bounds": [
+      [
+        7.6307830810546875,
+        2.743635416030884,
+        3.8817577362060547
+      ],
+      [
+        7.631123065948486,
+        2.7437334060668945,
+        3.9533944129943848
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_lower_cabinet_27",
+    "surface_id": "kitchen_lower_cabinet_27_surface_01",
+    "placement_id": "kitchen_lower_cabinet_27::kitchen_lower_cabinet_27_surface_01"
+  },
+  "surface_0121": {
+    "id": "surface_0121",
+    "surface_point": [
+      6.65339469909668,
+      3.0371510982513428,
+      4.819188117980957
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:299:38",
+    "support_bounds": [
+      [
+        6.594107151031494,
+        3.0145604610443115,
+        4.627849578857422
+      ],
+      [
+        6.686219692230225,
+        3.048346757888794,
+        5.1450066566467285
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_16",
+    "surface_id": "dining_chair_16_surface_05",
+    "placement_id": "dining_chair_16::dining_chair_16_surface_05"
+  },
+  "surface_0122": {
+    "id": "surface_0122",
+    "surface_point": [
+      6.561642169952393,
+      2.7122583389282227,
+      4.752177715301514
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:299:34",
+    "support_bounds": [
+      [
+        6.561642169952393,
+        2.685175895690918,
+        4.752177715301514
+      ],
+      [
+        6.6063995361328125,
+        2.729208469390869,
+        5.079168319702148
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_16",
+    "surface_id": "dining_chair_16_surface_03",
+    "placement_id": "dining_chair_16::dining_chair_16_surface_03"
+  },
+  "surface_0123": {
+    "id": "surface_0123",
+    "surface_point": [
+      5.939018249511719,
+      3.0243160724639893,
+      5.766709327697754
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:301:38",
+    "support_bounds": [
+      [
+        5.6249847412109375,
+        3.008333683013916,
+        5.673830509185791
+      ],
+      [
+        6.065144062042236,
+        3.0455174446105957,
+        5.78092622756958
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_18",
+    "surface_id": "dining_chair_18_surface_05",
+    "placement_id": "dining_chair_18::dining_chair_18_surface_05"
+  },
+  "surface_0124": {
+    "id": "surface_0124",
+    "surface_point": [
+      5.676364898681641,
+      2.9883251190185547,
+      5.691230297088623
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:301:37",
+    "support_bounds": [
+      [
+        5.665722846984863,
+        2.98408579826355,
+        5.691230297088623
+      ],
+      [
+        5.78204345703125,
+        2.998753786087036,
+        5.731837272644043
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_18",
+    "surface_id": "dining_chair_18_surface_04",
+    "placement_id": "dining_chair_18::dining_chair_18_surface_04"
+  },
+  "surface_0125": {
+    "id": "surface_0125",
+    "surface_point": [
+      5.810506820678711,
+      2.7962329387664795,
+      5.7203145027160645
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:301:35",
+    "support_bounds": [
+      [
+        5.66522741317749,
+        2.760948896408081,
+        5.616922378540039
+      ],
+      [
+        6.11016845703125,
+        2.810981512069702,
+        5.7203145027160645
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_18",
+    "surface_id": "dining_chair_18_surface_03",
+    "placement_id": "dining_chair_18::dining_chair_18_surface_03"
+  },
+  "surface_0126": {
+    "id": "surface_0126",
+    "surface_point": [
+      6.359041213989258,
+      2.512706756591797,
+      4.760410785675049
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:299:32",
+    "support_bounds": [
+      [
+        6.282370090484619,
+        2.521047353744507,
+        4.734385967254639
+      ],
+      [
+        6.537875175476074,
+        2.55935001373291,
+        5.050261497497559
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_16",
+    "surface_id": "dining_chair_16_surface_02",
+    "placement_id": "dining_chair_16::dining_chair_16_surface_02"
+  },
+  "surface_0127": {
+    "id": "surface_0127",
+    "surface_point": [
+      6.282370090484619,
+      2.5170912742614746,
+      5.050261497497559
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:299:32",
+    "support_bounds": [
+      [
+        6.282370090484619,
+        2.521047353744507,
+        4.734385967254639
+      ],
+      [
+        6.537875175476074,
+        2.55935001373291,
+        5.050261497497559
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_16",
+    "surface_id": "dining_chair_16_surface_02",
+    "placement_id": "dining_chair_16::dining_chair_16_surface_02"
+  },
+  "surface_0128": {
+    "id": "surface_0128",
+    "surface_point": [
+      6.083981513977051,
+      2.473935127258301,
+      5.570794582366943
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:301:31",
+    "support_bounds": [
+      [
+        6.083981037139893,
+        2.4811851978302,
+        5.240816116333008
+      ],
+      [
+        6.139318943023682,
+        2.500335454940796,
+        5.570794582366943
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_18",
+    "surface_id": "dining_chair_18_surface_01",
+    "placement_id": "dining_chair_18::dining_chair_18_surface_01"
+  },
+  "surface_0129": {
+    "id": "surface_0129",
+    "surface_point": [
+      6.9512786865234375,
+      2.674313545227051,
+      1.7748026847839355
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:34",
+    "support_bounds": [
+      [
+        6.733864784240723,
+        2.68048357963562,
+        -0.14371144771575928
+      ],
+      [
+        7.179748058319092,
+        2.7451517581939697,
+        1.9054595232009888
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_04",
+    "placement_id": "couch_13::couch_13_surface_04"
+  },
+  "surface_0130": {
+    "id": "surface_0130",
+    "surface_point": [
+      7.129712104797363,
+      2.6787095069885254,
+      -0.14371144771575928
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:34",
+    "support_bounds": [
+      [
+        6.733864784240723,
+        2.68048357963562,
+        -0.14371144771575928
+      ],
+      [
+        7.179748058319092,
+        2.7451517581939697,
+        1.9054595232009888
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_04",
+    "placement_id": "couch_13::couch_13_surface_04"
+  },
+  "surface_0131": {
+    "id": "surface_0131",
+    "surface_point": [
+      6.773227691650391,
+      2.7238032817840576,
+      -0.0949697345495224
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:34",
+    "support_bounds": [
+      [
+        6.733864784240723,
+        2.68048357963562,
+        -0.14371144771575928
+      ],
+      [
+        7.179748058319092,
+        2.7451517581939697,
+        1.9054595232009888
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_04",
+    "placement_id": "couch_13::couch_13_surface_04"
+  },
+  "surface_0132": {
+    "id": "surface_0132",
+    "surface_point": [
+      7.163873195648193,
+      2.6406376361846924,
+      0.8235482573509216
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "blanket",
+    "room_categories": [],
+    "surface_group": "rendered:271:33",
+    "support_bounds": [
+      [
+        7.146353244781494,
+        2.6008169651031494,
+        0.49899527430534363
+      ],
+      [
+        7.224864482879639,
+        2.669184923171997,
+        1.1085985898971558
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "blanket_07",
+    "surface_id": "blanket_07_surface_02",
+    "placement_id": "blanket_07::blanket_07_surface_02"
+  },
+  "surface_0133": {
+    "id": "surface_0133",
+    "surface_point": [
+      7.1777520179748535,
+      2.63187313079834,
+      1.1085985898971558
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "blanket",
+    "room_categories": [],
+    "surface_group": "rendered:271:33",
+    "support_bounds": [
+      [
+        7.146353244781494,
+        2.6008169651031494,
+        0.49899527430534363
+      ],
+      [
+        7.224864482879639,
+        2.669184923171997,
+        1.1085985898971558
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "blanket_07",
+    "surface_id": "blanket_07_surface_02",
+    "placement_id": "blanket_07::blanket_07_surface_02"
+  },
+  "surface_0134": {
+    "id": "surface_0134",
+    "surface_point": [
+      7.172824859619141,
+      2.6202924251556396,
+      0.5565712451934814
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "blanket",
+    "room_categories": [],
+    "surface_group": "rendered:271:33",
+    "support_bounds": [
+      [
+        7.146353244781494,
+        2.6008169651031494,
+        0.49899527430534363
+      ],
+      [
+        7.224864482879639,
+        2.669184923171997,
+        1.1085985898971558
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "blanket_07",
+    "surface_id": "blanket_07_surface_02",
+    "placement_id": "blanket_07::blanket_07_surface_02"
+  },
+  "surface_0135": {
+    "id": "surface_0135",
+    "surface_point": [
+      7.057040691375732,
+      2.7680811882019043,
+      -0.1559462696313858
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "pillow",
+    "room_categories": [],
+    "surface_group": "rendered:273:35",
+    "support_bounds": [
+      [
+        6.970231533050537,
+        2.761667251586914,
+        -0.15950369834899902
+      ],
+      [
+        7.0860371589660645,
+        2.7755067348480225,
+        -0.07083824276924133
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "pillow_33",
+    "surface_id": "pillow_33_surface_03",
+    "placement_id": "pillow_33::pillow_33_surface_03"
+  },
+  "surface_0136": {
+    "id": "surface_0136",
+    "surface_point": [
+      6.914994716644287,
+      2.7475929260253906,
+      -0.10025333613157272
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "pillow",
+    "room_categories": [],
+    "surface_group": "rendered:273:34",
+    "support_bounds": [
+      [
+        6.756019592285156,
+        2.723930835723877,
+        -0.14627470076084137
+      ],
+      [
+        6.975294589996338,
+        2.759159564971924,
+        -0.03433585166931152
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "pillow_33",
+    "surface_id": "pillow_33_surface_02",
+    "placement_id": "pillow_33::pillow_33_surface_02"
+  },
+  "surface_0137": {
+    "id": "surface_0137",
+    "surface_point": [
+      9.408979415893555,
+      3.3480443954467773,
+      -0.6969168186187744
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "tv",
+    "room_categories": [],
+    "surface_group": "rendered:283:42",
+    "support_bounds": [
+      [
+        9.241630554199219,
+        3.342519760131836,
+        -0.8289792537689209
+      ],
+      [
+        9.723292350769043,
+        3.3575422763824463,
+        -0.5201278924942017
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "tv_45",
+    "surface_id": "tv_45_surface_03",
+    "placement_id": "tv_45::tv_45_surface_03"
+  },
+  "surface_0138": {
+    "id": "surface_0138",
+    "surface_point": [
+      9.63348388671875,
+      3.3420348167419434,
+      -0.5434592962265015
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "tv",
+    "room_categories": [],
+    "surface_group": "rendered:283:42",
+    "support_bounds": [
+      [
+        9.241630554199219,
+        3.342519760131836,
+        -0.8289792537689209
+      ],
+      [
+        9.723292350769043,
+        3.3575422763824463,
+        -0.5201278924942017
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "tv_45",
+    "surface_id": "tv_45_surface_03",
+    "placement_id": "tv_45::tv_45_surface_03"
+  },
+  "surface_0139": {
+    "id": "surface_0139",
+    "surface_point": [
+      9.311875343322754,
+      2.7747650146484375,
+      -0.7022790908813477
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "tv",
+    "room_categories": [],
+    "surface_group": "rendered:283:35",
+    "support_bounds": [
+      [
+        9.20108413696289,
+        2.788795232772827,
+        -0.8704975247383118
+      ],
+      [
+        9.654367446899414,
+        2.820796489715576,
+        -0.5179800987243652
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "tv_45",
+    "surface_id": "tv_45_surface_01",
+    "placement_id": "tv_45::tv_45_surface_01"
+  },
+  "surface_0140": {
+    "id": "surface_0140",
+    "surface_point": [
+      9.654367446899414,
+      2.779160261154175,
+      -0.5179800987243652
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "tv",
+    "room_categories": [],
+    "surface_group": "rendered:283:35",
+    "support_bounds": [
+      [
+        9.20108413696289,
+        2.788795232772827,
+        -0.8704975247383118
+      ],
+      [
+        9.654367446899414,
+        2.820796489715576,
+        -0.5179800987243652
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "tv_45",
+    "surface_id": "tv_45_surface_01",
+    "placement_id": "tv_45::tv_45_surface_01"
+  },
+  "surface_0141": {
+    "id": "surface_0141",
+    "surface_point": [
+      9.187919616699219,
+      2.777376651763916,
+      -0.8363774418830872
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "tv stand",
+    "room_categories": [],
+    "surface_group": "rendered:284:35",
+    "support_bounds": [
+      [
+        8.919547080993652,
+        2.7748169898986816,
+        -1.4076848030090332
+      ],
+      [
+        9.793729782104492,
+        2.791522979736328,
+        -0.3619551658630371
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "tv_stand_46",
+    "surface_id": "tv_stand_46_surface_01",
+    "placement_id": "tv_stand_46::tv_stand_46_surface_01"
+  },
+  "surface_0142": {
+    "id": "surface_0142",
+    "surface_point": [
+      9.787557601928711,
+      2.776564359664917,
+      -0.4468814730644226
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "tv stand",
+    "room_categories": [],
+    "surface_group": "rendered:284:35",
+    "support_bounds": [
+      [
+        8.919547080993652,
+        2.7748169898986816,
+        -1.4076848030090332
+      ],
+      [
+        9.793729782104492,
+        2.791522979736328,
+        -0.3619551658630371
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "tv_stand_46",
+    "surface_id": "tv_stand_46_surface_01",
+    "placement_id": "tv_stand_46::tv_stand_46_surface_01"
+  },
+  "surface_0143": {
+    "id": "surface_0143",
+    "surface_point": [
+      9.243593215942383,
+      2.7790470123291016,
+      -1.4076848030090332
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "tv stand",
+    "room_categories": [],
+    "surface_group": "rendered:284:35",
+    "support_bounds": [
+      [
+        8.919547080993652,
+        2.7748169898986816,
+        -1.4076848030090332
+      ],
+      [
+        9.793729782104492,
+        2.791522979736328,
+        -0.3619551658630371
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "tv_stand_46",
+    "surface_id": "tv_stand_46_surface_01",
+    "placement_id": "tv_stand_46::tv_stand_46_surface_01"
+  },
+  "surface_0144": {
+    "id": "surface_0144",
+    "surface_point": [
+      9.382810592651367,
+      2.7735390663146973,
+      -0.6118267774581909
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "tv stand",
+    "room_categories": [],
+    "surface_group": "rendered:284:35",
+    "support_bounds": [
+      [
+        8.919547080993652,
+        2.7748169898986816,
+        -1.4076848030090332
+      ],
+      [
+        9.793729782104492,
+        2.791522979736328,
+        -0.3619551658630371
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "tv_stand_46",
+    "surface_id": "tv_stand_46_surface_01",
+    "placement_id": "tv_stand_46::tv_stand_46_surface_01"
+  },
+  "surface_0145": {
+    "id": "surface_0145",
+    "surface_point": [
+      9.154265403747559,
+      2.8404364585876465,
+      -1.1274670362472534
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "entertainment set",
+    "room_categories": [],
+    "surface_group": "rendered:285:36",
+    "support_bounds": [
+      [
+        9.070231437683105,
+        2.84028959274292,
+        -1.302066445350647
+      ],
+      [
+        9.261467933654785,
+        2.868263006210327,
+        -0.9796919822692871
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "entertainment_set_22",
+    "surface_id": "entertainment_set_22_surface_02",
+    "placement_id": "entertainment_set_22::entertainment_set_22_surface_02"
+  },
+  "surface_0146": {
+    "id": "surface_0146",
+    "surface_point": [
+      9.122340202331543,
+      2.832409381866455,
+      -1.1547763347625732
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "entertainment set",
+    "room_categories": [],
+    "surface_group": "rendered:285:35",
+    "support_bounds": [
+      [
+        8.997251510620117,
+        2.779315948486328,
+        -1.311180830001831
+      ],
+      [
+        9.256749153137207,
+        2.8397817611694336,
+        -0.9211855530738831
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "entertainment_set_22",
+    "surface_id": "entertainment_set_22_surface_01",
+    "placement_id": "entertainment_set_22::entertainment_set_22_surface_01"
+  },
+  "surface_0147": {
+    "id": "surface_0147",
+    "surface_point": [
+      8.359129905700684,
+      3.0622191429138184,
+      3.0016698837280273
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:38",
+    "support_bounds": [
+      [
+        8.192556381225586,
+        3.0013866424560547,
+        2.7825379371643066
+      ],
+      [
+        8.643708229064941,
+        3.0754072666168213,
+        3.0984699726104736
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_09",
+    "placement_id": "armchair_02::armchair_02_surface_09"
+  },
+  "surface_0148": {
+    "id": "surface_0148",
+    "surface_point": [
+      8.643708229064941,
+      3.0247156620025635,
+      3.0508506298065186
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:38",
+    "support_bounds": [
+      [
+        8.192556381225586,
+        3.0013866424560547,
+        2.7825379371643066
+      ],
+      [
+        8.643708229064941,
+        3.0754072666168213,
+        3.0984699726104736
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_09",
+    "placement_id": "armchair_02::armchair_02_surface_09"
+  },
+  "surface_0149": {
+    "id": "surface_0149",
+    "surface_point": [
+      8.235261917114258,
+      3.065418004989624,
+      2.7825376987457275
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:38",
+    "support_bounds": [
+      [
+        8.192556381225586,
+        3.0013866424560547,
+        2.7825379371643066
+      ],
+      [
+        8.643708229064941,
+        3.0754072666168213,
+        3.0984699726104736
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_09",
+    "placement_id": "armchair_02::armchair_02_surface_09"
+  },
+  "surface_0150": {
+    "id": "surface_0150",
+    "surface_point": [
+      8.412428855895996,
+      2.6746459007263184,
+      2.1284875869750977
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:34",
+    "support_bounds": [
+      [
+        8.314420700073242,
+        2.6801576614379883,
+        2.04225492477417
+      ],
+      [
+        8.43175220489502,
+        2.6930675506591797,
+        2.2097795009613037
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_05",
+    "placement_id": "armchair_02::armchair_02_surface_05"
+  },
+  "surface_0151": {
+    "id": "surface_0151",
+    "surface_point": [
+      6.869491100311279,
+      2.714794158935547,
+      1.7714476585388184
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "pillow",
+    "room_categories": [],
+    "surface_group": "rendered:270:34",
+    "support_bounds": [
+      [
+        6.774339199066162,
+        2.6863255500793457,
+        1.7309162616729736
+      ],
+      [
+        6.898971080780029,
+        2.7427148818969727,
+        1.8084874153137207
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "pillow_32",
+    "surface_id": "pillow_32_surface_01",
+    "placement_id": "pillow_32::pillow_32_surface_01"
+  },
+  "surface_0152": {
+    "id": "surface_0152",
+    "surface_point": [
+      7.0383830070495605,
+      2.6490962505340576,
+      1.7446906566619873
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:33",
+    "support_bounds": [
+      [
+        6.653264045715332,
+        2.606407642364502,
+        -0.20812931656837463
+      ],
+      [
+        7.188133716583252,
+        2.6786458492279053,
+        1.9332443475723267
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_03",
+    "placement_id": "couch_13::couch_13_surface_03"
+  },
+  "surface_0153": {
+    "id": "surface_0153",
+    "surface_point": [
+      6.795688152313232,
+      2.6343860626220703,
+      -0.14540217816829681
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:33",
+    "support_bounds": [
+      [
+        6.653264045715332,
+        2.606407642364502,
+        -0.20812931656837463
+      ],
+      [
+        7.188133716583252,
+        2.6786458492279053,
+        1.9332443475723267
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_03",
+    "placement_id": "couch_13::couch_13_surface_03"
+  },
+  "surface_0154": {
+    "id": "surface_0154",
+    "surface_point": [
+      7.188133716583252,
+      2.6419920921325684,
+      -0.05284035578370094
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:33",
+    "support_bounds": [
+      [
+        6.653264045715332,
+        2.606407642364502,
+        -0.20812931656837463
+      ],
+      [
+        7.188133716583252,
+        2.6786458492279053,
+        1.9332443475723267
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_03",
+    "placement_id": "couch_13::couch_13_surface_03"
+  },
+  "surface_0155": {
+    "id": "surface_0155",
+    "surface_point": [
+      6.678929328918457,
+      2.618528366088867,
+      1.857043743133545
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "couch",
+    "room_categories": [],
+    "surface_group": "rendered:269:33",
+    "support_bounds": [
+      [
+        6.653264045715332,
+        2.606407642364502,
+        -0.20812931656837463
+      ],
+      [
+        7.188133716583252,
+        2.6786458492279053,
+        1.9332443475723267
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "couch_13",
+    "surface_id": "couch_13_surface_03",
+    "placement_id": "couch_13::couch_13_surface_03"
+  },
+  "surface_0156": {
+    "id": "surface_0156",
+    "surface_point": [
+      8.967820167541504,
+      2.4241976737976074,
+      2.1505067348480225
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:30",
+    "support_bounds": [
+      [
+        8.635174751281738,
+        2.4034438133239746,
+        2.1149821281433105
+      ],
+      [
+        9.098430633544922,
+        2.4399993419647217,
+        2.932502269744873
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_01",
+    "placement_id": "armchair_02::armchair_02_surface_01"
+  },
+  "surface_0157": {
+    "id": "surface_0157",
+    "surface_point": [
+      7.182164192199707,
+      2.5542168617248535,
+      0.18747581541538239
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "pillow",
+    "room_categories": [],
+    "surface_group": "rendered:273:32",
+    "support_bounds": [
+      [
+        7.182164192199707,
+        2.5535852909088135,
+        0.1874758005142212
+      ],
+      [
+        7.198792457580566,
+        2.5583410263061523,
+        0.18998169898986816
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "pillow_33",
+    "surface_id": "pillow_33_surface_01",
+    "placement_id": "pillow_33::pillow_33_surface_01"
+  },
+  "surface_0158": {
+    "id": "surface_0158",
+    "surface_point": [
+      6.578928470611572,
+      2.4767909049987793,
+      4.833571910858154
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:299:31",
+    "support_bounds": [
+      [
+        6.284437656402588,
+        2.4703176021575928,
+        4.721001625061035
+      ],
+      [
+        6.581142902374268,
+        2.516538619995117,
+        5.024960041046143
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_16",
+    "surface_id": "dining_chair_16_surface_01",
+    "placement_id": "dining_chair_16::dining_chair_16_surface_01"
+  },
+  "surface_0159": {
+    "id": "surface_0159",
+    "surface_point": [
+      5.624481201171875,
+      2.9877991676330566,
+      4.044458866119385
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:37",
+    "support_bounds": [
+      [
+        5.586544513702393,
+        2.979489326477051,
+        4.044459342956543
+      ],
+      [
+        5.889059543609619,
+        2.9952714443206787,
+        4.087934494018555
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_05",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_05"
+  },
+  "surface_0160": {
+    "id": "surface_0160",
+    "surface_point": [
+      5.889059543609619,
+      2.9912641048431396,
+      4.051315784454346
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:37",
+    "support_bounds": [
+      [
+        5.586544513702393,
+        2.979489326477051,
+        4.044459342956543
+      ],
+      [
+        5.889059543609619,
+        2.9952714443206787,
+        4.087934494018555
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_05",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_05"
+  },
+  "surface_0161": {
+    "id": "surface_0161",
+    "surface_point": [
+      8.525834083557129,
+      2.9304394721984863,
+      5.716487407684326
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "sink",
+    "room_categories": [],
+    "surface_group": "rendered:317:37",
+    "support_bounds": [
+      [
+        8.369254112243652,
+        2.9208147525787354,
+        5.709222793579102
+      ],
+      [
+        9.158852577209473,
+        2.9498887062072754,
+        5.8297624588012695
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "sink_37",
+    "surface_id": "sink_37_surface_02",
+    "placement_id": "sink_37::sink_37_surface_02"
+  },
+  "surface_0162": {
+    "id": "surface_0162",
+    "surface_point": [
+      9.157625198364258,
+      2.939406633377075,
+      5.8297624588012695
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "sink",
+    "room_categories": [],
+    "surface_group": "rendered:317:37",
+    "support_bounds": [
+      [
+        8.369254112243652,
+        2.9208147525787354,
+        5.709222793579102
+      ],
+      [
+        9.158852577209473,
+        2.9498887062072754,
+        5.8297624588012695
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "sink_37",
+    "surface_id": "sink_37_surface_02",
+    "placement_id": "sink_37::sink_37_surface_02"
+  },
+  "surface_0163": {
+    "id": "surface_0163",
+    "surface_point": [
+      5.153275012969971,
+      2.859112024307251,
+      5.010385513305664
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:302:35",
+    "support_bounds": [
+      [
+        5.114617824554443,
+        2.7663702964782715,
+        4.6968560218811035
+      ],
+      [
+        5.246009826660156,
+        2.8321614265441895,
+        5.118766784667969
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_19",
+    "surface_id": "dining_chair_19_surface_03",
+    "placement_id": "dining_chair_19::dining_chair_19_surface_03"
+  },
+  "surface_0164": {
+    "id": "surface_0164",
+    "surface_point": [
+      5.184266567230225,
+      2.681992769241333,
+      4.763128757476807
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:302:34",
+    "support_bounds": [
+      [
+        5.069860458374023,
+        2.6886024475097656,
+        4.724483013153076
+      ],
+      [
+        5.261203765869141,
+        2.7532753944396973,
+        5.127903461456299
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_19",
+    "surface_id": "dining_chair_19_surface_02",
+    "placement_id": "dining_chair_19::dining_chair_19_surface_02"
+  },
+  "surface_0165": {
+    "id": "surface_0165",
+    "surface_point": [
+      9.979159355163574,
+      3.01816463470459,
+      3.6922452449798584
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "toaster",
+    "room_categories": [],
+    "surface_group": "rendered:323:38",
+    "support_bounds": [
+      [
+        9.87712574005127,
+        3.0089097023010254,
+        3.6856565475463867
+      ],
+      [
+        9.983989715576172,
+        3.024044990539551,
+        3.71761417388916
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "toaster_40",
+    "surface_id": "toaster_40_surface_01",
+    "placement_id": "toaster_40::toaster_40_surface_01"
+  },
+  "surface_0166": {
+    "id": "surface_0166",
+    "surface_point": [
+      9.597392082214355,
+      2.9488964080810547,
+      4.918789386749268
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "oven and stove",
+    "room_categories": [],
+    "surface_group": "rendered:328:37",
+    "support_bounds": [
+      [
+        9.480016708374023,
+        2.9223520755767822,
+        4.572331428527832
+      ],
+      [
+        9.671276092529297,
+        2.9715728759765625,
+        5.312655925750732
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "oven_and_stove_31",
+    "surface_id": "oven_and_stove_31_surface_02",
+    "placement_id": "oven_and_stove_31::oven_and_stove_31_surface_02"
+  },
+  "surface_0167": {
+    "id": "surface_0167",
+    "surface_point": [
+      9.67029094696045,
+      2.9509873390197754,
+      5.312201499938965
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "oven and stove",
+    "room_categories": [],
+    "surface_group": "rendered:328:37",
+    "support_bounds": [
+      [
+        9.480016708374023,
+        2.9223520755767822,
+        4.572331428527832
+      ],
+      [
+        9.671276092529297,
+        2.9715728759765625,
+        5.312655925750732
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "oven_and_stove_31",
+    "surface_id": "oven_and_stove_31_surface_02",
+    "placement_id": "oven_and_stove_31::oven_and_stove_31_surface_02"
+  },
+  "surface_0168": {
+    "id": "surface_0168",
+    "surface_point": [
+      9.597089767456055,
+      2.9402599334716797,
+      4.572331428527832
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "oven and stove",
+    "room_categories": [],
+    "surface_group": "rendered:328:37",
+    "support_bounds": [
+      [
+        9.480016708374023,
+        2.9223520755767822,
+        4.572331428527832
+      ],
+      [
+        9.671276092529297,
+        2.9715728759765625,
+        5.312655925750732
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "oven_and_stove_31",
+    "surface_id": "oven_and_stove_31_surface_02",
+    "placement_id": "oven_and_stove_31::oven_and_stove_31_surface_02"
+  },
+  "surface_0169": {
+    "id": "surface_0169",
+    "surface_point": [
+      5.836715221405029,
+      2.744417428970337,
+      2.532602548599243
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "stairs railing",
+    "room_categories": [],
+    "surface_group": "rendered:259:34",
+    "support_bounds": [
+      [
+        5.836715221405029,
+        2.7219338417053223,
+        2.532602548599243
+      ],
+      [
+        5.836715221405029,
+        2.7219338417053223,
+        2.532602548599243
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "stairs_railing_38",
+    "surface_id": "stairs_railing_38_surface_01",
+    "placement_id": "stairs_railing_38::stairs_railing_38_surface_01"
+  },
+  "surface_0170": {
+    "id": "surface_0170",
+    "surface_point": [
+      6.631088733673096,
+      2.993699073791504,
+      5.027472019195557
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:299:37",
+    "support_bounds": [
+      [
+        6.590864181518555,
+        2.954292058944702,
+        5.027471542358398
+      ],
+      [
+        6.634726047515869,
+        2.9986634254455566,
+        5.083926677703857
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_16",
+    "surface_id": "dining_chair_16_surface_04",
+    "placement_id": "dining_chair_16::dining_chair_16_surface_04"
+  },
+  "surface_0171": {
+    "id": "surface_0171",
+    "surface_point": [
+      9.475494384765625,
+      2.8793110847473145,
+      4.956882476806641
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "oven and stove",
+    "room_categories": [],
+    "surface_group": "rendered:328:36",
+    "support_bounds": [
+      [
+        9.466341018676758,
+        2.8904316425323486,
+        4.599198818206787
+      ],
+      [
+        9.48003101348877,
+        2.89809250831604,
+        5.283584117889404
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "oven_and_stove_31",
+    "surface_id": "oven_and_stove_31_surface_01",
+    "placement_id": "oven_and_stove_31::oven_and_stove_31_surface_01"
+  },
+  "surface_0172": {
+    "id": "surface_0172",
+    "surface_point": [
+      9.466341018676758,
+      2.894251823425293,
+      5.283584117889404
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "oven and stove",
+    "room_categories": [],
+    "surface_group": "rendered:328:36",
+    "support_bounds": [
+      [
+        9.466341018676758,
+        2.8904316425323486,
+        4.599198818206787
+      ],
+      [
+        9.48003101348877,
+        2.89809250831604,
+        5.283584117889404
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "oven_and_stove_31",
+    "surface_id": "oven_and_stove_31_surface_01",
+    "placement_id": "oven_and_stove_31::oven_and_stove_31_surface_01"
+  },
+  "surface_0173": {
+    "id": "surface_0173",
+    "surface_point": [
+      9.473033905029297,
+      2.802194833755493,
+      4.667374610900879
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "oven and stove",
+    "room_categories": [],
+    "surface_group": "rendered:328:36",
+    "support_bounds": [
+      [
+        9.466341018676758,
+        2.8904316425323486,
+        4.599198818206787
+      ],
+      [
+        9.48003101348877,
+        2.89809250831604,
+        5.283584117889404
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "oven_and_stove_31",
+    "surface_id": "oven_and_stove_31_surface_01",
+    "placement_id": "oven_and_stove_31::oven_and_stove_31_surface_01"
+  },
+  "surface_0174": {
+    "id": "surface_0174",
+    "surface_point": [
+      8.745609283447266,
+      2.875298023223877,
+      5.829495429992676
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "sink",
+    "room_categories": [],
+    "surface_group": "rendered:317:36",
+    "support_bounds": [
+      [
+        8.452085494995117,
+        2.8841440677642822,
+        5.736319065093994
+      ],
+      [
+        8.78228759765625,
+        2.916764259338379,
+        5.829495429992676
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "sink_37",
+    "surface_id": "sink_37_surface_01",
+    "placement_id": "sink_37::sink_37_surface_01"
+  },
+  "surface_0175": {
+    "id": "surface_0175",
+    "surface_point": [
+      8.452085494995117,
+      2.9131546020507812,
+      5.736319065093994
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "sink",
+    "room_categories": [],
+    "surface_group": "rendered:317:36",
+    "support_bounds": [
+      [
+        8.452085494995117,
+        2.8841440677642822,
+        5.736319065093994
+      ],
+      [
+        8.78228759765625,
+        2.916764259338379,
+        5.829495429992676
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "sink_37",
+    "surface_id": "sink_37_surface_01",
+    "placement_id": "sink_37::sink_37_surface_01"
+  },
+  "surface_0176": {
+    "id": "surface_0176",
+    "surface_point": [
+      7.273797512054443,
+      2.5689756870269775,
+      0.8607402443885803
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "blanket",
+    "room_categories": [],
+    "surface_group": "rendered:271:32",
+    "support_bounds": [
+      [
+        7.182834625244141,
+        2.552123546600342,
+        0.4353874623775482
+      ],
+      [
+        7.273797512054443,
+        2.579073667526245,
+        0.8607402443885803
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "blanket_07",
+    "surface_id": "blanket_07_surface_01",
+    "placement_id": "blanket_07::blanket_07_surface_01"
+  },
+  "surface_0177": {
+    "id": "surface_0177",
+    "surface_point": [
+      7.182834625244141,
+      2.5548901557922363,
+      0.4353874623775482
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "blanket",
+    "room_categories": [],
+    "surface_group": "rendered:271:32",
+    "support_bounds": [
+      [
+        7.182834625244141,
+        2.552123546600342,
+        0.4353874623775482
+      ],
+      [
+        7.273797512054443,
+        2.579073667526245,
+        0.8607402443885803
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "blanket_07",
+    "surface_id": "blanket_07_surface_01",
+    "placement_id": "blanket_07::blanket_07_surface_01"
+  },
+  "surface_0178": {
+    "id": "surface_0178",
+    "surface_point": [
+      5.978905200958252,
+      2.5211424827575684,
+      5.517509937286377
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:301:32",
+    "support_bounds": [
+      [
+        5.90044641494751,
+        2.521484851837158,
+        5.321095943450928
+      ],
+      [
+        6.073492050170898,
+        2.547457218170166,
+        5.632737636566162
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_18",
+    "surface_id": "dining_chair_18_surface_02",
+    "placement_id": "dining_chair_18::dining_chair_18_surface_02"
+  },
+  "surface_0179": {
+    "id": "surface_0179",
+    "surface_point": [
+      8.64773941040039,
+      2.856093406677246,
+      2.986971616744995
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:36",
+    "support_bounds": [
+      [
+        8.236546516418457,
+        2.842024326324463,
+        2.6354897022247314
+      ],
+      [
+        8.75464916229248,
+        2.886471748352051,
+        3.1273458003997803
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_07",
+    "placement_id": "armchair_02::armchair_02_surface_07"
+  },
+  "surface_0180": {
+    "id": "surface_0180",
+    "surface_point": [
+      8.257861137390137,
+      2.866650342941284,
+      2.6354897022247314
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:36",
+    "support_bounds": [
+      [
+        8.236546516418457,
+        2.842024326324463,
+        2.6354897022247314
+      ],
+      [
+        8.75464916229248,
+        2.886471748352051,
+        3.1273458003997803
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_07",
+    "placement_id": "armchair_02::armchair_02_surface_07"
+  },
+  "surface_0181": {
+    "id": "surface_0181",
+    "surface_point": [
+      5.646569728851318,
+      2.5441880226135254,
+      4.409913539886475
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:32",
+    "support_bounds": [
+      [
+        5.593895435333252,
+        2.5202126502990723,
+        4.154749870300293
+      ],
+      [
+        5.980503559112549,
+        2.552680730819702,
+        4.496913433074951
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_02",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_02"
+  },
+  "surface_0182": {
+    "id": "surface_0182",
+    "surface_point": [
+      5.980503559112549,
+      2.510213851928711,
+      4.351034164428711
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:32",
+    "support_bounds": [
+      [
+        5.593895435333252,
+        2.5202126502990723,
+        4.154749870300293
+      ],
+      [
+        5.980503559112549,
+        2.552680730819702,
+        4.496913433074951
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_02",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_02"
+  },
+  "surface_0183": {
+    "id": "surface_0183",
+    "surface_point": [
+      5.744715690612793,
+      2.526689291000366,
+      4.154749870300293
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:32",
+    "support_bounds": [
+      [
+        5.593895435333252,
+        2.5202126502990723,
+        4.154749870300293
+      ],
+      [
+        5.980503559112549,
+        2.552680730819702,
+        4.496913433074951
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_02",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_02"
+  },
+  "surface_0184": {
+    "id": "surface_0184",
+    "surface_point": [
+      5.8564043045043945,
+      2.4800589084625244,
+      4.118447303771973
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "dining chair",
+    "room_categories": [],
+    "surface_group": "rendered:300:31",
+    "support_bounds": [
+      [
+        5.73706579208374,
+        2.4890644550323486,
+        4.114743709564209
+      ],
+      [
+        5.956424236297607,
+        2.5197722911834717,
+        4.320180416107178
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "dining_chair_17",
+    "surface_id": "dining_chair_17_surface_01",
+    "placement_id": "dining_chair_17::dining_chair_17_surface_01"
+  },
+  "surface_0185": {
+    "id": "surface_0185",
+    "surface_point": [
+      8.513725280761719,
+      2.7776601314544678,
+      2.887985944747925
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:35",
+    "support_bounds": [
+      [
+        8.470927238464355,
+        2.781867265701294,
+        2.887985944747925
+      ],
+      [
+        8.756613731384277,
+        2.8347244262695312,
+        2.9641122817993164
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_06",
+    "placement_id": "armchair_02::armchair_02_surface_06"
+  },
+  "surface_0186": {
+    "id": "surface_0186",
+    "surface_point": [
+      9.750972747802734,
+      3.288283348083496,
+      -0.621551513671875
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "tv",
+    "room_categories": [],
+    "surface_group": "rendered:283:41",
+    "support_bounds": [
+      [
+        9.750972747802734,
+        3.289417266845703,
+        -0.621551513671875
+      ],
+      [
+        9.750972747802734,
+        3.289417266845703,
+        -0.621551513671875
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "tv_45",
+    "surface_id": "tv_45_surface_02",
+    "placement_id": "tv_45::tv_45_surface_02"
+  },
+  "surface_0187": {
+    "id": "surface_0187",
+    "surface_point": [
+      8.467373847961426,
+      2.9946467876434326,
+      3.0221962928771973
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "armchair",
+    "room_categories": [],
+    "surface_group": "rendered:290:37",
+    "support_bounds": [
+      [
+        8.465785026550293,
+        2.9978857040405273,
+        3.0141663551330566
+      ],
+      [
+        8.467373847961426,
+        2.9994616508483887,
+        3.0221962928771973
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "armchair_02",
+    "surface_id": "armchair_02_surface_08",
+    "placement_id": "armchair_02::armchair_02_surface_08"
+  },
+  "surface_0188": {
+    "id": "surface_0188",
+    "surface_point": [
+      10.05826473236084,
+      3.090273380279541,
+      3.689246416091919
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "toaster",
+    "room_categories": [],
+    "surface_group": "rendered:323:39",
+    "support_bounds": [
+      [
+        10.05826473236084,
+        3.09504771232605,
+        3.68924617767334
+      ],
+      [
+        10.107004165649414,
+        3.0997724533081055,
+        3.700700521469116
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "toaster_40",
+    "surface_id": "toaster_40_surface_02",
+    "placement_id": "toaster_40::toaster_40_surface_02"
+  },
+  "surface_0189": {
+    "id": "surface_0189",
+    "surface_point": [
+      8.0490140914917,
+      2.7279109954833984,
+      4.4977288246154785
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "refrigerator",
+    "room_categories": [],
+    "surface_group": "rendered:334:34",
+    "support_bounds": [
+      [
+        8.0490140914917,
+        2.732823610305786,
+        4.497729301452637
+      ],
+      [
+        8.0490140914917,
+        2.732823610305786,
+        4.497729301452637
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "refrigerator_35",
+    "surface_id": "refrigerator_35_surface_01",
+    "placement_id": "refrigerator_35::refrigerator_35_surface_01"
+  },
+  "surface_0190": {
+    "id": "surface_0190",
+    "surface_point": [
+      7.85766077041626,
+      2.937941551208496,
+      4.322386264801025
+    ],
+    "normal": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "category": "kitchen lower cabinet",
+    "room_categories": [],
+    "surface_group": "rendered:333:36",
+    "support_bounds": [
+      [
+        7.85766077041626,
+        2.848559617996216,
+        4.322386264801025
+      ],
+      [
+        7.907486915588379,
+        2.8622286319732666,
+        4.323665142059326
+      ]
+    ],
+    "semantic_color": null,
+    "margin": 0.01,
+    "support_id": "kitchen_lower_cabinet_27",
+    "surface_id": "kitchen_lower_cabinet_27_surface_03",
+    "placement_id": "kitchen_lower_cabinet_27::kitchen_lower_cabinet_27_surface_03"
+  }
+}

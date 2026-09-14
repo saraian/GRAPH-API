@@ -1,0 +1,29 @@
+Renderer: NVIDIA GeForce RTX 4090/PCIe/SSE2 by NVIDIA Corporation
+OpenGL version: 4.6.0 NVIDIA 580.126.09
+Using optional features:
+    GL_ARB_vertex_array_object
+    GL_ARB_separate_shader_objects
+    GL_ARB_robustness
+    GL_ARB_texture_storage
+    GL_ARB_texture_view
+    GL_ARB_framebuffer_no_attachments
+    GL_ARB_invalidate_subdata
+    GL_ARB_texture_storage_multisample
+    GL_ARB_multi_bind
+    GL_ARB_direct_state_access
+    GL_ARB_get_texture_sub_image
+    GL_ARB_texture_filter_anisotropic
+    GL_KHR_debug
+    GL_KHR_parallel_shader_compile
+    GL_NV_depth_buffer_float
+Using driver workarounds:
+    no-forward-compatible-core-context
+    nv-egl-incorrect-gl11-function-pointers
+    no-layout-qualifiers-on-old-glsl
+    nv-zero-context-profile-mask
+    nv-implementation-color-read-format-dsa-broken
+    nv-cubemap-inconsistent-compressed-image-size
+    nv-cubemap-broken-full-compressed-image-query
+    nv-compressed-block-size-in-bits
+[00:11:17:522670]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00839-zt1RVoi7PcG' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+Support diagnostic: {"counts": {"semantic_objects": 158, "support_categories": 158, "no_matching_collision_surface": 133, "points": 228, "height_filter": 8}, "source": "rendered semantic+depth", "support_categories": {"machine": 2, "couch": 9, "table": 2, "board": 4, "blinds": 1, "snack": 6, "arcade game": 1, "cabinet": 15, "media console": 2, "tv stand": 2, "tv": 1, "unknown": 19, "armchair": 2, "mini fridge": 2, "pillow": 12, "bed": 19, "towel": 2, "desk": 1, "computer chair": 1, "clothes hanger": 2, "clothes": 4, "chair": 9, "dining table": 1, "sink": 1, "bath cabinet": 1, "exercise machine": 1, "staircase handrail": 3, "bed table": 4, "blanket": 2, "footstool": 1, "mirror": 7, "book": 6, "bath faucet": 1, "kitchen island": 1, "kitchen cabinet": 1, "highchair": 1, "stove": 1, "shelf": 1, "decoration": 1, "monitor": 2, "computer desk": 1, "photo": 1, "bed small": 1, "coffee table": 1}, "categories_sample": {"unknown": 19, "bed": 19, "cabinet": 15, "pillow": 12, "couch": 9, "chair": 9, "mirror": 7, "snack": 6, "book": 6, "board": 4, "clothes": 4, "bed table": 4, "staircase handrail": 3, "machine": 2, "table": 2, "media console": 2, "tv stand": 2, "armchair": 2, "mini fridge": 2, "towel": 2, "clothes hanger": 2, "blanket": 2, "monitor": 2, "blinds": 1, "arcade game": 1, "tv": 1, "desk": 1, "computer chair": 1, "dining table": 1, "sink": 1}, "aabb_samples": [{"category": "machine", "min": [3.053046941757202, 1.3522239923477173, 1.6983840465545654], "max": [3.1180081367492676, 1.3606407642364502, 1.923761248588562], "size": [0.06496119499206543, 0.00841677188873291, 0.22537720203399658]}, {"category": "couch", "min": [-0.9156664609909058, 0.8618899583816528, 1.5514484643936157], "max": [-0.7648258805274963, 0.8860048055648804, 1.7014223337173462], "size": [0.15084058046340942, 0.02411484718322754, 0.14997386932373047]}, {"category": "couch", "min": [-0.6871116757392883, 0.615838348865509, -0.2681849002838135], "max": [-0.2516646683216095, 0.6392887234687805, 1.7684227228164673], "size": [0.43544700741767883, 0.023450374603271484, 2.0366076231002808]}, {"category": "couch", "min": [-0.3253002166748047, 0.4407920837402344, -0.26386260986328125], "max": [-0.029762381687760353, 0.5062171220779419, 1.7192893028259277], "size": [0.29553783498704433, 0.06542503833770752, 1.983151912689209]}, {"category": "table", "min": [0.7033894062042236, 0.45146313309669495, 0.10367274284362793], "max": [1.423973560333252, 0.4633823335170746, 1.1390422582626343], "size": [0.7205841541290283, 0.011919200420379639, 1.0353695154190063]}, {"category": "table", "min": [1.4591612815856934, 0.43389323353767395, 0.9456887245178223], "max": [1.4591612815856934, 0.43389323353767395, 0.9456887245178223], "size": [0.0, 0.0, 0.0]}, {"category": "couch", "min": [-0.04492228850722313, 0.4301369786262512, 0.4744476079940796], "max": [-0.024419574066996574, 0.4391521215438843, 0.7569655179977417], "size": [0.020502714440226555, 0.009015142917633057, 0.2825179100036621]}, {"category": "board", "min": [1.404799461364746, 1.5753309726715088, -1.5432027578353882], "max": [1.4433537721633911, 1.5904486179351807, -1.536105751991272], "size": [0.03855431079864502, 0.015117645263671875, 0.007097005844116211]}, {"category": "blinds", "min": [0.45755526423454285, 1.6754995584487915, -1.6112602949142456], "max": [0.4657649099826813, 1.6871521472930908, -1.6059385538101196], "size": [0.008209645748138428, 0.011652588844299316, 0.0053217411041259766]}, {"category": "snack", "min": [1.1809967756271362, 1.4817922115325928, -1.5236200094223022], "max": [1.1809967756271362, 1.4817922115325928, -1.5236200094223022], "size": [0.0, 0.0, 0.0]}, {"category": "snack", "min": [0.9139626026153564, 1.4504482746124268, -1.5358514785766602], "max": [0.9308245778083801, 1.4553991556167603, -1.5303329229354858], "size": [0.01686197519302368, 0.004950881004333496, 0.005518555641174316]}, {"category": "snack", "min": [1.168299913406372, 1.2442492246627808, -1.5312880277633667], "max": [1.2542848587036133, 1.2473891973495483, -1.5300326347351074], "size": [0.08598494529724121, 0.003139972686767578, 0.0012553930282592773]}]}

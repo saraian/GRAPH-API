@@ -1,0 +1,29 @@
+Renderer: NVIDIA GeForce RTX 4090/PCIe/SSE2 by NVIDIA Corporation
+OpenGL version: 4.6.0 NVIDIA 580.126.09
+Using optional features:
+    GL_ARB_vertex_array_object
+    GL_ARB_separate_shader_objects
+    GL_ARB_robustness
+    GL_ARB_texture_storage
+    GL_ARB_texture_view
+    GL_ARB_framebuffer_no_attachments
+    GL_ARB_invalidate_subdata
+    GL_ARB_texture_storage_multisample
+    GL_ARB_multi_bind
+    GL_ARB_direct_state_access
+    GL_ARB_get_texture_sub_image
+    GL_ARB_texture_filter_anisotropic
+    GL_KHR_debug
+    GL_KHR_parallel_shader_compile
+    GL_NV_depth_buffer_float
+Using driver workarounds:
+    no-forward-compatible-core-context
+    nv-egl-incorrect-gl11-function-pointers
+    no-layout-qualifiers-on-old-glsl
+    nv-zero-context-profile-mask
+    nv-implementation-color-read-format-dsa-broken
+    nv-cubemap-inconsistent-compressed-image-size
+    nv-cubemap-broken-full-compressed-image-query
+    nv-compressed-block-size-in-bits
+[00:11:30:010362]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00873-bxsVRursffK' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+Support diagnostic: {"counts": {"semantic_objects": 123, "support_categories": 123, "no_matching_collision_surface": 209, "points": 177, "height_filter": 6}, "source": "rendered semantic+depth", "support_categories": {"bed": 8, "plush toy": 4, "shelf": 2, "toy": 4, "chest": 2, "nightstand": 6, "pillow": 3, "mirror frame": 2, "cabinet": 3, "handrail": 4, "book": 4, "alarm clock": 4, "unknown": 4, "end table": 7, "table": 3, "decoration": 2, "closet": 9, "bottle": 1, "box": 2, "hanging clothes": 8, "stool": 2, "clothes dryer": 2, "sink": 6, "bathroom counter": 3, "washing machine": 1, "bath towel": 1, "bathtub": 1, "bathroom towel": 3, "candle": 2, "rock": 1, "vase": 2, "handbag": 4, "soap dispenser": 1, "blinds": 6, "clothes hanger": 3, "toilet": 3}, "categories_sample": {"closet": 9, "bed": 8, "hanging clothes": 8, "end table": 7, "nightstand": 6, "sink": 6, "blinds": 6, "plush toy": 4, "toy": 4, "handrail": 4, "book": 4, "alarm clock": 4, "unknown": 4, "handbag": 4, "pillow": 3, "cabinet": 3, "table": 3, "bathroom counter": 3, "bathroom towel": 3, "clothes hanger": 3, "toilet": 3, "shelf": 2, "chest": 2, "mirror frame": 2, "decoration": 2, "box": 2, "stool": 2, "clothes dryer": 2, "candle": 2, "vase": 2}, "aabb_samples": [{"category": "bed", "min": [-9.466022491455078, 0.5576038956642151, -6.3064422607421875], "max": [-8.575600624084473, 0.5998005867004395, -4.719066619873047], "size": [0.8904218673706055, 0.042196691036224365, 1.5873756408691406]}, {"category": "plush toy", "min": [-6.876039505004883, 1.412916660308838, -6.329738140106201], "max": [-6.796735763549805, 1.4651825428009033, -6.2217183113098145], "size": [0.07930374145507812, 0.05226588249206543, 0.10801982879638672]}, {"category": "plush toy", "min": [-6.864511489868164, 1.3728938102722168, -6.417496681213379], "max": [-6.79822301864624, 1.3977006673812866, -6.341290473937988], "size": [0.06628847122192383, 0.024806857109069824, 0.07620620727539062]}, {"category": "shelf", "min": [-6.9663262367248535, 1.1806061267852783, -6.213141441345215], "max": [-6.93806791305542, 1.1944955587387085, -6.085685729980469], "size": [0.028258323669433594, 0.013889431953430176, 0.1274557113647461]}, {"category": "toy", "min": [-7.129436016082764, 0.7355067133903503, -5.470391273498535], "max": [-7.046845436096191, 0.7420193552970886, -5.403829574584961], "size": [0.08259057998657227, 0.006512641906738281, 0.06656169891357422]}, {"category": "chest", "min": [-7.228216648101807, 0.4559992849826813, -5.739683628082275], "max": [-6.789429187774658, 0.46943598985671997, -4.860886096954346], "size": [0.43878746032714844, 0.013436704874038696, 0.8787975311279297]}, {"category": "nightstand", "min": [-8.407833099365234, 0.8400367498397827, -6.715659141540527], "max": [-7.508632183074951, 0.8538622260093689, -6.314211368560791], "size": [0.8992009162902832, 0.013825476169586182, 0.40144777297973633]}, {"category": "nightstand", "min": [-8.2803955078125, 0.659074604511261, -6.538220405578613], "max": [-7.57287073135376, 0.6756740212440491, -6.33021354675293], "size": [0.7075247764587402, 0.016599416732788086, 0.2080068588256836]}, {"category": "nightstand", "min": [-8.205838203430176, 0.6801305413246155, -6.473117828369141], "max": [-7.688798904418945, 0.7198655009269714, -6.373625755310059], "size": [0.5170392990112305, 0.03973495960235596, 0.09949207305908203]}, {"category": "pillow", "min": [-8.53564739227295, 0.7070404887199402, 0.1840304732322693], "max": [-8.47362995147705, 0.7380706071853638, 0.1865697056055069], "size": [0.06201744079589844, 0.031030118465423584, 0.00253923237323761]}, {"category": "bed", "min": [-9.459993362426758, 0.6802284717559814, -1.4022823572158813], "max": [-8.392556190490723, 0.7385420203208923, 0.18194080889225006], "size": [1.0674371719360352, 0.05831354856491089, 1.5842231661081314]}, {"category": "mirror frame", "min": [-9.466456413269043, 1.0805772542953491, -2.6279773712158203], "max": [-9.074970245361328, 1.106790542602539, -2.532017469406128], "size": [0.39148616790771484, 0.02621328830718994, 0.09595990180969238]}]}
