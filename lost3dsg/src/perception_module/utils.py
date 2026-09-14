@@ -103,14 +103,19 @@ class SyncedCameraData:
         self._try_get_transform()
 
     def _try_get_transform(self):
-        if self.cached_rgb is None:
+        # Snapshot the message: the sensor callbacks run in a ReentrantCallbackGroup on a
+        # MultiThreadedExecutor while the perception cycle sets `cached_rgb = None` after it
+        # consumes a frame, so "check None, then read .header" raced and killed perception_2
+        # on 20260914_170517 (AttributeError: 'NoneType' object has no attribute 'header').
+        rgb = self.cached_rgb
+        if rgb is None:
             return
         if not hasattr(self.node, 'tf_buffer'):
             return
-        camera_frame = self.cached_rgb.header.frame_id or self.default_camera_frame
+        camera_frame = rgb.header.frame_id or self.default_camera_frame
         target_frame = config.world_frame()
         try:
-            lookup_time = Time.from_msg(self.cached_rgb.header.stamp)
+            lookup_time = Time.from_msg(rgb.header.stamp)
             transform = self.node.tf_buffer.lookup_transform(
                 target_frame,
                 camera_frame,
