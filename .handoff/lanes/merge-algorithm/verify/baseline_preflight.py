@@ -125,11 +125,18 @@ def main():
         for c in checks:
             print(f"  [{'ok ' if c['ok'] else 'FAIL'}] {c['check']}\n         {c['detail']}")
         print(f"\n{len(checks) - len(failed)} of {len(checks)} checks pass.")
-        print("\nTHIS SCRIPT LAUNCHED NOTHING. When the owner authorises the run, the command is:")
-        print("  cd /DATA/GRAPH-API/.claude/worktrees/found-merge-algorithm")
+        print("\nTHIS SCRIPT LAUNCHED NOTHING. When the owner authorises the run:")
+        print(f"  cd {REPO}")
+        print(f"  git checkout --detach {BASELINE_REV}    # the BASELINE arm runs the tree")
+        print("                                           # WITHOUT the four repairs")
         print("  DETACH=1 bash lost3dsg/test/debug_configs/launch_merge_debug.sh evidence")
         print("  DETACH=1 bash lost3dsg/test/debug_configs/launch_merge_debug.sh legacy")
-        print("Run the two arms ONE AT A TIME: they share the GPU and the Modal endpoint.")
+        print("  git checkout worktree-found-merge-algorithm   # then the REPAIRED arm, same two")
+        print("  DETACH=1 bash lost3dsg/test/debug_configs/launch_merge_debug.sh evidence")
+        print("  DETACH=1 bash lost3dsg/test/debug_configs/launch_merge_debug.sh legacy")
+        print("\nRun the arms ONE AT A TIME: they share the GPU and the Modal endpoint.")
+        print("Re-run this script after each checkout: the container copies its sources from")
+        print("the checkout, so the revision it reports IS the code that will run.")
     return 1 if failed else 0
 
 
