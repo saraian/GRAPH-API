@@ -13,3 +13,5 @@ A8 gap 0.3, label .40 (MiniLM), veto                  44     1    74  artwork->p
 A9 gap 0.3, new weights, OWLv2 label, veto            35    10    74  sculpture->statue@0.859, table->object@0.883, stove->oven@0.887, cushion#1->seat@0.907, dispenser->paper_towel_holder@0.94, artwork->painting@0.943, pillow->cushion#1@0.896, bench#1->cabinet#3@0.895, bench#2->cabinet#4@0.888, pillow#2->cushion#3@0.913
 A10 gap 0.3, label .25 (OWLv2), veto                  41     7    71  sculpture->statue@0.873, stove->oven@0.871, cushion#1->seat@0.855, dispenser->paper_towel_holder@0.902, artwork->painting@0.946, pillow->cushion#1@0.893, pillow#2->cushion#3@0.906
 A11 gap 0.3, label .40 (OWLv2), veto                  44     6    69  sculpture->statue@0.882, stove->oven@0.858, dispenser->paper_towel_holder@0.874, artwork->painting@0.948, pillow->cushion#1@0.891, pillow#2->cushion#3@0.901
+
+pairs written: /DATA/GRAPH-API/.claude/worktrees/found-merge-algorithm/.handoff/lanes/merge-algorithm/verify/assoc_arms_pairs.json

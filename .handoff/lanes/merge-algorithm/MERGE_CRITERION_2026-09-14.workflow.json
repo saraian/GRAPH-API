@@ -1,0 +1,211 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "GRAPH-API Merge Criterion",
+    "quality_profile": "showcase",
+    "locale": "en"
+  },
+  "lanes": [
+    {
+      "id": "sweep",
+      "label": "Sweep and gates (per scan-complete)"
+    },
+    {
+      "id": "evidence",
+      "label": "Evidence and decision"
+    },
+    {
+      "id": "apply",
+      "label": "Apply"
+    },
+    {
+      "id": "refused",
+      "label": "Refused or held, every one recorded",
+      "variant": "exception"
+    }
+  ],
+  "mainPath": [
+    "snapshot",
+    "candidates",
+    "room",
+    "geometry",
+    "score",
+    "decide",
+    "apply"
+  ],
+  "nodes": [
+    {
+      "id": "snapshot",
+      "lane": "sweep",
+      "col": 0,
+      "type": "database",
+      "label": "Snapshot",
+      "sublabel": "fused else measured",
+      "width": 124
+    },
+    {
+      "id": "candidates",
+      "lane": "sweep",
+      "col": 1,
+      "type": "backend",
+      "label": "Offer pairs",
+      "sublabel": "reach or gap 0.3 m",
+      "width": 124
+    },
+    {
+      "id": "room",
+      "lane": "sweep",
+      "col": 2,
+      "type": "security",
+      "label": "Room gate",
+      "sublabel": "apart boxes only",
+      "width": 124
+    },
+    {
+      "id": "geometry",
+      "lane": "sweep",
+      "col": 3,
+      "type": "security",
+      "label": "Geometry gate",
+      "sublabel": "gap <= 0.3 m",
+      "width": 124
+    },
+    {
+      "id": "score",
+      "lane": "evidence",
+      "col": 4,
+      "type": "backend",
+      "label": "score_pair",
+      "sublabel": "6 channels, hypothesis",
+      "width": 124
+    },
+    {
+      "id": "decide",
+      "lane": "evidence",
+      "col": 5,
+      "type": "security",
+      "label": "Decide",
+      "sublabel": "rule, 2.996, x2",
+      "width": 124
+    },
+    {
+      "id": "apply",
+      "lane": "apply",
+      "col": 5,
+      "type": "cloud",
+      "label": "Commit, apply",
+      "sublabel": "keeper, fuse, count",
+      "width": 124
+    },
+    {
+      "id": "refuse_room",
+      "lane": "refused",
+      "col": 2,
+      "type": "external",
+      "label": "Room refusal",
+      "sublabel": "recorded, streak 0",
+      "width": 124
+    },
+    {
+      "id": "refuse_geometry",
+      "lane": "refused",
+      "col": 3,
+      "type": "external",
+      "label": "Geometry refusal",
+      "sublabel": "gap_m recorded",
+      "width": 124
+    },
+    {
+      "id": "hold",
+      "lane": "refused",
+      "col": 5,
+      "type": "external",
+      "label": "Hold or reject",
+      "sublabel": "channels recorded",
+      "width": 124
+    }
+  ],
+  "edges": [
+    {
+      "from": "snapshot",
+      "to": "candidates",
+      "label": "boxed objects",
+      "role": "main"
+    },
+    {
+      "from": "candidates",
+      "to": "room",
+      "label": "offered",
+      "role": "main"
+    },
+    {
+      "from": "room",
+      "to": "geometry",
+      "label": "same room or intersect",
+      "role": "main"
+    },
+    {
+      "from": "geometry",
+      "to": "score",
+      "label": "compatible",
+      "role": "main"
+    },
+    {
+      "from": "score",
+      "to": "decide",
+      "label": "total, streak",
+      "role": "main"
+    },
+    {
+      "from": "decide",
+      "to": "apply",
+      "label": "merge",
+      "role": "main"
+    },
+    {
+      "from": "room",
+      "to": "refuse_room",
+      "label": "apart, other room",
+      "role": "error"
+    },
+    {
+      "from": "geometry",
+      "to": "refuse_geometry",
+      "label": "gap > 0.3",
+      "role": "error"
+    },
+    {
+      "from": "decide",
+      "to": "hold",
+      "label": "held, or 1 of 2",
+      "role": "error"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Attribute channel (LSF)",
+      "items": [
+        "s = sum(w * term) / sum(w) over comparable terms (label .25, colour .36, material .24, description .15); abstain if no optional term",
+        "llr = +2.0 * (s - .85) / .15 capped at 2.0 for s >= .85 (below the 2.996 threshold); -8 * (.85 - s) / .35 floored at -8 for s < .85; same_kind = exact base label"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Geometric and other channels",
+      "items": [
+        "overlap = log(V_map / V_larger) * containment, clipped +-8; no intersection -> gIoU <= 0 and separation (Mahalanobis LLR vs 1/V_map)",
+        "co-visibility: VETO if one frame and 2D-disjoint, else abstain; room +-log(n_rooms); appearance = CLIP in a 45 degree cone; ontology OFF"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Rule, persistence, keeper",
+      "items": [
+        "unwitnessed overlap: overlap > 0 AND same base label AND attributes measured, else HOLD; so same label + overlap evidence => merge, synonyms and cross-kind stay held",
+        "commit: total >= log(20) = 2.996 on 2 consecutive sweeps; gate refusal or hold resets the streak; keeper by merge_rank keeps its OWN box; stale pair skipped; merged_count = applied"
+      ]
+    }
+  ]
+}

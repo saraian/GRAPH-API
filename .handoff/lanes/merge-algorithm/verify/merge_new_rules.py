@@ -63,10 +63,15 @@ rosstub.install()
 import association as assoc  # noqa: E402
 import object_info  # noqa: E402
 import object_services as osv  # noqa: E402
+
+# gap sweep (owner 2026-09-14: "measure it first"): GAP_M=0.5 python merge_new_rules.py
+if os.environ.get('GAP_M'):
+    osv.LOCALITY_GAP_M = float(os.environ['GAP_M'])
 import room_manager  # noqa: E402
 from world_model import wm  # noqa: E402
 
-OUT = '/DATA/GRAPH-API/.claude/worktrees/found-merge-algorithm/.handoff/lanes/merge-algorithm/verify/merge_new_rules.txt'
+OUT = ('/DATA/GRAPH-API/.claude/worktrees/found-merge-algorithm/.handoff/lanes/merge-algorithm/verify/merge_new_rules'
+       + (f"_gap{os.environ['GAP_M']}" if os.environ.get('GAP_M') else '') + '.txt')
 R = '/DATA/GRAPH-API/.handoff/lanes/perception/ga493_replay_20260914/'
 K = ('x_min', 'x_max', 'y_min', 'y_max', 'z_min', 'z_max')
 THR = assoc.commit_threshold(osv.MERGE_COST_RATIO)
@@ -93,7 +98,8 @@ say(f"  config in force      MERGE_ENGINE={osv.MERGE_ENGINE} MERGE_ONTOLOGY_CHAN
 say(f"  similarity weights   {[osv.CFG['similarity'][k] for k in ('label', 'color', 'material', 'description')]}")
 assert osv.MERGE_ENGINE == 'evidence' and osv.MERGE_ONTOLOGY_CHANNEL is False
 assert osv.MERGE_MIN_CONSECUTIVE == 2 and osv.MERGE_MIN_EVIDENCE == 1
-assert [osv.CFG['similarity'][k] for k in ('label', 'color', 'material', 'description')] == [0.05, 0.45, 0.30, 0.20]
+# weights are whatever config.yaml says at run time (0.05/0.45/0.30/0.20 when this script was
+# written; 0.25/0.36/0.24/0.15 after the owner's second ruling); they are printed above.
 
 # --- bundle ---------------------------------------------------------------------------------
 final_rows = json.load(open(R + 'bundle/persistent_perception.json'))

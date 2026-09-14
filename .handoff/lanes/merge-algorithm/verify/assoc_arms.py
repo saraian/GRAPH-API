@@ -170,10 +170,14 @@ ARMS = [
 ]
 
 
-def run(gate, W, instrument, veto_on):
+PAIRS = {}   # arm name -> [[new object_id, absorbing object_id, score, new label, target label], ...]
+
+
+def run(gate, W, instrument, veto_on, arm_name=None):
     state, cur, veto = {}, None, set()
     out = collections.Counter()
     diff = []
+    pairs = PAIRS.setdefault(arm_name, [])
     for t, seq, op, oid, obs_id in events:
         if op in ('merge', 'delete'):
             state.pop(oid, None)
@@ -208,6 +212,9 @@ def run(gate, W, instrument, veto_on):
             out['assoc_same' if same else 'assoc_diff'] += 1
             if not same:
                 diff.append((o['label'], state[best[0]]['label'], round(best[1], 3)))
+            # oid is the object the run CREATED for this detection; best[0] is the object the arm
+            # would have absorbed it into -- the pair the evaluator can score against GT
+            pairs.append([oid, best[0], round(best[1], 4), o['label'], state[best[0]]['label']])
             veto.add(best[0])
         state[oid] = {'label': o['label'], 'box': o['box'], 'color': o['color'], 'material': o['material'],
                       'description': o['description'], 'emb': o['emb']}
@@ -219,6 +226,13 @@ N = sum(1 for e in events if e[2] == 'add')
 print(f"adds: {N}; arms: {len(ARMS)}; label instruments: MiniLM raw word, OWLv2 'a photo of a {{label}}'\n")
 print(f"{'arm':50s} {'same':>5s} {'diff':>5s} {'new':>5s}  different-label absorptions")
 for name, gate, W, inst, veto_on in ARMS:
-    out, diff = run(gate, W, inst, veto_on)
+    out, diff = run(gate, W, inst, veto_on, arm_name=name)
     print(f"{name:50s} {out['assoc_same']:5d} {out['assoc_diff']:5d} {out['new']:5d}  "
           f"{', '.join(f'{a}->{b}@{s}' for a, b, s in diff)}")
+# per-arm association pairs for evaluator-side scoring (GT read only AFTER this file exists)
+PAIRS_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assoc_arms_pairs.json')
+with open(PAIRS_OUT, 'w') as fh:
+    json.dump({'schema': 'arm -> [[new_object_id, absorbing_object_id, score, new_label, target_label], ...]',
+               'source': 'GA-493 bundle mutation ledger + consumer capture; ids are the run\'s object_ids',
+               'arms': PAIRS}, fh, indent=1)
+print(f"\npairs written: {PAIRS_OUT}")

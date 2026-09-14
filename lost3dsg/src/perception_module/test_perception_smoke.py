@@ -544,9 +544,18 @@ def merge_path_evidence():
     lamp2 = obj("lamp", BOX, "a red wooden thing", "red", "wood", "obj_l2", 1.0)
     table2 = obj("table", SHIFT, "a red wooden thing", "red", "wood", "obj_t2", 2.0)
     svc._dry_hypotheses.clear()
-    for _ in range(3):
-        assert sweep([lamp2, table2, anchor]).merged_count == 0, "cross-kind with agreeing attributes must hold"
-    held2 = refusals("hold", ("obj_l2", "obj_t2"))
+    # under rosstub two different label strings score 0.0 on the label term, which at label
+    # weight 0.25 keeps the score under 0.85 by itself; pin a high label similarity so the
+    # attribute channel is POSITIVE and the hold is exercised on its own
+    import nlp_utils
+    real_sem = nlp_utils.semantic_similarity
+    nlp_utils.semantic_similarity = (lambda m, x, y: 0.9 if {x, y} == {"lamp", "table"} else real_sem(m, x, y))
+    try:
+        for _ in range(3):
+            assert sweep([lamp2, table2, anchor]).merged_count == 0, "cross-kind with agreeing attributes must hold"
+        held2 = refusals("hold", ("obj_l2", "obj_t2"))
+    finally:
+        nlp_utils.semantic_similarity = real_sem
     assert held2 and held2[0]["channels"]["attributes"]["log_odds"] > 0, held2
     assert str(held2[0].get("decision_reason", "")).startswith("containment carries"), held2[0].get("decision_reason")
 
