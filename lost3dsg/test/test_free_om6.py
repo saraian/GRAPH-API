@@ -133,12 +133,19 @@ a = NS(label="chair", object_id="obj_a", bbox=box(0.0), **ATTR)
 b = NS(label="chair", object_id="obj_b", bbox=box(0.5), **ATTR)
 wm.persistent_perceptions[:] = [a, b]
 merge_log = [{"keeper": "chair", "keeper_id": "obj_a", "discarded": "chair#2", "bbox_from_object_id": "obj_a"}]
-om6.requests.request = lambda **k: fake_response(200, json.dumps({"success": True, "merged_count": 1, "merge_log": merge_log}))
+def _merge_stub(req, resp):
+    # 2026-09-15: merge_duplicate_objects calls object_services._cb_merge_objects IN-PROCESS,
+    # no longer requests.request -> bridge /merge -> service. Reads `merge_log` at call time,
+    # as the HTTP stub did, so the second case below can rebind it.
+    return type("R", (), {"success": True, "message": "", "merged_count": 1,
+                          "merge_log_json": json.dumps(merge_log)})()
+n.object_services._cb_merge_objects = _merge_stub
 assert om6.ObjectManagerService.merge_duplicate_objects(n) == 1  # returns the applied COUNT, not a bool
 pending = dict(n.reeval.drain())
 assert pending.get("obj_a") == "merged" and "obj_b" in pending, pending
 # an older log without keeper_id (label under "keeper") must not raise either
 n = node()
+n.object_services._cb_merge_objects = _merge_stub
 wm.persistent_perceptions[:] = [a, b]
 merge_log = [{"keeper": "chair", "discarded": "chair#2", "bbox_from_object_id": "obj_a"}]
 assert om6.ObjectManagerService.merge_duplicate_objects(n) == 1  # returns the applied COUNT, not a bool
