@@ -1,0 +1,135 @@
+=== 1. box_gap / geometry_compatible ===
+  identical                        gap=0.0000 compat@0.3=True compat@0.0=True symmetric=True
+  touching_face_x                  gap=0.0000 compat@0.3=True compat@0.0=True symmetric=True
+  nested_inside                    gap=0.0000 compat@0.3=True compat@0.0=True symmetric=True
+  nested_outside(a inside b)       gap=0.0000 compat@0.3=True compat@0.0=True symmetric=True
+  diag_offset_0.2x_0.2y            gap=0.2000 compat@0.3=True compat@0.0=False symmetric=True
+  diag_offset_0.2x_0.5y            gap=0.5000 compat@0.3=False compat@0.0=False symmetric=True
+  corner_touch_xyz                 gap=0.0000 compat@0.3=True compat@0.0=True symmetric=True
+  degenerate_point_inside          gap=0.0000 compat@0.3=True compat@0.0=True symmetric=True
+  degenerate_point_0.25_off_x      gap=0.2500 compat@0.3=True compat@0.0=False symmetric=True
+  degenerate_plane_on_face         gap=0.0000 compat@0.3=True compat@0.0=True symmetric=True
+  degenerate_plane_0.3_off         gap=0.3000 compat@0.3=False compat@0.0=False symmetric=True
+  far_5m                           gap=4.0000 compat@0.3=False compat@0.0=False symmetric=True
+  inverted_min>max_touching        gap=1.0000 compat@0.3=False compat@0.0=False symmetric=True
+  None sides: None None None
+  box_gap(None, a) raises TypeError
+  NaN x_min box vs a: gap 0.0 compat@0.3 True | reversed gap 0.0 True
+  NaN x_min, y 5 m away: gap 4.0 compat False
+  gap_m as string '0.3': True
+
+=== 2. locality_bounds ===
+  fused with extra keys (GA-493 shape)   -> (-0.1, 1.1, 0.0, 1.0, 0.0, 1.0)
+  fused = {}                             -> (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+  fused = None                           -> (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+  fused malformed {x_min only}           -> None
+  fused with string values               -> (-0.1, 1.1, 0.0, 1.0, 0.0, 1.0)
+  fused with None value                  -> None
+  no fused, bbox None                    -> None
+  fused ok, bbox None                    -> (-0.1, 1.1, 0.0, 1.0, 0.0, 1.0)
+  fused = 0 (falsy non-dict)             -> (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+  fused = list of 6                      -> None
+  no fused_bbox attribute at all       -> (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+  obj None                             -> None
+
+=== 3. channel_attributes (reference 0.85, cap 2.0) ===
+  score 0.85        -> (0.0, {'score': 0.85, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 1.0         -> (2.0, {'score': 1.0, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 0.5         -> (-8.0, {'score': 0.5, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 0.0         -> (-8.0, {'score': 0.0, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 0.925       -> (1.0000000000000007, {'score': 0.925, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 0.9         -> (0.6666666666666672, {'score': 0.9, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 0.7         -> (-3.4285714285714293, {'score': 0.7, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 0.44        -> (-8.0, {'score': 0.44, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 1.2         -> (2.0, {'score': 1.2, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score -0.3        -> (-8.0, {'score': -0.3, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 0.85000001  -> (1.3333333400330122e-07, {'score': 0.85, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  score 0.84999999  -> (-2.2857142718229237e-07, {'score': 0.85, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True})
+  evidence_count 0        -> Abstain('0 optional term(s) comparable < 1', measured=True) .measured True
+  score None              -> Abstain('attribute score not supplied', measured=False) .measured False
+  same_kind False detail  -> {'score': 0.9, 'evidence_count': 3, 'reference': 0.85, 'same_kind': False}
+  same_kind None detail   -> {'score': 0.9, 'evidence_count': 3, 'reference': 0.85, 'same_kind': None}
+  numpy inputs            -> (0.666666348775228, {'score': 0.9, 'evidence_count': 2, 'reference': 0.85, 'same_kind': np.True_})
+  evidence_count None    -> RAISES TypeError: '<' not supported between instances of 'NoneType' and 'int'
+  evidence_count "3"     -> RAISES TypeError: '<' not supported between instances of 'str' and 'int'
+  score "0.9"            -> (0.6666666666666672, {'score': 0.9, 'evidence_count': 3, 'reference': 0.85, 'same_kind': None})
+  cap 5.0 (above log(20)=3.0): 5.0 -> attributes alone clear commit_threshold? True
+  reference 0.5 (division guard): (-8.0, {'score': 0.4, 'evidence_count': 3, 'reference': 0.5, 'same_kind': None})
+  reference 1.0 (division guard): (0.0, {'score': 1.0, 'evidence_count': 3, 'reference': 1.0, 'same_kind': None}) (-1.5999999999999996, {'score': 0.9, 'evidence_count': 3, 'reference': 1.0, 'same_kind': None})
+
+=== 4. score_pair with attribute_score_fn variants ===
+  2-tuple                  channel={'log_odds': 1.3333333333333328, 'score': 0.95, 'evidence_count': 3, 'reference': 0.85, 'same_kind': None} abstention=None total=5.896 cu=True
+  3-tuple                  channel={'log_odds': 1.3333333333333328, 'score': 0.95, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True} abstention=None total=5.896 cu=False
+  3-tuple same_kind False  channel={'log_odds': 1.3333333333333328, 'score': 0.95, 'evidence_count': 3, 'reference': 0.85, 'same_kind': False} abstention=None total=5.896 cu=True
+  None                     channel=None abstention=attribute score not supplied total=4.563 cu=True
+  1-tuple                  RAISES ValueError: not enough values to unpack (expected 3, got 2)
+  scalar                   RAISES TypeError: 'float' object is not iterable
+  4-tuple                  channel={'log_odds': 1.3333333333333328, 'score': 0.95, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True} abstention=None total=5.896 cu=False
+  list                     channel={'log_odds': 1.3333333333333328, 'score': 0.95, 'evidence_count': 3, 'reference': 0.85, 'same_kind': True} abstention=None total=5.896 cu=False
+  numpy types              channel={'log_odds': 1.333333174387614, 'score': 0.95, 'evidence_count': 3, 'reference': 0.85, 'same_kind': np.True_} abstention=None total=5.896 cu=True
+  empty tuple              RAISES ValueError: not enough values to unpack (expected 3, got 1)
+  raises                   RAISES RuntimeError: scorer failed
+  default ctx (no fn, ontology on): attributes in channels? False | ontology in channels? False | abstentions {'covisibility': 'no observation records to compare', 'separation': 'boxes overlap; containment already answers this', 'ontology': 'one or both sides unaligned; alignment is required before use', 'appearance': 'no descriptors on one or both sides', 'room': 'fewer than two rooms mapped; no null to compare against'}
+  use_ontology False, fn None: abstentions {'covisibility': 'no observation records to compare', 'separation': 'boxes overlap; containment already answers this', 'ontology': 'disabled by config (association.merge_ontology_channel)', 'appearance': 'no descriptors on one or both sides', 'room': 'fewer than two rooms mapped; no null to compare against'}
+
+=== 5. PairScore.containment_unchecked truth table (overlap +3.0 carries) ===
+  covisibility           attributes same_kind  -> containment_unchecked
+  channel                pos        True       -> False
+  channel                pos        False      -> False
+  channel                pos        None       -> False
+  channel                neg        True       -> False
+  channel                neg        False      -> False
+  channel                neg        None       -> False
+  channel                zero       True       -> False
+  channel                zero       False      -> False
+  channel                zero       None       -> False
+  channel                abstain    True       -> False
+  channel                absent     True       -> False
+  measured-abstain       pos        True       -> False
+  measured-abstain       pos        False      -> False
+  measured-abstain       pos        None       -> False
+  measured-abstain       neg        True       -> False
+  measured-abstain       neg        False      -> False
+  measured-abstain       neg        None       -> False
+  measured-abstain       zero       True       -> False
+  measured-abstain       zero       False      -> False
+  measured-abstain       zero       None       -> False
+  measured-abstain       abstain    True       -> False
+  measured-abstain       absent     True       -> False
+  uncollected-abstain    pos        True       -> False
+  uncollected-abstain    pos        False      -> True
+  uncollected-abstain    pos        None       -> True
+  uncollected-abstain    neg        True       -> False
+  uncollected-abstain    neg        False      -> False
+  uncollected-abstain    neg        None       -> False
+  uncollected-abstain    zero       True       -> True
+  uncollected-abstain    zero       False      -> True
+  uncollected-abstain    zero       None       -> True
+  uncollected-abstain    abstain    True       -> True
+  uncollected-abstain    absent     True       -> True
+  absent                 pos        True       -> False
+  absent                 pos        False      -> True
+  absent                 pos        None       -> True
+  absent                 neg        True       -> False
+  absent                 neg        False      -> False
+  absent                 neg        None       -> False
+  absent                 zero       True       -> True
+  absent                 zero       False      -> True
+  absent                 zero       None       -> True
+  absent                 abstain    True       -> True
+  absent                 absent     True       -> True
+  uncollected / pos / same_kind=np.bool_(True) -> True (np.bool_(True) is True? False )
+  uncollected / no attrs / overlap 1.0 of total 5.0 -> False
+
+=== 6. Hypothesis: streak across a SKIPPED sweep, and stale channel state ===
+  pair score total 6.563 vs threshold 2.996, containment_unchecked=False
+  sweep 1: ('hold', 'log-odds 6.563 >= 2.996 but only 1/2 consecutive') streak 1
+  sweep 2: SKIPPED (pair offered but refused by a gate before update)
+  sweep 3: ('merge', 'log-odds 6.563 >= 2.996 for 2 consecutive updates') streak 2 frames [1, 3]
+  attributes +2.0 in sweep 1, ABSTAINS in sweep 2 -> state keeps it? True; total sweep1 6.563 sweep2 6.563; history[1] abstentions 'attribute score not supplied'
+  cross-kind sweep 1 hold streak 0
+  cross-kind sweep 2 hold streak 0
+  cross-kind sweep 3 hold streak 0
+  same/cross/same -> hold hold hold streak 1
+
+probe_association done

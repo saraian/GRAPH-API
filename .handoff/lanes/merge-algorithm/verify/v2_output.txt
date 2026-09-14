@@ -1,0 +1,37 @@
+(a) fused_bbox vs bbox, 104 final objects
+    max one-sided extension of fused beyond measured: >0.6 m in 8, >0.3 m in 31, median 0.184 m
+    top 8: [(1.18, 'rug', 3), (1.14, 'countertop#2', 1), (0.91, 'countertop#1', 1), (0.82, 'cabinet#2', 2), (0.74, 'sofa', 2), (0.66, 'cabinet#1', 1), (0.63, 'cabinet', 1), (0.63, 'pillow#1', 1)]
+    fused view_count: Counter({1: 84, 2: 12, 3: 6, 4: 2})
+
+(b) final-object pairs, 5356 all-pairs; covariance None for every object (observations are not in the bundle), so the shell = sum of half-diagonals
+    generate_candidates: offered 294 (shell 266, gap 28), excluded 5062
+    gate-compatible on FUSED: 328; on MEASURED: 234; both: 234
+    fused-compatible but NEVER OFFERED by generate_candidates: 76 (same base label: 5)
+    examples (label_a, label_b, fused gap, measured gap): [('sofa#1', 'rug', 0.15, 0.82), ('sofa#2', 'object', 0.27, 0.45), ('sofa#2', 'table', 0.0, 0.37), ('pillow#1', 'rug', 0.3, 0.54), ('pillow#1', 'table', 0.27, 0.85), ('pillow#1', 'table', 0.24, 0.78), ('plant#1', 'rug', 0.27, 1.08), ('rug', 'table#1', 0.24, 0.51), ('rug', 'chair#1', 0.06, 1.26), ('rug', 'chair#2', 0.06, 1.27), ('rug', 'chair#1', 0.06, 1.35), ('rug', 'chair#2', 0.06, 1.33)]
+
+(c) same-cycle detection pairs from capture/consumer/events.jsonl
+    cycles 41, detections 226, same-base-label pairs in one cycle 92; of those gap<=0.3 (new locality): 13, 3D IoU>=0.10 (old exploration gate): 0
+    gap<=0.3 pairs with 2D IoU < 0.30 (co-visibility would VETO their merge): 5 of 13
+      ('a8ce2f', 'pillow#1', 'pillow#2', 0.19, 0.0, 0.08098470033360182)
+      ('262ab4', 'pillow#1', 'pillow#2', 0.19, 0.0, 'unparsed')
+      ('aeabbc', 'pillow#1', 'pillow#2', 0.15, 0.0, 'unparsed')
+      ('007762', 'pillow#1', 'pillow#2', 0.12, 0.0, 0.00509154494959874)
+      ('ccd5b6', 'cushion#1', 'cushion#2', 0.01, 0.0, 0.09971746717633351)
+      ('ccd5b6', 'cushion#2', 'cushion#3', 0.12, 0.0, 0.033638572229489995)
+      ('070e65', 'cabinet#1', 'cabinet#2', 0.19, 0.0, 'unparsed')
+      ('070e65', 'cabinet#4', 'cabinet#5', 0.04, 0.0, 'unparsed')
+      ('11477b', 'cabinet#1', 'cabinet#2', 0.07, 0.0, 'unparsed')
+      ('5bf532', 'cabinet#1', 'cabinet#2', 0.05, 0.0, 'unparsed')
+      ('5bf532', 'pillow#1', 'pillow#2', 0.05, 0.0, 0.07830551989730415)
+      ('5d8efa', 'cabinet#1', 'cabinet#2', 0.27, 0.0, 'unparsed')
+      ('5d8efa', 'cabinet#4', 'cabinet#5', 0.03, 0.0, 'unparsed')
+
+(d) mutation_receipts: (object_id, cycle) with >= 2 applied add/update receipts
+    0 of 138 (object, cycle) keys absorbed >= 2 detections in one cycle under the old code
+
+(e) room_id among 104 final objects: {'room_0': 39, 'room_4': 24, 'room_5': 40, 'room_1': 1}  -> n_rooms (known) = 4, log = 1.386
+
+(f) same-base-label final pairs, by geometry (measured box | fused box)
+    intersecting: measured 43 | fused 58; nested (containment>=0.8): 12 | 29; adjacent (no intersection, gap<=0.3): 19 | 11
+    nested on fused: [('rug', 'rug', 0.91, 'grey', 'grey', 'fabric', 'fabric'), ('table#1', 'table', 0.88, 'silver', 'silver', 'metal', 'glass'), ('chair#1', 'chair#1', 1.0, 'brown', 'grey', 'fabric', 'fabric'), ('chair#1', 'chair#1', 0.93, 'brown', 'grey', 'fabric', 'fabric'), ('chair#2', 'chair#2', 0.97, 'brown', 'grey', 'fabric', 'fabric'), ('chair#2', 'chair#2', 0.91, 'brown', 'grey', 'fabric', 'fabric'), ('mirror', 'mirror', 0.96, 'brown', 'brown', 'glass', 'wood'), ('chair#1', 'chair#1', 0.93, 'grey', 'grey', 'fabric', 'fabric'), ('chair#2', 'chair#2', 0.94, 'grey', 'grey', 'fabric', 'fabric'), ('cabinet#1', 'cabinet#1', 1.0, 'white', 'white', 'wood', 'wood'), ('cabinet#1', 'cabinet#1', 1.0, 'white', 'white', 'wood', 'wood'), ('cabinet#1', 'cabinet#1', 1.0, 'white', 'white', 'wood', 'wood'), ('cabinet#1', 'cabinet#1', 1.0, 'white', 'white', 'wood', 'wood'), ('cabinet#2', 'cabinet#4', 0.81, 'white', 'white', 'wood', 'wood'), ('cabinet', 'cabinet#1', 0.98, 'white', 'white', 'wood', 'wood')]
+    adjacent on fused: [('sofa#1', 'sofa', 0.12, 'blue', 'blue', 'fabric', 'fabric'), ('table#2', 'table', 0.06, 'clear', 'clear', 'glass', 'glass'), ('painting', 'painting', 0.27, 'black', 'black', 'canvas', 'canvas'), ('cabinet#1', 'cabinet#1', 0.24, 'white', 'white', 'wood', 'wood'), ('cabinet#2', 'cabinet#2', 0.3, 'white', 'white', 'wood', 'wood'), ('countertop', 'countertop#1', 0.03, 'beige', 'grey', 'stone', 'stone'), ('cushion#1', 'cushion#3', 0.03, 'blue', 'blue', 'fabric', 'fabric'), ('cabinet#2', 'cabinet#1', 0.0, 'white', 'white', 'wood', 'wood'), ('cabinet#2', 'cabinet#4', 0.12, 'white', 'white', 'wood', 'wood'), ('table', 'table#1', 0.09, 'brown', 'brown', 'wood', 'wood'), ('cabinet#3', 'cabinet#4', 0.27, 'white', 'white', 'wood', 'wood')]

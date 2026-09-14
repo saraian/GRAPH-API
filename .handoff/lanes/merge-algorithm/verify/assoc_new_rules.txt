@@ -1,0 +1,225 @@
+captured detections with 3D box: 226; with a description embedding: 226
+ledger events: {'add': 119, 'merge': 15, 'direct_exploration_update': 1, 'update': 19, 'delete': 24}
+adds replayed: 119; ledger associations replayed: 20; final objects in replay: 104
+
+=== NEW rules: geometry_compatible(gap<=0.3 m, measured box), weights .05/.45/.30/.20, best score > 0.85, same-cycle veto ===
+  ASSOC_same_label                           36 of 119   (expl   2 of 16, track  34 of 103)
+  ASSOC_diff_label                            8 of 119   (expl   0 of 16, track   8 of 103)
+  NEW_no_geometry_compatible_candidate       26 of 119   (expl   8 of 16, track  18 of 103)
+  NEW_candidate_but_score_le_threshold       42 of 119   (expl   5 of 16, track  37 of 103)
+  NEW_same_cycle_veto                         7 of 119   (expl   1 of 16, track   6 of 103)
+  would ASSOCIATE instead of add: 44 of 119; still a new object: 75 of 119
+  adds with >= 1 locality-passing candidate: 93 of 119; with >= 2 candidates above the score gate (exploration loop takes the FIRST in index order, tracking the best): 23 of 119
+  score of the ACCEPTED candidate (best, unvetoed) per associated add: n=44 min 0.853 p10 0.883 median 0.953 p90 0.989 max 1.000
+  best score among REFUSED locality-passing candidates per still-new add: n=49 min 0.065 p10 0.364 median 0.702 p90 0.966 max 0.996
+  every (add, locality-passing candidate) pair score: n=298 min 0.065 p10 0.318 median 0.700 p90 0.964 max 1.000
+  pair-score histogram (n=298 pairs): <0.50 114, 0.50-0.70 35, 0.70-0.85 57, 0.85-0.925 32, >=0.925 60
+
+=== OLD rules (control): IoU >= 0.10 expl / 0.30 track on measured box, weights .05/.30/.15/.50, score > 0.85, no veto ===
+  ASSOC_same_label                            0 of 119   (expl   0 of 16, track   0 of 103)
+  ASSOC_diff_label                            0 of 119   (expl   0 of 16, track   0 of 103)
+  NEW_no_geometry_compatible_candidate      105 of 119   (expl  14 of 16, track  91 of 103)
+  NEW_candidate_but_score_le_threshold       14 of 119   (expl   2 of 16, track  12 of 103)
+  NEW_same_cycle_veto                         0 of 119   (expl   0 of 16, track   0 of 103)
+  would ASSOCIATE instead of add: 0 of 119; still a new object: 119 of 119
+  adds with >= 1 locality-passing candidate: 14 of 119; with >= 2 candidates above the score gate (exploration loop takes the FIRST in index order, tracking the best): 0 of 119
+  score of the ACCEPTED candidate (best, unvetoed) per associated add: n=0
+  best score among REFUSED locality-passing candidates per still-new add: n=14 min 0.431 p10 0.573 median 0.746 p90 0.822 max 0.847
+  every (add, locality-passing candidate) pair score: n=17 min 0.431 p10 0.596 median 0.752 p90 0.842 max 0.847
+  pair-score histogram (n=17 pairs): <0.50 1, 0.50-0.70 4, 0.70-0.85 12, 0.85-0.925 0, >=0.925 0
+
+=== NEW-rule associations: IoU on the measured box (what the OLD gate read) ===
+  0<IoU<0.3 (below the old gate)                    25 of 44
+  IoU=0 (gap only)                                  14 of 44
+  IoU>=0.3 (old gate passed; old score refused)      5 of 44
+
+=== RISK: NEW-rule associations to a DIFFERENT base label (every one) ===
+  [1] add table (obj obj_a4a3) -> absorbed by object (obj obj_cdae)  score NEW 0.875 OLD 0.793  IoU 0.00  same-label passing alternatives: 0
+       new: white/unknown: 'small white side table'
+       old: white/unknown: 'small white object sitting on the glass table'
+  [2] add stove (obj obj_ab2d) -> absorbed by oven (obj obj_4713)  score NEW 0.880 OLD 0.725  IoU 0.04  same-label passing alternatives: 0
+       new: white/metal: 'white range stove on the far left'
+       old: white/metal: 'white double wall oven with a digital display on top'
+  [3] add cushion#1 (obj obj_d762) -> absorbed by seat (obj obj_404b)  score NEW 0.903 OLD 0.789  IoU 0.06  same-label passing alternatives: 0
+       new: blue/fabric: 'blue cushion on the left side of the bench'
+       old: blue/fabric: 'built-in window seat with light blue cushions'
+  [4] add dispenser (obj obj_c4f6) -> absorbed by paper_towel_holder (obj obj_a6ca)  score NEW 0.919 OLD 0.847  IoU 0.25  same-label passing alternatives: 0
+       new: white/plastic: 'white paper towel or soap dispenser mounted on the wall'
+       old: white/plastic: 'white paper towel holder mounted on the wall'
+  [5] add artwork (obj obj_1a86) -> absorbed by painting (obj obj_f6e7)  score NEW 0.931 OLD 0.850  IoU 0.21  same-label passing alternatives: 0
+       new: blue/canvas: 'vertical abstract painting with blue and beige tones'
+       old: blue/canvas: 'abstract blue and gold painting on the left wall'
+  [6] add pillow (obj obj_d964) -> absorbed by seat (obj obj_404b)  score NEW 0.890 OLD 0.770  IoU 0.02  same-label passing alternatives: 0
+       new: blue/fabric: 'blue patterned throw pillow on a white seat'
+       old: blue/fabric: 'built-in window seat with light blue cushions'
+  [7] add bench#1 (obj obj_1f5c) -> absorbed by cabinet#3 (obj obj_47f6)  score NEW 0.886 OLD 0.767  IoU 0.76  same-label passing alternatives: 1
+       new: white/wood: 'white built-in window seat cabinet'
+       old: white/wood: 'white storage chest under the window'
+  [8] add pillow#2 (obj obj_ada8) -> absorbed by cushion#3 (obj obj_536f)  score NEW 0.899 OLD 0.777  IoU 0.14  same-label passing alternatives: 0
+       new: blue/fabric: 'blue patterned throw pillow on the right seat'
+       old: blue/fabric: 'blue cushion on the right side of the bench'
+  different-label absorptions: 8 of 44 NEW-rule associations (of 119 adds)
+
+=== NEW-rule associations to the SAME base label (every one) ===
+  rug            expl score 1.000 IoU 0.00  grey/fabric vs grey/fabric
+       new: 'grey and white patterned area rug'
+       old: 'grey and white patterned area rug'
+  table          expl score 0.924 IoU 0.00  clear/glass vs clear/glass
+       new: 'clear glass coffee table'
+       old: 'glass top coffee table partially visible on the rug'
+  rug            track score 0.989 IoU 0.00  grey/fabric vs grey/fabric
+       new: 'grey and white patterned rug'
+       old: 'grey and white patterned area rug'
+  sofa           track score 0.949 IoU 0.00  blue/fabric vs blue/fabric
+       new: 'light blue upholstered couch'
+       old: 'light blue sofa on the left with a white fuzzy blanket'
+  sofa           track score 0.975 IoU 0.04  blue/fabric vs blue/fabric
+       new: 'light blue fabric sofa with white faux fur blankets on it'
+       old: 'light blue sofa on the left with a white fuzzy blanket'
+  plant          track score 0.889 IoU 0.11  green/unknown vs green/unknown
+       new: 'tall green cactus-like plant'
+       old: 'tall green plant in a dark brown pot'
+  chair#1        track score 0.933 IoU 0.44  grey/fabric vs grey/fabric
+       new: 'dark grey armchair in the foreground'
+       old: 'dark grey tufted armchair with nailhead trim'
+  chair#2        track score 0.937 IoU 0.34  grey/fabric vs grey/fabric
+       new: 'dark grey armchair in the background'
+       old: 'dark grey tufted armchair with nailhead trim'
+  rug            track score 1.000 IoU 0.00  grey/fabric vs grey/fabric
+       new: 'grey and white patterned area rug'
+       old: 'grey and white patterned area rug'
+  mirror         track score 0.989 IoU 0.24  brown/glass vs brown/glass
+       new: 'rectangular mirror with a brown wooden frame'
+       old: 'rectangular mirror with brown frame'
+  cabinet        track score 0.971 IoU 0.14  white/wood vs white/wood
+       new: 'white lower kitchen cabinets with silver handles'
+       old: 'white lower kitchen cabinets'
+  sofa           track score 0.976 IoU 0.16  blue/fabric vs blue/fabric
+       new: 'light blue sofa with dark grey cushions'
+       old: 'light blue sofa in the center with grey throw pillows'
+  rug            track score 1.000 IoU 0.00  grey/fabric vs grey/fabric
+       new: 'grey and white patterned area rug'
+       old: 'grey and white patterned area rug'
+  cabinet#1      track score 0.964 IoU 0.21  white/wood vs white/wood
+       new: 'white kitchen base cabinets on the left side'
+       old: 'white lower kitchen cabinets'
+  cabinet#4      track score 0.975 IoU 0.04  white/wood vs white/wood
+       new: 'white upper cabinets on the left side'
+       old: 'white upper kitchen cabinets'
+  cabinet#1      track score 0.972 IoU 0.00  white/wood vs white/wood
+       new: 'lower white kitchen cabinet on the left'
+       old: 'white kitchen base cabinets on the left side'
+  cabinet#3      track score 0.981 IoU 0.00  white/wood vs white/wood
+       new: 'upper white kitchen cabinet on the right'
+       old: 'white upper cabinets on the right side'
+  cabinet#4      track score 0.971 IoU 0.05  white/wood vs white/wood
+       new: 'lower white kitchen cabinet on the right'
+       old: 'white kitchen base cabinets on the right side'
+  plant          track score 0.880 IoU 0.30  green/unknown vs green/unknown
+       new: 'small plant on the center table'
+       old: 'small green plant in the breakfast nook'
+  cabinet#2      track score 0.956 IoU 0.28  white/wood vs white/wood
+       new: 'white lower cabinet on the left'
+       old: 'lower white kitchen cabinet under the countertop'
+  cabinet#3      track score 0.983 IoU 0.00  white/wood vs white/wood
+       new: 'white upper cabinet on the right'
+       old: 'white upper cabinets on the right side'
+  cabinet#4      track score 0.964 IoU 0.00  white/wood vs white/wood
+       new: 'white lower cabinet on the right'
+       old: 'white kitchen base cabinets on the right side'
+  cabinet#1      track score 0.982 IoU 0.04  white/wood vs white/wood
+       new: 'white kitchen base cabinet with silver handles'
+       old: 'white lower kitchen cabinets with silver handles'
+  cabinet#2      track score 0.938 IoU 0.03  white/wood vs white/wood
+       new: 'white freestanding storage cabinet next to the counter'
+       old: 'lower white kitchen cabinet on the left'
+  plant          track score 0.853 IoU 0.52  green/unknown vs green/unknown
+       new: 'green leafy plant in a bright blue pot'
+       old: 'small green plant in the breakfast nook'
+  cabinet#1      track score 0.938 IoU 0.17  white/wood vs white/wood
+       new: 'white base cabinet with a single drawer and door'
+       old: 'white kitchen base cabinet with silver handles'
+  bench#2        track score 0.881 IoU 0.05  white/wood vs white/wood
+       new: 'white built-in window seat cabinet on the right side'
+       old: 'curved built-in seating area with blue cushions'
+  cabinet#3      track score 0.951 IoU 0.07  white/wood vs white/wood
+       new: 'white kitchen base cabinets with granite countertop'
+       old: 'lower white kitchen cabinet under the countertop'
+  cabinet#1      track score 0.980 IoU 0.00  white/wood vs white/wood
+       new: 'white base cabinet with drawers and silver handles'
+       old: 'white kitchen base cabinet with silver handles'
+  cabinet#3      track score 1.000 IoU 0.01  white/wood vs white/wood
+       new: 'white upper kitchen cabinets'
+       old: 'white upper kitchen cabinets'
+  table#1        track score 0.924 IoU 0.00  brown/wood vs brown/wood
+       new: 'dark wood side table with lower shelf'
+       old: 'dark brown accent table with curved legs'
+  bench          track score 0.959 IoU 0.08  white/wood vs white/wood
+       new: 'white built-in window seat with storage'
+       old: 'white built-in window seat cabinet'
+  pillow#1       track score 0.951 IoU 0.23  blue/fabric vs blue/fabric
+       new: 'blue and white patterned square pillow'
+       old: 'blue patterned throw pillow on a white seat'
+  cabinet#3      track score 0.969 IoU 0.00  white/wood vs white/wood
+       new: 'white lower cabinets under the countertop on the left'
+       old: 'white lower cabinet on the right'
+  cabinet#4      track score 0.908 IoU 0.00  white/wood vs white/wood
+       new: 'white kitchen island base'
+       old: 'white freestanding storage cabinet next to the counter'
+  cabinet#6      track score 0.972 IoU 0.03  white/wood vs white/wood
+       new: 'white cabinet partially visible on the far left'
+       old: 'white lower cabinet on the left'
+
+=== NEW rules: adds where the same-cycle veto changed the outcome ===
+  pillow#2       would take pillow#1 at 0.991, vetoed: ledger add of pillow#1 earlier in cycle a8ce2f40
+  cushion#2      would take cushion#1 at 0.994, vetoed: ledger add of cushion#1 earlier in cycle ccd5b6f2
+  cushion#3      would take cushion#2 at 0.995, vetoed: ledger add of cushion#2 earlier in cycle ccd5b6f2
+  latch          would take knob at 0.925, vetoed: ledger add of knob earlier in cycle a739ca5b
+  cabinet#5      would take cabinet#4 at 0.959, vetoed: ledger add of cabinet#4 earlier in cycle 070e6585
+  pillow#2       would take pillow#1 at 0.993, vetoed: ledger add of pillow#1 earlier in cycle 5bf532e5
+  cabinet#2      would take cabinet#1 at 0.996, vetoed: ledger add of cabinet#1 earlier in cycle 5d8efa8d
+
+=== the 20 ledger associations (19 update + 1 direct_exploration_update): same target under NEW rules ===
+  geometry_compatible True: 20 of 20; NEW score > 0.85: 19 of 20; OLD score > 0.85 (should be all): 20 of 20; target vetoed by same-cycle rule: 1 of 20
+  control on the replay's boxes: OLD IoU gate (0.10 expl / 0.30 track) passed by 19 of 20 (the exploration-mode 'update' rows came through check_tracking_transition, which has no IoU gate)
+  direct_exploration_update  sofa#1         expl IoU 0.16 old 0.919 new 0.968 optional_terms 3
+  update                     sofa#2         expl IoU 0.02 old 0.922 new 0.969 optional_terms 3
+  update                     chair#1        track IoU 0.52 old 0.976 new 0.990 optional_terms 3
+  update                     chair#2        track IoU 0.44 old 0.967 new 0.987 optional_terms 3
+  update                     rug            track IoU 0.55 old 0.967 new 0.987 optional_terms 3
+  update                     mirror         track IoU 0.37 old 0.899 new 0.843 optional_terms 3   <-- NEW rules would NOT associate
+  update                     sofa           track IoU 0.46 old 0.907 new 0.963 optional_terms 3
+  update                     stove          track IoU 0.71 old 0.980 new 0.992 optional_terms 3
+  update                     cabinet#1      track IoU 0.61 old 0.932 new 0.973 optional_terms 3
+  update                     sign           track IoU 0.74 old 0.913 new 0.958 optional_terms 2
+  update                     sign           track IoU 0.71 old 0.925 new 0.964 optional_terms 2
+  update                     table          track IoU 0.80 old 0.863 new 0.945 optional_terms 3
+  update                     cabinet#2      track IoU 0.47 old 0.878 new 0.951 optional_terms 3
+  update                     pillow#1       track IoU 0.86 old 0.965 new 0.986 optional_terms 3
+  update                     plant          track IoU 0.78 old 0.907 new 0.955 optional_terms 2
+  update                     cabinet#2      track IoU 0.38 old 0.933 new 0.973 optional_terms 3
+  update                     table          track IoU 0.74 old 0.898 new 0.959 optional_terms 3
+  update                     artwork#2      track IoU 0.62 old 0.871 new 0.948 optional_terms 3
+  update                     cabinet#5      track IoU 0.40 old 0.890 new 0.956 optional_terms 3   <-- NEW rules would NOT associate (veto: counterfactual association of cabinet#4)
+  update                     knob           track IoU 0.87 old 0.994 new 0.998 optional_terms 3
+
+=== control: OLD rules on the 119 adds (the ledger says every one was an add) ===
+  OLD-rule associations among the adds: 0 of 119
+
+=== ledger associations the NEW rules would refuse: raw terms (real nlp_utils functions) ===
+  update mirror (cycle 600efeee): terms label 1.0, color 1.0, material 0.515, description 0.944 -> old 0.899 new 0.843; veto: None
+       det: mirror brown/wood: 'rectangular mirror with a brown wooden frame'
+       obj: mirror brown/glass: 'rectangular mirror with brown frame'
+  update cabinet#5 (cycle 5d8efa8d): terms label 1.0, color 1.0, material 1.0, description 0.78 -> old 0.890 new 0.956; veto: counterfactual association of cabinet#4
+       det: cabinet#5 white/wood: 'small white freestanding cabinet in the foreground'
+       obj: cabinet#2 white/wood: 'white freestanding storage cabinet next to the counter'
+
+=== NEW-rule associations: largest per-axis gap between the detection box and the candidate's measured box ===
+  0 (boxes intersect)     30 of 44
+  (0, 0.1] m               6 of 44
+  (0.1, 0.2] m             3 of 44
+  (0.2, 0.3] m             5 of 44
+
+=== fused box extension past the measured box, 104 final objects (end-of-run boxes) ===
+  max per-axis extension: median 0.18 m, p90 0.55 m, max 1.18 m; > 0.3 m: 31 of 104; > 0.6 m: 8 of 104
+  (a detection within 0.3 m of a fused box that extends > 0.3 m past the measured box CAN be further than 0.6 m from the measured box, and then the broad phase drops it before locality_ok runs; the replay cannot count how often, it has no fused boxes)

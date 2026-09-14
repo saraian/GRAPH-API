@@ -1,0 +1,328 @@
+[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅
+COMPONENTS (rule 2)
+  interpreter          /home/xps/miniconda3/envs/mlspaces_310/bin/python
+  embedding model      SentenceTransformer from /home/xps/miniconda3/envs/mlspaces_310/lib/python3.10/site-packages/sentence_transformers/__init__.py
+  association          /DATA/GRAPH-API/.claude/worktrees/found-merge-algorithm/lost3dsg/src/perception_module/association.py
+  object_services      /DATA/GRAPH-API/.claude/worktrees/found-merge-algorithm/lost3dsg/src/perception_module/object_services.py
+  decision path        ObjectServices._cb_merge_objects (dry_run) -> _merge_candidates -> _assoc_build -> assoc.generate_candidates / score_pair / Hypothesis; attribute_score_fn = object_services._attribute_channel_input
+  config in force      MERGE_ENGINE=evidence MERGE_ONTOLOGY_CHANNEL=False MERGE_ATTRIBUTE_MAX_LOG_ODDS=2.0 LOCALITY_GAP_M=0.3 SIM_THRESHOLD=0.85 MERGE_COST_RATIO=20.0 threshold=log(20)=2.9957 MERGE_MIN_EVIDENCE=1 MERGE_MIN_CONSECUTIVE=2 MERGE_KNN_K=None
+  similarity weights   [0.05, 0.45, 0.3, 0.2]
+
+=== PASS A: Object.bbox = fused_bbox (as instructed) ===
+  objects 104; all pairs 5356; map_volume_m3 370.5; n_rooms 4
+  generate_candidates: offered 428/5356 (shell 395, gap-only 33); excluded 4928/5356; callback's not_offered_summary 4928 (agree: True)
+  sweep 1 (streak 1/2): merged_count 0; refusals by reason {'hold': 310, 'geometry': 73, 'room': 45}
+  sweep 2 (streak 2/2): merged_count 28; rows {'not_offered_summary': 1, 'merge_refused': 296, 'merge': 28}; refusals by reason {'hold': 163, 'geometry': 40, 'already_condemned': 72, 'room': 21}
+  sweep-2 HOLD by reason {'below_threshold': 144, 'containment_unchecked': 18, 'other:no positive overlap evidence and co-visi': 1}  (denominator: 163 holds)
+  sweep-2 offered pairs with a row 324/428; silent skips (a already condemned) 104
+  hypotheses after sweep 2: 310 (= pairs that reached the evidence decision); pair-level state {'hold:below_threshold': 241, 'hold:containment_unchecked': 64, 'merge_eligible': 5}
+
+  MERGES decided in sweep 2: 28
+            sofa#1 + sofa           same_kind=True  IoU=0.113 attr=0.975 (n_opt 3) log-odds=7.03 {'overlap': 3.97, 'attributes': 1.67, 'room': 1.39} rooms room_0/room_0
+           plant#1 + plant          same_kind=True  IoU=0.147 attr=0.889 (n_opt 2) log-odds=3.57 {'overlap': 1.67, 'attributes': 0.52, 'room': 1.39} rooms room_0/room_0
+               rug + rug            same_kind=True  IoU=0.301 attr=0.989 (n_opt 3) log-odds=7.19 {'overlap': 3.94, 'attributes': 1.86, 'room': 1.39} rooms room_0/room_0
+           table#1 + table          same_kind=True  IoU=0.654 attr=0.815 (n_opt 3) log-odds=7.08 {'overlap': 6.5, 'attributes': -0.8, 'room': 1.39} rooms room_0/room_0
+           plant#2 + plant          same_kind=True  IoU=0.348 attr=0.818 (n_opt 2) log-odds=6.62 {'overlap': 5.96, 'attributes': -0.72, 'room': 1.39} rooms room_0/room_0
+           chair#1 + chair#1        same_kind=True  IoU=0.908 attr=0.810 (n_opt 3) log-odds=6.55 {'overlap': 6.07, 'attributes': -0.91, 'room': 1.39} rooms room_0/room_0
+           chair#1 + chair#1        same_kind=True  IoU=0.852 attr=0.842 (n_opt 3) log-odds=6.96 {'overlap': 5.76, 'attributes': -0.18, 'room': 1.39} rooms room_0/room_0
+           chair#2 + chair#2        same_kind=True  IoU=0.786 attr=0.810 (n_opt 3) log-odds=6.20 {'overlap': 5.73, 'attributes': -0.91, 'room': 1.39} rooms room_0/room_0
+           chair#2 + chair#2        same_kind=True  IoU=0.808 attr=0.844 (n_opt 3) log-odds=6.79 {'overlap': 5.55, 'attributes': -0.14, 'room': 1.39} rooms room_0/room_0
+            mirror + mirror         same_kind=True  IoU=0.572 attr=0.793 (n_opt 3) log-odds=8.08 {'overlap': 8.0, 'attributes': -1.3, 'room': 1.39} rooms room_0/room_0
+         cabinet#1 + cabinet        same_kind=True  IoU=0.329 attr=0.971 (n_opt 3) log-odds=4.53 {'overlap': 4.3, 'attributes': 1.62, 'room': -1.39} rooms room_4/room_5
+         cabinet#1 + cabinet#1      same_kind=True  IoU=0.129 attr=0.964 (n_opt 3) log-odds=9.23 {'overlap': 6.32, 'attributes': 1.52, 'room': 1.39} rooms room_4/room_4
+         cabinet#1 + cabinet#1      same_kind=True  IoU=0.359 attr=0.970 (n_opt 3) log-odds=6.53 {'overlap': 6.32, 'attributes': 1.6, 'room': -1.39} rooms room_4/room_5
+         cabinet#1 + cabinet#1      same_kind=True  IoU=0.367 attr=0.949 (n_opt 3) log-odds=9.02 {'overlap': 6.32, 'attributes': 1.32, 'room': 1.39} rooms room_4/room_4
+         cabinet#1 + cabinet#1      same_kind=True  IoU=0.052 attr=0.929 (n_opt 3) log-odds=5.99 {'overlap': 6.32, 'attributes': 1.06, 'room': -1.39} rooms room_4/room_5
+         cabinet#2 + cabinet#4      same_kind=True  IoU=0.189 attr=0.975 (n_opt 3) log-odds=7.69 {'overlap': 4.64, 'attributes': 1.67, 'room': 1.39} rooms room_5/room_5
+         cabinet#2 + cabinet#4      same_kind=True  IoU=0.300 attr=0.964 (n_opt 3) log-odds=7.84 {'overlap': 4.93, 'attributes': 1.52, 'room': 1.39} rooms room_4/room_4
+         cabinet#2 + cabinet#3      same_kind=True  IoU=0.020 attr=0.965 (n_opt 3) log-odds=5.31 {'overlap': 2.39, 'attributes': 1.54, 'room': 1.39} rooms room_4/room_4
+      countertop#1 + countertop#2   same_kind=True  IoU=0.038 attr=0.797 (n_opt 3) log-odds=3.46 {'overlap': 3.27, 'attributes': -1.2, 'room': 1.39} rooms room_5/room_5
+             plant + plant          same_kind=True  IoU=0.319 attr=0.880 (n_opt 2) log-odds=8.15 {'overlap': 6.37, 'attributes': 0.39, 'room': 1.39} rooms room_5/room_5
+             plant + plant          same_kind=True  IoU=0.601 attr=0.853 (n_opt 2) log-odds=9.43 {'overlap': 8.0, 'attributes': 0.04, 'room': 1.39} rooms room_5/room_5
+         cabinet#2 + cabinet#2      same_kind=True  IoU=1.000 attr=0.956 (n_opt 3) log-odds=9.88 {'overlap': 7.09, 'attributes': 1.41, 'room': 1.39} rooms room_5/room_5
+         cabinet#2 + cabinet#3      same_kind=True  IoU=0.337 attr=0.951 (n_opt 3) log-odds=7.04 {'overlap': 4.3, 'attributes': 1.35, 'room': 1.39} rooms room_5/room_5
+             bench + bench#1        same_kind=True  IoU=0.055 attr=0.884 (n_opt 3) log-odds=6.57 {'overlap': 4.73, 'attributes': 0.45, 'room': 1.39} rooms room_5/room_5
+             bench + bench#2        same_kind=True  IoU=0.048 attr=0.881 (n_opt 3) log-odds=6.54 {'overlap': 4.73, 'attributes': 0.42, 'room': 1.39} rooms room_5/room_5
+             bench + bench          same_kind=True  IoU=0.550 attr=0.896 (n_opt 3) log-odds=6.48 {'overlap': 4.49, 'attributes': 0.61, 'room': 1.39} rooms room_5/room_5
+            pillow + pillow#1       same_kind=True  IoU=0.302 attr=0.951 (n_opt 3) log-odds=7.99 {'overlap': 5.26, 'attributes': 1.34, 'room': 1.39} rooms room_5/room_5
+         cabinet#4 + cabinet#5      same_kind=True  IoU=0.030 attr=0.959 (n_opt 3) log-odds=4.01 {'overlap': 1.16, 'attributes': 1.46, 'room': 1.39} rooms room_5/room_5
+  cross-kind merges (base labels differ): 0/28
+  merges with NO box intersection (carried by attributes + room): 0/28; merges across rooms (boxes overlap, room gate passed): 3/28
+  merge-eligible pairs by state 5; not turned into a merge row by the in-sweep cascade (a side already condemned) 2/5
+    cascade-lost: cabinet#1 + cabinet#2 same_kind=True IoU=0.109 log-odds=4.77
+    cascade-lost: cushion#3 + cushion#1 same_kind=True IoU=0.000 log-odds=3.09
+  held on containment_unchecked: 64; same base label 41, different 23
+    paper_towel_holder + dispenser      log-odds=10.30 attr_llr=0.92 IoU=0.375
+         cabinet#1 + cabinet#1      log-odds=9.88 attr_llr=1.15 IoU=0.146
+         cabinet#2 + cabinet#2      log-odds=9.88 attr_llr=1.41 IoU=1.000
+             plant + plant          log-odds=9.43 attr_llr=0.04 IoU=0.601
+             plant + plant          log-odds=9.29 attr_llr=-0.1 IoU=0.500
+           bench#1 + cabinet#3      log-odds=9.26 attr_llr=0.48 IoU=0.794
+         cabinet#1 + cabinet#1      log-odds=9.23 attr_llr=1.52 IoU=0.129
+              oven + stove          log-odds=9.10 attr_llr=0.4 IoU=0.133
+         cabinet#1 + cabinet#1      log-odds=9.02 attr_llr=1.32 IoU=0.367
+         cushion#1 + pillow         log-odds=8.60 attr_llr=0.43 IoU=0.151
+            statue + sculpture      log-odds=8.45 attr_llr=-0.0 IoU=0.491
+         cabinet#1 + cabinet        log-odds=8.26 attr_llr=1.3 IoU=0.170
+  the 41 SAME-kind pairs held on containment_unchecked (attribute channel not positive, so no second witness):
+         cabinet#1 + cabinet#1      IoU=0.146 attr=0.937 (n_opt 3) colour white/white material wood/wood attr_llr=1.15
+         cabinet#2 + cabinet#2      IoU=1.000 attr=0.956 (n_opt 3) colour white/white material wood/wood attr_llr=1.41
+             plant + plant          IoU=0.601 attr=0.853 (n_opt 2) colour green/green material unknown/unknown attr_llr=0.04
+             plant + plant          IoU=0.500 attr=0.846 (n_opt 2) colour green/green material unknown/unknown attr_llr=-0.1
+         cabinet#1 + cabinet#1      IoU=0.129 attr=0.964 (n_opt 3) colour white/white material wood/wood attr_llr=1.52
+         cabinet#1 + cabinet#1      IoU=0.367 attr=0.949 (n_opt 3) colour white/white material wood/wood attr_llr=1.32
+         cabinet#1 + cabinet        IoU=0.170 attr=0.948 (n_opt 3) colour white/white material wood/wood attr_llr=1.3
+           chair#1 + chair#1        IoU=0.778 attr=0.933 (n_opt 3) colour grey/grey material fabric/fabric attr_llr=1.11
+             plant + plant          IoU=0.319 attr=0.880 (n_opt 2) colour green/green material unknown/unknown attr_llr=0.39
+           chair#2 + chair#2        IoU=0.720 attr=0.937 (n_opt 3) colour grey/grey material fabric/fabric attr_llr=1.16
+            mirror + mirror         IoU=0.572 attr=0.793 (n_opt 3) colour brown/brown material glass/wood attr_llr=-1.3
+           bench#1 + bench          IoU=0.092 attr=0.959 (n_opt 3) colour white/white material wood/wood attr_llr=1.45
+          pillow#1 + pillow         IoU=0.302 attr=0.951 (n_opt 3) colour blue/blue material fabric/fabric attr_llr=1.34
+         cabinet#2 + cabinet#4      IoU=0.300 attr=0.964 (n_opt 3) colour white/white material wood/wood attr_llr=1.52
+         cabinet#1 + cabinet        IoU=0.025 attr=0.910 (n_opt 3) colour white/white material wood/wood attr_llr=0.8
+         cabinet#2 + cabinet#4      IoU=0.189 attr=0.975 (n_opt 3) colour white/white material wood/wood attr_llr=1.67
+         cabinet#2 + cabinet        IoU=0.079 attr=0.918 (n_opt 3) colour white/white material wood/wood attr_llr=0.91
+               rug + rug            IoU=0.301 attr=0.989 (n_opt 3) colour grey/grey material fabric/fabric attr_llr=1.86
+         cabinet#1 + cabinet#1      IoU=0.143 attr=0.938 (n_opt 3) colour white/white material wood/wood attr_llr=1.17
+           table#1 + table          IoU=0.654 attr=0.815 (n_opt 3) colour silver/silver material metal/glass attr_llr=-0.8
+         cabinet#2 + cabinet#3      IoU=0.337 attr=0.951 (n_opt 3) colour white/white material wood/wood attr_llr=1.35
+            sofa#1 + sofa           IoU=0.113 attr=0.975 (n_opt 3) colour blue/blue material fabric/fabric attr_llr=1.67
+           chair#1 + chair#1        IoU=0.852 attr=0.842 (n_opt 3) colour brown/grey material fabric/fabric attr_llr=-0.18
+              sofa + sofa           IoU=0.276 attr=0.955 (n_opt 3) colour blue/blue material fabric/fabric attr_llr=1.4
+           chair#2 + chair#2        IoU=0.808 attr=0.844 (n_opt 3) colour brown/grey material fabric/fabric attr_llr=-0.14
+           plant#2 + plant          IoU=0.348 attr=0.818 (n_opt 2) colour green/green material unknown/unknown attr_llr=-0.72
+           bench#1 + bench          IoU=0.055 attr=0.884 (n_opt 3) colour white/white material wood/wood attr_llr=0.45
+         cabinet#2 + cabinet#3      IoU=0.337 attr=0.915 (n_opt 3) colour white/white material wood/wood attr_llr=0.87
+           chair#1 + chair#1        IoU=0.908 attr=0.810 (n_opt 3) colour grey/brown material fabric/fabric attr_llr=-0.91
+           bench#2 + bench          IoU=0.048 attr=0.881 (n_opt 3) colour white/white material wood/wood attr_llr=0.42
+         cabinet#1 + cabinet#1      IoU=0.359 attr=0.970 (n_opt 3) colour white/white material wood/wood attr_llr=1.6
+             bench + bench          IoU=0.550 attr=0.896 (n_opt 3) colour white/white material wood/wood attr_llr=0.61
+         cabinet#1 + cabinet#1      IoU=0.146 attr=0.944 (n_opt 3) colour white/white material wood/wood attr_llr=1.25
+           chair#2 + chair#2        IoU=0.786 attr=0.810 (n_opt 3) colour brown/grey material fabric/fabric attr_llr=-0.91
+         cabinet#3 + cabinet#4      IoU=0.017 attr=0.969 (n_opt 3) colour white/white material wood/wood attr_llr=1.58
+         cabinet#1 + cabinet#1      IoU=0.052 attr=0.929 (n_opt 3) colour white/white material wood/wood attr_llr=1.06
+         cabinet#1 + cabinet        IoU=0.173 attr=0.982 (n_opt 3) colour white/white material wood/wood attr_llr=1.76
+           cabinet + cabinet#1      IoU=0.060 attr=0.940 (n_opt 3) colour white/white material wood/wood attr_llr=1.2
+         cabinet#1 + cabinet#1      IoU=0.481 attr=0.946 (n_opt 3) colour white/white material wood/wood attr_llr=1.28
+         cabinet#1 + cabinet        IoU=0.329 attr=0.971 (n_opt 3) colour white/white material wood/wood attr_llr=1.62
+      countertop#2 + countertop#1   IoU=0.038 attr=0.797 (n_opt 3) colour grey/brown material stone/stone attr_llr=-1.2
+
+  OLD ENGINE (legacy, hook_decisions.jsonl): 15 merges, 559 distinct refused pairs
+  old refused pairs with both sides among the 104 finals: 470/559
+    old reason distance           n= 255 -> new: {'not_offered': 102, 'hold:below_threshold': 108, 'merge': 6, 'geometry': 18, 'already_condemned': 7, 'hold:containment_unchecked': 7, 'merge_eligible': 1, 'room': 6}
+    old reason room               n=  51 -> new: {'room': 9, 'merge': 3, 'hold:below_threshold': 15, 'already_condemned': 7, 'not_offered': 13, 'hold:containment_unchecked': 4}
+    old reason similarity         n= 164 -> new: {'hold:containment_unchecked': 28, 'hold:below_threshold': 109, 'geometry': 3, 'merge': 19, 'already_condemned': 1, 'not_offered': 3, 'merge_eligible': 1}
+  old similarity-refused, same base label, fused boxes overlap: 31 -> new: {'merge': 19, 'hold:containment_unchecked': 7, 'hold:below_threshold': 4, 'merge_eligible': 1}
+           plant#2 + plant          fusedIoU=0.348 new=merge                      log-odds=6.62
+           chair#1 + chair#1        fusedIoU=0.908 new=merge                      log-odds=6.55
+           chair#2 + chair#2        fusedIoU=0.786 new=merge                      log-odds=6.2
+            mirror + mirror         fusedIoU=0.572 new=merge                      log-odds=8.08
+             plant + plant#1        fusedIoU=0.147 new=merge                      log-odds=3.57
+            sofa#1 + sofa           fusedIoU=0.113 new=merge                      log-odds=7.03
+              sofa + sofa           fusedIoU=0.276 new=hold:containment_unchecked log-odds=6.86
+           table#1 + table          fusedIoU=0.654 new=merge                      log-odds=7.08
+           chair#1 + chair#1        fusedIoU=0.852 new=merge                      log-odds=6.96
+           chair#2 + chair#2        fusedIoU=0.808 new=merge                      log-odds=6.79
+           chair#1 + chair#1        fusedIoU=0.778 new=hold:containment_unchecked log-odds=8.16
+           chair#2 + chair#2        fusedIoU=0.720 new=hold:containment_unchecked log-odds=8.09
+             table + table#1        fusedIoU=0.257 new=hold:below_threshold       log-odds=1.88
+             table + table          fusedIoU=0.268 new=hold:below_threshold       log-odds=2.61
+         cabinet#1 + cabinet#1      fusedIoU=0.129 new=merge                      log-odds=9.23
+      countertop#2 + countertop     fusedIoU=0.017 new=hold:below_threshold       log-odds=2.21
+             plant + plant          fusedIoU=0.319 new=merge                      log-odds=8.15
+         cabinet#2 + cabinet#2      fusedIoU=1.000 new=merge                      log-odds=9.88
+             plant + plant          fusedIoU=0.601 new=merge                      log-odds=9.43
+         cabinet#1 + cabinet#2      fusedIoU=0.109 new=merge_eligible             log-odds=4.77
+         cabinet#1 + cabinet#1      fusedIoU=0.146 new=hold:containment_unchecked log-odds=9.88
+         cabinet#2 + cabinet#3      fusedIoU=0.337 new=merge                      log-odds=7.04
+           bench#2 + bench          fusedIoU=0.048 new=merge                      log-odds=6.54
+             plant + plant          fusedIoU=0.500 new=hold:containment_unchecked log-odds=9.29
+         cabinet#2 + cabinet#3      fusedIoU=0.337 new=hold:containment_unchecked log-odds=6.56
+         cabinet#5 + cabinet#4      fusedIoU=0.030 new=merge                      log-odds=4.01
+         cabinet#3 + cabinet#2      fusedIoU=0.020 new=merge                      log-odds=5.31
+      countertop#2 + countertop#1   fusedIoU=0.132 new=hold:below_threshold       log-odds=2.47
+             bench + bench          fusedIoU=0.550 new=merge                      log-odds=6.48
+          pillow#1 + pillow         fusedIoU=0.302 new=merge                      log-odds=7.99
+           bench#1 + bench          fusedIoU=0.092 new=hold:containment_unchecked log-odds=8.08
+
+  OLD MERGES re-decided (pass A; discard rebuilt from its creation observation, keeper = final object): 15 pairs, 0 discards not reconstructable
+      pillow#1 + pillow#2   old_sim=0.978 new=merge                      IoU=0.169 gap=0.00m attr_new=0.991 (n_opt 3) log-odds=9.79
+           rug + rug        old_sim=1.000 new=merge                      IoU=0.104 gap=0.00m attr_new=1.000 (n_opt 3) log-odds=6.33
+        mirror + mirror     old_sim=0.972 new=merge                      IoU=0.203 gap=0.00m attr_new=0.989 (n_opt 3) log-odds=9.85
+           rug + rug        old_sim=0.973 new=hold:containment_unchecked IoU=0.050 gap=0.00m attr_new=0.989 (n_opt 3) log-odds=7.27
+        sofa#2 + sofa       old_sim=0.941 new=merge                      IoU=0.326 gap=0.00m attr_new=0.976 (n_opt 3) log-odds=7.23
+           rug + rug        old_sim=1.000 new=merge                      IoU=0.011 gap=0.00m attr_new=1.000 (n_opt 3) log-odds=6.33
+        rock#1 + rock#2     old_sim=0.991 new=merge                      IoU=0.026 gap=0.00m attr_new=0.996 (n_opt 3) log-odds=9.95
+     cabinet#2 + cabinet#4  old_sim=0.928 new=merge                      IoU=0.160 gap=0.00m attr_new=0.971 (n_opt 3) log-odds=9.61
+     cabinet#3 + cabinet#3  old_sim=0.952 new=hold:below_threshold       IoU=0.000 gap=0.00m attr_new=0.981 (n_opt 3) log-odds=1.34
+     cushion#1 + cushion#2  old_sim=0.986 new=merge                      IoU=0.154 gap=0.00m attr_new=0.994 (n_opt 3) log-odds=8.71
+     cabinet#3 + cabinet#3  old_sim=0.958 new=hold:below_threshold       IoU=0.000 gap=0.00m attr_new=0.983 (n_opt 3) log-odds=1.29
+     cabinet#4 + cabinet#3  old_sim=0.937 new=hold:containment_unchecked IoU=0.164 gap=0.00m attr_new=0.975 (n_opt 3) log-odds=8.73
+     cabinet#1 + cabinet#1  old_sim=0.949 new=hold:containment_unchecked IoU=0.143 gap=0.00m attr_new=0.980 (n_opt 3) log-odds=9.05
+      pillow#1 + pillow#2   old_sim=0.981 new=merge                      IoU=0.294 gap=0.00m attr_new=0.993 (n_opt 3) log-odds=8.88
+     cabinet#3 + cabinet#1  old_sim=0.975 new=geometry                   IoU=0.000 gap=0.33m attr_new=0.990 (n_opt 3) log-odds=-
+  summary: {'merge': 9, 'hold:containment_unchecked': 3, 'hold:below_threshold': 2, 'geometry': 1} of 15
+
+=== PASS B: Object.bbox = measured bbox, fused_bbox beside it (as _assoc_build wires it) ===
+  objects 104; all pairs 5356; map_volume_m3 329.5; n_rooms 4
+  generate_candidates: offered 428/5356 (shell 395, gap-only 33); excluded 4928/5356; callback's not_offered_summary 4928 (agree: True)
+  sweep 1 (streak 1/2): merged_count 0; refusals by reason {'hold': 310, 'geometry': 73, 'room': 45}
+  sweep 2 (streak 2/2): merged_count 28; rows {'not_offered_summary': 1, 'merge_refused': 296, 'merge': 28}; refusals by reason {'hold': 163, 'geometry': 40, 'already_condemned': 72, 'room': 21}
+  sweep-2 HOLD by reason {'below_threshold': 144, 'containment_unchecked': 18, 'other:no positive overlap evidence and co-visi': 1}  (denominator: 163 holds)
+  sweep-2 offered pairs with a row 324/428; silent skips (a already condemned) 104
+  hypotheses after sweep 2: 310 (= pairs that reached the evidence decision); pair-level state {'hold:below_threshold': 241, 'hold:containment_unchecked': 64, 'merge_eligible': 5}
+
+  MERGES decided in sweep 2: 28
+            sofa#1 + sofa           same_kind=True  IoU=0.097 attr=0.975 (n_opt 3) log-odds=6.94 {'overlap': 3.88, 'attributes': 1.67, 'room': 1.39} rooms room_0/room_0
+           plant#1 + plant          same_kind=True  IoU=0.108 attr=0.889 (n_opt 2) log-odds=3.54 {'overlap': 1.64, 'attributes': 0.52, 'room': 1.39} rooms room_0/room_0
+               rug + rug            same_kind=True  IoU=0.000 attr=0.989 (n_opt 3) log-odds=7.08 {'overlap': 3.84, 'attributes': 1.86, 'room': 1.39} rooms room_0/room_0
+           table#1 + table          same_kind=True  IoU=0.253 attr=0.815 (n_opt 3) log-odds=6.98 {'overlap': 6.4, 'attributes': -0.8, 'room': 1.39} rooms room_0/room_0
+           plant#2 + plant          same_kind=True  IoU=0.187 attr=0.818 (n_opt 2) log-odds=6.55 {'overlap': 5.88, 'attributes': -0.72, 'room': 1.39} rooms room_0/room_0
+           chair#1 + chair#1        same_kind=True  IoU=0.457 attr=0.810 (n_opt 3) log-odds=6.43 {'overlap': 5.96, 'attributes': -0.91, 'room': 1.39} rooms room_0/room_0
+           chair#1 + chair#1        same_kind=True  IoU=0.493 attr=0.842 (n_opt 3) log-odds=6.85 {'overlap': 5.65, 'attributes': -0.18, 'room': 1.39} rooms room_0/room_0
+           chair#2 + chair#2        same_kind=True  IoU=0.498 attr=0.810 (n_opt 3) log-odds=6.09 {'overlap': 5.61, 'attributes': -0.91, 'room': 1.39} rooms room_0/room_0
+           chair#2 + chair#2        same_kind=True  IoU=0.605 attr=0.844 (n_opt 3) log-odds=6.69 {'overlap': 5.44, 'attributes': -0.14, 'room': 1.39} rooms room_0/room_0
+            mirror + mirror         same_kind=True  IoU=0.351 attr=0.793 (n_opt 3) log-odds=8.08 {'overlap': 8.0, 'attributes': -1.3, 'room': 1.39} rooms room_0/room_0
+         cabinet#1 + cabinet        same_kind=True  IoU=0.139 attr=0.971 (n_opt 3) log-odds=4.44 {'overlap': 4.21, 'attributes': 1.62, 'room': -1.39} rooms room_4/room_5
+         cabinet#1 + cabinet#1      same_kind=True  IoU=0.207 attr=0.964 (n_opt 3) log-odds=9.11 {'overlap': 6.2, 'attributes': 1.52, 'room': 1.39} rooms room_4/room_4
+         cabinet#1 + cabinet#1      same_kind=True  IoU=0.086 attr=0.970 (n_opt 3) log-odds=6.42 {'overlap': 6.2, 'attributes': 1.6, 'room': -1.39} rooms room_4/room_5
+         cabinet#1 + cabinet#1      same_kind=True  IoU=0.123 attr=0.949 (n_opt 3) log-odds=8.91 {'overlap': 6.2, 'attributes': 1.32, 'room': 1.39} rooms room_4/room_4
+         cabinet#1 + cabinet#1      same_kind=True  IoU=0.012 attr=0.929 (n_opt 3) log-odds=5.87 {'overlap': 6.2, 'attributes': 1.06, 'room': -1.39} rooms room_4/room_5
+         cabinet#2 + cabinet#4      same_kind=True  IoU=0.043 attr=0.975 (n_opt 3) log-odds=7.60 {'overlap': 4.54, 'attributes': 1.67, 'room': 1.39} rooms room_5/room_5
+         cabinet#2 + cabinet#4      same_kind=True  IoU=0.000 attr=0.964 (n_opt 3) log-odds=7.77 {'overlap': 4.86, 'attributes': 1.52, 'room': 1.39} rooms room_4/room_4
+         cabinet#2 + cabinet#3      same_kind=True  IoU=0.000 attr=0.965 (n_opt 3) log-odds=5.26 {'overlap': 2.33, 'attributes': 1.54, 'room': 1.39} rooms room_4/room_4
+      countertop#1 + countertop#2   same_kind=True  IoU=0.002 attr=0.797 (n_opt 3) log-odds=3.37 {'overlap': 3.18, 'attributes': -1.2, 'room': 1.39} rooms room_5/room_5
+             plant + plant          same_kind=True  IoU=0.304 attr=0.880 (n_opt 2) log-odds=8.08 {'overlap': 6.3, 'attributes': 0.39, 'room': 1.39} rooms room_5/room_5
+             plant + plant          same_kind=True  IoU=0.580 attr=0.853 (n_opt 2) log-odds=9.43 {'overlap': 8.0, 'attributes': 0.04, 'room': 1.39} rooms room_5/room_5
+         cabinet#2 + cabinet#2      same_kind=True  IoU=0.278 attr=0.956 (n_opt 3) log-odds=9.76 {'overlap': 6.97, 'attributes': 1.41, 'room': 1.39} rooms room_5/room_5
+         cabinet#2 + cabinet#3      same_kind=True  IoU=0.074 attr=0.951 (n_opt 3) log-odds=6.96 {'overlap': 4.23, 'attributes': 1.35, 'room': 1.39} rooms room_5/room_5
+             bench + bench#1        same_kind=True  IoU=0.047 attr=0.884 (n_opt 3) log-odds=6.45 {'overlap': 4.61, 'attributes': 0.45, 'room': 1.39} rooms room_5/room_5
+             bench + bench#2        same_kind=True  IoU=0.046 attr=0.881 (n_opt 3) log-odds=6.42 {'overlap': 4.61, 'attributes': 0.42, 'room': 1.39} rooms room_5/room_5
+             bench + bench          same_kind=True  IoU=0.399 attr=0.896 (n_opt 3) log-odds=6.37 {'overlap': 4.38, 'attributes': 0.61, 'room': 1.39} rooms room_5/room_5
+            pillow + pillow#1       same_kind=True  IoU=0.232 attr=0.951 (n_opt 3) log-odds=7.92 {'overlap': 5.19, 'attributes': 1.34, 'room': 1.39} rooms room_5/room_5
+         cabinet#4 + cabinet#5      same_kind=True  IoU=0.000 attr=0.959 (n_opt 3) log-odds=3.99 {'overlap': 1.15, 'attributes': 1.46, 'room': 1.39} rooms room_5/room_5
+  cross-kind merges (base labels differ): 0/28
+  merges with NO box intersection (carried by attributes + room): 0/28; merges across rooms (boxes overlap, room gate passed): 3/28
+  merge-eligible pairs by state 5; not turned into a merge row by the in-sweep cascade (a side already condemned) 2/5
+    cascade-lost: cabinet#1 + cabinet#2 same_kind=True IoU=0.000 log-odds=4.74
+    cascade-lost: cushion#3 + cushion#1 same_kind=True IoU=0.000 log-odds=3.09
+  held on containment_unchecked: 64; same base label 41, different 23
+    paper_towel_holder + dispenser      log-odds=10.30 attr_llr=0.92 IoU=0.254
+         cabinet#1 + cabinet#1      log-odds=9.77 attr_llr=1.15 IoU=0.060
+         cabinet#2 + cabinet#2      log-odds=9.76 attr_llr=1.41 IoU=0.278
+             plant + plant          log-odds=9.43 attr_llr=0.04 IoU=0.580
+             plant + plant          log-odds=9.29 attr_llr=-0.1 IoU=0.357
+           bench#1 + cabinet#3      log-odds=9.14 attr_llr=0.48 IoU=0.764
+         cabinet#1 + cabinet#1      log-odds=9.11 attr_llr=1.52 IoU=0.207
+              oven + stove          log-odds=8.99 attr_llr=0.4 IoU=0.041
+         cabinet#1 + cabinet#1      log-odds=8.91 attr_llr=1.32 IoU=0.123
+         cushion#1 + pillow         log-odds=8.48 attr_llr=0.43 IoU=0.329
+            statue + sculpture      log-odds=8.37 attr_llr=-0.0 IoU=0.201
+         cabinet#1 + cabinet        log-odds=8.14 attr_llr=1.3 IoU=0.139
+  the 41 SAME-kind pairs held on containment_unchecked (attribute channel not positive, so no second witness):
+         cabinet#1 + cabinet#1      IoU=0.060 attr=0.937 (n_opt 3) colour white/white material wood/wood attr_llr=1.15
+         cabinet#2 + cabinet#2      IoU=0.278 attr=0.956 (n_opt 3) colour white/white material wood/wood attr_llr=1.41
+             plant + plant          IoU=0.580 attr=0.853 (n_opt 2) colour green/green material unknown/unknown attr_llr=0.04
+             plant + plant          IoU=0.357 attr=0.846 (n_opt 2) colour green/green material unknown/unknown attr_llr=-0.1
+         cabinet#1 + cabinet#1      IoU=0.207 attr=0.964 (n_opt 3) colour white/white material wood/wood attr_llr=1.52
+         cabinet#1 + cabinet#1      IoU=0.123 attr=0.949 (n_opt 3) colour white/white material wood/wood attr_llr=1.32
+         cabinet#1 + cabinet        IoU=0.139 attr=0.948 (n_opt 3) colour white/white material wood/wood attr_llr=1.3
+            mirror + mirror         IoU=0.351 attr=0.793 (n_opt 3) colour brown/brown material glass/wood attr_llr=-1.3
+             plant + plant          IoU=0.304 attr=0.880 (n_opt 2) colour green/green material unknown/unknown attr_llr=0.39
+           chair#1 + chair#1        IoU=0.440 attr=0.933 (n_opt 3) colour grey/grey material fabric/fabric attr_llr=1.11
+           chair#2 + chair#2        IoU=0.341 attr=0.937 (n_opt 3) colour grey/grey material fabric/fabric attr_llr=1.16
+           bench#1 + bench          IoU=0.085 attr=0.959 (n_opt 3) colour white/white material wood/wood attr_llr=1.45
+          pillow#1 + pillow         IoU=0.232 attr=0.951 (n_opt 3) colour blue/blue material fabric/fabric attr_llr=1.34
+         cabinet#2 + cabinet#4      IoU=0.000 attr=0.964 (n_opt 3) colour white/white material wood/wood attr_llr=1.52
+         cabinet#1 + cabinet        IoU=0.007 attr=0.910 (n_opt 3) colour white/white material wood/wood attr_llr=0.8
+         cabinet#2 + cabinet#4      IoU=0.043 attr=0.975 (n_opt 3) colour white/white material wood/wood attr_llr=1.67
+         cabinet#2 + cabinet        IoU=0.000 attr=0.918 (n_opt 3) colour white/white material wood/wood attr_llr=0.91
+               rug + rug            IoU=0.000 attr=0.989 (n_opt 3) colour grey/grey material fabric/fabric attr_llr=1.86
+         cabinet#1 + cabinet#1      IoU=0.173 attr=0.938 (n_opt 3) colour white/white material wood/wood attr_llr=1.17
+           table#1 + table          IoU=0.253 attr=0.815 (n_opt 3) colour silver/silver material metal/glass attr_llr=-0.8
+         cabinet#2 + cabinet#3      IoU=0.074 attr=0.951 (n_opt 3) colour white/white material wood/wood attr_llr=1.35
+            sofa#1 + sofa           IoU=0.097 attr=0.975 (n_opt 3) colour blue/blue material fabric/fabric attr_llr=1.67
+           chair#1 + chair#1        IoU=0.493 attr=0.842 (n_opt 3) colour brown/grey material fabric/fabric attr_llr=-0.18
+              sofa + sofa           IoU=0.127 attr=0.955 (n_opt 3) colour blue/blue material fabric/fabric attr_llr=1.4
+           chair#2 + chair#2        IoU=0.605 attr=0.844 (n_opt 3) colour brown/grey material fabric/fabric attr_llr=-0.14
+           plant#2 + plant          IoU=0.187 attr=0.818 (n_opt 2) colour green/green material unknown/unknown attr_llr=-0.72
+         cabinet#2 + cabinet#3      IoU=0.201 attr=0.915 (n_opt 3) colour white/white material wood/wood attr_llr=0.87
+           bench#1 + bench          IoU=0.047 attr=0.884 (n_opt 3) colour white/white material wood/wood attr_llr=0.45
+           chair#1 + chair#1        IoU=0.457 attr=0.810 (n_opt 3) colour grey/brown material fabric/fabric attr_llr=-0.91
+           bench#2 + bench          IoU=0.046 attr=0.881 (n_opt 3) colour white/white material wood/wood attr_llr=0.42
+         cabinet#1 + cabinet#1      IoU=0.086 attr=0.970 (n_opt 3) colour white/white material wood/wood attr_llr=1.6
+             bench + bench          IoU=0.399 attr=0.896 (n_opt 3) colour white/white material wood/wood attr_llr=0.61
+         cabinet#1 + cabinet#1      IoU=0.000 attr=0.944 (n_opt 3) colour white/white material wood/wood attr_llr=1.25
+           chair#2 + chair#2        IoU=0.498 attr=0.810 (n_opt 3) colour brown/grey material fabric/fabric attr_llr=-0.91
+         cabinet#3 + cabinet#4      IoU=0.000 attr=0.969 (n_opt 3) colour white/white material wood/wood attr_llr=1.58
+         cabinet#1 + cabinet#1      IoU=0.012 attr=0.929 (n_opt 3) colour white/white material wood/wood attr_llr=1.06
+         cabinet#1 + cabinet        IoU=0.035 attr=0.982 (n_opt 3) colour white/white material wood/wood attr_llr=1.76
+           cabinet + cabinet#1      IoU=0.050 attr=0.940 (n_opt 3) colour white/white material wood/wood attr_llr=1.2
+         cabinet#1 + cabinet#1      IoU=0.103 attr=0.946 (n_opt 3) colour white/white material wood/wood attr_llr=1.28
+         cabinet#1 + cabinet        IoU=0.139 attr=0.971 (n_opt 3) colour white/white material wood/wood attr_llr=1.62
+      countertop#2 + countertop#1   IoU=0.002 attr=0.797 (n_opt 3) colour grey/brown material stone/stone attr_llr=-1.2
+
+  OLD ENGINE (legacy, hook_decisions.jsonl): 15 merges, 559 distinct refused pairs
+  old refused pairs with both sides among the 104 finals: 470/559
+    old reason distance           n= 255 -> new: {'not_offered': 102, 'hold:below_threshold': 108, 'merge': 6, 'geometry': 18, 'already_condemned': 7, 'hold:containment_unchecked': 7, 'merge_eligible': 1, 'room': 6}
+    old reason room               n=  51 -> new: {'room': 9, 'merge': 3, 'hold:below_threshold': 15, 'already_condemned': 7, 'not_offered': 13, 'hold:containment_unchecked': 4}
+    old reason similarity         n= 164 -> new: {'hold:containment_unchecked': 28, 'hold:below_threshold': 109, 'geometry': 3, 'merge': 19, 'already_condemned': 1, 'not_offered': 3, 'merge_eligible': 1}
+  old similarity-refused, same base label, fused boxes overlap: 31 -> new: {'merge': 19, 'hold:containment_unchecked': 7, 'hold:below_threshold': 4, 'merge_eligible': 1}
+           plant#2 + plant          fusedIoU=0.348 new=merge                      log-odds=6.55
+           chair#1 + chair#1        fusedIoU=0.908 new=merge                      log-odds=6.43
+           chair#2 + chair#2        fusedIoU=0.786 new=merge                      log-odds=6.09
+            mirror + mirror         fusedIoU=0.572 new=merge                      log-odds=8.08
+             plant + plant#1        fusedIoU=0.147 new=merge                      log-odds=3.54
+            sofa#1 + sofa           fusedIoU=0.113 new=merge                      log-odds=6.94
+              sofa + sofa           fusedIoU=0.276 new=hold:containment_unchecked log-odds=6.77
+           table#1 + table          fusedIoU=0.654 new=merge                      log-odds=6.98
+           chair#1 + chair#1        fusedIoU=0.852 new=merge                      log-odds=6.85
+           chair#2 + chair#2        fusedIoU=0.808 new=merge                      log-odds=6.69
+           chair#1 + chair#1        fusedIoU=0.778 new=hold:containment_unchecked log-odds=8.05
+           chair#2 + chair#2        fusedIoU=0.720 new=hold:containment_unchecked log-odds=7.98
+             table + table#1        fusedIoU=0.257 new=hold:below_threshold       log-odds=1.82
+             table + table          fusedIoU=0.268 new=hold:below_threshold       log-odds=2.55
+         cabinet#1 + cabinet#1      fusedIoU=0.129 new=merge                      log-odds=9.11
+      countertop#2 + countertop     fusedIoU=0.017 new=hold:below_threshold       log-odds=2.11
+             plant + plant          fusedIoU=0.319 new=merge                      log-odds=8.08
+         cabinet#2 + cabinet#2      fusedIoU=1.000 new=merge                      log-odds=9.76
+             plant + plant          fusedIoU=0.601 new=merge                      log-odds=9.43
+         cabinet#1 + cabinet#2      fusedIoU=0.109 new=merge_eligible             log-odds=4.74
+         cabinet#1 + cabinet#1      fusedIoU=0.146 new=hold:containment_unchecked log-odds=9.77
+         cabinet#2 + cabinet#3      fusedIoU=0.337 new=merge                      log-odds=6.96
+           bench#2 + bench          fusedIoU=0.048 new=merge                      log-odds=6.42
+             plant + plant          fusedIoU=0.500 new=hold:containment_unchecked log-odds=9.29
+         cabinet#2 + cabinet#3      fusedIoU=0.337 new=hold:containment_unchecked log-odds=6.48
+         cabinet#5 + cabinet#4      fusedIoU=0.030 new=merge                      log-odds=3.99
+         cabinet#3 + cabinet#2      fusedIoU=0.020 new=merge                      log-odds=5.26
+      countertop#2 + countertop#1   fusedIoU=0.132 new=hold:below_threshold       log-odds=2.43
+             bench + bench          fusedIoU=0.550 new=merge                      log-odds=6.37
+          pillow#1 + pillow         fusedIoU=0.302 new=merge                      log-odds=7.92
+           bench#1 + bench          fusedIoU=0.092 new=hold:containment_unchecked log-odds=7.96
+
+  OLD MERGES re-decided (pass B; discard rebuilt from its creation observation, keeper = final object): 15 pairs, 0 discards not reconstructable
+      pillow#1 + pillow#2   old_sim=0.978 new=merge                      IoU=0.000 gap=0.19m attr_new=0.991 (n_opt 3) log-odds=9.71
+           rug + rug        old_sim=1.000 new=merge                      IoU=0.000 gap=0.04m attr_new=1.000 (n_opt 3) log-odds=6.25
+        mirror + mirror     old_sim=0.972 new=merge                      IoU=0.240 gap=0.00m attr_new=0.989 (n_opt 3) log-odds=9.85
+           rug + rug        old_sim=0.973 new=hold:containment_unchecked IoU=0.269 gap=0.00m attr_new=0.989 (n_opt 3) log-odds=7.18
+        sofa#2 + sofa       old_sim=0.941 new=merge                      IoU=0.161 gap=0.00m attr_new=0.976 (n_opt 3) log-odds=7.15
+           rug + rug        old_sim=1.000 new=merge                      IoU=0.000 gap=0.00m attr_new=1.000 (n_opt 3) log-odds=6.25
+        rock#1 + rock#2     old_sim=0.991 new=merge                      IoU=0.000 gap=0.45m attr_new=0.996 (n_opt 3) log-odds=9.95
+     cabinet#2 + cabinet#4  old_sim=0.928 new=merge                      IoU=0.054 gap=0.00m attr_new=0.971 (n_opt 3) log-odds=9.61
+     cabinet#3 + cabinet#3  old_sim=0.952 new=hold:below_threshold       IoU=0.000 gap=0.01m attr_new=0.981 (n_opt 3) log-odds=1.34
+     cushion#1 + cushion#2  old_sim=0.986 new=merge                      IoU=0.000 gap=0.01m attr_new=0.994 (n_opt 3) log-odds=8.63
+     cabinet#3 + cabinet#3  old_sim=0.958 new=hold:below_threshold       IoU=0.000 gap=0.01m attr_new=0.983 (n_opt 3) log-odds=1.29
+     cabinet#4 + cabinet#3  old_sim=0.937 new=hold:containment_unchecked IoU=0.068 gap=0.00m attr_new=0.975 (n_opt 3) log-odds=8.64
+     cabinet#1 + cabinet#1  old_sim=0.949 new=hold:containment_unchecked IoU=0.000 gap=0.01m attr_new=0.980 (n_opt 3) log-odds=8.97
+      pillow#1 + pillow#2   old_sim=0.981 new=merge                      IoU=0.000 gap=0.05m attr_new=0.993 (n_opt 3) log-odds=8.8
+     cabinet#3 + cabinet#1  old_sim=0.975 new=geometry                   IoU=0.000 gap=0.34m attr_new=0.990 (n_opt 3) log-odds=-
+  summary: {'merge': 9, 'hold:containment_unchecked': 3, 'hold:below_threshold': 2, 'geometry': 1} of 15
+
+CAVEATS
+  - Final fused boxes are not the boxes at sweep time: the old engine decided on single-view measured boxes
+    while objects were being created, and the keeper's final fused box already contains the views merged into it.
+  - room gate reads the stored room_id of each final object; live it reads room_manager.room_at_bbox(measured bbox).
+  - no observations -> co-visibility abstains (uncollected), separation abstains (no covariance), appearance abstains.
+  - the discarded sides of the 15 old merges carry their creation-time attributes and captured box, no fused box.
+
+written /DATA/GRAPH-API/.claude/worktrees/found-merge-algorithm/.handoff/lanes/merge-algorithm/verify/merge_new_rules.txt

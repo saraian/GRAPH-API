@@ -1,0 +1,13 @@
+objects: 104; with fused_bbox: 104
+fused overhang beyond measured (max over 6 faces): median 0.184 m, p90 0.553, max 1.182; > 0.3 m: 31/104; > 0.6 m (WorldModel.candidates expands by 2*margin): 8/104; fused NOT a superset of measured: 17/104
+generate_candidates (measured bbox, extent-only shell, gap 0.3): offered 294/5356 ({'shell': 266, 'gap': 28}), excluded 5062
+pairs passing the FUSED gap test (what the merge gate applies): 328/5356
+pairs passing the MEASURED gap test: 234/5356
+pairs the merge gate would accept but generate_candidates never offers: 76/328 (same base label among them: 5)
+    ('painting', 'painting', 0.27, 0.316)
+    ('cabinet#1', 'cabinet#1', 0.24, 0.853)
+    ('cabinet#2', 'cabinet#2', 0.3, 0.487)
+    ('cushion#1', 'cushion#3', 0.03, 0.608)
+    ('cabinet#3', 'cabinet#4', 0.27, 0.587)
+offered pairs the fused geometry gate then refuses (reason 'geometry'): 42/294
+probe_ga493_locality done

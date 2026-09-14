@@ -1,0 +1,77 @@
+[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅
+component: nlp_utils.world2vec.st_model = SentenceTransformer
+CFG similarity weights as loaded from the worktree config.yaml: {'label': 0.05, 'color': 0.45, 'material': 0.3, 'description': 0.2}
+CFG association merge_engine/ontology/attr cap/margin: evidence False 2.0 0.3
+
+=== Part A [BRANCH] weights {'label': 0.05, 'color': 0.45, 'material': 0.3, 'description': 0.2} attribute channel ON ===
+  104 objects, 5356 all-pairs, offered 294 (Counter({'shell': 266, 'gap': 28})), excluded 5062
+  decisions over offered pairs: {'geometry': 31, 'hold': 213, 'merge': 26, 'room': 24}
+  MERGES 26: cross-base-label 0; overlap<50% of total with same_kind!=True (GA-328 guard diluted, not lifted) 0; measured boxes NOT intersecting (room+attributes path) 0
+    ('sofa#1', 'sofa', 'blue/fabric', 'blue/fabric', 0.9753, True, 6.25, {'overlap': 3.2, 'attributes': 1.67, 'room': 1.39}, 'inter', 0.46, 'shell')
+    ('plant#1', 'plant', 'green/unknown', 'green/unknown', 0.8891, True, 5.43, {'overlap': 3.52, 'attributes': 0.52, 'room': 1.39}, 'inter', 0.49, 'shell')
+    ('chair#1', 'chair#1', 'grey/fabric', 'grey/fabric', 0.9331, True, 7.49, {'overlap': 5.0, 'attributes': 1.11, 'room': 1.39}, 'inter', 0.72, 'shell')
+    ('chair#2', 'chair#2', 'grey/fabric', 'grey/fabric', 0.9369, True, 5.98, {'overlap': 3.43, 'attributes': 1.16, 'room': 1.39}, 'inter', 0.52, 'shell')
+    ('sofa', 'sofa', 'blue/fabric', 'blue/fabric', 0.9549, True, 4.81, {'overlap': 2.03, 'attributes': 1.4, 'room': 1.39}, 'inter', 0.29, 'shell')
+    ('cabinet#1', 'cabinet', 'white/wood', 'white/wood', 0.9711, True, 3.22, {'overlap': 2.99, 'attributes': 1.62, 'room': -1.39}, 'inter', 0.44, 'shell')
+    ('cabinet#1', 'cabinet#1', 'white/wood', 'white/wood', 0.964, True, 10.62, {'overlap': 7.71, 'attributes': 1.52, 'room': 1.39}, 'inter', 1.0, 'shell')
+    ('cabinet#1', 'cabinet#1', 'white/wood', 'white/wood', 0.9488, True, 9.19, {'overlap': 6.48, 'attributes': 1.32, 'room': 1.39}, 'inter', 0.84, 'shell')
+    ('cabinet#2', 'cabinet#4', 'white/wood', 'white/wood', 0.975, True, 9.23, {'overlap': 6.17, 'attributes': 1.67, 'room': 1.39}, 'inter', 0.92, 'shell')
+    ('cabinet', 'cabinet#1', 'white/wood', 'white/wood', 0.9399, True, 4.19, {'overlap': 4.38, 'attributes': 1.2, 'room': -1.39}, 'inter', 0.65, 'shell')
+    ('cabinet', 'cabinet#1', 'white/wood', 'white/wood', 0.9479, True, 6.64, {'overlap': 3.95, 'attributes': 1.3, 'room': 1.39}, 'inter', 0.59, 'shell')
+    ('cabinet', 'cabinet#1', 'white/wood', 'white/wood', 0.9821, True, 4.63, {'overlap': 4.26, 'attributes': 1.76, 'room': -1.39}, 'inter', 0.63, 'shell')
+    ('cabinet', 'cabinet#1', 'white/wood', 'white/wood', 0.9103, True, 4.49, {'overlap': 2.3, 'attributes': 0.8, 'room': 1.39}, 'inter', 0.34, 'shell')
+    ('plant', 'plant', 'green/unknown', 'green/unknown', 0.8796, True, 8.73, {'overlap': 6.95, 'attributes': 0.39, 'room': 1.39}, 'inter', 0.67, 'shell')
+    ('plant', 'plant', 'green/unknown', 'green/unknown', 0.8531, True, 9.43, {'overlap': 8.0, 'attributes': 0.04, 'room': 1.39}, 'inter', 0.88, 'shell')
+    ('cabinet#1', 'cabinet#1', 'white/wood', 'white/wood', 0.9462, True, 4.15, {'overlap': 4.25, 'attributes': 1.28, 'room': -1.39}, 'inter', 0.53, 'shell')
+    ('cabinet#1', 'cabinet#1', 'white/wood', 'white/wood', 0.9366, True, 9.16, {'overlap': 6.62, 'attributes': 1.15, 'room': 1.39}, 'inter', 0.82, 'shell')
+    ('cabinet#2', 'cabinet#2', 'white/wood', 'white/wood', 0.9557, True, 8.75, {'overlap': 5.96, 'attributes': 1.41, 'room': 1.39}, 'inter', 0.79, 'shell')
+    ('cabinet#2', 'cabinet#3', 'white/wood', 'white/wood', 0.9512, True, 5.01, {'overlap': 2.28, 'attributes': 1.35, 'room': 1.39}, 'inter', 0.31, 'shell')
+    ('bench', 'bench#1', 'white/wood', 'white/wood', 0.8838, True, 6.98, {'overlap': 5.14, 'attributes': 0.45, 'room': 1.39}, 'inter', 1.0, 'shell')
+    ('bench', 'bench#2', 'white/wood', 'white/wood', 0.8814, True, 6.95, {'overlap': 5.14, 'attributes': 0.42, 'room': 1.39}, 'inter', 1.0, 'shell')
+    ('bench', 'bench', 'white/wood', 'white/wood', 0.8958, True, 6.11, {'overlap': 4.12, 'attributes': 0.61, 'room': 1.39}, 'inter', 0.8, 'shell')
+    ('cabinet#2', 'cabinet#3', 'white/wood', 'white/wood', 0.9152, True, 5.12, {'overlap': 2.86, 'attributes': 0.87, 'room': 1.39}, 'inter', 0.4, 'shell')
+    ('cabinet#1', 'cabinet#1', 'white/wood', 'white/wood', 0.9379, True, 5.33, {'overlap': 5.55, 'attributes': 1.17, 'room': -1.39}, 'inter', 0.58, 'shell')
+    ('pillow', 'pillow#1', 'blue/fabric', 'blue/fabric', 0.9507, True, 7.58, {'overlap': 4.85, 'attributes': 1.34, 'room': 1.39}, 'inter', 0.51, 'shell')
+    ('bench#1', 'bench', 'white/wood', 'white/wood', 0.9586, True, 8.57, {'overlap': 5.73, 'attributes': 1.45, 'room': 1.39}, 'inter', 1.0, 'shell')
+
+=== Part A [old weights + attribute channel] weights {'label': 0.05, 'color': 0.3, 'material': 0.15, 'description': 0.5} attribute channel ON ===
+  104 objects, 5356 all-pairs, offered 294 (Counter({'shell': 266, 'gap': 28})), excluded 5062
+  decisions over offered pairs: {'geometry': 31, 'hold': 226, 'merge': 13, 'room': 24}
+  MERGES 13: cross-base-label 0; overlap<50% of total with same_kind!=True (GA-328 guard diluted, not lifted) 0; measured boxes NOT intersecting (room+attributes path) 0
+    ('sofa#1', 'sofa', 'blue/fabric', 'blue/fabric', 0.9383, True, 5.76, {'overlap': 3.2, 'attributes': 1.18, 'room': 1.39}, 'inter', 0.46, 'shell')
+    ('table#1', 'table', 'silver/metal', 'silver/glass', 0.8639, True, 8.76, {'overlap': 7.19, 'attributes': 0.19, 'room': 1.39}, 'inter', 0.9, 'shell')
+    ('sofa', 'sofa', 'blue/fabric', 'blue/fabric', 0.8871, True, 3.91, {'overlap': 2.03, 'attributes': 0.5, 'room': 1.39}, 'inter', 0.29, 'shell')
+    ('cabinet#1', 'cabinet#1', 'white/wood', 'white/wood', 0.9101, True, 9.9, {'overlap': 7.71, 'attributes': 0.8, 'room': 1.39}, 'inter', 1.0, 'shell')
+    ('cabinet#1', 'cabinet#1', 'white/wood', 'white/wood', 0.8719, True, 8.16, {'overlap': 6.48, 'attributes': 0.29, 'room': 1.39}, 'inter', 0.84, 'shell')
+    ('cabinet#2', 'cabinet#4', 'white/wood', 'white/wood', 0.9375, True, 8.73, {'overlap': 6.17, 'attributes': 1.17, 'room': 1.39}, 'inter', 0.92, 'shell')
+    ('cabinet', 'cabinet#1', 'white/wood', 'white/wood', 0.8697, True, 5.59, {'overlap': 3.95, 'attributes': 0.26, 'room': 1.39}, 'inter', 0.59, 'shell')
+    ('cabinet', 'cabinet#1', 'white/wood', 'white/wood', 0.9552, True, 4.27, {'overlap': 4.26, 'attributes': 1.4, 'room': -1.39}, 'inter', 0.63, 'shell')
+    ('cabinet#1', 'cabinet#1', 'white/wood', 'white/wood', 0.8656, True, 3.08, {'overlap': 4.25, 'attributes': 0.21, 'room': -1.39}, 'inter', 0.53, 'shell')
+    ('cabinet#2', 'cabinet#2', 'white/wood', 'white/wood', 0.8892, True, 7.86, {'overlap': 5.96, 'attributes': 0.52, 'room': 1.39}, 'inter', 0.79, 'shell')
+    ('cabinet#2', 'cabinet#3', 'white/wood', 'white/wood', 0.878, True, 4.04, {'overlap': 2.28, 'attributes': 0.37, 'room': 1.39}, 'inter', 0.31, 'shell')
+    ('pillow', 'pillow#1', 'blue/fabric', 'blue/fabric', 0.8768, True, 6.6, {'overlap': 4.85, 'attributes': 0.36, 'room': 1.39}, 'inter', 0.51, 'shell')
+    ('bench#1', 'bench', 'white/wood', 'white/wood', 0.8965, True, 7.74, {'overlap': 5.73, 'attributes': 0.62, 'room': 1.39}, 'inter', 1.0, 'shell')
+
+=== Part A [pre-ruling engine, no attribute channel] weights {'label': 0.05, 'color': 0.45, 'material': 0.3, 'description': 0.2} attribute channel OFF ===
+  104 objects, 5356 all-pairs, offered 294 (Counter({'shell': 266, 'gap': 28})), excluded 5062
+  decisions over offered pairs: {'geometry': 31, 'hold': 239, 'room': 24}
+  MERGES 0: cross-base-label 0; overlap<50% of total with same_kind!=True (GA-328 guard diluted, not lifted) 0; measured boxes NOT intersecting (room+attributes path) 0
+
+=== Part B: per-detection counterfactual against the OLD run's state (ledger order) ===
+
+  weights=new: ('absorbed', 'iou>=0.10')=8, ('absorbed', 'no intersection')=1, detections=48, new_object=33, transition_moved=6, vetoed_candidate=22
+
+  weights=old: ('absorbed', 'iou>=0.10')=7, detections=48, new_object=36, transition_moved=5, vetoed_candidate=21
+
+  transition MOVED rows (new weights) 6 / (old) 5: (cycle, det label, object label, score, centre m, IoU, det c/m, obj c/m)
+    ('262ab4', 'rug', 'rug', 1.0, 0.69, 0.0, 'grey/fabric', 'grey/fabric')
+    ('149881', 'plant', 'plant#1', 0.938, 0.42, 0.07, 'green/unknown', 'green/unknown')
+    ('149881', 'rug', 'rug', 1.0, 1.34, 0.0, 'grey/fabric', 'grey/fabric')
+    ('0e6c3c', 'plant', 'plant#1', 0.86, 0.54, 0.0, 'green/organic', 'green/unknown')
+    ('2b4832', 'sofa#2', 'sofa#1', 0.969, 0.93, 0.02, 'blue/fabric', 'blue/fabric')
+    ('2b4832', 'rug', 'rug', 1.0, 0.47, 0.0, 'grey/fabric', 'grey/fabric')
+
+  absorbed by an earlier detection of the SAME cycle, then declared MOVED by a later one: []
+
+  absorptions with NO intersection on the measured box (armed by the gap locality), new weights:
+    ('new', '2b4832', 'table', 'table#2', 0.924, 'no intersection', 0.07)

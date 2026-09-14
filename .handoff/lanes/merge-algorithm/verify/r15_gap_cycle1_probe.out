@@ -1,0 +1,7 @@
+consumer_pair cycles 41 first 7f99b28f9b094ff9
+admissions per cycle (first 5 cycles): [('7f99b28f9b094ff9', 0), ('a8ce2f40f9874f94', 0), ('59ffa0922139427a', 0), ('262ab4a678c84323', 0), ('272a48a0530941d2', 0)]
+mutation ops {('add', 'applied_in_memory'): 119, ('add', 'applied_and_checkpointed'): 119, ('direct_exploration_update', 'applied_in_memory'): 1, ('update', 'applied_in_memory'): 19, ('update', 'applied_and_checkpointed'): 19, ('direct_exploration_update', 'applied_and_checkpointed'): 1}
+objects ADDED in the first cycle 0 of 119 objects with receipts; of those in the final map 0 ; with a later update receipt 0
+latency row {"vlm_ms": 5663.3, "owlv2_ms": 0.0, "nms_ms": 0.0, "nms_reported": false, "backend_overhead_ms": 1210.0, "wire_ms": 1186.0, "server_total_reported": true, "client": {"encode_ms": 1.5, "request_ms": 1493.9, "payload_bytes": 47131, "response_bytes": 27437, "boxes": 5}, "sam_ms": 285.3, "projection_ms"
+latency row {"vlm_ms": 9181.1, "owlv2_ms": 0.0, "nms_ms": 0.0, "nms_reported": false, "backend_overhead_ms": 765.9, "wire_ms": 732.3, "server_total_reported": true, "client": {"encode_ms": 1.1, "request_ms": 1051.8, "payload_bytes": 50519, "response_bytes": 46663, "boxes": 9}, "sam_ms": 287.0, "projection_ms":
+latency rows 38

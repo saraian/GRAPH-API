@@ -1,0 +1,72 @@
+[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 2 objects in memory
+══════════════════════════════════════════════
+
+📐 COMPARISON chair vs chair:
+   Pos A: (0.50, 0.50, 0.50)
+   Pos B: (0.50, 0.50, 0.50)
+   Distance: 0.000m (threshold: 0.8m)
+   Sim semantiche:
+     Label: 'chair' vs 'chair'
+     Colore: 'red' vs 'red'
+     Materiale: 'wood' vs 'wood'
+     Similarity: 1.000 (threshold: 0.95)
+   ✅ MERGE!
+     Volume A: 1.000m³ | Volume B: 1.000m³ → Kept: 1.000m³
+     Kept: 'chair' | Removed: 'chair'
+     Keeper desc: 'a chair...'
+     Bbox kept: x[0.00,1.00] y[0.00,1.00] z[0.00,1.00]
+
+🗑️ REMOVING: 1 duplicate objects:
+══════════════════════════════════════════════
+
+--- A: single pair, discard leaves mid-sweep ---
+merged_count=0  merge_rows=1 dry_run=[False]  merge_log_json entries=1  operations.txt MERGE lines=1  stale_warn=['[MERGE] 1 pair(s) skipped: an object left the map between the unlocked sweep and the write']
+rows (keeper, merged_from): [('obj_keep', 'obj_gone')]
+merge_log keepers: ['obj_keep']   om6 would queue as 'merged': []
+map after: ['obj_keep']
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 4 objects in memory
+══════════════════════════════════════════════
+
+📐 COMPARISON chair vs chair:
+   Pos A: (0.50, 0.50, 0.50)
+   Pos B: (0.50, 0.50, 0.50)
+   Distance: 0.000m (threshold: 0.8m)
+   Sim semantiche:
+     Label: 'chair' vs 'chair'
+     Colore: 'red' vs 'red'
+     Materiale: 'wood' vs 'wood'
+     Similarity: 1.000 (threshold: 0.95)
+   ✅ MERGE!
+     Volume A: 1.000m³ | Volume B: 1.000m³ → Kept: 1.000m³
+     Kept: 'chair' | Removed: 'chair'
+     Keeper desc: 'a chair...'
+     Bbox kept: x[0.00,1.00] y[0.00,1.00] z[0.00,1.00]
+
+📐 COMPARISON chair vs chair:
+   Pos A: (10.50, 0.50, 0.50)
+   Pos B: (10.50, 0.50, 0.50)
+   Distance: 0.000m (threshold: 0.8m)
+   Sim semantiche:
+     Label: 'chair' vs 'chair'
+     Colore: 'red' vs 'red'
+     Materiale: 'wood' vs 'wood'
+     Similarity: 1.000 (threshold: 0.95)
+   ✅ MERGE!
+     Volume A: 1.000m³ | Volume B: 1.000m³ → Kept: 1.000m³
+     Kept: 'chair' | Removed: 'chair'
+     Keeper desc: 'a chair...'
+     Bbox kept: x[10.00,11.00] y[0.00,1.00] z[0.00,1.00]
+
+🗑️ REMOVING: 2 duplicate objects:
+   - chair @ (0.50, 0.50)
+══════════════════════════════════════════════
+
+--- B: mixed sweep, one applied one stale ---
+merged_count=1  merge_rows=2 dry_run=[False, False]  merge_log_json entries=2  operations.txt MERGE lines=2  stale_warn=['[MERGE] 1 pair(s) skipped: an object left the map between the unlocked sweep and the write']
+rows (keeper, merged_from): [('obj_keep', 'obj_drop'), ('obj_keep2', 'obj_gone')]
+merge_log keepers: ['obj_keep', 'obj_keep2']   om6 would queue as 'merged': ['obj_keep', 'obj_keep2']
+map after: ['obj_keep', 'obj_keep2']
+PROBE: reproduced -- one sweep, four records, three of them count the stale pair

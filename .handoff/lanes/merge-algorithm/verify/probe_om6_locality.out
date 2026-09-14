@@ -1,0 +1,18 @@
+[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅
+ASSOCIATION_MARGIN_M 0.3 | object_services.LOCALITY_GAP_M 0.3 | TRACKING_IOU_THRESHOLD still defined: True | EXPLORATION_IOU_THRESHOLD still defined: True
+  det gap 0.2, no fused                            -> True
+  det gap 0.5, no fused                            -> False
+  det gap 0.35 measured / 0.25 fused               -> True
+  det gap 0.35 measured, fused None                -> False
+  fused = {} (falls back?)                         -> True
+  fused malformed {x_min only}, det overlaps bbox  -> False
+  fused ok, obj.bbox None                          -> True
+  det None                                         -> False
+  obj None                                         -> False
+  obj.bbox None, no fused                          -> False
+  det identical to bbox                            -> True
+  det with extra keys only                         -> True
+
+same-cycle veto: Object.__eq__ is object.__eq__ (identity)? True | __hash__ default? True
+  two distinct Objects with equal fields/ids: o1 in [o2] -> False | o1 in [o1] -> True
+probe_om6_locality done

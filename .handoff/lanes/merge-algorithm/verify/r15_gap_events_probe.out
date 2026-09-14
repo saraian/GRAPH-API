@@ -1,0 +1,14 @@
+events lines 350
+kinds [('periodic_tick', 137), ('bbox3d_array_arrived', 41), ('object_descriptions_arrived', 41), ('consumer_pair', 41), ('consumer_result', 41), ('scan_complete_arrived', 16), ('scan_merge_started', 15), ('scan_merge_completed', 15), ('initial_state', 1), ('mode_transition', 1), ('mutation_ledger', 1)]
+  first initial_state                    line       1 t None
+  first periodic_tick                    line       2 t None
+  first scan_complete_arrived            line       3 t None
+  first scan_merge_started               line       4 t None
+  first scan_merge_completed             line       5 t None
+  first bbox3d_array_arrived             line       9 t None
+  first object_descriptions_arrived      line      10 t None
+  first consumer_pair                    line      11 t None
+  first consumer_result                  line      12 t None
+  first mode_transition                  line      80 t None
+  first mutation_ledger                  line     350 t None
+observation_discard example: {"t": 1789345276.1411822, "kind": "observation_discard", "object": "718f69deca8e4c4a8a7c55b55fe47edb:7f99b28f9b094ff9:0", "reason": "manager_motion_gate", "cycle_id": "7f99b28f9b094ff9"}

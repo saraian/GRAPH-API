@@ -1,0 +1,36 @@
+[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅
+component: SentenceTransformer weights {'label': 0.05, 'color': 0.45, 'material': 0.3, 'description': 0.2}
+map hull 329.5 m3, rooms in run 4, objects 104
+
+n_rooms=4 (same-room channel +1.386): cross-kind fused-intersecting offered pairs n=108; co-visibility uncollected on 108; MERGE 0; held only by the guard 18
+   guard-held pairs at the run's own room count, distance to the dilution edge
+   (guard is off when attrs + room > overlap; appearance abstains, so nothing else is positive):
+    cushion#3/pillow#2: score 0.899, overlap 2.41, attrs +0.66, room +1.39, total 4.46 -> flips at attrs +1.03 = score 0.927  REACHABLE
+    seat/pillow: score 0.890, overlap 4.04, attrs +0.54, room +1.39, total 5.96 -> flips at attrs +2.65 = score 1.049
+    oven/stove: score 0.880, overlap 4.04, attrs +0.40, room +1.39, total 5.83 -> flips at attrs +2.65 = score 1.049
+    seat/cushion#1: score 0.903, overlap 4.50, attrs +0.71, room +1.39, total 6.60 -> flips at attrs +3.12 = score 1.084
+    statue/sculpture: score 0.850, overlap 3.98, attrs -0.00, room +1.39, total 5.36 -> flips at attrs +2.60 = score 1.045
+    seat/cushion#3: score 0.904, overlap 5.10, attrs +0.72, room +1.39, total 7.21 -> flips at attrs +3.72 = score 1.129
+    cabinet#3/bench: score 0.907, overlap 5.73, attrs +0.76, room +1.39, total 7.88 -> flips at attrs +4.35 = score 1.176
+    painting/artwork: score 0.931, overlap 3.34, attrs +1.09, room -1.39, total 3.04 -> flips at attrs +4.73 = score 1.205
+    seat/pillow#2: score 0.891, overlap 5.85, attrs +0.54, room +1.39, total 7.78 -> flips at attrs +4.47 = score 1.185
+    cushion#1/pillow#1: score 0.853, overlap 5.70, attrs +0.04, room +1.39, total 7.12 -> flips at attrs +4.31 = score 1.173
+    bench/cabinet#3: score 0.806, overlap 5.14, attrs -0.99, room +1.39, total 5.53 -> flips at attrs +3.76 = score 1.132
+    bench/cabinet#5: score 0.798, overlap 5.14, attrs -1.18, room +1.39, total 5.35 -> flips at attrs +3.76 = score 1.132
+    bench/cabinet#4: score 0.796, overlap 5.14, attrs -1.23, room +1.39, total 5.29 -> flips at attrs +3.76 = score 1.132
+    paper_towel_holder/dispenser: score 0.919, overlap 8.00, attrs +0.92, room +1.39, total 10.30 -> flips at attrs +6.61 = score 1.346
+    cabinet#3/bench#1: score 0.886, overlap 7.66, attrs +0.48, room +1.39, total 9.52 -> flips at attrs +6.27 = score 1.320
+    cushion#1/pillow: score 0.882, overlap 8.00, attrs +0.43, room +1.39, total 9.81 -> flips at attrs +6.61 = score 1.346
+    sign/decor: score 0.824, overlap 7.45, attrs -0.59, room +1.39, total 8.25 -> flips at attrs +6.06 = score 1.305
+    sofa/pillow#1: score 0.712, overlap 5.16, attrs -3.16, room +1.39, total 3.39 -> flips at attrs +3.77 = score 1.133
+
+n_rooms=5 (same-room channel +1.609): cross-kind fused-intersecting offered pairs n=108; co-visibility uncollected on 108; MERGE 1; held only by the guard 17
+   MERGE seat/pillow#1 score 0.850 attrs -0.01 room +1.61 overlap 1.59 total 3.19  (overlap < 0.5*total: True)
+
+n_rooms=6 (same-room channel +1.792): cross-kind fused-intersecting offered pairs n=108; co-visibility uncollected on 108; MERGE 2; held only by the guard 16
+   MERGE seat/pillow#1 score 0.850 attrs -0.01 room +1.79 overlap 1.59 total 3.37  (overlap < 0.5*total: True)
+   MERGE cushion#3/pillow#2 score 0.899 attrs +0.66 room +1.79 overlap 2.41 total 4.86  (overlap < 0.5*total: True)
+
+n_rooms=8 (same-room channel +2.079): cross-kind fused-intersecting offered pairs n=108; co-visibility uncollected on 108; MERGE 2; held only by the guard 16
+   MERGE seat/pillow#1 score 0.850 attrs -0.01 room +2.08 overlap 1.59 total 3.66  (overlap < 0.5*total: True)
+   MERGE cushion#3/pillow#2 score 0.899 attrs +0.66 room +2.08 overlap 2.41 total 5.15  (overlap < 0.5*total: True)

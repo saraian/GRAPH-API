@@ -1,0 +1,34 @@
+commit threshold log(20) = 2.996
+
+Q1  nested same-label pair (containment 1.0, e.g. pillow inside a pillow box, cabinet run containing a drawer labelled 'cabinet'); no observations -> co-visibility UNCOLLECTED
+  pre-change engine (no attribute channel)                       -> ('hold', 7.419, {'overlap': 5.627, 'room': 1.792}, True, ['appearance', 'covisibility', 'ontology', 'separation'])
+  same_kind=True, score 0.95                                     -> ('merge', 8.752, {'overlap': 5.627, 'attributes': 1.333, 'room': 1.792}, False, ['appearance', 'covisibility', 'ontology', 'separation'])
+  same_kind=True, score 0.86 (just above the 0.85 reference)     -> ('merge', 7.552, {'overlap': 5.627, 'attributes': 0.133, 'room': 1.792}, False, ['appearance', 'covisibility', 'ontology', 'separation'])
+  same_kind=False, score 0.95 (synonym / cross-kind)             -> ('hold', 8.752, {'overlap': 5.627, 'attributes': 1.333, 'room': 1.792}, True, ['appearance', 'covisibility', 'ontology', 'separation'])
+  same_kind=True, score 0.95, ONE room (room channel abstains)   -> ('merge', 6.96, {'overlap': 5.627, 'attributes': 1.333}, False, ['appearance', 'covisibility', 'ontology', 'room', 'separation'])
+  pillow-in-bed, same_kind=False, score 0.95                     -> ('merge', 5.651, {'overlap': 2.526, 'attributes': 1.333, 'room': 1.792}, False, ['appearance', 'covisibility', 'ontology', 'separation'])
+  pillow-in-bed, same_kind=False, score 0.44 (measured lamp/table) -> ('hold', -3.683, {'overlap': 2.526, 'attributes': -8.0, 'room': 1.792}, False, ['appearance', 'covisibility', 'ontology', 'separation'])
+
+Q2  two 1 m cubes 0.25 m apart (gap-compatible at 0.3, no intersection)
+  no observations, n_rooms=1: offered_by=shell d=1.250 reach=1.732 -> ('hold', 1.889, {'overlap': -0.111, 'attributes': 2.0}, False, ['appearance', 'covisibility', 'ontology', 'room', 'separation'])
+  no observations, n_rooms=3: offered_by=shell d=1.250 reach=1.732 -> ('hold', 2.988, {'overlap': -0.111, 'attributes': 2.0, 'room': 1.099}, False, ['appearance', 'covisibility', 'ontology', 'separation'])
+  no observations, n_rooms=4: offered_by=shell d=1.250 reach=1.732 -> ('merge', 3.275, {'overlap': -0.111, 'attributes': 2.0, 'room': 1.386}, False, ['appearance', 'covisibility', 'ontology', 'separation'])
+  no observations, n_rooms=6: offered_by=shell d=1.250 reach=1.732 -> ('merge', 3.681, {'overlap': -0.111, 'attributes': 2.0, 'room': 1.792}, False, ['appearance', 'covisibility', 'ontology', 'separation'])
+  no observations, n_rooms=6, score 0.86 -> ('hold', 1.814, {'overlap': -0.111, 'attributes': 0.133, 'room': 1.792}, False, ['appearance', 'covisibility', 'ontology', 'separation'])
+  no observations, n_rooms=6, PRE-CHANGE engine -> ('hold', 1.681, {'overlap': -0.111, 'room': 1.792}, False, ['appearance', 'covisibility', 'ontology', 'separation'])
+  one sighting each (cov 2.0e-09): offered_by=shell d=1.250 reach=1.732 -> ('hold', -4.319, {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.792}, False, ['appearance', 'covisibility', 'ontology'])
+  same pair, locality_gap_m=None (pre-change): offered=1 excluded=0
+
+Q2b room + attributes ceiling with no positive geometry: attrs cap 2.0 + log(n_rooms) - |giou|
+  n_rooms=2: 2.0 + log(2) = 2.693  < thr
+  n_rooms=3: 2.0 + log(3) = 3.099  >= thr
+  n_rooms=4: 2.0 + log(4) = 3.386  >= thr
+  n_rooms=5: 2.0 + log(5) = 3.609  >= thr
+  n_rooms=6: 2.0 + log(6) = 3.792  >= thr
+  n_rooms=8: 2.0 + log(8) = 4.079  >= thr
+
+Q1b two 1 m cubes of one kind intersecting by 0.2 m on x (containment 0.2), n_rooms=1
+  score None: -> ('hold', 1.141, {'overlap': 1.141}, True, ['appearance', 'covisibility', 'ontology', 'room', 'separation'])
+  score 0.86: -> ('hold', 1.274, {'overlap': 1.141, 'attributes': 0.133}, False, ['appearance', 'covisibility', 'ontology', 'room', 'separation'])
+  score 0.95: -> ('hold', 2.474, {'overlap': 1.141, 'attributes': 1.333}, False, ['appearance', 'covisibility', 'ontology', 'room', 'separation'])
+  score 1.0: -> ('merge', 3.141, {'overlap': 1.141, 'attributes': 2.0}, False, ['appearance', 'covisibility', 'ontology', 'room', 'separation'])

@@ -1,0 +1,10 @@
+commit threshold log(20) = 2.996; legacy merge bar merge_min_similarity = 0.925
+
+  A pre-ruling evidence engine (no attribute channel), no sightings          -> ('hold', 9.79, {'overlap': 8.0, 'room': 1.79}, 'guard=True', 'covis=no observation records to compare')
+  B branch: same_kind=True score 0.86, no sightings                          -> ('merge', 9.93, {'overlap': 8.0, 'attributes': 0.13, 'room': 1.79}, 'guard=False', 'covis=no observation records to compare')
+  C branch: same_kind=True 0.86, SAME frame, no 2D box (GA-493 capture shape) -> ('merge', 9.93, {'overlap': 8.0, 'attributes': 0.13, 'room': 1.79}, 'guard=False', 'covis=co-visible, but no 2D overlap availabl')
+  D branch: same_kind=True 0.86, SAME frame, 2D boxes DISJOINT               -> ('reject', 9.93, {'overlap': 8.0, 'attributes': 0.13, 'room': 1.79}, 'guard=False', 'covis=VETO')
+  E branch: same_kind=True 0.86, SAME frame, 2D boxes identical              -> ('merge', 9.93, {'overlap': 8.0, 'attributes': 0.13, 'room': 1.79}, 'guard=False', 'covis=co-visible but overlapping (2D IoU 1.0')
+  F branch: same_kind=True 0.86, sightings in DIFFERENT frames               -> ('merge', 9.93, {'overlap': 8.0, 'attributes': 0.13, 'room': 1.79}, 'guard=False', 'covis=never observed in one frame: no shared')
+  G branch: same_kind=False 0.86 (synonym), no sightings                     -> ('hold', 9.93, {'overlap': 8.0, 'attributes': 0.13, 'room': 1.79}, 'guard=True', 'covis=no observation records to compare')
+  H branch: same_kind=True, score 0.85 exactly (channel 0.0), no sightings   -> ('hold', 9.79, {'overlap': 8.0, 'attributes': 0.0, 'room': 1.79}, 'guard=True', 'covis=no observation records to compare')

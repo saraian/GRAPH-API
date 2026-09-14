@@ -1,0 +1,38 @@
+component: object_services from /DATA/GRAPH-API/.claude/worktrees/found-merge-algorithm/lost3dsg/src/perception_module/object_services.py
+MERGE_ENGINE evidence ontology False attr cap 2.0 gap 0.3 min_consecutive 2 threshold 2.996
+box gap 0.25 geometry_compatible@0.3 True intersection 0.0
+--- arm (b) no observations, identical attributes, same room (n_rooms=4)
+  sweep 1: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds 3.275 >= 2.996 but only 1/2 consecutive', {'overlap': -0.111, 'attributes': 2.0, 'room': 1.386}, 3.275, ['appearance', 'covisibility', 'ontology', 'separation'])]
+📐 COMPARISON chair vs chair:
+  sweep 2: merged_count=1 rows=[]
+  => arm (b) MERGED
+--- arm (b) with n_rooms=2 (n_rooms=2)
+  sweep 1: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds 2.582 < 2.996', {'overlap': -0.111, 'attributes': 2.0, 'room': 0.693}, 2.582, ['appearance', 'covisibility', 'ontology', 'separation'])]
+  sweep 2: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds 2.582 < 2.996', {'overlap': -0.111, 'attributes': 2.0, 'room': 0.693}, 2.582, ['appearance', 'covisibility', 'ontology', 'separation'])]
+--- arm (b) with n_rooms=3 (n_rooms=3)
+  sweep 1: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds 2.988 < 2.996', {'overlap': -0.111, 'attributes': 2.0, 'room': 1.099}, 2.987, ['appearance', 'covisibility', 'ontology', 'separation'])]
+  sweep 2: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds 2.988 < 2.996', {'overlap': -0.111, 'attributes': 2.0, 'room': 1.099}, 2.987, ['appearance', 'covisibility', 'ontology', 'separation'])]
+--- arm (b) PRE-CHANGE (attribute channel abstains) (n_rooms=4)
+  sweep 1: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds 1.275 < 2.996', {'overlap': -0.111, 'room': 1.386}, 1.275, ['appearance', 'attributes', 'covisibility', 'ontology', 'separation'])]
+  sweep 2: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds 1.275 < 2.996', {'overlap': -0.111, 'room': 1.386}, 1.275, ['appearance', 'attributes', 'covisibility', 'ontology', 'separation'])]
+  cov one sighting: 2e-09
+--- arm (a) ONE sighting each (n_rooms=4)
+  sweep 1: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+  sweep 2: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+  cov two sightings spread 0.0 : 0.0
+--- arm (a2) TWO sightings each, spread 0.0 m (n_rooms=4)
+  sweep 1: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+  sweep 2: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+  cov two sightings spread 0.02 : 0.0001
+--- arm (a2) TWO sightings each, spread 0.02 m (n_rooms=4)
+  sweep 1: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+  sweep 2: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+  cov two sightings spread 0.05 : 0.000625
+--- arm (a2) TWO sightings each, spread 0.05 m (n_rooms=4)
+  sweep 1: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+  sweep 2: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+  cov two sightings spread 0.1 : 0.0025
+--- arm (a2) TWO sightings each, spread 0.1 m (n_rooms=4)
+  sweep 1: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+  sweep 2: merged_count=0 rows=[('merge_refused', 'hold', 'log-odds -4.725 < 2.996', {'overlap': -0.111, 'separation': -8.0, 'attributes': 2.0, 'room': 1.386}, -4.725, ['appearance', 'covisibility', 'ontology'])]
+offered_by: shell d 1.25 reach 1.732

@@ -1,0 +1,9 @@
+final objects 104; sightings per object: [(1, 89), (2, 12), (3, 2), (4, 1)] (0 = ledger row without a captured box)
+shell widening beyond the extent with the rebuilt sightings: max 1.500 m, objects widened by > 0.01 m: 14/104
+with the production shell: fused-accepted pairs never offered 67/328; same base label 5
+      painting painting sightings 1 1 fused gap 0.27 measured gap 0.316
+      cabinet#1 cabinet#1 sightings 1 1 fused gap 0.24 measured gap 0.853
+      cabinet#2 cabinet#2 sightings 1 1 fused gap 0.3 measured gap 0.487
+      cushion#1 cushion#3 sightings 1 1 fused gap 0.03 measured gap 0.608
+      cabinet#3 cabinet#4 sightings 1 1 fused gap 0.27 measured gap 0.587
+refute_locality_shell_real done

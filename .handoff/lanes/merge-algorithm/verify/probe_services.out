@@ -1,0 +1,42 @@
+[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅
+engine: evidence | ontology channel: False | attr cap: 2.0 | locality gap: 0.3 | min_consecutive: 2 | commit thr: 2.9957
+=== A. dry run: merged_count and keeper/discard ===
+  sweep1 merged_count 0 msg [DRY RUN] 0 merge(s) simulati | refusals [('obj_a', 'obj_b', 'hold', 'log-odds 4.436 >= 2.996 but only 1/2 consecutive')]
+  sweep2 merged_count 1 msg [DRY RUN] 1 merge(s) simulati | merge_log keeper/discarded [('obj_a', 'chair#1')] | map still has both? True
+  keeper obj_a discard obj_b
+  hypothesis committed flag after dry-run merge: [(('obj_a', 'obj_b'), True)]
+  sweep3 (dry, after committed hypothesis) merged_count 0 | hypotheses now [('obj_a', 'obj_b')] | refusals [('obj_a', 'obj_b', 'hold', 'log-odds 4.436 >= 2.996 but only 1/2 consecutive')]
+=== B. live path: stale keeper / stale discard / both / control ===
+  stale keeper             merged_count=0 msg='0 merge(s) eseguiti' merge rows written=1 discard still in map=True keeper in map=False
+  stale discard            merged_count=0 msg='0 merge(s) eseguiti' merge rows written=1 discard still in map=False keeper in map=True
+  both stale               merged_count=0 msg='0 merge(s) eseguiti' merge rows written=1 discard still in map=False keeper in map=False
+  control (both present)   merged_count=1 msg='1 merge(s) eseguiti' merge rows written=1 discard still in map=False keeper in map=True
+=== C. room gate with room_at_bbox None on one side (boxes APART, gap 0.2) ===
+  room refusals: []
+  all a/c rows: [('hold', None, 'r_right', 'log-odds 1.909 < 2.996')]
+  reversed (None on the other side) room refusals: []
+=== D. geometry refusal record keys (gap 0.5) ===
+  object obj_a keys: ['a_has_color', 'a_has_description', 'a_has_material', 'a_label', 'b_has_color', 'b_has_description', 'b_has_material', 'b_label', 'candidate', 'dry_run', 'gap_m', 'reason', 'room_a', 'room_b', 'similarity', 'threshold_gap_m']
+  values: {'candidate': 'obj_d', 'reason': 'geometry', 'a_has_color': True, 'b_has_color': True, 'a_has_material': True, 'b_has_material': True, 'a_has_description': True, 'b_has_description': True, 'similarity': None, 'dry_run': True, 'gap_m': 0.5, 'threshold_gap_m': 0.3, 'room_a': None, 'room_b': None}
+  'evidence_count' present on geometry row? False
+  offered_by in pair_meta reaches the record? False
+=== E. hypothesis across a sweep the GEOMETRY gate refuses (offered, never updated) ===
+  sweep1 merged 0 | streak 1 | frames [1]
+  sweep2 (b moved to gap 0.5) merged 0 | a/b refusal [('obj_a', 'obj_b', 'geometry', None)] | hypothesis kept? True | streak 1 | frames [1]
+  sweep3 (b back) merged 1 | decision rows [] | merge rows [('obj_b', 4.435617950178738)]
+  provenance frames: [1, 3]
+  room-gate variant sweep2 refusals [('obj_a', 'obj_b', 'room', None)] | hypothesis kept? True
+  room-gate variant sweep3 merged 1
+  not-offered variant sweep2: hypothesis kept? False | not_offered rows [{'n_pairs': 3, 'by_reason': {'outside the combined covariance shell': 3}}]
+  not-offered variant sweep3 merged 0 (restart -> 0 expected)
+=== F. _hypothesis_gc semantics ===
+  live={ab, cd}, cd committed, ef not live -> dropped 2 remaining [('a', 'b')]
+=== G. _attribute_channel_input: same_kind on label casing / spacing / empty ===
+  'chair#1'    vs 'chair#2'    -> score 1.0000 optional_count 2 same_kind True
+  'Chair#1'    vs 'chair#2'    -> score 1.0000 optional_count 2 same_kind True
+  'chair #1'   vs 'chair#2'    -> score 1.0000 optional_count 2 same_kind True
+  ''           vs ''           -> score 1.0000 optional_count 2 same_kind False
+  'chair'      vs 'armchair'   -> score 0.9375 optional_count 2 same_kind False
+  'chair#1'    vs 'chair'      -> score 1.0000 optional_count 2 same_kind True
+  no source on one side -> None
+probe_services done

@@ -1,0 +1,13 @@
+A. final objects 104; single-view 84/104
+A. fused-gap-accepted pairs 328/5356; not offered on measured bbox 76/328
+A. of those, BOTH sides single-view (shell = extent exactly, so EXACT miss): 36/76; same base label among them: 4
+      painting painting fused gap 0.27 measured gap 0.316
+      cabinet#1 cabinet#1 fused gap 0.24 measured gap 0.853
+      cushion#1 cushion#3 fused gap 0.03 measured gap 0.608
+      cabinet#3 cabinet#4 fused gap 0.27 measured gap 0.587
+A. counterfactual: generate_candidates reading the FUSED box offers 428 pairs; fused-accepted pairs it misses: 0/328
+B. captured detections with a 3D box: 226
+B. (detection, final object) pairs locality_ok accepts on the fused box: 1246
+B. of those, NOT returned by WorldModel.candidates (measured gap > 0.6): 40/1246; same base label: 2
+B. detections with at least one unreachable fused-accepted object: 39/226; with ONLY unreachable ones (every locality partner hidden): 0/226
+refute_locality_one_test done

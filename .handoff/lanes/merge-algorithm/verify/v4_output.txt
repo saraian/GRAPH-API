@@ -1,0 +1,37 @@
+[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅
+component: SentenceTransformer weights {'label': 0.05, 'color': 0.45, 'material': 0.3, 'description': 0.2}
+
+1. cross-base-label offered pairs with intersecting FUSED boxes (past room+geometry gates):
+   (label_a, label_b, c/m a, c/m b, score, total, overlap, attrs, guard_holds, decision)
+   n=108; attribute channel POSITIVE (score > 0.85) on 16; guard holds 20
+    ('painting', 'artwork', 'blue/canvas', 'blue/canvas', 0.9314, 3.04, 3.34, 1.09, True, 'hold')
+    ('paper_towel_holder', 'dispenser', 'white/plastic', 'white/plastic', 0.9186, 10.3, 8.0, 0.92, True, 'hold')
+    ('cabinet#3', 'bench', 'white/wood', 'white/wood', 0.9074, 7.88, 5.73, 0.76, True, 'hold')
+    ('seat', 'cushion#3', 'blue/fabric', 'blue/fabric', 0.904, 7.21, 5.1, 0.72, True, 'hold')
+    ('seat', 'cushion#1', 'blue/fabric', 'blue/fabric', 0.9031, 6.6, 4.5, 0.71, True, 'hold')
+    ('cushion#3', 'pillow#2', 'blue/fabric', 'blue/fabric', 0.8992, 4.46, 2.41, 0.66, True, 'hold')
+    ('seat', 'pillow#2', 'blue/fabric', 'blue/fabric', 0.8908, 7.78, 5.85, 0.54, True, 'hold')
+    ('seat', 'pillow', 'blue/fabric', 'blue/fabric', 0.8902, 5.96, 4.04, 0.54, True, 'hold')
+    ('cabinet#4', 'bench', 'white/wood', 'white/wood', 0.8884, 1.87, -0.03, 0.51, False, 'hold')
+    ('cabinet#3', 'bench#1', 'white/wood', 'white/wood', 0.8857, 9.52, 7.66, 0.48, True, 'hold')
+    ('cushion#1', 'pillow', 'blue/fabric', 'blue/fabric', 0.8821, 9.81, 8.0, 0.43, True, 'hold')
+    ('oven', 'stove', 'white/metal', 'white/metal', 0.8804, 5.83, 4.04, 0.4, True, 'hold')
+    ('object', 'table', 'white/unknown', 'white/unknown', 0.875, 0.95, -0.77, 0.33, False, 'hold')
+    ('cabinet#5', 'bench#2', 'white/wood', 'white/wood', 0.8566, 1.52, 0.05, 0.09, False, 'hold')
+    ('rug', 'chair#2', 'grey/fabric', 'grey/fabric', 0.8556, 0.64, -0.82, 0.07, False, 'hold')
+   pairs with total >= threshold (held ONLY by the guard): 18 -> [('painting', 'artwork', 0.9314, 3.04), ('paper_towel_holder', 'dispenser', 0.9186, 10.3), ('cabinet#3', 'bench', 0.9074, 7.88), ('seat', 'cushion#3', 0.904, 7.21), ('seat', 'cushion#1', 0.9031, 6.6), ('cushion#3', 'pillow#2', 0.8992, 4.46), ('seat', 'pillow#2', 0.8908, 7.78), ('seat', 'pillow', 0.8902, 5.96), ('cabinet#3', 'bench#1', 0.8857, 9.52), ('cushion#1', 'pillow', 0.8821, 9.81), ('oven', 'stove', 0.8804, 5.83), ('cushion#1', 'pillow#1', 0.8532, 7.12), ('statue', 'sculpture', 0.8498, 5.36), ('sign', 'decor', 0.8243, 8.25), ('bench', 'cabinet#3', 0.8065, 5.53), ('bench', 'cabinet#5', 0.7984, 5.35), ('bench', 'cabinet#4', 0.796, 5.29), ('sofa', 'pillow#1', 0.7119, 3.39)]
+
+2. same-base-label final pairs: attribute score under the NEW weights, by geometry
+   fused-intersecting (candidate re-observations): n=58, median 0.934, score > 0.85 (attribute channel positive, lift armed): 45 (78%)
+   centres > 1.5 m apart (distinct objects): n=306, median 0.912, score > 0.85 (attribute channel positive, lift armed): 228 (75%)
+
+3. exploration detections n=48
+   MOVED transitions (new weights) 6: (cycle, det, obj, centre m, gap m, note)
+    ('262ab4', 'rug', 'rug', 0.69, 0.0, 'gap<=0.3: the exploration loop WOULD have absorbed it')
+    ('149881', 'plant', 'plant#1', 0.42, 0.0, 'gap<=0.3: the exploration loop WOULD have absorbed it')
+    ('149881', 'rug', 'rug', 1.34, 0.18, 'gap<=0.3: the exploration loop WOULD have absorbed it')
+    ('0e6c3c', 'plant', 'plant#1', 0.54, 0.04, 'gap<=0.3: the exploration loop WOULD have absorbed it')
+    ('2b4832', 'sofa#2', 'sofa#1', 0.93, 0.0, 'gap<=0.3: the exploration loop WOULD have absorbed it')
+    ('2b4832', 'rug', 'rug', 0.47, 0.04, 'gap<=0.3: the exploration loop WOULD have absorbed it')
+   detections that become NEW objects only because every passing candidate was absorbed earlier in the cycle: 0 -> []
+   detections with >= 2 live passing candidates: 0; first-in-insertion-order is not the best-IoU one in 0

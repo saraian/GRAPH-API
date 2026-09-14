@@ -1,0 +1,8 @@
+[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅
+answering component: sentence_transformers.sentence_transformer.model SentenceTransformer
+  smoke pair (two chair views)               score 0.9331 optional_count 3 -> attributes log-odds 1.1079463781278938
+  smoke lamp/table                           score 0.3289 optional_count 3 -> attributes log-odds -8.0
+  smoke cross-kind same attrs                score 0.9013 optional_count 3 -> attributes log-odds 0.6841528436900778
+  chair vs armchair, same attrs              score 0.9460 optional_count 3 -> attributes log-odds 1.2795072183881366
+  same kind, description unknown one side    score 1.0000 optional_count 2 -> attributes log-odds 2.0
+probe_real_minilm done

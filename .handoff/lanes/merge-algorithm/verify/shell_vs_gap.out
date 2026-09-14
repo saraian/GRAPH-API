@@ -1,0 +1,11 @@
+keys on one object: ['admission_filled', 'admission_grade', 'bbox', 'bbox_fusion', 'color', 'creation_time', 'description', 'fused_bbox', 'label', 'last_perception_datetime', 'last_perception_timestamp', 'material', 'object_id', 'relations', 'room_id', 'shape']
+objects with an 'observations' list: 0 of 104
+fused-only pairs: 94; offered by the covariance shell anyway: 18 of 94; NOT offered (never reach the fused-box gate): 76 of 94
+same base label among them: 7; offered by shell: 2 of 7
+    ('rug', 'rug', 1.566, 1.929, True, 'extent only (no covariance)')
+    ('painting', 'painting', 1.799, 1.739, False, 'extent only (no covariance)')
+    ('cabinet', 'cabinet#4', 0.986, 2.028, True, 'extent only (no covariance)')
+    ('cabinet#1', 'cabinet#1', 1.641, 1.106, False, 'extent only (no covariance)')
+    ('cabinet#2', 'cabinet#2', 1.668, 1.135, False, 'extent only (no covariance)')
+    ('cushion#1', 'cushion#3', 1.14, 0.712, False, 'extent only (no covariance)')
+    ('cabinet#3', 'cabinet#4', 1.075, 0.669, False, 'extent only (no covariance)')

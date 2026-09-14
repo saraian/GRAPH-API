@@ -1,0 +1,25 @@
+component: nlp_utils.world2vec.st_model = SentenceTransformer
+weights {'label': 0.05, 'color': 0.45, 'material': 0.3, 'description': 0.2} attr cap 2.0
+104 objects, map volume 329.5 m3, n_rooms 4 (room channel +1.386 same / -1.386 different), threshold 2.996
+offered 294 Counter({'shell': 266, 'gap': 28}), excluded 5062
+every offered pair: covariance None on both sides -> True
+decisions: {'geometry': 31, 'hold': 213, 'merge': 26, 'room': 24}
+
+NON-intersecting measured boxes among scored pairs: 131 of 239; merged 0; separation abstained on all: True
+top 12 by total (decision, total, inter, gap_m, offered_by, labels, attr score, same_kind, same_room, channels):
+    ('hold', 2.634, False, 0.128, 'shell', 'cabinet#4', 'cabinet#3', 0.9688, True, True, {'overlap': -0.34, 'attributes': 1.58, 'room': 1.39})
+    ('hold', 2.586, False, 0.203, 'shell', 'cabinet#2', 'cabinet#4', 0.9641, True, True, {'overlap': -0.32, 'attributes': 1.52, 'room': 1.39})
+    ('hold', 2.579, False, 0.133, 'shell', 'cabinet#2', 'cabinet#3', 0.9655, True, True, {'overlap': -0.35, 'attributes': 1.54, 'room': 1.39})
+    ('hold', 2.537, False, 0.53, 'shell', 'rug', 'rug', 0.9894, True, True, {'overlap': -0.71, 'attributes': 1.86, 'room': 1.39})
+    ('hold', 2.517, False, 0.089, 'shell', 'cabinet#1', 'cabinet#1', 0.9439, True, True, {'overlap': -0.12, 'attributes': 1.25, 'room': 1.39})
+    ('hold', 2.511, False, 0.039, 'shell', 'cabinet#4', 'cabinet#5', 0.9594, True, True, {'overlap': -0.33, 'attributes': 1.46, 'room': 1.39})
+    ('hold', 2.322, False, 0.152, 'shell', 'bench#2', 'bench', 0.9457, True, True, {'overlap': -0.34, 'attributes': 1.28, 'room': 1.39})
+    ('hold', 2.231, False, 0.221, 'shell', 'sofa#1', 'sofa', 0.9492, True, True, {'overlap': -0.48, 'attributes': 1.32, 'room': 1.39})
+    ('hold', 1.925, False, 0.055, 'shell', 'cabinet#1', 'cabinet#2', 0.9377, True, True, {'overlap': -0.63, 'attributes': 1.17, 'room': 1.39})
+    ('hold', 1.914, False, 0.232, 'shell', 'table', 'table#1', 0.9243, True, True, {'overlap': -0.46, 'attributes': 0.99, 'room': 1.39})
+    ('hold', 1.867, False, 0.008, 'shell', 'cabinet#4', 'bench', 0.8884, False, True, {'overlap': -0.03, 'attributes': 0.51, 'room': 1.39})
+    ('hold', 1.809, False, 0.146, 'shell', 'cabinet#2', 'cabinet#1', 0.9278, True, True, {'overlap': -0.61, 'attributes': 1.04, 'room': 1.39})
+
+non-intersecting, same room, same kind: 17; attr score max 0.9894; totals within 0.5 of threshold: 6
+attribute score a same-room non-intersecting pair needs at giou -0.111 with n_rooms=4: 0.979
+attr score distribution over same-kind same-room non-intersecting pairs: [0.928, 0.938, 0.944, 0.946, 0.949, 0.959, 0.964, 0.966, 0.969, 0.989]

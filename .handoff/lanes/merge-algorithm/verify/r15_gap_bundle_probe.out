@@ -1,0 +1,13 @@
+hook_decisions lines 2318
+kinds [('merge_refused', 1913), ('admission', 119), ('link', 119), ('observation_discard', 85), ('vlm_description_status', 25), ('disappearance_removal', 24), ('merge', 15), ('not_offered_summary', 13), ('tracking_scan_summary', 2), ('unpaired_description', 2), ('update', 1)]
+engines on records with channels Counter()
+separation channel values Counter()
+separation abstentions []
+TSS {"t": 1789345288.1012113, "kind": "tracking_scan_summary", "object": "<cycle>", "frame": null, "detections": 9, "objects_visited": 26, "skipped_unstable": 26, "comparisons_scored": 0, "winners": 0, "winner_distance": null, "pruned_locality": 10, "locality_unmeasured": 0, "reach_fallback": 0, "refused_evidence": 0, "loser_distance_min": null, "loser_distance_p50": null, "loser_distance_p90": null,
+TSS {"t": 1789345332.7440798, "kind": "tracking_scan_summary", "object": "<cycle>", "frame": null, "detections": 2, "objects_visited": 5, "skipped_unstable": 0, "comparisons_scored": 4, "winners": 2, "winner_distance": 0.9329311917265742, "pruned_locality": 12, "locality_unmeasured": 0, "reach_fallback": 0, "refused_evidence": 0, "loser_distance_min": 0.205, "loser_distance_p50": 0.933, "loser_distanc
+rows mentioning tracking_scan_summary/reach_fallback 2
+persistent type list n objects 104
+keys ['admission_filled', 'admission_grade', 'bbox', 'bbox_fusion', 'color', 'creation_time', 'description', 'fused_bbox', 'label', 'last_perception_datetime', 'last_perception_timestamp', 'material', 'object_id', 'relations', 'room_id', 'shape']
+room_id Counter({'room_5': 40, 'room_0': 39, 'room_4': 24, 'room_1': 1})
+has observations key 0 n_obs>0 0
+n_observations field [('?', 104)]

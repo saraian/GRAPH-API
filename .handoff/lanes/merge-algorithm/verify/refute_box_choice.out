@@ -1,0 +1,9 @@
+[AssocObject.bbox = measured] objects 104; all pairs 5356; offered by generate_candidates 294; shell basis ['extent only (no covariance)']
+   pairs the service gate (fused box, gap<=0.3) ACCEPTS: 328 of 5356; of those NOT offered by the generator: 76 (same base label: 5)
+      (a, b, measured gap m, fused gap m) = ('painting', 'painting', 0.316, 0.27)
+      (a, b, measured gap m, fused gap m) = ('cabinet#1', 'cabinet#1', 0.853, 0.24)
+      (a, b, measured gap m, fused gap m) = ('cabinet#2', 'cabinet#2', 0.487, 0.3)
+      (a, b, measured gap m, fused gap m) = ('cushion#1', 'cushion#3', 0.608, 0.03)
+      (a, b, measured gap m, fused gap m) = ('cabinet#3', 'cabinet#4', 0.587, 0.27)
+[AssocObject.bbox = fused] objects 104; all pairs 5356; offered by generate_candidates 428; shell basis ['extent only (no covariance)']
+   pairs the service gate (fused box, gap<=0.3) ACCEPTS: 328 of 5356; of those NOT offered by the generator: 0 (same base label: 0)

@@ -1,0 +1,7 @@
+objects: 104; with measured bbox: 104; with fused_bbox: 104
+(a) fused box extends beyond measured box: n=104 objects with both; median 0.184 m, max 1.182 m (rug); 31 of 104 extend > 0.3 m (the amount at which the 2x0.3 m association broad phase on the measured box can hide a candidate the fused-box gate would accept)
+    top 5: [(1.182, 'rug'), (1.138, 'countertop#2'), (0.911, 'countertop#1'), (0.82, 'cabinet#2'), (0.736, 'sofa')]
+(b) pairs with both measured boxes: 5356; gap<=0.3 on fused: 328; on measured: 234; fused-compatible but measured-incompatible: 94 (same base label: 7); measured-compatible but fused-incompatible: 0
+    same-label fused-only pairs (a, b, measured gap, fused gap): [('rug', 'rug', 0.53, 0.0), ('painting', 'painting', 0.316, 0.27), ('cabinet', 'cabinet#4', 0.326, 0.0), ('cabinet#1', 'cabinet#1', 0.853, 0.24), ('cabinet#2', 'cabinet#2', 0.487, 0.3), ('cushion#1', 'cushion#3', 0.608, 0.03), ('cabinet#3', 'cabinet#4', 0.587, 0.27)]
+(c) hook_decisions.jsonl kinds: {'observation_discard': 85, 'admission': 119, 'link': 119, 'tracking_scan_summary': 2, 'vlm_description_status': 25, 'not_offered_summary': 13, 'merge_refused': 1913, 'merge': 15, 'update': 1, 'disappearance_removal': 24, 'unpaired_description': 2}
+    merge_refused reasons (legacy engine, GA-493): {'distance': 1105, 'similarity': 589, 'already_condemned': 54, 'room': 165}

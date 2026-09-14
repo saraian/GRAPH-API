@@ -1,0 +1,10 @@
+synthetic sofa: locality_ok(det, sofa) = True | wm.candidates(det, 0.3) = [] -> the loop never calls locality_ok for it
+GA-493: objects whose fused box extends > 0.6 m beyond the measured box on one side: 8 of 104; a detection inside the fused box at that end passes locality_ok but is NOT a broad-phase candidate for 3 of them
+  (label, side, extension m, locality_ok, reached by wm.candidates) = ('rug', 'y_max', 1.18, True, False)
+  (label, side, extension m, locality_ok, reached by wm.candidates) = ('sofa', 'y_min', 0.74, True, True)
+  (label, side, extension m, locality_ok, reached by wm.candidates) = ('cabinet#1', 'y_max', 0.66, True, True)
+  (label, side, extension m, locality_ok, reached by wm.candidates) = ('cabinet', 'y_max', 0.63, True, True)
+  (label, side, extension m, locality_ok, reached by wm.candidates) = ('cabinet#2', 'y_max', 0.82, True, True)
+  (label, side, extension m, locality_ok, reached by wm.candidates) = ('pillow#1', 'y_max', 0.63, True, True)
+  (label, side, extension m, locality_ok, reached by wm.candidates) = ('countertop#1', 'y_min', 0.91, True, False)
+  (label, side, extension m, locality_ok, reached by wm.candidates) = ('countertop#2', 'x_min', 1.14, True, False)

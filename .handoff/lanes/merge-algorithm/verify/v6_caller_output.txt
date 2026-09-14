@@ -1,0 +1,152 @@
+[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅
+engine: evidence | ontology: False | attr cap: 2.0 | min_consecutive: 2 | commit thr: 2.9957
+P40: containment 0.400; overlap channel log(300/1.92)*c = 2.021
+P85: containment 0.850; overlap channel log(300/1.92)*c = 4.294
+
+--- CROSS-KIND bed/pillow, both blue/fabric, 4 rooms (+1.386), containment 0.40
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 1: merged_count=0 [('bed', 'pillow', 'hold', 4.574, {'overlap': 2.021, 'attributes': 1.167, 'room': 1.386}, 'same_kind=False', 'log-odds 4.574 >= 2.996 but only 1/2 consecutive')]
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+📐 COMPARISON bed vs pillow:
+   Pos A: (1.00, 0.80, 0.30)
+   Pos B: (0.40, 0.30, 0.62)
+   Distance: 0.844m (threshold: 0.8m)
+   Sim semantiche:
+     Label: 'bed' vs 'pillow'
+     Colore: 'blue' vs 'blue'
+     Materiale: 'fabric' vs 'fabric'
+     Similarity: 4.574 (threshold: 0.95)
+   ✅ MERGE!
+     Volume A: 1.920m³ | Volume B: 0.048m³ → Kept: 1.920m³
+     Kept: 'bed' | Removed: 'pillow'
+     Keeper desc: 'a bed...'
+     Bbox kept: x[0.00,2.00] y[0.00,1.60] z[0.00,0.60]
+══════════════════════════════════════════════
+
+  sweep 2: merged_count=1 [('MERGE', 'bed', None, 4.573543943233162)]
+
+--- CROSS-KIND bed/pillow, both blue/fabric, 2 rooms (+0.693), containment 0.40
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 1: merged_count=0 [('bed', 'pillow', 'hold', 3.88, {'overlap': 2.021, 'attributes': 1.167, 'room': 0.693}, 'same_kind=False', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 2: merged_count=0 [('bed', 'pillow', 'hold', 3.88, {'overlap': 2.021, 'attributes': 1.167, 'room': 0.693}, 'same_kind=False', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+
+--- CROSS-KIND bed/pillow, both blue/fabric, 1 room (room abstains), containment 0.40
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 1: merged_count=0 [('bed', 'pillow', 'hold', 3.187, {'overlap': 2.021, 'attributes': 1.167}, 'same_kind=False', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 2: merged_count=0 [('bed', 'pillow', 'hold', 3.187, {'overlap': 2.021, 'attributes': 1.167}, 'same_kind=False', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+
+--- CROSS-KIND bed/pillow, both blue/fabric, 4 rooms, containment 0.85
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 1: merged_count=0 [('bed', 'pillow', 'hold', 6.847, {'overlap': 4.294, 'attributes': 1.167, 'room': 1.386}, 'same_kind=False', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 2: merged_count=0 [('bed', 'pillow', 'hold', 6.847, {'overlap': 4.294, 'attributes': 1.167, 'room': 1.386}, 'same_kind=False', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+
+--- CROSS-KIND bed/pillow, both blue/fabric, 6 rooms (+1.792), containment 0.85
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 1: merged_count=0 [('bed', 'pillow', 'hold', 7.252, {'overlap': 4.294, 'attributes': 1.167, 'room': 1.792}, 'same_kind=False', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 2: merged_count=0 [('bed', 'pillow', 'hold', 7.252, {'overlap': 4.294, 'attributes': 1.167, 'room': 1.792}, 'same_kind=False', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+
+--- CROSS-KIND bed/pillow, blue/fabric vs white/fabric, 4 rooms, containment 0.40
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 1: merged_count=0 [('bed', 'pillow', 'hold', -4.593, {'overlap': 2.021, 'attributes': -8.0, 'room': 1.386}, 'same_kind=False', 'log-odds -4.593 < 2.996')]
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 2: merged_count=0 [('bed', 'pillow', 'hold', -4.593, {'overlap': 2.021, 'attributes': -8.0, 'room': 1.386}, 'same_kind=False', 'log-odds -4.593 < 2.996')]
+
+--- CROSS-KIND bed/pillow, attributes UNKNOWN both sides (channel abstains = pre-change arithmetic), 4 rooms, containment 0.40
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 1: merged_count=0 [('bed', 'pillow', 'hold', 3.407, {'overlap': 2.021, 'room': 1.386}, 'same_kind=None', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+══════════════════════════════════════════════
+🔍 MERGE CHECK: 7 objects in memory
+══════════════════════════════════════════════
+
+✅ NO duplicates found.
+══════════════════════════════════════════════
+
+  sweep 2: merged_count=0 [('bed', 'pillow', 'hold', 3.407, {'overlap': 2.021, 'room': 1.386}, 'same_kind=None', 'containment carries the decision and co-visibility was never recorded — the hard negative that would refute it is uncollected')]
+
+SUMMARY merged_count on sweep 2 (dry run, through _cb_merge_objects, MERGE_MIN_CONSECUTIVE=2):
+  agree 4 rooms c0.40              -> 1
+  agree 2 rooms c0.40              -> 0
+  agree 1 room  c0.40              -> 0
+  agree 4 rooms c0.85              -> 0
+  agree 6 rooms c0.85              -> 0
+  colour differs 4 rooms c0.40     -> 0
+  attrs unknown 4 rooms c0.40      -> 0
