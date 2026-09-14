@@ -110,11 +110,9 @@ LAYER_KEYS = {ord("b"): "boxes", ord("l"): "labels", ord("1"): "admitted",
 def _publish_layers():
     """Write the layer state where the dashboard can read it. Same channel as
     merge_pending.json, and atomic for the same reason (GA-257)."""
-    d = os.environ.get("RUN_DIR") or os.environ.get("GRAPH_API_OUTPUT_DIR") or ""
-    if not d:
-        return
+    d = STATS_DIR
     try:
-        path = os.path.join(d, "feed_layers.json")
+        path = os.path.join(str(d), "feed_layers.json")
         tmp = path + ".tmp"
         with open(tmp, "w") as fh:
             json.dump({"t": time.time(), "layers": LAYERS,
@@ -179,6 +177,10 @@ else:
     print(f"[feed] WARNING: OUT_DIR is not set. feed_stats.json and bev_data.json go to "
           f"{STATS_DIR} and will NOT be in any run bundle. The next run overwrites them.",
           flush=True)
+
+# A persistent driver replaces this at each floor barrier. Empty keeps standalone runs backward
+# compatible. These keys travel with every frame and event so stale work can be refused by identity.
+FLOOR_SESSION_CONTEXT = {}
 
 SINGLE_FLOOR = bool(hab_cfg.get("single_floor", True))
 FLOOR_TOL = float(hab_cfg.get("floor_tolerance_m", 0.5))
@@ -634,13 +636,20 @@ class CtrlHandler(BaseHTTPRequestHandler):
             self._json({"success": False, "error": f"unknown path {path}"}, code=404)
 
 
+_CTRL_SERVER = None
+
+
 def start_ctrl_server():
+    global _CTRL_SERVER
+    if _CTRL_SERVER is not None:
+        return
     try:
         httpd = ThreadingHTTPServer(("0.0.0.0", CTRL_PORT), CtrlHandler)
     except OSError as exc:
         print(f"[feed] control server disabled ({exc})")
         return
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    _CTRL_SERVER = httpd
     print(f"[feed] control server on :{CTRL_PORT} "
           "(frame.jpg feed.mjpg bev_data logs auto_mode action set_config object_command)")
 
@@ -989,6 +998,11 @@ if TOUR_ALL_FLOORS:
 # ends with pending merges; the count is in the dwell lines.
 TOUR_END_SETTLE_S = float(os.environ.get("FEED_TOUR_END_SETTLE_S",
                                          hab_cfg.get("tour_end_settle_s", 90.0)))
+# Multi-floor mode stops producing observations and requires the consumer queue
+# to remain empty for this interval before a floor session may close.
+DRAIN_STABLE_S = float(os.environ.get("FEED_DRAIN_STABLE_S", "2.0"))
+if DRAIN_STABLE_S < 0:
+    raise SystemExit("FEED_DRAIN_STABLE_S must be non-negative")
 
 # GA-441. THE PRECOMPUTED EXPLORATION SCHEDULE. A schedule is one storey's roadmap and the order to
 # walk it, built offline from the navmesh by lost3dsg/test/voronoi_roadmap.py: waypoints on the
@@ -1480,6 +1494,7 @@ def _fire_post_scan(ctx):
     A hook that raises STOPS THE RUN rather than being swallowed -- a dataset update that silently
     failed would leave a bundle whose laps claim a change that never happened.
     """
+    ctx = {**ctx, **FLOOR_SESSION_CONTEXT}
     out = None
     if POST_SCAN_HOOK:
         mod_name, _, fn_name = POST_SCAN_HOOK.partition(":")
@@ -1829,11 +1844,20 @@ class RevisitState:
 # a random-sampling baseline is ever wanted: it is at habitat_feed_host.py in commit eae203e.
 
 
-def main():
+def main(sim=None, session_context=None, runtime=None):
     global SCHEDULE_OVERLAY
     global SHOW
-    sim = make_sim()
+    global FLOOR_SESSION_CONTEXT
+    global _MERGE_PENDING_DIR
+    global _MERGE_PENDING_PATH
+    FLOOR_SESSION_CONTEXT = dict(session_context or {})
+    runtime = runtime if runtime is not None else {}
+    if sim is None:
+        sim = make_sim()
     agent = sim.initialize_agent(0)
+
+    _MERGE_PENDING_DIR = str(STATS_DIR)
+    _MERGE_PENDING_PATH = os.path.join(_MERGE_PENDING_DIR, "merge_pending.json")
 
     have_nav = ensure_navmesh(sim)
     state = habitat_sim.AgentState()
@@ -1870,7 +1894,20 @@ def main():
         c = (np.array(bb.min) + np.array(bb.max)) / 2
         state.position = np.array([c[0], float(bb.min[1]) + 0.1, c[2]], dtype=np.float32)
     agent.set_state(state)
-    object_controller = DynamicObjectController(sim, agent)
+    pose_ready = runtime.get("pose_ready")
+    if pose_ready is not None:
+        pose_ready({
+            "pose_stamp": time.time(),
+            "habitat_floor": float(agent.get_state().position[1]),
+        })
+    object_controller = runtime.get("object_controller")
+    if object_controller is None:
+        object_controller = DynamicObjectController(sim, agent)
+        runtime["object_controller"] = object_controller
+    else:
+        # The simulator and its ManagedRigidObject wrappers persist across floor sessions.
+        # initialize_agent() may return a fresh wrapper, so only refresh the agent handle.
+        object_controller.agent = agent
 
     # No handler here (owner ruling 2026-09-08 12:15, rule 14): a sampling failure stops the launch.
     # The old `except Exception` continued with NO points, so the storey clustering below ran
@@ -1902,10 +1939,11 @@ def main():
     _sched_doc = load_schedule(SCHEDULE_PATH, _floor_now)
     schedule_payload = schedule_overlay(_sched_doc, EXPLORATION_LAPS)
     tour = ScheduledTour(sim, _sched_doc, EXPLORATION_LAPS, MOVE_FN)
-    poller = None
-    if SHOW and OVERLAY:
+    poller = runtime.get("belief_poller")
+    if SHOW and OVERLAY and poller is None:
         poller = BeliefPoller()
         poller.start()
+        runtime["belief_poller"] = poller
 
     floor_ref = tour.floor_y if tour else float(agent.get_state().position[1])
 
@@ -2122,7 +2160,9 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", PORT))
     srv.listen(1)
-    print(f"[feed] scene={SCENE} listening on :{PORT}, waiting for the ROS side...")
+    _session_label = (f" session={FLOOR_SESSION_CONTEXT['session_id']}"
+                      if FLOOR_SESSION_CONTEXT.get("session_id") else "")
+    print(f"[feed] scene={SCENE}{_session_label} listening on :{PORT}, waiting for the ROS side...")
     conn, addr = srv.accept()
     conn.settimeout(SEND_TIMEOUT)  # a hard-killed container must not hang sendall forever
     print(f"[feed] connected: {addr}")
@@ -2143,9 +2183,9 @@ def main():
     t_start = time.time()
 
     ag_state = agent.get_state()
-    t_start_sim = t_start
+    t_start_sim = float(runtime.setdefault("clock_start", t_start))
     total_steps = 0
-    frame_seq = 0          # GA-121: ordinal of each published frame; see the frame dict
+    frame_seq = int(runtime.get("frame_seq", 0))
     # GA-37. Two counts with two names. total_steps is RENDERED frames; frames_sent_ok is
     # frames sendall() accepted for the ROS side (the socket is reliable, so a frame the
     # peer never read is one that was in flight when it dropped the connection); the
@@ -2154,13 +2194,17 @@ def main():
     # two old bundles that carried a viewpoint file).
     frames_sent_ok = 0
     frames_send_failed = 0
-    frame_poses_path = STATS_DIR / "frame_poses.jsonl"
+    recording_dir = Path(runtime.get("recording_dir", STATS_DIR))
+    recording_dir.mkdir(parents=True, exist_ok=True)
+    frame_poses_path = recording_dir / "frame_poses.jsonl"
     total_distance_m = 0.0
     last_pos = np.asarray(ag_state.position, dtype=np.float64)
 
     house_done_at = None
     end_reason = None
     settle_pending_start = settle_pending_end = None
+    drain_queue_start = drain_queue_end = None
+    strict_drain = runtime.get("drain_barrier")
     while True:
         t0 = time.time()
         # RULE 73. THE RUN ENDS ITSELF. See TOUR_END_SETTLE_S: with no cap, nothing else would.
@@ -2176,9 +2220,32 @@ def main():
                 # settle_pending_end above zero says the feed left while merges were still resolving,
                 # and the run says so about itself rather than waiting for somebody to notice.
                 settle_pending_start, _sw = _pending_merges()
+                if strict_drain is not None:
+                    drain_queue_start = strict_drain.sample(t0, house_done_at)["queue_depth"]
                 print(f"[feed] settling for {TOUR_END_SETTLE_S:.0f}s before ending the feed "
                       f"({settle_pending_start if settle_pending_start is not None else '?'} "
-                      f"merges pending)", flush=True)
+                      f"merges pending; perception queue "
+                      f"{drain_queue_start if drain_queue_start is not None else '?'})", flush=True)
+            if strict_drain is not None:
+                # A strict floor barrier cannot drain while its producer keeps adding frames.
+                # Keep Habitat and the socket alive, but publish no new observation after the
+                # schedule-complete frame. The perception worker then consumes its finite backlog.
+                drain = strict_drain.sample(t0, house_done_at)
+                drain_queue_end = drain["queue_depth"]
+                settle_pending_end, _sw = _pending_merges()
+                # Legacy merge mode has no hypothesis signal. When a merge engine does publish
+                # one, a measured nonzero value is part of the drain and cannot be ignored.
+                merge_drain_complete = (
+                    settle_pending_end is None or settle_pending_end == 0
+                )
+                if drain["complete"] and merge_drain_complete:
+                    end_reason = "house_tour_complete"
+                    break
+                if drain["timed_out"]:
+                    end_reason = "house_tour_incomplete_drain"
+                    break
+                time.sleep(min(0.25, period))
+                continue
             elif (t0 - house_done_at) >= TOUR_END_SETTLE_S:
                 settle_pending_end, _sw = _pending_merges()
                 end_reason = "house_tour_complete"
@@ -2255,6 +2322,7 @@ def main():
             # length depends on the path the mover finds, which is not known until it arrives.
             phase_rem = tour.scan_left if tour.scan_left > 0 else -1
             feed_stats = {
+                **FLOOR_SESSION_CONTEXT,
                 "elapsed_sec": round(time.time() - t_start_sim, 1),
                 "total_steps": total_steps,
                 "frames_rendered": total_steps,
@@ -2320,6 +2388,7 @@ def main():
             active_map = topdown_maps.get(min(topdown_maps, key=_floor_dist)) if topdown_maps else None
 
             bev_payload = {
+                **FLOOR_SESSION_CONTEXT,
                 "agent": {
                     "x": float(ros_agent_pos[0]),
                     "y": float(ros_agent_pos[1]),
@@ -2382,6 +2451,7 @@ def main():
         cam_quat = np.array([cam.rotation.x, cam.rotation.y, cam.rotation.z, cam.rotation.w], dtype=np.float64)
         scan_complete = CTRL.scan_events.popleft() if CTRL.scan_events else None
         frame = {
+            **FLOOR_SESSION_CONTEXT,
             "rgb": np.ascontiguousarray(obs["color_sensor"][..., :3], dtype=np.uint8),
             "depth": np.ascontiguousarray(obs["depth_sensor"], dtype=np.float32),
             "cam_pos": np.asarray(cam.position, dtype=np.float64),
@@ -2438,6 +2508,7 @@ def main():
             "w": W, "h": H, "hfov": HFOV,
         }
         frame_seq += 1
+        runtime["frame_seq"] = frame_seq
 
         if _HAVE_CV2[0]:          # latest JPEG for the control server's frame.jpg / feed.mjpg
             try:
@@ -2527,6 +2598,14 @@ def main():
                 print(f"[feed] cv2 display error (disabling GUI window): {exc}\n{traceback.format_exc()}")
                 SHOW = False
 
+        guard = runtime.get("observation_guard")
+        if guard is not None and not guard({
+            "session_id": frame.get("session_id"),
+            "floor_id": frame.get("floor_id"),
+            "transform_epoch": frame.get("transform_epoch"),
+            "stamp": frame["t"],
+        }):
+            raise RuntimeError("floor-session coordinator rejected an outgoing observation")
         blob = pickle.dumps(frame, protocol=4)
         try:
             conn.sendall(struct.pack("!I", len(blob)) + blob)
@@ -2537,8 +2616,8 @@ def main():
             # what rendered the frame; base_z for reference. Consumed by tools/frustum_gt.py.
             _cp, _cq = habitat_pose_to_ros(frame["cam_pos"], frame["cam_quat"])
             _yaw = math.atan2(2.0 * (_cq[3] * _cq[2] + _cq[0] * _cq[1]), 1.0 - 2.0 * (_cq[1] ** 2 + _cq[2] ** 2))
-            with open(frame_poses_path, "a") as fp:
-                fp.write(json.dumps({
+            pose_record = {
+                    **FLOOR_SESSION_CONTEXT,
                     "frame_id": frame["frame_id"], "stamp": frame["t"],
                     "x": float(_cp[0]), "y": float(_cp[1]), "z": float(_cp[2]), "yaw": float(_yaw),
                     "qx": float(_cq[0]), "qy": float(_cq[1]), "qz": float(_cq[2]), "qw": float(_cq[3]),
@@ -2554,7 +2633,13 @@ def main():
                     "stop_index": getattr(tour, "i", None),
                     "lap": getattr(tour, "lap", None),
                     "scan_left": getattr(tour, "scan_left", None),
-                }) + "\n")
+                }
+            with open(frame_poses_path, "a") as fp:
+                fp.write(json.dumps(pose_record) + "\n")
+            session_pose_path = STATS_DIR / "frame_poses.jsonl"
+            if session_pose_path != frame_poses_path:
+                with open(session_pose_path, "a") as fp:
+                    fp.write(json.dumps(pose_record) + "\n")
         except (BrokenPipeError, ConnectionResetError, socket.error, OSError) as exc:
             frames_send_failed += 1
             print(f"[feed] client disconnected ({exc}), waiting for reconnect...")
@@ -2589,14 +2674,47 @@ def main():
     feed_stats["settle_pending_start"] = settle_pending_start
     feed_stats["settle_pending_end"] = settle_pending_end
     feed_stats["settle_was_enough"] = _settled
+    feed_stats["frames_sent_ok"] = frames_sent_ok
+    feed_stats["frames_send_failed"] = frames_send_failed
+    feed_stats["frames_rendered"] = total_steps
+    feed_stats["total_steps"] = total_steps
+    feed_stats["drain_queue_start"] = drain_queue_start
+    feed_stats["drain_queue_end"] = drain_queue_end
+    feed_stats["drain_stable_s"] = DRAIN_STABLE_S if strict_drain is not None else None
+    feed_stats["drain_complete"] = (
+        drain_queue_end == 0 and end_reason == "house_tour_complete"
+        if strict_drain is not None else None
+    )
+    # RULE 79. A VERDICT MAY CLAIM ONLY WHAT IT MEASURED. `drain_complete` is TWO conditions
+    # wearing one name: the perception queue reached a measured zero, AND pending merges were
+    # not above zero. The second is VACUOUS under a merge engine that publishes no pending
+    # signal -- legacy mode reports null, and `settle_pending_end is None` is deliberately
+    # ALLOWED to pass so a certification is not refused for a signal that engine never had.
+    # So `drain_complete: true` from a legacy run asserts strictly less than the same value
+    # from an engine that measured both halves, and nothing in the field said which one you
+    # were reading. This key says it, in the artefact, beside the verdict -- a distinction
+    # that lives only in a handoff is invisible to whoever acts on the bundle.
+    # The verdict is deliberately NOT changed: making an unmeasured merge signal fail the
+    # drain would refuse every legacy-engine certification, which is a new failure rather
+    # than a fix.
+    feed_stats["drain_scope"] = (
+        None if strict_drain is None
+        else "queue_and_merges_both_measured" if settle_pending_end is not None
+        else "queue_measured_only: merge-pending unavailable, so that half asserts nothing"
+    )
     with open(STATS_DIR / "feed_stats.json", "w") as f:
         json.dump(feed_stats, f)
-    marker = {"reason": end_reason, "t": time.time(),
+    marker = {**FLOOR_SESSION_CONTEXT, "reason": end_reason, "t": time.time(),
               "floors_toured": list(getattr(tour, "floor_order", [])) if tour else [],
               "settle_s": TOUR_END_SETTLE_S,
               "settle_pending_start": settle_pending_start,
               "settle_pending_end": settle_pending_end,
               "settle_was_enough": _settled,
+              "drain_queue_start": drain_queue_start,
+              "drain_queue_end": drain_queue_end,
+              "drain_stable_s": DRAIN_STABLE_S if strict_drain is not None else None,
+              "drain_complete": feed_stats["drain_complete"],
+              "drain_scope": feed_stats["drain_scope"],
               "settle_note": "TOUR_END_SETTLE_S is CHOSEN, not measured. settle_pending_end above "
                              "zero means the feed ended while merges were still resolving, so the "
                              "settle was too short for this run; null means the pending count could "
@@ -2605,6 +2723,9 @@ def main():
     with open(STATS_DIR / "feed_ended.json", "w") as f:
         json.dump(marker, f)
     print(f"[feed] FEED ENDED ({end_reason}); wrote {STATS_DIR / 'feed_ended.json'}", flush=True)
+    conn.close()
+    srv.close()
+    return {"marker": marker, "runtime": runtime, "sim": sim}
 
 
 if __name__ == "__main__":

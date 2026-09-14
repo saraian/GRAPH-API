@@ -15,7 +15,7 @@ import json
 from geometry_msgs.msg import Point
 from utils import statistical_outlier_removal, get_distinct_color
 from box_view import BOX_EDGES, box_corners_map, project_visible
-from config import CFG, vlm_completion_kwargs, world_frame
+from config import CFG, world_frame
 import struct
 from openai import OpenAI
 import base64
@@ -686,16 +686,18 @@ def _stamp_from_seconds(timestamp_sec):
     return stamp
 
 
-def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix=""):
+def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix="",
+                              prefer_fused=False):
     if not pub:
         return
     ma = MarkerArray()
     for i, obj in enumerate(objects):
-        if obj.bbox is None:
+        bbox = (getattr(obj, "fused_bbox", None) if prefer_fused else None) or obj.bbox
+        if bbox is None:
             continue
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
-        cx, cy, cz = _centroid_from_bbox(obj.bbox)
+        cx, cy, cz = _centroid_from_bbox(bbox)
         ma.markers.append(_make_marker(world_frame(), stamp, ns, i, Marker.SPHERE, 0.08, color, (cx, cy, cz)))
         ma.markers.append(_make_text_marker(world_frame(), stamp, ns+"_labels", i+10000,
                                             obj.label.replace(' ', '') + label_suffix, (cx, cy, cz)))
@@ -723,27 +725,29 @@ def publish_pov_volume(node, pov_volume, considered_volume_pub=None):
 
 def publish_persistent_centroids(node, wm, persistent_centroids_pub=None):
     _publish_centroid_markers(node, wm.persistent_perceptions, persistent_centroids_pub,
-                              "persistent_centroids", (0.0, 1.0, 0.0, 1.0))
+                              "persistent_centroids", (0.0, 1.0, 0.0, 1.0),
+                              prefer_fused=True)
 
 
 def publish_uncertain_centroids(node, uncertain_objects, uncertain_centroids_pub):
     _publish_centroid_markers(node, uncertain_objects, uncertain_centroids_pub,
                               "uncertain_centroids", (1.0, 0.6, 0.0, 1.0), label_suffix="[?]")
 
-def _publish_bbox_markers(node, objects, pub, ns, color):
+def _publish_bbox_markers(node, objects, pub, ns, color, prefer_fused=False):
     if not pub:
         return
     ma = MarkerArray()
     for i, obj in enumerate(objects):
-        if obj.bbox is None:
+        bbox = (getattr(obj, "fused_bbox", None) if prefer_fused else None) or obj.bbox
+        if bbox is None:
             continue
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
-        cx, cy, cz = _centroid_from_bbox(obj.bbox)
+        cx, cy, cz = _centroid_from_bbox(bbox)
         m = _make_marker(world_frame(), stamp, ns, i * 2, Marker.CUBE, None, color, (cx, cy, cz))
-        m.scale.x = obj.bbox["x_max"] - obj.bbox["x_min"]
-        m.scale.y = obj.bbox["y_max"] - obj.bbox["y_min"]
-        m.scale.z = obj.bbox["z_max"] - obj.bbox["z_min"]
+        m.scale.x = bbox["x_max"] - bbox["x_min"]
+        m.scale.y = bbox["y_max"] - bbox["y_min"]
+        m.scale.z = bbox["z_max"] - bbox["z_min"]
         ma.markers.append(m)
     if ma.markers:
         pub.publish(ma)
@@ -751,7 +755,7 @@ def _publish_bbox_markers(node, objects, pub, ns, color):
 
 def publish_persistent_bboxes(node, wm, persistent_bboxes_pub=None):
     _publish_bbox_markers(node, wm.persistent_perceptions, persistent_bboxes_pub,
-                          "persistent_bboxes", (0.0, 1.0, 0.0, 0.3))
+                          "persistent_bboxes", (0.0, 1.0, 0.0, 0.3), prefer_fused=True)
 
 
 def publish_uncertain_bboxes(node, uncertain_objects, uncertain_bbox_pub):

@@ -58,6 +58,10 @@ if not hasattr(np, "float"):
     np.float = float  # type: ignore[attr-defined]
 
 import utils  # noqa: E402
+from bbox_fusion import (  # noqa: E402
+    VOXEL_SIZE_M,
+    fusion_payload_from_points,
+)
 from cloud import get_perception_backend  # noqa: E402
 from cv_utils import (  # noqa: E402
     _clear_markers,
@@ -71,6 +75,7 @@ from cv_utils import (  # noqa: E402
     vlm_call,
 )
 from detection_pipeline import DetectionPipelineMixin  # noqa: E402
+from detection_types import make_observation_ref, write_observation_msg  # noqa: E402
 from input_output import PerceptionIOMixin  # noqa: E402
 from models import VitSam  # noqa: E402
 from object_info import Object  # noqa: E402
@@ -302,6 +307,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # is being computed FROM. Set at submit, popped at harvest, injected into the
         # result so `_build_descriptions` can refuse one whose object is no longer current.
         self._vlm_origin = {}
+        self._observation_run_id = os.environ.get("GRAPH_API_RUN_ID", "")
+        self._observation_producer_id = uuid.uuid4().hex
 
         # GA-95: one source for the cache window. utils.CameraData drops a frame whose stamp
         # is older than this, so the two must not drift apart.
@@ -352,6 +359,23 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                                      self._gt_semantic_callback, 30)
             self.log_both("info", f"[GT] semantic frame cache: {GT_SEMANTIC_CACHE_FRAMES} frames "
                                   f"(compressed, decoded at lookup)")
+
+        # The live a6 gate waits for this marker before it samples the camera transform.
+        # Write it only after the node has loaded VitSAM and completed all startup work.
+        # The gate and this process share the archive directory, so no extra environment
+        # variable is required in the normal container launch.
+        if self.vitsam is not None:
+            ready_path = os.environ.get("VITSAM_READY_FILE") or os.path.join(
+                os.fspath(self.detection_archive.root), "vitsam_ready")
+            ready_tmp = f"{ready_path}.{os.getpid()}.tmp"
+            try:
+                os.makedirs(os.path.dirname(ready_path), exist_ok=True)
+                with open(ready_tmp, "w", encoding="utf-8") as ready_file:
+                    ready_file.write("ready\n")
+                os.replace(ready_tmp, ready_path)
+                self.log_both("info", f"VitSAM readiness marker written: {ready_path}")
+            except OSError as exc:
+                self.log_both("error", f"Could not write VitSAM readiness marker: {exc}")
 
         self.get_logger().info("Perception startup ready")
 
@@ -634,6 +658,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 return
         if len(self.frame_queue) == self.frame_queue.maxlen:
             self._queue_dropped += 1
+            evicted = self.frame_queue[0]
+            evicted_stamp = evicted.get("timestamp") if isinstance(evicted, dict) else None
+            archive = getattr(self, "detection_archive", None)
+            if archive is not None:
+                archive.record_event(
+                    "capture_queue_evicted",
+                    frame_id=frame_id_from_stamp(evicted_stamp),
+                    queue_depth=int(self.frame_queue.maxlen))
         # Stamped so the CYCLE can report how stale the frame it processed was. Without this
         # the queue's cost is unmeasurable: a deep queue trades freshness for nothing when it
         # is saturated, and only the age says which is happening.
@@ -925,18 +957,38 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         cycle_stamp = camera_data.get("timestamp", None) or (
             camera_info.header.stamp if hasattr(camera_info, "header") else self.get_clock().now().to_msg()
         )
+        # Mint the attempt before any detector output can be archived, filtered, or
+        # delivered asynchronously. It contains no label, geometry, or GT identity.
+        cycle_id = uuid.uuid4().hex[:16]
 
         # TF-dependent: calcolata subito, finché lo stamp è ancora nel buffer TF
         fov_volume = compute_fov_volume_from_depth(depth, camera_info, self, stamp=cycle_stamp)
 
         self.log_both("info", "publish_objects: before run_detection")
         detections = self.run_detection(camera_data)
+        camera_frame_id = str(getattr(getattr(camera_info, "header", None), "frame_id", "") or "")
+        for detection_index, det in enumerate(detections):
+            det.observation = make_observation_ref(
+                self._observation_run_id,
+                self._observation_producer_id,
+                cycle_id,
+                detection_index,
+                cycle_stamp,
+                camera_frame_id,
+            )
         self.log_both("info", f"publish_objects: after run_detection, detections={len(detections)}")
 
         if frame is None and (self.processing_interrupted or not self.is_stationary):
+            self.detection_archive.record_event(
+                "cycle_discarded", frame_id=frame_id_from_stamp(cycle_stamp),
+                cycle_id=cycle_id, reason="motion_during_detection",
+                detection_count=len(detections))
             self.get_logger().error("Processing interrupted: robot moving during detection")
             return
         if not detections:
+            self.detection_archive.record_event(
+                "cycle_completed", frame_id=frame_id_from_stamp(cycle_stamp),
+                cycle_id=cycle_id, outcome="valid_empty", detection_count=0)
             self._publish_image_with_bb(image_raw, [], [], camera_info, camera_data["transform"], cycle_stamp, depth)
             # LAT-2: hand over the FOV computed at the top of this cycle instead of
             # letting the empty-state path project the whole depth image a second time.
@@ -977,6 +1029,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # threaded through. W2: the frame key is mandatory provenance.
         crops_data = self.prepare_crops(detections, image_raw,
                                         frame_id_from_stamp(cycle_stamp))
+        for det, crop in zip(detections, crops_data or []):
+            if crop is not None:
+                observation = getattr(det, "observation", None)
+                crop["observation"] = observation.as_dict() if observation else None
         _mark("crops")
         # GA-172: archived AFTER prepare_crops so the row can carry `crop_meta`, and still
         # BEFORE the VLM batch so a describer failure cannot cost the record of what was
@@ -1001,7 +1057,6 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # description waits on a VLM round trip, so their stamps drift apart under the frame
         # queue and the exact-stamp join stopped matching entirely (20260911_193627: boxes two
         # minutes ahead of descriptions, 50 detections, 0 admissions).
-        cycle_id = uuid.uuid4().hex[:16]
         self._publish_bbox_array(detections, bboxes_3d, fov_volume, cycle_stamp, cycle_id)
         self._publish_description_array(detections, descriptions, cycle_stamp, cycle_id)
         self._publish_late_descriptions(cycle_stamp)
@@ -1225,6 +1280,17 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # were 1.19 s and the bulk of 1.85 s in a 14-detection cycle.
         for det, pts_map in zip(detections, points):
             det.points_map = pts_map
+
+        # Reuse the map-frame points already computed for the AABB and PCA
+        # stages. A frame-grouped benchmark rejected a thread pool here: the
+        # small batches made two workers slower than one.
+        fusion_labels = [det.instance_label for det in detections]
+        payloads = [
+            fusion_payload_from_points(pts_map, label)
+            for pts_map, label in zip(points, fusion_labels)
+        ]
+        for det, payload in zip(detections, payloads):
+            det.fusion_voxel_keys = payload
         return centroids_3d, bboxes_3d
 
     def _attach_crop_embeddings(self, detections, crops_data):
@@ -1403,7 +1469,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         producer, and defaulting it here would rebuild the exact silent
         misattribution this bookkeeping exists to prevent.
         """
-        self._vlm_origin[crop["label"]] = {"frame": crop["frame"], "bbox": crop["bbox"]}
+        self._vlm_origin[crop["label"]] = {
+            "frame": crop["frame"],
+            "bbox": crop["bbox"],
+            "observation": crop.get("observation"),
+        }
 
     def _build_descriptions(self, detections, vlm_results, crops_data=None):
         """GA-277. `crop_path` rides along so the admission gate can SEE the object.
@@ -1482,6 +1552,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             m.status = _description_status(res)
             m.origin_frame = str(origin.get("frame") or "")
             m.origin_bbox_2d = [float(v) for v in origin.get("bbox") or (0.0, 0.0, 0.0, 0.0)]
+            if hasattr(m, "observation"):
+                write_observation_msg(m.observation, origin.get("observation"))
             arr.descriptions.append(m)
         pub.publish(arr)
         self.log_both("info", f"[VLM] {len(late)} late description(s) delivered by origin (GA-108)")
@@ -1589,6 +1661,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 continue
             box_msg = Bbox3d()
             box_msg.label = det.instance_label
+            if hasattr(box_msg, "observation"):
+                write_observation_msg(
+                    box_msg.observation, getattr(det, "observation", None))
             for key, value in bbox_3d.items():
                 # Only copy keys the msg actually has: bbox dicts may carry
                 # extra fields (added before the msg grows a matching one) and
@@ -1632,6 +1707,17 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 box_msg.clip_embedding = [float(v) for v in det_embed]
             else:
                 box_msg.has_clip_embedding = False
+
+            # One view's compact map-frame geometry. Absence is explicit: an
+            # empty typed array alone cannot say whether projection failed or
+            # produced a measured empty cloud.
+            fusion_keys = getattr(det, "fusion_voxel_keys", None)
+            if fusion_keys:
+                box_msg.has_fusion_voxels = True
+                box_msg.fusion_voxel_size_m = float(VOXEL_SIZE_M)
+                box_msg.fusion_voxel_keys = [int(v) for v in fusion_keys]
+            else:
+                box_msg.has_fusion_voxels = False
             msg.boxes.append(box_msg)
         self.bbox_pub.publish(msg)
 
@@ -1641,6 +1727,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         for det, desc in zip(detections, descriptions):
             obj_msg = ObjectDescription()
             obj_msg.label = det.instance_label
+            if hasattr(obj_msg, "observation"):
+                write_observation_msg(
+                    obj_msg.observation, getattr(det, "observation", None))
             # Only copy keys the msg actually has -- the same guard _publish_bbox_array
             # already carries, and for the same reason. `_build_descriptions` adds
             # `confirmed` (always) and `provenance` (sometimes), and ObjectDescription.msg

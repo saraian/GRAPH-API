@@ -2029,6 +2029,7 @@ TOOLS_MENU_TEMPLATE = """
     <a href="./"      style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">NEW &rarr;</a>
     <a id="liveLink" href="dash" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LIVE &rarr;</a>
     <a href="bundles" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LOAD &rarr;</a>
+    <a href="baseline-replay/" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">BASELINE REPLAY &rarr;</a>
 __EXT_LINKS____INTERNAL_LINKS__  </div>
 </div>
 <script>
@@ -2066,7 +2067,8 @@ __EXT_LINKS____INTERNAL_LINKS__  </div>
     // COLLAPSED ON EVERY LOAD (owner 2026-09-11): the panel's own inline display:none is what
     // does it, so there is no restore step to get wrong.
     var local = ['localhost', '127.0.0.1', '::1', ''];
-    if (local.indexOf(location.hostname) !== -1) document.getElementById('rvizLaunchBtn').hidden = false;
+    var rvizButton = document.getElementById('rvizLaunchBtn');
+    if (rvizButton && local.indexOf(location.hostname) !== -1) rvizButton.hidden = false;
     // LIVE ANSWERS FOR ITSELF. /mode_info is the server's own verdict on whether a bridge is
     // answering, which is the same source the banner uses -- so the link and the banner cannot
     // disagree. Disabled rather than hidden: a reader who knows the link should be there is
@@ -2693,6 +2695,35 @@ pollRun();
 """
 
 
+def _install_baseline_replay(app):
+    """Same-origin read-only baseline tool, shared by live and archived dashboards.
+
+    Resolve models only when opened. An unused replay tool must not load image
+    libraries or recordings into the main dashboard at startup.
+    """
+    mounted = []
+
+    async def baseline_app(scope, receive, send):
+        if not mounted:
+            root = str(GRAPH_API_ROOT.resolve())
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            from tools.baselines.replay_server import create_app
+            configured = os.environ.get("BASELINE_REPLAY_MODELS")
+            if configured:
+                models = json.loads(configured)
+                if not isinstance(models, list) or not all(isinstance(p, str) for p in models):
+                    raise ValueError("BASELINE_REPLAY_MODELS must be a JSON array of file paths")
+            else:
+                directory = GRAPH_API_ROOT / "artifacts/baselines"
+                models = [p for p in (directory / "clio.replay.json", directory / "hovsg.replay.json") if p.is_file()]
+            video_root = os.environ.get("BASELINE_REPLAY_VIDEO_ROOT", str(GRAPH_API_ROOT / "artifacts/baselines"))
+            mounted.append(create_app(models, video_root))
+        await mounted[0](scope, receive, send)
+
+    app.mount("/baseline-replay", baseline_app, name="baseline_replay")
+
+
 def _install_launcher(app, index_fn, bundles_fn, current_fn):
     """Register the start page, the dashboard and the run-launch routes on `app`.
 
@@ -2717,6 +2748,8 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
     def _local(request) -> bool:
         return (request.client.host if request and request.client else "") in (
             "127.0.0.1", "::1", "localhost")
+
+    _install_baseline_replay(app)
 
     @app.get("/", response_class=HTMLResponse)
     def _start_page():

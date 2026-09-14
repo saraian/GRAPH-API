@@ -1,4 +1,5 @@
 string label
+ObservationRef observation
 string description
 string color 
 string material

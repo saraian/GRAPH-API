@@ -229,12 +229,15 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
         if not isinstance(obj, dict):
             invalid_predicted_aabb_count += 1
             continue
-        box = _rotate_ros_aabb(_predicted_aabb(obj.get("bbox")), prediction_yaw_deg)
+        fused = obj.get("fused_bbox")
+        geometry = fused if isinstance(fused, dict) else obj.get("bbox")
+        box = _rotate_ros_aabb(_predicted_aabb(geometry), prediction_yaw_deg)
         if box is None:
             invalid_predicted_aabb_count += 1
             continue
         row = {"object_id": obj.get("object_id"), "label": obj.get("label"),
                "room_id": obj.get("room_id"),
+               "bbox_source": "fused_bbox" if isinstance(fused, dict) else "bbox",
                "aabb_min_m": box[0].tolist(), "aabb_max_m": box[1].tolist()}
         # HOV-SG evaluates the appearance embedding belonging to this object.
         # It is serialized in the persistent object's bbox, not in the

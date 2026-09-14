@@ -7,8 +7,8 @@ Covers the harness, the probes that need neither ROS nor a backend (a2, a3, a5),
 `return False` branch of a1, a2 and a6 (GA-73) — a2 against the real config.py, a1 and a6
 against stubbed aligner / TF modules. What only the container can show is marked
 `needs_container` and skipped with the call named, never faked: claiming a probe is verified
-when it has never run is the failure this whole gate exists to catch. a4's branch logic IS
-exercised, against stubs; its two real inferences are not.
+when it has never run is the failure this whole gate exists to catch. a4's branch logic is
+exercised against stubs, and its real Modal adapter path is exercised with HTTP intercepted.
 """
 import json
 import os
@@ -42,6 +42,16 @@ def _fake_frame():
     # keeps the fixture honest if a4 ever grows a minimum-size check.
     import numpy as np
     return np.zeros((480, 640, 3), dtype=np.uint8)
+
+
+def _check_a4_probe_object(frame, scene_objects):
+    """The gate may supply geometry, but no semantic hint or evaluation vocabulary."""
+    check(len(scene_objects) == 1, f"a4 must send one bbox, got {scene_objects!r}")
+    obj = scene_objects[0]
+    check(tuple(obj.bbox) == (160.0, 120.0, 480.0, 360.0), obj.bbox)
+    check(all(getattr(obj, key) == "" for key in
+              ("label", "description", "color", "material", "shape")),
+          "a4's synthetic object must not carry a label, GT, or semantic hint")
 
 try:
     import pytest
@@ -432,6 +442,7 @@ def test_a4_catches_the_missing_stage_timings_before_the_run_does():
     def run_with_timings(t):
         class B:
             def segment_scene(self, frame, scene_objects):
+                _check_a4_probe_object(frame, scene_objects)
                 return [], t
 
         fake_cfg = types.ModuleType("config")
@@ -461,6 +472,9 @@ def test_a4_catches_the_missing_stage_timings_before_the_run_does():
     check(d["probe_frame"] == "a4_probe_frame.jpg", d)
     check(d["frame_shape"] == [480, 640, 3], d)
     check(d["reported_timing_keys"] == [sorted(req)] * 3, d)
+    check(d["probe_object_count"] == 1, d)
+    check(d["probe_semantics"] ==
+          "empty local attributes; image and bbox only on the wire", d)
     check(d["required_read_from"] is not None, "a pass must name which contract it applied")
 
     # the live failure: the call SUCCEEDS and the pipeline then refuses the response
@@ -504,6 +518,79 @@ def test_a4_reads_the_pipelines_required_keys_rather_than_copying_them():
 
     # and the detail records WHERE it read them, so a bundle says which contract was applied
     check(isinstance(g._PIPELINE_TIMING_FALLBACK, tuple), "a fallback must exist")
+
+
+@needs_container("the real Modal adapter imports cv2 for resize and JPEG encoding; HTTP is intercepted")
+def test_a4_modal_probe_reaches_wire_with_bbox_only_and_builds_detection():
+    """Use the real Modal adapter with only its HTTP method replaced.
+
+    This proves a4 reaches JPEG encoding, emits the narrow wire schema, decodes a valid mask,
+    and constructs a Detection. No external request or model call occurs.
+    """
+    perception_dir = os.path.join(REPO_ROOT, "lost3dsg", "src", "perception_module")
+    if perception_dir not in sys.path:
+        sys.path.insert(0, perception_dir)
+    from cloud import client as real_client
+
+    frame = _fake_frame()
+    required, _ = g.pipeline_timing_keys()
+    wire_payloads = []
+    returned = []
+
+    class RecordingModalBackend(real_client.ModalPerceptionBackend):
+        def _post_keepalive(self, body):
+            payload = json.loads(body.decode("utf-8"))
+            wire_payloads.append(payload)
+            mask = real_client.rle_encode(
+                __import__("numpy").zeros(frame.shape[:2], dtype="uint8"))
+            return json.dumps({
+                "segments": [{"index": 0, "mask_rle": mask,
+                              "clip_embedding": None}],
+                "timings_ms": {key: 1.0 for key in required},
+            }).encode("utf-8")
+
+        def segment_scene(self, rgb_image, scene_objects):
+            result = super().segment_scene(rgb_image, scene_objects)
+            returned.append(result)
+            return result
+
+    backend = RecordingModalBackend("https://probe-predict.modal.run")
+
+    # Negative control for the exact defect: an empty list returns before the wire.
+    check(backend.segment_scene(frame, []) == ([], {}),
+          "the adapter's empty-input short circuit changed")
+    check(wire_payloads == [], "an empty object list must make no HTTP call")
+    returned.clear()
+
+    fake_cfg = types.ModuleType("config")
+    fake_cfg.CFG = _a4_local_cfg()
+    saved_cfg = sys.modules.get("config")
+    saved_factory = real_client.get_perception_backend
+    sys.modules["config"] = fake_cfg
+    real_client.get_perception_backend = lambda cfg: backend
+    try:
+        ok, detail = g.a4_perception_twice(frame=frame)
+    finally:
+        real_client.get_perception_backend = saved_factory
+        if saved_cfg is None:
+            sys.modules.pop("config", None)
+        else:
+            sys.modules["config"] = saved_cfg
+
+    check(ok is True, detail)
+    check(len(wire_payloads) == 3, "a4 must make three real adapter requests")
+    for payload in wire_payloads:
+        check(set(payload) == {"image_b64", "boxes"},
+              f"Modal wire schema leaked extra data: {sorted(payload)}")
+        check(payload["boxes"] == [[120.0, 90.0, 360.0, 270.0]], payload["boxes"])
+        check(isinstance(payload["image_b64"], str) and payload["image_b64"],
+              "the request must contain the encoded real probe frame")
+    check(len(returned) == 3, returned)
+    for detections, timings in returned:
+        check(len(detections) == 1, "the adapter must construct one Detection")
+        check(detections[0].bbox == (160.0, 120.0, 480.0, 360.0), detections[0])
+        check(detections[0].mask.shape == (480, 640, 1), detections[0].mask.shape)
+        check(all(key in timings for key in required), timings)
 
 
 # THE a4 FIXTURES NEED SEGMENTER FILES, and they did not when they were written. a4 gained a
@@ -735,6 +822,7 @@ def test_a4_tells_a_cold_start_apart_from_the_serve_once_fault():
 
         class Stub:
             def segment_scene(self, frame, scene_objects):
+                _check_a4_probe_object(frame, scene_objects)
                 if not next(seq):
                     raise TimeoutError("The read operation timed out")
                 # the contract: (detections, per-stage timings). GA-85 asserts the second half.
@@ -1310,7 +1398,7 @@ if __name__ == "__main__":
     # branch logic had landed -- a statement about the tests that the tests contradicted, which
     # is the family this gate exists for. It under-claimed, so it failed safe; it was still
     # wrong, and a summary nobody maintains is how "verified" drifts from what ran.
-    print("a4's BRANCH LOGIC is exercised here against stubs; its two real inferences are not.")
+    print("a4's BRANCH LOGIC is exercised here against stubs; its live endpoint calls remain preflight-only.")
     print("a1, a2 and a6 are shown REFUSING here (a2 against the real config.py; a1 and a6 against")
     print("stubbed aligner / TF modules). NOT exercised here (need the container, see the skips):")
     print("a2's installed config copy, a6's live TF tree, a7 against a real frozen root.")
@@ -1328,23 +1416,59 @@ def test_a12_refuses_a_gt_reader_outside_the_allow_list_and_passes_the_clean_tre
     lost = os.path.dirname(HERE)
     ignore = shutil.ignore_patterns("__pycache__", ".ruff_cache", "*.pyc", "output", "probe_assets")
     with tempfile.TemporaryDirectory() as td:
+        root = os.path.join(td, "lost3dsg")
+        os.makedirs(root)
         for d in ("src", "test"):
-            shutil.copytree(os.path.join(lost, d), os.path.join(td, d), ignore=ignore)
-        ok, detail = a12_gt_isolation(root=td)
+            shutil.copytree(os.path.join(lost, d), os.path.join(root, d), ignore=ignore)
+        shutil.copyfile(os.path.join(os.path.dirname(lost), "run_sim.sh"),
+                        os.path.join(td, "run_sim.sh"))
+        ok, detail = a12_gt_isolation(root=root)
         assert ok is True, detail
-        om6 = os.path.join(td, "src", "perception_module", "object_manager_6.py")
+
+        # Generated output is not source. A notebook helper or rendered benchmark under
+        # test/output must not change the gate verdict for the frozen runtime tree.
+        generated = os.path.join(root, "test", "output", "generated_probe.py")
+        os.makedirs(os.path.dirname(generated), exist_ok=True)
+        with open(generated, "w") as fh:
+            fh.write("_generated_only = 'FEED_GT_SEMANTIC'\n")
+        ok, detail = a12_gt_isolation(root=root)
+        assert ok is True, detail
+
+        # A new runtime reader outside the file allow-list must fail on its own.
+        om6 = os.path.join(root, "src", "perception_module", "object_manager_6.py")
+        om6_src = open(om6).read()
         with open(om6, "a") as fh:
             fh.write("\n_leak = os.environ.get('FEED_GT_SEMANTIC')\n")
-        p2 = os.path.join(td, "src", "perception_module", "perception_2.py")
-        src = open(p2).read()
-        needle = "    def publish_objects("
-        assert needle in src, "perception_2.publish_objects moved; re-point the negative test"
-        src = src.replace(needle, "    def publish_objects(self, *_a, **_k):\n        _x = self._gt_semantic\n\n" + needle, 1)
-        open(p2, "w").write(src)
-        ok, detail = a12_gt_isolation(root=td)
+        ok, detail = a12_gt_isolation(root=root)
         assert ok is False, detail
         assert "src/perception_module/object_manager_6.py" in detail["not_allowed_files"], detail
-        assert "publish_objects" in detail["perception_2_functions_not_allowed"], detail
+        open(om6, "w").write(om6_src)
+
+        # Both selectable perception executables use the same function policy. Plant the
+        # same forbidden reader in each file separately so neither audit can be inert.
+        needle = "    def publish_objects("
+        detail_keys = {
+            "perception_2.py": "perception_2_functions_not_allowed",
+            "perception_parallel.py": "perception_parallel_functions_not_allowed",
+        }
+        for filename, detail_key in detail_keys.items():
+            path = os.path.join(root, "src", "perception_module", filename)
+            src = open(path).read()
+            assert needle in src, f"{filename}: publish_objects moved; re-point the negative test"
+            planted = src.replace(
+                needle,
+                "    def publish_objects(self, *_a, **_k):\n"
+                "        _x = self._gt_semantic\n\n" + needle,
+                1,
+            )
+            open(path, "w").write(planted)
+            ok, detail = a12_gt_isolation(root=root)
+            assert ok is False, detail
+            assert "publish_objects" in detail[detail_key], detail
+            open(path, "w").write(src)
+
+        ok, detail = a12_gt_isolation(root=root)
+        assert ok is True, detail
 
 
 def test_a13_verdict_requires_exactly_one_authority_on_the_stamped_side():

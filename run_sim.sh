@@ -17,6 +17,7 @@
 #   ./run_sim.sh                       every storey of the scene in the config
 #   ./run_sim.sh hm3d_00861            that scene, this run only
 #   ./run_sim.sh --one-storey          a single storey
+#   ./run_sim.sh --multi-floor         ordered visits with one persistent Habitat world
 #   ./run_sim.sh --config <file>       a specific run configuration
 #   ./run_sim.sh --schedule <file>     a list of runs, each with its own configuration
 #   ./run_sim_headless.sh ...          the same, with no rviz and no preview window
@@ -31,6 +32,9 @@
 #   THE HOUSE
 #     HOUSE_FLOORS    the storeys to tour, e.g. "-1.59 +1.21". Read from the published maps
 #                     when unset, so no discovery launch is needed.
+#     MULTI_FLOOR_SEQUENCE    ordered heights with repeats, e.g. "-1.59,+1.21,-1.59".
+#     MULTI_FLOOR_TRANSFORMS  JSON file of building_to_map 4x4 matrices keyed by floor id.
+#     MULTI_FLOOR_TRANSPORT   teleport (default) or stairs; stairs still requires run evidence.
 #     FEED_SPAWN_FLOOR  with --one-storey, which storey. REQUIRED when the scene has per-floor
 #                     maps and you are pinning by hand.
 #   EXPLORATION
@@ -312,11 +316,9 @@ cleanup() {
     # NOTHING TO COPY: $OUT_DIR IS $RUN_DIR since 2026-09-10. These two lines copied the scratch
     # directory into the bundle; with one directory per run they would copy files onto themselves,
     # and `cp` reporting "are the same file" into /dev/null is how a no-op looks like a step.
-    # GA-336. Delete the scratch localization copy (~1.2 GB). Here, not earlier: the container
-    # holds it open until rtabmap closes, and this trap runs after `docker run` has returned.
-    # Its identity is preserved in run_metadata.json (localize_db_source + sha), so deleting the
-    # bytes loses no evidence. Left behind, every run would cost 1.2 GB of results/ for nothing.
-    [ -n "${LOCALIZE_DB_COPY:-}" ] && rm -f "$LOCALIZE_DB_COPY" 2>/dev/null || true
+    # Retain a localization session's writable database. The multi-floor contract must hash the
+    # bytes after RTAB-Map closes and prove which floor state a revisit used. Removing the copy here
+    # would preserve only launch intent, not the map/localizer state that actually ran.
     # GA-238. NO COPY IS NEEDED, and the first version of this block wrongly added one.
     # `-v "$RUN_DIR":/ws/output` (below) means the container's output directory IS the bundle,
     # and live_stack_container.sh exports GRAPH_API_OUTPUT_DIR=/ws/output. So once
@@ -522,7 +524,13 @@ if docker ps --filter name=graphapi_live --format '{{.Names}}' | grep -q .; then
   echo "!! container graphapi_live is already running — aborting (stop it first: docker rm -f graphapi_live)"; exit 1
 fi
 if ss -tln 2>/dev/null | grep -q ':7799 '; then
-  echo "!! port 7799 busy — a feed host is already running — aborting"; exit 1
+  if [ "${GRAPH_API_MULTI_FLOOR:-0}" != "1" ]; then
+    echo "!! port 7799 busy — a feed host is already running — aborting"; exit 1
+  fi
+  _persistent_pid=$(cat "$MULTI_FLOOR_COORD_DIR/feed.pid" 2>/dev/null || true)
+  [ -n "$_persistent_pid" ] && kill -0 "$_persistent_pid" 2>/dev/null || {
+    echo "!! port 7799 is busy but the multi-floor feed pid is absent or dead"; exit 1;
+  }
 fi
 
 echo ">>> host habitat feed (scene renders on the host GPU)"
@@ -562,9 +570,13 @@ case "${1:-hm3d_00861}" in
               DEF_DATASET=$HM3D_ROOT/hm3d_annotated_basis.scene_dataset_config.json ;;
   hm3d_00770) DEF_SCENE=$HM3D_ROOT/00770-NBg5UqG3di3/NBg5UqG3di3.basis.glb
               DEF_DATASET=$HM3D_ROOT/hm3d_annotated_basis.scene_dataset_config.json ;;
+  hm3d_00824) DEF_SCENE=$HM3D_ROOT/00824-Dd4bFSTQ8gi/Dd4bFSTQ8gi.basis.glb
+              DEF_DATASET=$HM3D_ROOT/hm3d_annotated_basis.scene_dataset_config.json ;;
+  hm3d_00829) DEF_SCENE=$HM3D_ROOT/00829-QaLdnwvtxbs/QaLdnwvtxbs.basis.glb
+              DEF_DATASET=$HM3D_ROOT/hm3d_annotated_basis.scene_dataset_config.json ;;
   mp3d_17DRP) DEF_SCENE=$MP3D_ROOT/17DRP5sb8fy/17DRP5sb8fy.glb
               DEF_DATASET=$MP3D_ROOT/mp3d.scene_dataset_config.json ;;
-  *) echo "unknown scene '$1' (hm3d_00861|hm3d_00337|hm3d_00770|mp3d_17DRP)"; exit 1 ;;
+  *) echo "unknown scene '$1' (hm3d_00861|hm3d_00337|hm3d_00770|hm3d_00824|hm3d_00829|mp3d_17DRP)"; exit 1 ;;
 esac
 # VLM config: real regolo endpoint when a key is present, offline smoke fallback
 if [ -n "${REGOLO_API_KEY:-}" ]; then
@@ -590,6 +602,19 @@ CFG_NAME="${CFG_NAME:?is not set. This section is not an entry point: run ./run_
 # reaches a local socket instead.
 export CFG_NAME
 echo "    config: $CFG_NAME"
+
+# Select an installed lost3dsg perception executable without changing the launch
+# file. Keep the established node as the default. The value is stamped below and
+# printed again by live_stack_container.sh, so a bundle states which variant ran.
+PERCEPTION_EXECUTABLE="${PERCEPTION_EXECUTABLE:-perception_2.py}"
+case "$PERCEPTION_EXECUTABLE" in
+  ''|*[!A-Za-z0-9_.-]*)
+    echo "!! invalid PERCEPTION_EXECUTABLE=$PERCEPTION_EXECUTABLE; use an installed executable name"
+    exit 2
+    ;;
+esac
+export PERCEPTION_EXECUTABLE
+echo "    perception executable: $PERCEPTION_EXECUTABLE"
 
 # Setup the persistent run bundle (never overwritten across runs)
 # GA-434. OVERRIDABLE, so a caller that launches the stack ONCE PER STOREY knows each bundle's path
@@ -639,6 +664,7 @@ SCENE_ARG=${1:-hm3d_00861}
 # unaffected: it asserts that no artefact predates run start in each directory it is given, and it
 # does not compare the two against each other.
 RUN_ID="${RUN_TIMESTAMP}_${SCENE_ARG}"
+export GRAPH_API_RUN_ID="$RUN_ID"
 RESULTS_DIR=${RESULTS_DIR:-$REPO/results}
 RUN_DIR="$RESULTS_DIR/$RUN_ID"
 # RUNS_DIR IS THE SAME DIRECTORY NOW, kept as a name because nine places use it: the `latest`
@@ -704,39 +730,16 @@ printf "%s\n" \
 echo "    run bundle: $RUN_DIR (symlinked as $RUNS_DIR/latest)"
 
 # Snapshot calibration, config, and run metadata
-# GA-233. DERIVED, not a literal. This was a heredoc stating 640x480 with fx=320 while the
-# run used 1280x960 -- right only because the sensor kept a 90 deg hfov and a 4:3 aspect, so
-# the RATIO the frustum tools actually read came out the same by luck. The day FEED_HFOV or
-# the aspect changes, tools/visible_gt.py and tools/frustum_gt.py would score against the
-# wrong cone and say nothing about it.
-#
-# Written from the resolved sensor configuration instead, with fx from the pinhole relation
-# fx = (w/2) / tan(hfov/2). The values are ALSO recorded as `source: derived` so a reader can
-# tell a computed calibration from a copied constant.
-_CAL_W="${FEED_WIDTH:-1280}"; _CAL_H="${FEED_HEIGHT:-960}"; _CAL_HFOV="${FEED_HFOV:-90}"
-python3 - "$RUN_DIR/calibration.json" "$_CAL_W" "$_CAL_H" "$_CAL_HFOV" <<'PYCAL'
-import json, math, sys
-path, w, h, hfov = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
-fx = (w / 2.0) / math.tan(math.radians(hfov) / 2.0)
-json.dump({
-    "camera_name": "habitat_camera_optical",
-    "resolution": {"width": w, "height": h},
-    "hfov_deg": hfov,
-    "intrinsics": {"fx": round(fx, 4), "fy": round(fx, 4),
-                   "cx": w / 2.0, "cy": h / 2.0},
-    "distortion_model": "plumb_bob",
-    "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
-    "source": "derived",
-    "source_note": ("GA-233. fx = (w/2)/tan(hfov/2) from the resolved sensor settings of THIS "
-                    "run. Was a hardcoded 640x480/fx=320 heredoc that stayed correct only "
-                    "while the hfov and aspect happened not to change."),
-}, open(path, "w"), indent=2)
-print(f"    calibration: {w}x{h} hfov {hfov} -> fx {fx:.1f} (derived)")
-PYCAL
-# The config the FEED HOST will load. It resolves $HERE/$CFG_NAME through the same
-# config.py::_load as the container, and _load returns the DEFAULTS when the file is absent —
-# silently, with hooks.filter empty. Two processes, one name, and nothing recording the split.
+# GA-233. Resolve the camera contract ONCE. The feed used YAML habitat values when FEED_* was
+# absent, while the old calibration writer used fixed defaults. That produced a 1280x960 file for
+# the measured 640x480 run. This helper validates the values, writes calibration atomically, and
+# returns the exact numeric tuple exported to the feed and stamped in run_metadata below.
 [ -f "$HERE/$CFG_NAME" ] || { echo "!! $HERE/$CFG_NAME does not exist — the feed host would run on config.py defaults; aborting"; exit 1; }
+_SENSOR_RESOLVED=$(python3 "$HERE/run_sensor_config.py" "$HERE/$CFG_NAME" "$RUN_DIR/calibration.json")
+IFS=$'\t' read -r FEED_WIDTH FEED_HEIGHT FEED_HFOV <<< "$_SENSOR_RESOLVED"
+export FEED_WIDTH FEED_HEIGHT FEED_HFOV
+printf '    calibration: %sx%s hfov %s (resolved once for calibration, metadata and feed)\n' \
+  "$FEED_WIDTH" "$FEED_HEIGHT" "$FEED_HFOV"
 cp "$HERE/$CFG_NAME" "$RUN_DIR/config.yaml"
 
 # These sit ABOVE run_metadata.json rather than beside `docker run`, because the metadata
@@ -965,7 +968,8 @@ sys.exit(0 if abs(float(d.get('nearest_scene_floor') or 1e9) - float(sys.argv[2]
     fi
   fi
 if [ -f "$_mapdir/rtabmap.db" ]; then
-    # GA-433 (2026-09-10). THE PUBLISHED MAP IS NOT USED, AND THIS SAYS SO INSTEAD OF PRETENDING.
+    # Preserve the established single-floor default: a published map is not selected implicitly.
+    # Multi-floor revisits and explicit localization pass RTABMAP_LOCALIZE_DB themselves.
     #
     # Until today this branch copied the map to scratch (~1.2 GB, 12 s), exported
     # RTABMAP_LOCALIZE_DB and printed "localizing against a scratch COPY". habitat_launch.py owns
@@ -974,13 +978,12 @@ if [ -f "$_mapdir/rtabmap.db" ]; then
     # That is the failure GA-380 refuses in the other direction, so the copy and the claim are gone
     # and the regime is named in run_metadata.json instead (localization_regime).
     #
-    # THE MAP LIBRARY IS DEAD CODE UNDER THIS CONFIGURATION — the params-sha sidecar, the :ro
-    # canonical mount (GA-295/158), the scratch copy (GA-336) and the per-floor publish refusal
-    # (GA-380). It is left standing, unused, pending the owner's ruling on the localization regime.
+    # The map library remains opt-in. An explicit RTABMAP_LOCALIZE_DB below makes a writable copy;
+    # this discovery branch does not silently change a normal single-floor run's regime.
     LOCALIZE_DB_SOURCE=""
     LOCALIZE_DB_SHA=""
     echo "    a published map exists at $_mapdir/rtabmap.db and THIS RUN WILL NOT USE IT."
-    echo "    habitat_launch.py maps fresh every launch (--delete_db_on_start); see PLAN_1.3 §67."
+    echo "    mapping remains the default; set RTABMAP_LOCALIZE_DB explicitly to use a writable copy."
   elif ls -d "$WORKSPACE_ROOT/maps/$SCENE_ARG"/floor_* >/dev/null 2>&1; then
     # GA-380 (2026-09-08). Maps are published PER FLOOR now and the scene-level rtabmap.db of
     # hm3d_00861 was moved aside on 7 Sep, so an unpinned localisation run would have fallen
@@ -994,9 +997,39 @@ if [ -f "$_mapdir/rtabmap.db" ]; then
     echo "   Pin FEED_SPAWN_FLOOR=<z> to localise against one of them (or set RTABMAP_LOCALIZE_DB). Refusing to map from scratch by accident."
     exit 1
   else
-    echo "    NO published map at $_mapdir. This run maps from scratch — as every run does now."
-    echo "    Publishing a map will NOT change that: habitat_launch.py passes --delete_db_on_start."
+    echo "    NO published map at $_mapdir. This run maps from scratch."
+    echo "    A later explicit RTABMAP_LOCALIZE_DB can localize against the published result."
   fi
+fi
+
+# An explicit localization input is a HOST path. Copy it into this run's writable bundle before
+# Docker starts. The canonical library is mounted read-only and is never handed to RTAB-Map.
+LOCALIZE_DB_SOURCE="${RTABMAP_LOCALIZE_DB:-}"
+LOCALIZE_DB_SHA=""
+if [ -n "$LOCALIZE_DB_SOURCE" ]; then
+  [ -f "$LOCALIZE_DB_SOURCE" ] || {
+    echo "!! RTABMAP_LOCALIZE_DB=$LOCALIZE_DB_SOURCE does not exist on the host"
+    exit 1
+  }
+  [ -f "${LOCALIZE_DB_SOURCE}.params-sha" ] || {
+    echo "!! ${LOCALIZE_DB_SOURCE}.params-sha is missing; refusing an unidentified map"
+    exit 1
+  }
+  LOCALIZE_DB_SHA=$(sha256sum "$LOCALIZE_DB_SOURCE" | cut -c1-16)
+  LOCALIZE_DB_COPY="$RUN_DIR/rtabmap.db"
+  cp --reflink=auto "$LOCALIZE_DB_SOURCE" "$LOCALIZE_DB_COPY"
+  cp "${LOCALIZE_DB_SOURCE}.params-sha" "${LOCALIZE_DB_COPY}.params-sha"
+  export RTABMAP_LOCALIZE_DB=/ws/output/rtabmap.db
+  export RTABMAP_SESSION_MODE=localization
+  export RTABMAP_DATABASE_PATH=/ws/output/rtabmap.db
+  echo "    RTAB-Map localization source: $LOCALIZE_DB_SOURCE (sha256_16 $LOCALIZE_DB_SHA)"
+  echo "    writable session copy: $LOCALIZE_DB_COPY"
+else
+  LOCALIZE_DB_COPY=""
+  export RTABMAP_SESSION_MODE=mapping
+  export RTABMAP_DATABASE_PATH=/ws/output/rtabmap.db
+  unset RTABMAP_LOCALIZE_DB
+  echo "    RTAB-Map mapping session: new database $RUN_DIR/rtabmap.db"
 fi
 # MAPPING_ONLY selected a run that was nothing but the mapping phase, and the mapping phase went
 # with the sampling policy (owner 2026-09-11). A scheduled run maps while it drives the roadmap, so
@@ -1326,7 +1359,11 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
   "start_time": "$(date -Iseconds)",
   "machine": "$(hostname)",
   "config_name": "$CFG_NAME",
+  "perception_executable": "$PERCEPTION_EXECUTABLE",
+  "perception_executable_note": "installed lost3dsg executable selected by this launcher; default perception_2.py",
   "output_dir": "$RUN_DIR",
+  "multi_floor": $([ "${GRAPH_API_MULTI_FLOOR:-0}" = 1 ] && echo true || echo false),
+  "floor_session": $([ "${GRAPH_API_MULTI_FLOOR:-0}" = 1 ] && printf '{"visit_index": %s, "session_id": "%s", "floor_id": "%s", "transform_epoch": %s}' "${MULTI_FLOOR_VISIT_INDEX}" "${MULTI_FLOOR_SESSION_ID}" "${MULTI_FLOOR_FLOOR_ID}" "${MULTI_FLOOR_VISIT_INDEX}" || echo null),
   "config_name_note": "the name the launcher intended; see config_resolved and preflight.json for what each process loaded",
   "config_resolved": {
     "feed_host_path": "$HERE/$CFG_NAME",
@@ -1342,7 +1379,7 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "navigation_mode": "$FEED_MOVE_FN",
     "policy_note": "THE SAMPLING POLICY IS REMOVED (owner 2026-09-11). Every bundle from today on drives a precomputed Voronoi roadmap for exploration_laps identical laps. Bundles before this date carry walk_frames / dwell_frames / dwell_mode / mapping_seconds instead and measure a DIFFERENT experiment: the sampled agent moved on 1.0-1.8% of its frames with mapping_seconds 0. Never pool the two, and never difference them.",
     "fps": $FEED_FPS,
-    "spawn_floor_requested": $([ -n "$FEED_SPAWN_FLOOR" ] && echo "$FEED_SPAWN_FLOOR" || echo null),
+    "spawn_floor_requested": $([ -n "$FEED_SPAWN_FLOOR" ] && echo "${FEED_SPAWN_FLOOR#+}" || echo null),
     "camera_pitch_deg": $FEED_CAMERA_PITCH_DEG,
     "camera_pitch_note": "negative looks DOWN, applied to rgb, depth and semantic together. 0 is the level camera every run before 2026-09-09 used.",
     "seed_source": "$SEED_SOURCE",
@@ -1361,7 +1398,7 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
     "merge_min_consecutive": ${MERGE_MIN_CONSECUTIVE:-2},
     "pose_source": "$FEED_POSE_SOURCE",
     "rtabmap_pub_loc_pose_only_when_localizing": true,
-    "rtabmap_launch": "direct ros2 run rtabmap_slam rtabmap since 2026-09-07 21:40 (GA-359 C): rtabmap.launch.py cannot set pub_loc_pose_only_when_localizing and every earlier bundle's rtabmap.log echoes it false, so /rtabmap/localization_pose was published on every frame, localised or not.",
+    "rtabmap_launch": "ros2 launch lost3dsg habitat_launch.py; database path and mapping/localization session mode are explicit launch arguments. See logs/launch.log for the resolved RTAB-Map child configuration.",
     "localization_pose_record": "logs/localization_pose.log",
     "localization_pose_record_note": "ros2 topic echo --csv --full-length of /rtabmap/localization_pose for the whole run, no header: stamp sec, nanosec, frame_id, position xyz, orientation xyzw, 36 covariance values. Gaps are the not-localised intervals; the covariance gate's threshold (perception, GA-359 C) is to be read from here.",
     "pose_source_note": "GA-359: simulator = boxes placed through the feed node's identity map->odom (Habitat's true pose as odometry AND localisation); rtabmap = rtabmap's map->odom correction applied. Bundles before 2026-09-07 19:45 ran with BOTH authorities publishing (publish_tf was an undeclared launch argument; publish_tf_map defaulted true): run 152446 had 54 of 747 detection rows 2-4 m off. A bundle with this key set is single-authority.",
@@ -1379,18 +1416,19 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
   },
   "resolved_config": {
     "note": "OWNER RULING 16. The RESOLVED values that were in force, not hashes of the files they came from. A bundle must state its own configuration: config_name and the shas say WHICH files were read, and a reader still had to re-resolve them to learn what they said. GA-156 — per-detection archiving silently off — was found by hand for exactly this reason.",
-    "sensor": {"width": $(python3 -c "import sys,yaml,os;c=yaml.safe_load(open(sys.argv[1])) or {};h=(c.get('habitat') or {});print(os.environ.get('FEED_WIDTH') or h.get('width',1280))" "$HERE/$CFG_NAME" 2>/dev/null || echo 1280),
-               "height": $(python3 -c "import sys,yaml,os;c=yaml.safe_load(open(sys.argv[1])) or {};h=(c.get('habitat') or {});print(os.environ.get('FEED_HEIGHT') or h.get('height',960))" "$HERE/$CFG_NAME" 2>/dev/null || echo 960),
-               "note": "raised from 640x480 by owner ruling 25. A gain measured here is a gain of the SYSTEM: resolution moves detector, segmentation, depth and describer together and cannot be attributed to one without a second arm."},
+    "sensor": {"width": $FEED_WIDTH, "height": $FEED_HEIGHT, "hfov_deg": $FEED_HFOV,
+               "source": "same validated tuple exported to the feed and written to calibration.json",
+               "note": "A resolution gain is a gain of the system: detector, segmentation, depth and describer change together."},
     "gt_semantic": ${FEED_GT_SEMANTIC:-0},
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
-    "localization_regime": "fresh_map_per_launch",
-    "tour_shape_note": "GA-434 / rule 73. WHICH SHAPE OF HOUSE RUN THIS BUNDLE BELONGS TO. Two exist and they are not comparable: relaunch_per_storey is one launch, one map and one bundle per storey, which is the owner's 2026-09-10 ruling; continuous_teleport is one launch touring every storey, whose map would straddle them and which owner ruling 25 refuses. A bundle set read as the wrong one would double-count objects across storeys or look like it lost them.",
-    "tour_shape": "relaunch_per_storey",
-    "tour_shape_note": "the only shape now. FEED_TOUR_ALL_FLOORS toured every storey in one continuous session; that machinery lived in the sampling tour and is removed (owner 2026-09-11). The feed host refuses the switch rather than ignoring it.",
+    "rtabmap_session_mode": "$RTABMAP_SESSION_MODE",
+    "rtabmap_database_path": "$RTABMAP_DATABASE_PATH",
+    "localization_regime": "$([ "$RTABMAP_SESSION_MODE" = localization ] && echo writable_declared_map_copy || echo fresh_map_per_launch)",
+    "tour_shape": "$([ "${GRAPH_API_MULTI_FLOOR:-0}" = 1 ] && echo persistent_habitat_floor_sessions || echo relaunch_per_storey)",
+    "tour_shape_note": "$([ "${GRAPH_API_MULTI_FLOOR:-0}" = 1 ] && echo 'opt-in floor-session mode: one Habitat world and acquisition clock persist; RTAB-Map and the output bundle close and reopen per ordered visit. This is distinct from the removed continuous_teleport mode, which mixed floors in one map.' || echo 'rule 73 default: one launch, one map and one bundle per storey. FEED_TOUR_ALL_FLOORS remains refused.')",
     "house_id": $([ -n "${HOUSE_ID:-}" ] && echo "\"$HOUSE_ID\"" || echo null),
-    "spawn_floor": $([ -n "${FEED_SPAWN_FLOOR:-}" ] && echo "$FEED_SPAWN_FLOOR" || echo null),
-    "localize_db_note": "GA-336: localize_db points at a SCRATCH COPY deleted at exit, so the path alone identifies nothing. localize_db_source + localize_db_sha256_16 name the canonical file this run actually opened.",
+    "spawn_floor": $([ -n "${FEED_SPAWN_FLOOR:-}" ] && echo "${FEED_SPAWN_FLOOR#+}" || echo null),
+    "localize_db_note": "localize_db is the writable in-bundle session copy. localize_db_source and localize_db_sha256_16 identify the preserved source bytes copied before launch. The post-close database remains in the bundle for audit.",
     "localize_db_source": $([ -n "${LOCALIZE_DB_SOURCE:-}" ] && echo "\"$LOCALIZE_DB_SOURCE\"" || echo null),
     "localize_db_sha256_16": $([ -n "${LOCALIZE_DB_SHA:-}" ] && echo "\"$LOCALIZE_DB_SHA\"" || echo null),
     "bridge_port": ${BRIDGE_PORT:-null},
@@ -1469,16 +1507,40 @@ echo "    (latest is repointed at the end, after a successful run)"
 # would have thrown away HABITAT_SCENE and HABITAT_DATASET, running the default scene under a
 
 # bundle stamped with the requested one.
-HABITAT_SCENE=${HABITAT_SCENE:-$DEF_SCENE} \
-HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
-DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
-GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
-  nohup "$HOME/miniconda3/envs/habitat_env/bin/python" "$HERE/habitat_feed_host.py" \
-  > "$RUN_DIR/logs/feed_host.log" 2>&1 &
-FEED_PID=$!
+if [ "${GRAPH_API_MULTI_FLOOR:-0}" = "1" ]; then
+  _feed_log="$MULTI_FLOOR_COORD_DIR/feed_host.log"
+  if [ "${MULTI_FLOOR_START_FEED:-0}" = "1" ]; then
+    HABITAT_SCENE=${HABITAT_SCENE:-$DEF_SCENE} \
+    HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
+    DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
+    GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
+      nohup "$HOME/miniconda3/envs/habitat_env/bin/python" "$HERE/persistent_habitat_feed.py" \
+      --plan "$MULTI_FLOOR_PLAN" --coord-dir "$MULTI_FLOOR_COORD_DIR" \
+      > "$_feed_log" 2>&1 &
+    _persistent_pid=$!
+    printf '%s\n' "$_persistent_pid" > "$MULTI_FLOOR_COORD_DIR/feed.pid"
+  else
+    _persistent_pid=$(cat "$MULTI_FLOOR_COORD_DIR/feed.pid" 2>/dev/null || true)
+    [ -n "$_persistent_pid" ] && kill -0 "$_persistent_pid" 2>/dev/null || {
+      echo "!! persistent Habitat feed is not alive for visit $MULTI_FLOOR_VISIT_INDEX"; exit 1;
+    }
+  fi
+  FEED_PID="" # the parent owns this persistent PID; a floor child must not kill it
+else
+  _feed_log="$RUN_DIR/logs/feed_host.log"
+  HABITAT_SCENE=${HABITAT_SCENE:-$DEF_SCENE} \
+  HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
+  DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
+  GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
+    nohup "$HOME/miniconda3/envs/habitat_env/bin/python" "$HERE/habitat_feed_host.py" \
+    > "$_feed_log" 2>&1 &
+  FEED_PID=$!
+fi
 # habitat import + scene load can take >2 min on cold caches
-for i in $(seq 1 90); do grep -q "listening" "$RUN_DIR/logs/feed_host.log" 2>/dev/null && break; sleep 2; done
-grep -q "listening" "$RUN_DIR/logs/feed_host.log" || { echo "feed host failed:"; tail -20 "$RUN_DIR/logs/feed_host.log"; exit 1; }
+_listen_pattern="listening"
+[ "${GRAPH_API_MULTI_FLOOR:-0}" = "1" ] && _listen_pattern="session=${MULTI_FLOOR_SESSION_ID} listening"
+for i in $(seq 1 90); do grep -q "$_listen_pattern" "$_feed_log" 2>/dev/null && break; sleep 2; done
+grep -q "$_listen_pattern" "$_feed_log" || { echo "feed host failed:"; tail -20 "$_feed_log"; exit 1; }
 echo "    feed host up"
 
 # GA-464 (owner 2026-09-10). ONE RVIZ, AND IT IS THE LAUNCH FILE'S. Two were being started and
@@ -1602,11 +1664,14 @@ fi
 # a "#" line here is not a comment -- docker receives "#" and each following word as ARGUMENTS.
 # `bash -n` accepts it, because it is valid syntax; only the run fails. Done once, 2026-09-11.
 docker run --name graphapi_live --rm --entrypoint bash --gpus all --network=host \
-  -e OPENAI_API_KEY -e CFG_NAME -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
+  -e OPENAI_API_KEY -e CFG_NAME -e PERCEPTION_EXECUTABLE -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
+  -e GRAPH_API_RUN_ID -e FEED_GT_SEMANTIC \
+  -e GA493_REPLAY_CAPTURE_DIR -e GA493_REPLAY_CAPTURE_MAX_CYCLES -e GA493_REPLAY_CAPTURE_MAX_BYTES \
   -e FRAME_QUEUE_MAX -e SCAN_COMPLETE_TOPIC -e SCAN_MERGE_SETTLE_S -e MOTION_POSITION_THRESHOLD \
   -e MERGE_MIN_CONSECUTIVE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
-  -e RTABMAP_LOCALIZE_DB -e RTABMAP_CLOSE_TIMEOUT \
+  -e RTABMAP_LOCALIZE_DB -e RTABMAP_SESSION_MODE -e RTABMAP_DATABASE_PATH -e RTABMAP_CLOSE_TIMEOUT \
+  -e MULTI_FLOOR_SESSION_ID -e MULTI_FLOOR_FLOOR_ID -e MULTI_FLOOR_VISIT_INDEX \
   -e FEED_HF_OFFLINE -e PREFLIGHT_HF_CACHE \
   -e FEED_SCHEDULE -e FEED_EXPLORATION_LAPS -e FEED_MOVE_FN -e FEED_POST_SCAN_HOOK \
   -e FEED_SPAWN_FLOOR -e WALL_DETECTOR -e BRIDGE_SERVICE_TIMEOUT \
@@ -1684,6 +1749,7 @@ export LC_ALL=C     # the same reason as the engine: floor_%+.2f under it_IT.UTF
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ONE_STOREY=0
+MULTI_FLOOR=0
 SCENE_ARG=""
 SCHEDULE=""
 CONFIG=""
@@ -1696,8 +1762,9 @@ for a in "$@"; do
     --schedule)   _next_is_schedule=1 ;;
     --config)     _next_is_config=1 ;;
     --one-storey) ONE_STOREY=1 ;;
+    --multi-floor) MULTI_FLOOR=1 ;;
     -h|--help)    sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    -*)           echo "!! unknown option: $a. This script takes a scene, --one-storey," >&2
+    -*)           echo "!! unknown option: $a. This script takes a scene, --one-storey, --multi-floor," >&2
                   echo "   --config <file> and --schedule <file>." >&2
                   echo "   Every other setting belongs in the config file." >&2; exit 2 ;;
     *)            SCENE_ARG="$a" ;;
@@ -1753,10 +1820,23 @@ fi
 # RULE 73 FORBIDS A CAP. A cap truncates a storey mid-tour and leaves a bundle that LOOKS
 # finished, which is the one failure a reader cannot see. Refuse rather than unset it: the caller
 # meant something by it.
-if [ -n "${CAP_MIN:-}" ]; then
+if [ -n "${CAP_MIN:-}" ] && [ "${GA493_DEBUG_MODE:-0}" != "1" ]; then
   echo "!! CAP_MIN=$CAP_MIN is set, and a base run has no cap (rule 73)." >&2
   echo "   Each storey ends when its tour completes. Clear CAP_MIN." >&2
   exit 2
+fi
+if [ "${GA493_DEBUG_MODE:-0}" = "1" ]; then
+  [ "$ONE_STOREY" = "1" ] || { echo "!! GA-493 debug mode requires --one-storey" >&2; exit 2; }
+  [ "${PERCEPTION_EXECUTABLE:-}" = "perception_parallel.py" ] || {
+    echo "!! GA-493 debug mode requires PERCEPTION_EXECUTABLE=perception_parallel.py" >&2; exit 2;
+  }
+  [ "${FEED_GT_SEMANTIC:-}" = "0" ] || {
+    echo "!! GA-493 debug mode requires FEED_GT_SEMANTIC=0" >&2; exit 2;
+  }
+  [ -n "${GA493_REPLAY_CAPTURE_DIR:-}" ] || {
+    echo "!! GA-493 debug mode requires GA493_REPLAY_CAPTURE_DIR" >&2; exit 2;
+  }
+  [ -n "${CAP_MIN:-}" ] || { echo "!! GA-493 debug mode requires CAP_MIN" >&2; exit 2; }
 fi
 # FEED_TOUR_ALL_FLOORS asked for the continuous teleporting tour, which is removed with the
 # sampling policy (owner 2026-09-11). The feed host refuses it too; this catches it before N
@@ -1766,6 +1846,38 @@ if [ "${FEED_TOUR_ALL_FLOORS:-0}" != "0" ]; then
   echo "   with the sampling policy (owner 2026-09-11). This script IS how a house is toured now:" >&2
   echo "   one run per storey, one map per storey (ruling 25). Clear the variable." >&2
   exit 2
+fi
+
+if [ "$MULTI_FLOOR" = "1" ]; then
+  [ "$ONE_STOREY" = "0" ] || { echo "!! --multi-floor and --one-storey are mutually exclusive" >&2; exit 2; }
+  : "${MULTI_FLOOR_SEQUENCE:?--multi-floor requires MULTI_FLOOR_SEQUENCE='floor0 floor1 floor0'}"
+  : "${MULTI_FLOOR_TRANSFORMS:?--multi-floor requires MULTI_FLOOR_TRANSFORMS=<floor-id-to-4x4-json>}"
+  [ -f "$MULTI_FLOOR_TRANSFORMS" ] || { echo "!! no transform file: $MULTI_FLOOR_TRANSFORMS" >&2; exit 2; }
+  [ -n "${FEED_SCHEDULE:-}" ] && [ -f "$FEED_SCHEDULE" ] || {
+    echo "!! --multi-floor requires an explicit existing FEED_SCHEDULE containing every visit" >&2
+    exit 2
+  }
+  _multi_pose_source="${FEED_POSE_SOURCE:-}"
+  if [ -z "$_multi_pose_source" ]; then
+    _multi_config_localization=$(python3 -c \
+      'import sys,yaml; c=yaml.safe_load(open(sys.argv[1])) or {}; print(((c.get("habitat") or {}).get("localization_mode") or "rtabmap").strip().lower())' \
+      "$CONFIG")
+    case "$_multi_config_localization" in
+      ground_truth) _multi_pose_source=simulator ;;
+      rtabmap)      _multi_pose_source=rtabmap ;;
+      *) echo "!! habitat.localization_mode=$_multi_config_localization is neither rtabmap nor ground_truth" >&2; exit 2 ;;
+    esac
+  fi
+  [ "$_multi_pose_source" = simulator ] || {
+    echo "!! --multi-floor currently requires simulator pose; resolved $_multi_pose_source from FEED_POSE_SOURCE/config." >&2
+    echo "   RTAB-Map pose mode needs a gated warm-up channel before perception may resume." >&2
+    exit 2
+  }
+  export FEED_POSE_SOURCE="$_multi_pose_source"
+  [ -z "${RTABMAP_LOCALIZE_DB:-}" ] || {
+    echo "!! --multi-floor owns per-visit RTABMAP_LOCALIZE_DB; do not set it globally" >&2
+    exit 2
+  }
 fi
 
 # THE SETUP IS CHECKED HERE, WHERE THE PERSON IS, rather than failing three layers down with a
@@ -1793,10 +1905,22 @@ FLOORS="${HOUSE_FLOORS:-}"
 _floor_source="HOUSE_FLOORS"
 if [ -z "$FLOORS" ]; then
   _mapdir="$WORKSPACE_ROOT/maps/$SCENE_NAME"
-  FLOORS="$(ls -d "$_mapdir"/floor_* 2>/dev/null | sed -E 's#.*/floor_##' | sort -g | tr '\n' ' ')"
+  if [ -d "$_mapdir" ]; then
+    FLOORS="$(find "$_mapdir" -mindepth 1 -maxdepth 1 -type d -name 'floor_*' -printf '%f\n' \
+      | sed -E 's#^floor_##' | sort -g | tr '\n' ' ')"
+  else
+    # No published map is an expected state. The branch below starts one
+    # unpinned run and reports that it maps from scratch.
+    FLOORS=""
+  fi
   _floor_source="the published maps in $_mapdir"
 fi
 FLOORS="$(echo $FLOORS)"      # collapse the trailing space so ${FLOORS%% *} is exact
+
+if [ "$MULTI_FLOOR" = "1" ]; then
+  FLOORS="$(printf '%s' "$MULTI_FLOOR_SEQUENCE" | tr ',' ' ' | xargs)"
+  _floor_source="the explicit MULTI_FLOOR_SEQUENCE"
+fi
 
 # --one-storey: ONE run, and it still has to be pinned when the maps are per-floor.
 if [ "$ONE_STOREY" = "1" ]; then
@@ -1807,6 +1931,25 @@ fi
 HOUSE_ID="house_$(date +%Y%m%d_%H%M%S)"
 HOUSE_DIR="$RESULTS_DIR/$HOUSE_ID"
 mkdir -p "$HOUSE_DIR"
+MULTI_FLOOR_COORD_DIR="$HOUSE_DIR/coordinator"
+MULTI_FLOOR_PLAN="$HOUSE_DIR/multi_floor_plan.json"
+if [ "$MULTI_FLOOR" = "1" ]; then
+  mkdir -p "$MULTI_FLOOR_COORD_DIR/visits"
+  python3 "$HERE/lost3dsg/test/multi_floor_session.py" \
+    --sequence "$FLOORS" --house-dir "$HOUSE_DIR" --output "$MULTI_FLOOR_PLAN" \
+    --transport "${MULTI_FLOOR_TRANSPORT:-teleport}" --transforms "$MULTI_FLOOR_TRANSFORMS"
+fi
+
+_parent_feed_cleanup() {
+  [ "$MULTI_FLOOR" = "1" ] || return 0
+  local pid
+  pid=$(cat "$MULTI_FLOOR_COORD_DIR/feed.pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo ">>> stopping this run's persistent Habitat feed pid $pid"
+    kill "$pid" 2>/dev/null || true
+  fi
+}
+trap _parent_feed_cleanup EXIT
 echo ">>> RUN $HOUSE_ID — scene $SCENE_NAME"
 if [ -n "$FLOORS" ]; then
   echo "    storeys: $FLOORS   (from $_floor_source)"
@@ -1820,16 +1963,61 @@ echo "    manifest: $HOUSE_DIR/manifest.json"
 storeys_done=()
 bundles=()
 statuses=()
+declare -A multi_floor_databases=()
+visit_index=0
+
+_write_floor_barrier() { # path, visit, session, floor-id, output-dir, source-db-or-empty, mode
+  python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
+import json, os, sys, time
+path, visit, session, floor_id, output_dir, source, mode = sys.argv[1:]
+payload = {"visit_index": int(visit), "session_id": session, "floor_id": floor_id,
+           "output_dir": output_dir, "source_database_path": source or None, "mode": mode,
+           "created_at": time.time()}
+snapshot = os.path.join(os.path.dirname(path), "visits", f"{int(visit):03d}_activate.json")
+if os.path.exists(snapshot):
+    raise SystemExit(f"refusing to overwrite visit activation record {snapshot}")
+for destination in (snapshot, path):
+    temporary = destination + ".tmp"
+    with open(temporary, "w") as stream:
+        json.dump(payload, stream, indent=2)
+        stream.write("\n")
+    os.replace(temporary, destination)
+PY
+}
 
 run_storey() {   # $1 = floor, or "" for an unpinned spawn
-  local floor="$1" stamp bundle rc=0
+  local floor="$1" stamp bundle rc=0 fid session source_db expected start_feed mode
   stamp="$(date +%Y%m%d_%H%M%S)"
   # The stamp is the bundle's name and the engine REFUSES a name already taken, so two storeys
   # starting inside the same second cannot land in one bundle.
   while [ -e "$RESULTS_DIR/${stamp}_${SCENE_NAME}" ]; do sleep 1; stamp="$(date +%Y%m%d_%H%M%S)"; done
   echo ""
   echo ">>> STOREY ${floor:-<unpinned>} — running (bundle stamp $stamp)"
-  if [ -n "$floor" ]; then
+  if [ "$MULTI_FLOOR" = "1" ]; then
+    fid=$(printf 'floor_%+.2f' "$floor")
+    session=$(printf 'visit-%03d-%s' "$visit_index" "$fid")
+    expected="$RESULTS_DIR/${stamp}_${SCENE_NAME}"
+    source_db="${multi_floor_databases[$fid]:-}"
+    mode=$([ -n "$source_db" ] && echo localization || echo mapping)
+    start_feed=$([ "$visit_index" -eq 0 ] && echo 1 || echo 0)
+    _write_floor_barrier "$MULTI_FLOOR_COORD_DIR/activate.json" "$visit_index" \
+      "$session" "$fid" "$expected" "$source_db" "$mode"
+    if [ -n "$source_db" ]; then
+      GRAPH_API_MULTI_FLOOR=1 MULTI_FLOOR_VISIT_INDEX="$visit_index" \
+        MULTI_FLOOR_SESSION_ID="$session" MULTI_FLOOR_FLOOR_ID="$fid" \
+        MULTI_FLOOR_COORD_DIR="$MULTI_FLOOR_COORD_DIR" MULTI_FLOOR_PLAN="$MULTI_FLOOR_PLAN" \
+        MULTI_FLOOR_START_FEED="$start_feed" RTABMAP_LOCALIZE_DB="$source_db" \
+        GRAPH_API_STOREY_CHILD=1 RUN_TIMESTAMP="$stamp" HOUSE_ID="$HOUSE_ID" FEED_SPAWN_FLOOR="$floor" \
+        bash "$0" ${SCENE_ARG:+"$SCENE_ARG"} || rc=$?
+    else
+      env -u RTABMAP_LOCALIZE_DB GRAPH_API_MULTI_FLOOR=1 MULTI_FLOOR_VISIT_INDEX="$visit_index" \
+        MULTI_FLOOR_SESSION_ID="$session" MULTI_FLOOR_FLOOR_ID="$fid" \
+        MULTI_FLOOR_COORD_DIR="$MULTI_FLOOR_COORD_DIR" MULTI_FLOOR_PLAN="$MULTI_FLOOR_PLAN" \
+        MULTI_FLOOR_START_FEED="$start_feed" \
+        GRAPH_API_STOREY_CHILD=1 RUN_TIMESTAMP="$stamp" HOUSE_ID="$HOUSE_ID" FEED_SPAWN_FLOOR="$floor" \
+        bash "$0" ${SCENE_ARG:+"$SCENE_ARG"} || rc=$?
+    fi
+  elif [ -n "$floor" ]; then
     GRAPH_API_STOREY_CHILD=1 RUN_TIMESTAMP="$stamp" HOUSE_ID="$HOUSE_ID" FEED_SPAWN_FLOOR="$floor" \
       bash "$0" ${SCENE_ARG:+"$SCENE_ARG"} || rc=$?
   else
@@ -1837,9 +2025,38 @@ run_storey() {   # $1 = floor, or "" for an unpinned spawn
       bash "$0" ${SCENE_ARG:+"$SCENE_ARG"} || rc=$?
   fi
   bundle="$(ls -d "$RESULTS_DIR/${stamp}_"* 2>/dev/null | head -1 || true)"
+  if [ "$MULTI_FLOOR" = "1" ] && [ "$bundle" != "$expected" ]; then
+    echo "!! multi-floor bundle identity mismatch: expected $expected, found ${bundle:-none}"
+    rc=1
+  fi
   storeys_done+=("${floor:-unpinned}")
   bundles+=("${bundle:-none}")
   statuses+=("$rc")
+  if [ "$MULTI_FLOOR" = "1" ] && [ "$rc" -eq 0 ]; then
+    [ -f "$bundle/rtabmap.db" ] || { echo "!! multi-floor session produced no closed rtabmap.db"; rc=1; statuses[$((${#statuses[@]} - 1))]=1; }
+    if [ "$rc" -eq 0 ]; then
+      local db_sha
+      db_sha=$(sha256sum "$bundle/rtabmap.db" | awk '{print $1}')
+      python3 - "$MULTI_FLOOR_COORD_DIR/closed.json" "$visit_index" "$session" \
+        "$bundle/rtabmap.db" "$db_sha" <<'PY'
+import json, os, sys, time
+path, visit, session, database, digest = sys.argv[1:]
+payload = {"visit_index": int(visit), "session_id": session,
+           "database_path": database, "database_sha256": digest, "created_at": time.time()}
+snapshot = os.path.join(os.path.dirname(path), "visits", f"{int(visit):03d}_closed.json")
+if os.path.exists(snapshot):
+    raise SystemExit(f"refusing to overwrite visit close record {snapshot}")
+for destination in (snapshot, path):
+    temporary = destination + ".tmp"
+    with open(temporary, "w") as stream:
+        json.dump(payload, stream, indent=2)
+        stream.write("\n")
+    os.replace(temporary, destination)
+PY
+      [ -n "${multi_floor_databases[$fid]:-}" ] || multi_floor_databases[$fid]="$bundle/rtabmap.db"
+      visit_index=$((visit_index + 1))
+    fi
+  fi
   if [ "$rc" -ne 0 ]; then
     echo "!! STOREY ${floor:-<unpinned>} FAILED (exit $rc). Stopping here."
     echo "   A storey usually fails for a reason the next storey would hit too, and four identical"
@@ -1857,25 +2074,72 @@ else
   done
 fi
 
+if [ "$MULTI_FLOOR" = "1" ]; then
+  _persistent_pid=$(cat "$MULTI_FLOOR_COORD_DIR/feed.pid" 2>/dev/null || true)
+  if [ "$house_rc" -ne 0 ]; then
+    [ -n "$_persistent_pid" ] && kill "$_persistent_pid" 2>/dev/null || true
+  else
+    _driver_deadline=$(( $(date +%s) + 60 ))
+    until [ -f "$MULTI_FLOOR_COORD_DIR/driver_ended.json" ]; do
+      if [ -z "$_persistent_pid" ] || ! kill -0 "$_persistent_pid" 2>/dev/null; then break; fi
+      [ "$(date +%s)" -ge "$_driver_deadline" ] && break
+      sleep 1
+    done
+    if [ ! -f "$MULTI_FLOOR_COORD_DIR/driver_ended.json" ]; then
+      echo "!! persistent Habitat feed did not confirm all floor sessions complete"
+      house_rc=1
+    fi
+  fi
+fi
+
 python3 - "$HOUSE_DIR/manifest.json" "$HOUSE_ID" "$house_rc" "$SCENE_NAME" "$CONFIG" \
+         "$MULTI_FLOOR" "$MULTI_FLOOR_PLAN" "${FEED_SCHEDULE:-}" "${MULTI_FLOOR_TRANSFORMS:-}" \
          "${storeys_done[@]}" -- "${bundles[@]}" -- "${statuses[@]}" <<'PY'
-import json, sys
-path, house_id, rc, scene, config = sys.argv[1:6]
-rest = sys.argv[6:]
+import hashlib, json, pathlib, sys
+path, house_id, rc, scene, config, multi_floor, plan_path, schedule_path, transforms_path = sys.argv[1:10]
+rest = sys.argv[10:]
 a = rest.index("--"); b = rest.index("--", a + 1)
 storeys, bundles, statuses = rest[:a], rest[a+1:b], rest[b+1:]
+multi = multi_floor == "1"
+plan = json.load(open(plan_path)) if multi else None
+coord = pathlib.Path(path).parent / "coordinator"
+def digest(candidate):
+    if not candidate.is_file(): return None
+    return hashlib.sha256(candidate.read_bytes()).hexdigest()
+visits = []
+if multi:
+    for activation_path in sorted((coord / "visits").glob("*_activate.json")):
+        activation = json.load(open(activation_path))
+        closed_path = activation_path.with_name(activation_path.name.replace("_activate", "_closed"))
+        closed = json.load(open(closed_path)) if closed_path.is_file() else None
+        visits.append({"activation": activation, "closed": closed})
 json.dump({
     "house_id": house_id,
     "scene": scene,
     "config": config,
-    "policy": "rule 73: one run, one map, one bundle, per storey",
+    "policy": ("persistent Habitat; one RTAB-Map session and bundle per ordered floor visit"
+               if multi else "rule 73: one run, one map, one bundle, per storey"),
+    "multi_floor": multi,
+    "multi_floor_plan": plan,
+    "multi_floor_plan_sha256": digest(pathlib.Path(plan_path)) if multi else None,
+    "multi_floor_schedule": ({"path": schedule_path, "sha256": digest(pathlib.Path(schedule_path))}
+                             if multi else None),
+    "multi_floor_transforms": ({"path": transforms_path, "sha256": digest(pathlib.Path(transforms_path))}
+                              if multi else None),
+    "multi_floor_visits": visits if multi else None,
+    "coordinator_events_sha256": digest(coord / "events.jsonl") if multi else None,
+    "continuous_frame_poses_sha256": digest(coord / "frame_poses.jsonl") if multi else None,
+    "dynamic_actions_sha256": digest(coord / "dynamic_actions.jsonl") if multi else None,
+    "driver_ended_sha256": digest(coord / "driver_ended.json") if multi else None,
     "exit_status": int(rc),
     "complete": int(rc) == 0,
     "storeys": [{"floor": s, "bundle": bu, "exit_status": int(st)}
                 for s, bu, st in zip(storeys, bundles, statuses)],
-    "note": "N bundles, not one. Anything that spans the house -- total coverage, an object seen "
-            "on two storeys, the duplicate rate -- is a post-hoc join across these bundles. Each "
-            "bundle's map has its own SLAM origin and they are NOT in a common frame.",
+    "note": ("N floor-session bundles share one persistent Habitat world and acquisition clock. "
+             "Each 2D map remains separate; use the plan's explicit building_to_map transforms."
+             if multi else
+             "N bundles, not one. Anything that spans the house is a post-hoc join. Each bundle's "
+             "map has its own SLAM origin and they are NOT in a common frame."),
 }, open(path, "w"), indent=2)
 print(f"wrote {path}")
 PY

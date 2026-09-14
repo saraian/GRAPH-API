@@ -48,7 +48,9 @@ class DetectionArchive:
         self._frames_written = set()
         self._depth_written = set()
         self.n_rows = 0
+        self.n_events = 0
         self.n_failed = 0
+        self.provenance_complete = True
         self._path = None
         self._frame_dir = None
         self._depth_dir = None
@@ -176,6 +178,29 @@ class DetectionArchive:
 
     # -- detections -----------------------------------------------------------------------
 
+    def record_event(self, event, frame_id=None, cycle_id=None, **fields):
+        """Append one non-detection outcome so archive counts can reconcile."""
+        if not self.enabled:
+            return False
+        row = {
+            "record_type": "event",
+            "event": str(event),
+            "frame_id": frame_id,
+            "cycle_id": cycle_id,
+            **fields,
+        }
+        try:
+            with self._lock:
+                with open(self._path, "a", encoding="utf-8") as archive:
+                    archive.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+                self.n_events += 1
+            return True
+        except OSError as exc:
+            self.n_failed += 1
+            self.provenance_complete = False
+            self._warn(f"event {event} not archived: {exc}")
+            return False
+
     def record_detection(self, frame_id, det, camera_position=None, centroid=None,
                          bbox_3d=None, crop_meta=None, stamp=None, room_id=None,
                          semantic_frame=None, camera_transform=None):
@@ -192,6 +217,10 @@ class DetectionArchive:
                 "stamp": stamp,
                 "label": getattr(det, "label", None),
                 "instance_label": getattr(det, "instance_label", None),
+                "observation": (
+                    det.observation.as_dict()
+                    if getattr(det, "observation", None) is not None else None
+                ),
                 # NULL STAYS NULL. `or 0.0` turned the detector's honest "no calibrated
                 # score" (detection_pipeline.py sets score=None) into a fabricated 0.0 on
                 # every row -- 622 of 622 in 20260911_173938_hm3d_00861. Every reader then
@@ -277,7 +306,9 @@ class DetectionArchive:
 
     def stats(self):
         return {"enabled": self.enabled, "rows": self.n_rows,
-                "frames": len(self._frames_written), "failed": self.n_failed}
+                "events": self.n_events,
+                "frames": len(self._frames_written), "failed": self.n_failed,
+                "provenance_complete": self.provenance_complete}
 
     def _warn(self, msg):
         if self.logger is not None:

@@ -108,16 +108,18 @@ def test_the_tools_menu_never_links_to_a_route_that_is_not_served():
     # so the moment a link gained an id -- `<a id="liveLink" href="dash">` -- it vanished from
     # the parse and this check quietly stopped covering it. `[^>]*?` before the href is what
     # makes the parse about links rather than about attribute order.
-    linked = {"/" + h if h != "./" else "/"
-              for h in re.findall(r'<a [^>]*?href="([a-z0-9_]*|\./)"', menu)}
-    # THREE, not four: the menu is NEW, LIVE and LOAD since /replay was retired (owner
-    # 2026-09-11) and the bundle picker moved to the Load page. The floor exists to catch a
+    linked = {"/" + h.rstrip("/") if h != "./" else "/"
+              for h in re.findall(r'<a [^>]*?href="([a-z0-9_/-]*|\./)"', menu)}
+    # NEW, LIVE, LOAD and BASELINE REPLAY. The bundle picker lives on the Load page.
+    # The floor exists to catch a
     # pattern that has gone stale and matches nothing, so it tracks the real count.
     assert len(linked) >= 3, f"the menu parse found almost nothing ({linked}); the pattern is stale"
     # Both spellings: the page routes are hung on `m.app` inside build_app, the start page and
     # /dash on the bare `app` in another function. Matching only one of them made this check
     # report /dash as unserved when it has been served all along.
     declared = set(re.findall(r'@(?:m\.)?app\.(?:get|post)\("(/[a-z_]*)"', src)) | {"/"}
+    declared |= set(re.findall(r'app\.mount\("(/[a-z0-9_-]+)"', src))
+    assert "/baseline-replay" in linked, "baseline replay disappeared from the Tools menu"
     missing = linked - declared
     assert not missing, f"the tools menu links routes nothing registers: {sorted(missing)}"
     # /arch was asserted here by name until 2026-09-10. It is an EXTENSION page now, so naming it

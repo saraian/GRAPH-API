@@ -1,4 +1,5 @@
 string label
+ObservationRef observation
 float32 x_min
 float32 x_max
 float32 y_min
@@ -50,3 +51,11 @@ float32[4] bbox_2d
 # is concerned, and the channel must ABSTAIN rather than score a fabricated one.
 bool has_clip_embedding
 float32[] clip_embedding
+
+# Multi-observation geometry. The enclosing Bbox3dArray.cycle_id identifies
+# this view. Keys are flattened XYZ int32 triplets in the map frame at
+# fusion_voxel_size_m resolution. The explicit flag preserves absence across
+# the typed boundary; an empty array is never treated as a measured cloud.
+bool has_fusion_voxels
+float32 fusion_voxel_size_m
+int32[] fusion_voxel_keys
