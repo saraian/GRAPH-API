@@ -29,7 +29,10 @@ from association import AssocObject, Observation, search_radius
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
 from cv_bridge import CvBridge
-from cv_utils import publish_persistent_bboxes
+from cv_utils import (
+    publish_persistent_bboxes,
+    publish_persistent_centroids as _publish_cv_persistent_centroids,
+)
 from detection_index import bounds as spatial_bounds
 from geometry_msgs.msg import PoseStamped
 from hooks import DecisionLog, load_hooks
@@ -55,12 +58,10 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformListener
 
-# Explicit, not `import *`. Only the names this file does NOT define itself:
-# publish_persistent_centroids, publish_pov_volume and publish_uncertain_* are defined
-# BELOW and also in cv_utils with different bodies, so importing them here would swap a
-# local implementation for a five-line wrapper (GA-77). While the star imports stood,
-# ruff's F family was blind on this file -- which is why GA-22's two crashes read as
-# `F405 may be undefined` instead of `F821 undefined name`.
+# Explicit, not `import *`. The persistent bbox/centroid publishers are shared with
+# object_services through cv_utils so every update path emits the same RViz markers.
+# The uncertain-marker helpers and POV publisher below remain local because their
+# object-manager filtering/ownership is intentionally different.
 from utils import compute_iou_3d
 from visualization_msgs.msg import Marker, MarkerArray
 from world_model import wm
@@ -292,6 +293,14 @@ SCAN_COMPLETE_TOPIC = os.environ.get(
     "SCAN_COMPLETE_TOPIC", _ASSOC.get("scan_complete_topic", "/habitat/scan_complete"))
 SCAN_MERGE_SETTLE_S = float(os.environ.get(
     "SCAN_MERGE_SETTLE_S", _ASSOC.get("scan_merge_settle_s", 1.0)))
+# Physical TIAGo has no waypoint/360 completion event.  Its external robot
+# configuration therefore enables the same graph-wide merge criterion on a
+# periodic timer.  Keep the default disabled so Habitat still relies only on
+# its scan-complete hook; the Tiago YAML sets this to 5 seconds and the
+# environment remains an explicit per-run override.
+_MERGE_CONFIG = (CFG.get("merge", {}) or {})
+TIAGO_MERGE_INTERVAL_S = float(os.environ.get(
+    "TIAGO_MERGE_INTERVAL_S", _MERGE_CONFIG.get("periodic_interval_s", 0.0)))
 # The FLOOR is the configured value; this is the ceiling, so one pathological VLM round trip
 # cannot stall every later sweep. A scan takes ~12 s at 36 frames and 3 fps, so a settle
 # longer than this would start eating the next stop.
@@ -571,27 +580,8 @@ def publish_agent_path(node, agent_poses, pub):
     pub.publish(path_msg)
 
 def publish_persistent_centroids(node, wm, pub):
-    marker_array = MarkerArray()
-    for i, obj in enumerate(wm.persistent_perceptions):
-        if obj.bbox is None or "door" in obj.label.lower():
-             continue
-        marker = Marker()
-        marker.header.frame_id = world_frame()
-        marker.header.stamp = _stamp_from_seconds(
-            getattr(obj, "last_perception_time", None)
-        ) if getattr(obj, "last_perception_time", None) else node.get_clock().now().to_msg()
-        marker.id = i
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.pose.orientation.w = 1.0
-        marker.pose.position.x = (obj.bbox['x_min'] + obj.bbox['x_max']) / 2.0
-        marker.pose.position.y = (obj.bbox['y_min'] + obj.bbox['y_max']) / 2.0
-        marker.pose.position.z = (obj.bbox['z_min'] + obj.bbox['z_max']) / 2.0
-        marker.scale.x = marker.scale.y = marker.scale.z = 0.1
-        marker.color.a = 1.0
-        marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
-        marker_array.markers.append(marker)
-    pub.publish(marker_array)
+    """Publish the shared sphere+text representation used by every run mode."""
+    return _publish_cv_persistent_centroids(node, wm, pub)
 
 def publish_uncertain_bboxes(node, uncertain_objects, pub):
     marker_array = MarkerArray()
@@ -750,6 +740,8 @@ class ObjectManagerService(Node):
         self._scan_merge_pending = None
         self._scan_merge_timer = None
         self._last_scan_id = None
+        self._periodic_merge_timer = None
+        self._merge_call_lock = threading.Lock()
         
         # --- INIT ROOM MANAGER ---
         self.room_manager = RoomManager(
@@ -868,6 +860,13 @@ class ObjectManagerService(Node):
         self.get_logger().info("Subscribing to /object_descriptions, /bbox_3d and /agent_camera_pose")
         self.create_subscription(String, SCAN_COMPLETE_TOPIC, self._scan_complete_callback, qos_standard)
         self.get_logger().info(f"Scan-complete merge hook: {SCAN_COMPLETE_TOPIC}")
+        if TIAGO_MERGE_INTERVAL_S > 0.0:
+            self._periodic_merge_timer = self.create_timer(
+                TIAGO_MERGE_INTERVAL_S, self._periodic_merge_callback)
+            self.get_logger().info(
+                f"Periodic merge enabled: every {TIAGO_MERGE_INTERVAL_S:.1f}s")
+        else:
+            self.get_logger().info("Periodic merge disabled")
         self.get_logger().info(f"Node name={self.get_name()} ns={self.get_namespace()}")
 
         self._bbox_timer = self.create_timer(2.0, self.periodic_bbox_publisher)
@@ -1117,18 +1116,47 @@ class ObjectManagerService(Node):
             except Exception:
                 pass
 
+        self._merge_call_lock.acquire()
         try:
-            merged_count = self.merge_duplicate_objects(scan_id=scan_id)
-        except Exception as exc:
-            self.object_services.log_both(
-                'error', f"[SCAN MERGE] reconciliation failed for {scan_id!r}: {exc}"
-            )
-            return
+            try:
+                merged_count = self.merge_duplicate_objects(scan_id=scan_id)
+            except Exception as exc:
+                self.object_services.log_both(
+                    'error', f"[SCAN MERGE] reconciliation failed for {scan_id!r}: {exc}"
+                )
+                return
+        finally:
+            self._merge_call_lock.release()
 
         self.object_services.log_both(
             'info',
             f"[SCAN MERGE] scan {scan_id!r}: {merged_count} merge(s) applied",
         )
+
+    def _periodic_merge_callback(self):
+        """Run the existing merge criterion periodically on physical TIAGo.
+
+        TIAGo has no navigation scan-complete event.  The lock prevents a slow
+        HTTP merge from overlapping either another periodic invocation or a
+        delayed Habitat scan-complete merge.
+        """
+        if not self._merge_call_lock.acquire(blocking=False):
+            self.object_services.log_both(
+                'warn', "[PERIODIC MERGE] previous merge is still running; skipped")
+            return
+        try:
+            scan_id = f"tiago-periodic-{int(time.time())}"
+            self.object_services.log_both(
+                'info',
+                f"[PERIODIC MERGE] starting ({TIAGO_MERGE_INTERVAL_S:.1f}s interval)",
+            )
+            merged_count = self.merge_duplicate_objects(scan_id=scan_id)
+            self.object_services.log_both(
+                'info',
+                f"[PERIODIC MERGE] completed: {merged_count} merge(s) applied",
+            )
+        finally:
+            self._merge_call_lock.release()
 
     @synchronized_world_model
     def check_tracking_transition(self, label_base, color, material, description_embedding, bbox):
@@ -1521,9 +1549,10 @@ class ObjectManagerService(Node):
             # GA-190: same rule, third field. Only when the publisher says it carried one.
             if getattr(box, "has_clip_embedding", False):
                 bbox_data["clip_embedding"] = [float(v) for v in box.clip_embedding]
-            temp_key = create_object_key(box.label, "", "", "")
+            detection_id = str(getattr(box, "detection_id", "") or "").strip() or None
+            temp_key = detection_id or create_object_key(box.label, "", "", "")
             self.latest_bboxes[temp_key] = {
-                "bbox": bbox_data, "label": box.label,
+                "bbox": bbox_data, "label": box.label, "detection_id": detection_id,
                 "color": "", "material": "", "description": ""
             }
 
@@ -1573,19 +1602,21 @@ class ObjectManagerService(Node):
             # (ok / model_abstained / parse_failed / call_failed / unanswered) from the log.
             status = getattr(description, "status", "") or "unanswered"
             self._vlm_status_counts[status] = self._vlm_status_counts.get(status, 0) + 1
+            detection_id = str(getattr(description, "detection_id", "") or "").strip() or None
 
             description_embedding = get_embedding(world2vec, description_text)
 
             old_key = create_object_key(label, "", "", "")
-            if old_key not in self.latest_bboxes:
+            bbox_key = detection_id if detection_id in self.latest_bboxes else old_key
+            if bbox_key not in self.latest_bboxes:
                 continue
 
-            bbox = self.latest_bboxes[old_key]["bbox"]
+            bbox = self.latest_bboxes[bbox_key]["bbox"]
             new_key = create_object_key(label, material, color, description_text)
 
-            del self.latest_bboxes[old_key]
+            del self.latest_bboxes[bbox_key]
             self.latest_bboxes[new_key] = {
-                "bbox": bbox, "label": label,
+                "bbox": bbox, "label": label, "detection_id": detection_id,
                 "color": color, "material": material, "description": description_text,
                 "status": status
             }
@@ -2025,6 +2056,23 @@ class ObjectManagerService(Node):
             return embedding.tolist()
         return [float(x) for x in embedding]
 
+    def _serialize_clip_embedding(self, embedding):
+        """Return a finite appearance vector for the Graph API, or ``None``.
+
+        Unlike the text embedding, an absent CLIP vector must be omitted from an update:
+        an update without an appearance measurement must preserve the object's previous
+        appearance rather than replace it with an empty array.
+        """
+        if embedding is None:
+            return None
+        try:
+            values = np.asarray(embedding, dtype=np.float32).flatten()
+        except (TypeError, ValueError):
+            return None
+        if values.size == 0 or not np.all(np.isfinite(values)):
+            return None
+        return values.tolist()
+
     def _call_graph_api(self, method, path, json_body=None, expected_status=None):
         url = self._graph_api_url(path)
         try:
@@ -2143,6 +2191,9 @@ class ObjectManagerService(Node):
                        description_embedding=None, in_exploration=False, room_id=None):
 
         serialized_embedding=self._serialize_embedding(description_embedding)
+        serialized_clip_embedding = self._serialize_clip_embedding(
+            bbox.get("clip_embedding") if isinstance(bbox, dict) else None
+        )
         assigned_room = str(room_id) if room_id is not None else self.room_manager.current_room_id
         self.room_manager.init_room_node(assigned_room)
         payload = {
@@ -2162,6 +2213,8 @@ class ObjectManagerService(Node):
                if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "in_exploration": in_exploration,
             "description_embedding": serialized_embedding,
+            **({"clip_embedding": serialized_clip_embedding}
+               if serialized_clip_embedding is not None else {}),
         }
 
         try:
@@ -2184,6 +2237,9 @@ class ObjectManagerService(Node):
         return None
 
     def modify_existing_object(self, best_match, bbox, description_embedding=None):
+        serialized_clip_embedding = self._serialize_clip_embedding(
+            bbox.get("clip_embedding") if isinstance(bbox, dict) else None
+        )
         payload = {
             "description": best_match.description,
             "color": best_match.color,
@@ -2198,6 +2254,8 @@ class ObjectManagerService(Node):
                 "oriented_extents": list(bbox["oriented_extents"])}
                if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
             "description_embedding": self._serialize_embedding(description_embedding),
+            **({"clip_embedding": serialized_clip_embedding}
+               if serialized_clip_embedding is not None else {}),
         }
 
         response = UpdateObject.Response()

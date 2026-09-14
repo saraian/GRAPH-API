@@ -56,6 +56,18 @@ _DEFAULTS = {
         "word2vec_path": "/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz",
         "word2vec_limit": 200000,
     },
+    # Runtime image appearance vectors.  This is deliberately a separate namespace from
+    # `embedding` above: the latter is the text/description vector used by the legacy
+    # semantic score, while this is the normalized CLIP image vector used by association
+    # appearance evidence and persisted as `bbox.clip_embedding`.
+    "appearance": {
+        "enabled": True,
+        "model_id": "openai/clip-vit-base-patch32",
+        "device": "auto",
+        "require_cuda": False,
+        "min_crop_px": 4,
+        "batch_size": 8,
+    },
     # lost_similarity weights; must sum to 1.0
     "similarity": {"label": 0.05, "color": 0.30, "material": 0.15, "description": 0.50},
     "association": {
@@ -117,6 +129,12 @@ _DEFAULTS = {
         # else. Values are the literals object_manager_6.py:281-282 already used.
         "scan_complete_topic": "/habitat/scan_complete",
         "scan_merge_settle_s": 1.0,
+        # A very close, substantially overlapping re-detection of the same base label is
+        # geometric identity evidence. It may bypass the semantic similarity floor, whose
+        # VLM attributes are known to fluctuate between views. The optional evidence gate
+        # still applies, so an identical label with no measured attributes is not enough.
+        "merge_near_distance_m": 0.02,      # 2 cm centre distance: depth noise / re-detection jitter
+        "merge_near_iou_threshold": 0.25,  # minimum 3D AABB overlap for the geometry override
         # Must stay STRICTLY above `sim_threshold` or a merge fuses pairs the association loop
         # just refused; object_services asserts that at load and the service now refuses a
         # request that carries a lower floor.

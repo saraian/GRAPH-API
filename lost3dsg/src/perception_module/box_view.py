@@ -20,6 +20,115 @@ BOX_EDGES = [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0,
 _AABB_KEYS = {"x_min", "x_max", "y_min", "y_max", "z_min", "z_max"}
 
 
+def _normalise_axis_yaw(yaw):
+    """Return an equivalent box-axis angle in [-pi/2, pi/2)."""
+    return float((float(yaw) + np.pi / 2.0) % np.pi - np.pi / 2.0)
+
+
+def aabb_from_points(points_xyz):
+    """Return the exact axis-aligned bounds of finite 3D points.
+
+    The perception pipeline has already removed invalid depth and statistical outliers before
+    calling this function. A bounding box is an enclosure, so trimming another 5 percent here
+    is incorrect: it makes the visual box miss valid points and makes the merge geometry
+    describe a smaller object than the one that was measured.
+    """
+    pts = np.asarray(points_xyz, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] == 0:
+        return None
+    if not np.all(np.isfinite(pts)):
+        return None
+    lo = np.min(pts, axis=0)
+    hi = np.max(pts, axis=0)
+    if np.any((hi - lo) <= 1e-6):
+        return None
+    return {
+        "x_min": float(lo[0]), "x_max": float(hi[0]),
+        "y_min": float(lo[1]), "y_max": float(hi[1]),
+        "z_min": float(lo[2]), "z_max": float(hi[2]),
+    }
+
+
+def pca_oriented_box(points_xyz, min_anisotropy=1.2):
+    """Fit a yaw-only, enclosing PCA box to finite 3D points.
+
+    This is the one orientation implementation shared by perception, persistence and the
+    renderers. PCA is performed on the complete filtered XY point set, not on a top-surface
+    subset and not by choosing a discretised rectangle angle. The returned extents are exact
+    min/max projections in the PCA frame, so every input point is inside the box.
+
+    A nearly isotropic XY cloud has no stable principal axis. Returning ``None`` for that case
+    is intentional; callers retain the exact AABB instead of publishing a made-up orientation.
+    """
+    pts = np.asarray(points_xyz, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] < 3:
+        return None
+    if not np.all(np.isfinite(pts)):
+        return None
+
+    xy = pts[:, :2]
+    centred = xy - np.mean(xy, axis=0)
+    covariance = np.cov(centred, rowvar=False)
+    if covariance.shape != (2, 2) or not np.all(np.isfinite(covariance)):
+        return None
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    order = np.argsort(eigenvalues)
+    minor_value = max(float(eigenvalues[order[0]]), 0.0)
+    major_value = max(float(eigenvalues[order[1]]), 0.0)
+    if major_value <= 1e-12:
+        return None
+    if major_value / max(minor_value, 1e-12) < float(min_anisotropy) ** 2:
+        return None
+
+    major = eigenvectors[:, order[1]]
+    yaw = _normalise_axis_yaw(np.arctan2(major[1], major[0]))
+
+    def projections(theta):
+        c, s = np.cos(theta), np.sin(theta)
+        u = xy[:, 0] * c + xy[:, 1] * s
+        v = -xy[:, 0] * s + xy[:, 1] * c
+        return u, v, c, s
+
+    u, v, c, s = projections(yaw)
+    lo_u, hi_u = float(np.min(u)), float(np.max(u))
+    lo_v, hi_v = float(np.min(v)), float(np.max(v))
+    lo_z, hi_z = float(np.min(pts[:, 2])), float(np.max(pts[:, 2]))
+
+    # The major eigenvector should already be the long axis. Keep this guard for numerical
+    # ties and for callers using unusual point sets, while preserving the same exact points.
+    if hi_v - lo_v > hi_u - lo_u:
+        yaw = _normalise_axis_yaw(yaw + np.pi / 2.0)
+        u, v, c, s = projections(yaw)
+        lo_u, hi_u = float(np.min(u)), float(np.max(u))
+        lo_v, hi_v = float(np.min(v)), float(np.max(v))
+
+    du, dv, dz = hi_u - lo_u, hi_v - lo_v, hi_z - lo_z
+    if min(du, dv, dz) <= 1e-6 or du / max(dv, 1e-12) < float(min_anisotropy):
+        return None
+    uc, vc = (lo_u + hi_u) / 2.0, (lo_v + hi_v) / 2.0
+    return {
+        "yaw": float(yaw),
+        "oriented_center": [float(uc * c - vc * s), float(uc * s + vc * c),
+                             float((lo_z + hi_z) / 2.0)],
+        "oriented_extents": [float(du), float(dv), float(dz)],
+    }
+
+
+def enclosing_box_from_points(points_xyz, min_anisotropy=1.2, include_orientation=True):
+    """Build one exact AABB and, when stable, one exact PCA-oriented box."""
+    box = aabb_from_points(points_xyz)
+    if box is None:
+        return None
+    if include_orientation:
+        oriented = pca_oriented_box(points_xyz, min_anisotropy=min_anisotropy)
+        if oriented is not None:
+            box.update(oriented)
+            box["has_orientation"] = True
+            return box
+    box["has_orientation"] = False
+    return box
+
+
 def box_corners_map(bbox):
     """(8 corners in the map frame, oriented?) — the PCA-oriented box when the dict
     carries one, else the AABB; ([], False) when the dict has neither."""

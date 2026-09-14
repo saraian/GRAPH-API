@@ -7,7 +7,8 @@ external package plugs into through configuration only.
 Upstream LOST-3DSG — the paper, the authors, and the ROS 2 install on a real robot — is documented
 in [`lost3dsg/README.md`](lost3dsg/README.md).
 
-**Start at [Quick start](#quick-start): two scripts, `./install.sh` then `./run_sim.sh`.**
+**Start at [Quick start](#quick-start): `./install.sh`, `./run_sim.sh` for Habitat, or
+`./run_tiago.sh` for a physical TIAGo / TIAGo RGB-D bag.**
 
 ## What runs where
 
@@ -29,14 +30,45 @@ VLM                    regolo    any OpenAI-compatible endpoint; vlm.base_url / 
 
 ## Quick start
 
-Four scripts at the top of the repository. Nothing else is needed.
+Five scripts at the top of the repository. Nothing else is needed for Habitat;
+TIAGo additionally needs the private bundle described below.
 
 ```bash
 ./install.sh          # once. Finds what this machine has and writes your settings file.
 ./run_sim.sh              # a base run: the whole house, every storey, no time limit.
 ./run_sim_headless.sh     # the same run on a machine with no screen.
+./run_tiago.sh physical      # fresh physical TIAGo run.
+./run_tiago.sh bag BAG        # fresh offline TIAGo RGB-D bag run.
 ./eval.sh             # score the newest run against the scene's ground truth.
 ```
+
+For a physical TIAGo or an offline RGB-D recording, use the concise TIAGo
+launcher instead of the Habitat runner:
+
+```bash
+./run_tiago.sh physical
+./run_tiago.sh bag BAG_NAME
+./run_tiago.sh bag BAG_NAME --rtabmap
+./run_tiago.sh physical --resume
+./run_tiago.sh bag BAG_NAME --rtabmap --resume
+```
+
+The concise TIAGo modes are fresh by default: an existing tmux stack is
+stopped, `/ws/output` is archived under `/ws/runs/tiago_<timestamp>`, and a new
+run is started. Use `--resume` to reuse the current session/output instead.
+The compatibility action `start` means resume; `new` explicitly means fresh:
+
+```bash
+./run_tiago.sh start  # compatibility resume form
+./run_tiago.sh new    # explicit fresh form
+```
+
+The public TIAGo runtime files are under [`tiago/`](tiago/). The PAL image,
+ISO and keys are private; place them under [`TIAGO_ISO/`](TIAGO_ISO/) as
+described in its setup note. Relative bag names use the repository-local
+`bags/` directory by default; `TIAGO_BAG_DIR` can override it. The compatibility
+launcher `./run_tiago.sh --help` documents physical DDS, bag replay, fresh
+RTAB-Map filtering, RViz, VLM authentication and automatic container creation.
 
 `install.sh` **discovers** the container image, the renderer, the scene library, the model cache and
 the results directory, then writes them into your settings file and names the one value no search can
@@ -377,7 +409,7 @@ per storey, so each storey still gets a clean process of its own.
 
 | | |
 |---|---|
-| `install.sh`, `run_sim.sh`, `run_sim_headless.sh`, `eval.sh` | what a person runs |
+| `install.sh`, `run_sim.sh`, `run_sim_headless.sh`, `run_tiago.sh`, `eval.sh` | what a person runs |
 | `lost3dsg/test/live_stack_container.sh` | inside the container. Nobody calls it by hand |
 
 `lost3dsg/test/live_run.sh` and `lost3dsg/test/run_house.sh` were deleted on 2026-09-11. If a step
@@ -402,10 +434,9 @@ cd lost3dsg/test && UPDATE_BASELINE=1 ./nonregression.sh && ./nonregression.sh
 4. Create the local settings file and name every value to fill in.
 5. Verify each of the above — including that an X display exists — and refuse with a cause.
 
-**One thing to know about a fresh clone:** git records every script in this repository as
-non-executable, so `./run_sim.sh` fails with "Permission denied" until you either mark it executable
-(`chmod +x run_sim.sh`) or call it as `bash run_sim.sh`. `run_sim_headless.sh` calls `run_sim.sh` through `bash`
-for exactly this reason, so `bash run_sim_headless.sh` always works.
+**One thing to know about a fresh clone:** the historical simulation entry points may still need
+`chmod +x` when checked out from older revisions, or they can be called with `bash`. The new
+`run_tiago.sh` is stored executable and can be invoked directly.
 
 ## Extension seam (`hooks.py`)
 
@@ -433,6 +464,7 @@ hooks.py`, `python3 box_view.py`.
 |---|---|
 | `lost3dsg/src/perception_module/` | the nodes (`perception_2.py`, `object_manager_6.py`, `object_services.py`, `room_manager.py`, `graph_api_bridge.py`), `config.py` / `config.yaml`, `hooks.py`, `cloud/` (Modal client + service), `viewer/` |
 | `run_sim.sh` | the whole launch: the storeys, the gate, the host feed, the container, the archive |
+| `run_tiago.sh` | physical TIAGo or RGB-D bag launch, DDS setup, container bootstrap, RViz and SLAM |
 | `lost3dsg/test/` | `live_stack_container.sh`, `habitat_feed_host.py`, `preflight_gate.py`, `smoke_test.sh`, `nonregression.sh`, the configs, `resource_monitor.py` |
 | `lost3dsg/msg`, `lost3dsg/srv` | the ROS 2 interfaces; `ObjectDescription.msg` carries `crop_path` |
 | `Dockerfile` | the `graphapi-run:humble` image |

@@ -178,7 +178,7 @@ class DetectionArchive:
 
     def record_detection(self, frame_id, det, camera_position=None, centroid=None,
                          bbox_3d=None, crop_meta=None, stamp=None, room_id=None,
-                         semantic_frame=None, camera_transform=None):
+                         semantic_frame=None, camera_transform=None, detection_id=None):
         """One row per detection per frame. All of it, or none of it.
 
         The 2D box and the mask come straight off the Detection the pipeline already built --
@@ -189,6 +189,10 @@ class DetectionArchive:
         try:
             row = {
                 "frame_id": frame_id,
+                # Stable within the run and shared with both ROS messages. This is the
+                # calibration join key: labels and centroids are allowed to change, while
+                # this id names exactly one detector output in exactly one frame.
+                "detection_id": (detection_id or getattr(det, "detection_id", None)),
                 "stamp": stamp,
                 "label": getattr(det, "label", None),
                 "instance_label": getattr(det, "instance_label", None),
@@ -205,6 +209,14 @@ class DetectionArchive:
                 "camera_position": list(camera_position) if camera_position is not None else None,
                 "room_id": room_id,
                 "crop_meta": crop_meta,
+                # Runtime image appearance vector.  It is the same normalized CLIP
+                # vector carried by Bbox3d; keeping it on the per-frame row makes the
+                # detector output self-contained even when the asynchronous sidecar
+                # writer has not flushed yet.
+                "clip_embedding": (
+                    [float(value) for value in getattr(det, "clip_embedding", None)]
+                    if getattr(det, "clip_embedding", None) is not None else None
+                ),
                 # GA-230. THE CAMERA ROTATION, so a 3D box can be put back on the frame it
                 # was measured from. The row carried `camera_position` and no orientation,
                 # which is half a pose: it says where the camera was and not where it looked.
