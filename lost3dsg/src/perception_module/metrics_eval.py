@@ -19,7 +19,8 @@ HM3D_TEXT_FEATURES = Path(__file__).with_name("text_feats_HM3DSEM_LABELS.npy")
 # not affect object detection/classification metrics.
 STRUCTURAL_OBJECT_LABELS = {
     "wall", "floor", "ceiling", "panel", "wall panel", "fireplace wall",
-    "shower wall", "shower floor", "shower ceiling",
+    "shower wall", "shower floor", "shower ceiling", "partition", "column",
+    "door", "doorway", "door frame", "door jamb", "window", "window frame",
 }
 
 
@@ -34,7 +35,43 @@ def is_structural_object(row):
         if (label in STRUCTURAL_OBJECT_LABELS or label.startswith("flooring")
                 or label.endswith((" wall", " floor", " ceiling"))):
             return True
-    return False
+    # Include compositional HM3D labels (door frame, shower door frame,
+    # window frame, open doorway, ...), while _structural_kind keeps hardware
+    # such as door knobs available as ordinary object classes.
+    return _structural_kind(row) is not None
+
+
+STRUCTURAL_ELEMENT_LABELS = {
+    "door": {"door", "doorway", "open doorway", "opening", "entrance",
+             "passage", "portal"},
+    "window": {"window"},
+}
+WALL_LABELS = {"wall", "wall panel", "fireplace wall", "shower wall",
+               "partition", "column"}
+
+
+def _row_label(row):
+    for key in ("category_name", "label", "predicted_label", "type"):
+        value = row.get(key)
+        if value is not None:
+            return str(value).strip().casefold().split("#", 1)[0].strip()
+    return ""
+
+
+def _structural_kind(row):
+    label = _row_label(row)
+    for kind, labels in STRUCTURAL_ELEMENT_LABELS.items():
+        if label in labels:
+            return kind
+    # HM3D has compositional names such as ``door frame`` and ``shower door
+    # frame``.  Treat those as door geometry too, while keeping small door
+    # hardware (knobs, handles, hinges, locks) out of the door count.
+    if ("door" in label or "doorway" in label) and not any(
+            token in label for token in ("knob", "handle", "hinge", "lock")):
+        return "door"
+    if "window" in label:
+        return "window"
+    return "wall" if label in WALL_LABELS else None
 
 
 def _active_floor_index(scene):
@@ -113,6 +150,137 @@ def filtered_scene(scene, include_regions=False):
                            if row.get("floor_index") is None
                            or row.get("floor_index") == (0 if key == "ground_truth_regions" and local_gt_floor else active)]
     return result
+
+
+def _structural_box_metrics(predicted, ground_truth, kind, threshold):
+    pred = [row for row in predicted if _structural_kind(row) == kind]
+    gt = [row for row in ground_truth if _structural_kind(row) == kind]
+    all_scores = [[geometry_iou(p, g) for g in gt] for p in pred]
+    matches = assignment(pred, gt, threshold) if pred and gt else []
+    tp = len(matches)
+    return {
+        "predicted": len(pred), "ground_truth": len(gt), "matched": tp,
+        "mean_iou_3d": round(float(np.mean([max(scores) for scores in all_scores
+                                             if scores])), 4)
+        if all_scores and gt else None,
+        "iou_threshold": threshold,
+    }
+
+
+def _gt_wall_segment(row):
+    low = np.asarray(row.get("aabb_min_m", []), dtype=float)
+    high = np.asarray(row.get("aabb_max_m", []), dtype=float)
+    if low.shape != (3,) or high.shape != (3,) or np.any(high <= low):
+        return None
+    # The manifest is already in ROS (x,y horizontal; z vertical).  Represent
+    # each thin GT wall AABB by its centre line and retain its vertical extent.
+    if high[0] - low[0] >= high[1] - low[1]:
+        return {"start": {"x": low[0], "y": (low[1] + high[1]) / 2},
+                "end": {"x": high[0], "y": (low[1] + high[1]) / 2},
+                "z_min": low[2], "z_max": high[2]}
+    return {"start": {"x": (low[0] + high[0]) / 2, "y": low[1]},
+            "end": {"x": (low[0] + high[0]) / 2, "y": high[1]},
+            "z_min": low[2], "z_max": high[2]}
+
+
+def _wall_prediction_aabb(row, default_thickness=.06):
+    try:
+        x0, y0 = float(row["start"]["x"]), float(row["start"]["y"])
+        x1, y1 = float(row["end"]["x"]), float(row["end"]["y"])
+        z0, z1 = float(row["z_min"]), float(row["z_max"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    try:
+        thickness = float(row.get("thickness_m", default_thickness))
+    except (TypeError, ValueError):
+        thickness = default_thickness
+    if not np.isfinite(thickness) or thickness <= 0.0:
+        thickness = default_thickness
+    half = thickness / 2.0
+    return {"aabb_min_m": [min(x0, x1) - half, min(y0, y1) - half, min(z0, z1)],
+            "aabb_max_m": [max(x0, x1) + half, max(y0, y1) + half, max(z0, z1)]}
+
+
+def _wall_footprint_iou(predicted, ground_truth, resolution=.02):
+    """Geometric IoU of wall footprints in the ROS XY floor plane."""
+    try:
+        import cv2
+        p0 = np.array([float(predicted["start"]["x"]), float(predicted["start"]["y"])])
+        p1 = np.array([float(predicted["end"]["x"]), float(predicted["end"]["y"])])
+        thickness = float(predicted.get("thickness_m", .06))
+        low = np.asarray(ground_truth["aabb_min_m"], dtype=float)
+        high = np.asarray(ground_truth["aabb_max_m"], dtype=float)
+        direction = p1 - p0
+        length = float(np.linalg.norm(direction))
+        if length <= 1e-9 or low.shape != (3,) or high.shape != (3,):
+            return 0.0
+        normal = np.array([-direction[1], direction[0]]) / length
+        half = max(thickness, 1e-6) / 2.0
+        pred_poly = np.array([p0 + normal * half, p1 + normal * half,
+                              p1 - normal * half, p0 - normal * half])
+        gt_poly = np.array([[low[0], low[1]], [high[0], low[1]],
+                            [high[0], high[1]], [low[0], high[1]]])
+        points = np.vstack((pred_poly, gt_poly))
+        origin = points.min(axis=0) - resolution
+        shape = np.ceil((points.max(axis=0) - origin) / resolution).astype(int) + 2
+        if np.any(shape <= 0) or np.any(shape > 10000):
+            return 0.0
+        pred_mask = np.zeros((int(shape[1]), int(shape[0])), np.uint8)
+        gt_mask = np.zeros_like(pred_mask)
+        def raster(poly, mask):
+            px = np.rint((poly - origin) / resolution).astype(np.int32)
+            cv2.fillPoly(mask, [px], 1)
+        raster(pred_poly, pred_mask); raster(gt_poly, gt_mask)
+        union = np.count_nonzero(pred_mask | gt_mask)
+        return float(np.count_nonzero(pred_mask & gt_mask) / union) if union else 0.0
+    except (ImportError, KeyError, TypeError, ValueError):
+        return 0.0
+
+
+def _wall_metrics(predicted, ground_truth, iou_threshold=.5):
+    pred = [row for row in predicted if isinstance(row, dict)]
+    gt = [row for row in ground_truth if _structural_kind(row) == "wall"
+          and "aabb_min_m" in row and "aabb_max_m" in row]
+    scores_matrix = np.asarray([[_wall_footprint_iou(p, g) for g in gt]
+                                for p in pred], dtype=float) if pred and gt else np.zeros((0, 0))
+    matches = []
+    if scores_matrix.size:
+        from scipy.optimize import linear_sum_assignment
+        ii, jj = linear_sum_assignment(scores_matrix, maximize=True)
+        matches = [(int(i), int(j), float(scores_matrix[i, j]))
+                   for i, j in zip(ii, jj) if scores_matrix[i, j] >= iou_threshold]
+    scores = [score for _, _, score in matches]
+    tp = len(scores); total_p, total_g = len(pred), len(gt)
+    return {
+        "predicted": total_p, "ground_truth": total_g, "matched": tp,
+        "mean_iou_xy": round(float(np.mean(np.max(scores_matrix, axis=1))), 4)
+        if scores_matrix.size else None,
+        "iou_threshold": iou_threshold,
+        "wall_iou_geometry": "XY footprint raster IoU",
+        "wall_thickness_source": "walls.json thickness_m",
+    }
+
+
+def structural_metrics(scenes, object_iou=.5):
+    """Evaluate run-produced doors, windows and depth-derived wall segments."""
+    doors, windows, walls = [], [], []
+    structural_ground_truth = []
+    for scene in scenes:
+        doors += [row for row in scene.get("predicted_structural_elements", [])
+                  if _structural_kind(row) == "door"]
+        windows += [row for row in scene.get("predicted_structural_elements", [])
+                    if _structural_kind(row) == "window"]
+        walls += list(scene.get("predicted_walls", []))
+        _, gt_map = _floor_index_maps(scene)
+        structural_ground_truth += [
+            row for row in scene.get("ground_truth_objects", [])
+            if _on_active_floor(row, scene, False, gt_map)
+        ]
+    return {"doors": _structural_box_metrics(doors, structural_ground_truth,
+                                               "door", object_iou),
+            "windows": _structural_box_metrics(windows, structural_ground_truth,
+                                                 "window", object_iou),
+            "walls": _wall_metrics(walls, structural_ground_truth)}
 
 @lru_cache(maxsize=1)
 def hm3d_object_types(path=HM3D_OBJECT_TYPES):
@@ -858,6 +1026,7 @@ def evaluate(scenes, base=Path.cwd(), region_iou=.5, object_iou=.5,
     report = {"scenes":[str(s.get("scene","unknown")) for s in scenes],
               "table_ii_floor_regions":floor_regions(scenes,region_iou),
               "table_iii_rooms":rooms(scenes), "table_iv_objects":objects(scenes, object_iou),
+              "table_structural_elements": structural_metrics(scenes, object_iou),
               "table_vi_room_objects":room_objects(scenes, object_iou, region_iou),
               "table_v_retrieval":retrieval(scenes), "table_vii_representation":sizes(scenes,base)}
     if include_match_details:

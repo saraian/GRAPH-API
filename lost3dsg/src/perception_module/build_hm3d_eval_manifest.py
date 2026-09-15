@@ -234,6 +234,8 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
     # duplicate and must not be used as an independent source.
     room_source = room_doc.get("building", {}).get("rooms")
     if room_source is None:
+        room_source = room_doc.get("rooms")
+    if room_source is None:
         raise RuntimeError("room.json non contiene building.rooms, cioè room areas")
     for room in room_source:
         if not isinstance(room, dict) or room.get("active", True) is False:
@@ -330,6 +332,31 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
             row["embedding"] = embedding
         predicted_objects.append(row)
     result["predicted_objects"] = predicted_objects
+
+    # Structural outputs are evaluated in the same manifest as ordinary
+    # objects.  They are already serialized in the ROS map frame by the
+    # runtime, so only normalize the nested bbox_3d spelling here.
+    structural_document = _load(run_dir / "structural_elements.json", {}, required=False)
+    structural_elements = structural_document.get("elements", []) \
+        if isinstance(structural_document, dict) else []
+    result["predicted_structural_elements"] = []
+    for item in structural_elements:
+        if not isinstance(item, dict) or not isinstance(item.get("bbox_3d"), dict):
+            continue
+        box = item["bbox_3d"]
+        try:
+            low = [float(box["x_min"]), float(box["y_min"]), float(box["z_min"])]
+            high = [float(box["x_max"]), float(box["y_max"]), float(box["z_max"])]
+        except (KeyError, TypeError, ValueError):
+            continue
+        row = {"object_id": item.get("id"), "label": item.get("type"),
+               "type": item.get("type"), "confidence": item.get("confidence"),
+               "aabb_min_m": low, "aabb_max_m": high}
+        result["predicted_structural_elements"].append(row)
+
+    walls_document = _load(run_dir / "walls.json", {}, required=False)
+    result["predicted_walls"] = (walls_document.get("walls", [])
+                                  if isinstance(walls_document, dict) else [])
 
     # A scripted scene's objects are NOT in the HM3D semantic mesh -- they are created at run time
     # -- so they cannot come from the static ground truth. The runner's ledger supplies them, each

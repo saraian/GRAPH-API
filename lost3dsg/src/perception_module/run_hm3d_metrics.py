@@ -150,6 +150,14 @@ def _print_region_diagnostics(scene):
             f"{precision[pi, gi]:.4f}"
         )
 
+
+def _print_structural_diagnostics(report):
+    print("\nSTRUCTURAL ELEMENTS (geometric IoU)")
+    for kind, values in report.get("table_structural_elements", {}).items():
+        print(f"  {kind:7} | predicted {values.get('predicted')} | "
+              f"GT {values.get('ground_truth')} | "
+              f"mean IoU {values.get('mean_iou_3d', values.get('mean_iou_xy'))}")
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("scene"); ap.add_argument("--run-dir", type=Path, required=True); ap.add_argument("--output-dir", type=Path, default=HERE)
@@ -223,6 +231,7 @@ def main():
     }
     report["summary"]["AP"] = geometry.get("ap")
     _print_region_diagnostics(evaluated)
+    _print_structural_diagnostics(report)
     _write(metrics_path, report)
     metrics_eval_visualize.render([manifest], visual_path, args.object_distance, args.region_iou)
     print("\n" + _result_row(report, canonical))

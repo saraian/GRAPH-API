@@ -23,6 +23,7 @@ import re
 import threading
 import time
 import traceback
+from itertools import combinations
 from concurrent.futures import ThreadPoolExecutor
 import base64
 import io
@@ -159,6 +160,8 @@ class RoomManager:
         self._window_vlm_last_call = 0.0
         self._window_vlm_state = []
         self._doorway_room_edges = {}
+        self._structural_element_ids = {}
+        self._next_structural_element_id = {'door': 0, 'window': 0}
         self._latest_rgb = None
         self._latest_rgb_received_at = 0.0
         self._camera_info = None
@@ -283,6 +286,10 @@ class RoomManager:
             'gvd_door_nms_m': 1.60,
             'gvd_critical_endpoint_margin_m': 0.20,
             'gvd_cut_margin_px': 2,
+            # A confirmed doorway may expose a temporarily small side while the
+            # map is still partial. This rescue applies only to locked door cuts;
+            # ordinary GVD cuts keep the normal room-area gate.
+            'locked_door_min_partition_area_m2': 0.75,
             # Visual confirmation is lazy: no candidate, no image projection and no
             # request.  Calls run outside the ROS callback thread.
             'doorway_vlm_enabled': True,
@@ -324,7 +331,7 @@ class RoomManager:
             # A doorway cut already defines connected room components. Watershed
             # reassigns the remaining free pixels by distance and can move a room
             # boundary through an open area, so it is opt-in only.
-            'room_use_watershed': False,
+            'room_use_watershed': True,
             # Compatible contour refinements below this IoU are also held;
             # otherwise room polygons visibly breathe at every map callback.
             'room_partition_stable_iou_min': 0.65,
@@ -439,6 +446,8 @@ class RoomManager:
                 Bbox3dArray, '/room_feature_bbox_3d', qos)
         except ImportError:
             self._feature_bbox_pub = None
+        self._feature_bbox_marker_pub = node.create_publisher(
+            MarkerArray, '/room_feature_bbox_markers', qos)
         self._window_vlm_pub = node.create_publisher(
             String, '/room_window_vlm_detections', qos)
         self._window_marker_pub = node.create_publisher(
@@ -537,6 +546,63 @@ class RoomManager:
         camera_info = getattr(self, '_camera_info', None)
         if camera_info is None or getattr(self, 'tf_buffer', None) is None:
             return None
+
+    def _doorway_bbox_3d(self, item):
+        """Build a door box from the measured opening, not from background cloud points."""
+        try:
+            centre = np.asarray(item['world'], dtype=float)
+            left = np.asarray(item['left_world'], dtype=float)
+            right = np.asarray(item['right_world'], dtype=float)
+            if centre.shape != (2,) or left.shape != (2,) or right.shape != (2,):
+                return None
+            width = float(np.linalg.norm(right - left))
+            if width <= 1e-3:
+                return None
+            theta = float(item.get('theta', 0.0))
+            normal = np.array([-math.sin(theta), math.cos(theta)], dtype=float)
+            tangent = np.array([math.cos(theta), math.sin(theta)], dtype=float)
+            # Find the two measured wall pieces that terminate at the opening sides.
+            wall_z = []
+            endpoint_radius = max(0.20, float(self._params.get(
+                'detected_wall_door_endpoint_radius_m', 0.20)) * 1.5)
+            for wall in getattr(self, '_detected_wall_map', []):
+                try:
+                    p0, p1, _direction, _length = self._wall_geometry(wall)
+                    for endpoint in (left, right):
+                        segment = p1 - p0
+                        t = np.clip(float((endpoint - p0) @ segment) /
+                                    max(float(segment @ segment), 1e-9), 0.0, 1.0)
+                        nearest = p0 + t * segment
+                        if float(np.linalg.norm(endpoint - nearest)) <= endpoint_radius:
+                            wall_z.extend((float(wall.get('z_min', 0.0)),
+                                           float(wall.get('z_max', 0.0))))
+                            break
+                except (KeyError, TypeError, ValueError):
+                    continue
+            floor = self._robot_height() if getattr(self, 'tf_buffer', None) is not None else 0.0
+            z_min = min(wall_z) if wall_z else floor
+            z_max = max(wall_z) if wall_z else floor + 2.10
+            if z_max <= z_min + 0.05:
+                z_max = z_min + 2.10
+            thickness = max(0.05, float(self._params.get(
+                'detected_wall_thickness_m', 0.08)))
+            half_w, half_t = width * 0.5, thickness * 0.5
+            corners = []
+            for z in (z_min, z_max):
+                for along in (-half_w, half_w):
+                    for across in (-half_t, half_t):
+                        xy = centre + normal * along + tangent * across
+                        corners.append((float(xy[0]), float(xy[1]), float(z)))
+            corners = np.asarray(corners, dtype=float)
+            mins, maxs = np.min(corners, axis=0), np.max(corners, axis=0)
+            return {
+                'x_min': float(mins[0]), 'x_max': float(maxs[0]),
+                'y_min': float(mins[1]), 'y_max': float(maxs[1]),
+                'z_min': float(mins[2]), 'z_max': float(maxs[2]),
+                'source': 'doorway_center_and_walls',
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
         try:
             x0, y0, x1, y1 = [float(value) for value in bbox_2d]
             if x1 <= x0 or y1 <= y0:
@@ -563,9 +629,29 @@ class RoomManager:
             u = k[0] * points_camera[:, 0] / points_camera[:, 2] + k[2]
             v = k[4] * points_camera[:, 1] / points_camera[:, 2] + k[5]
             inside = (u >= x0) & (u <= x1) & (v >= y0) & (v <= y1)
-            selected = points_world[finite][inside]
+            world_finite = points_world[finite]
+            camera_inside = points_camera[inside]
+            selected = world_finite[inside]
             if len(selected) < 4:
                 return None
+            # A projected map cloud contains the visible feature, but also any wall
+            # or furniture behind it.  Taking min/max over all of those points was
+            # the source of the oversized boxes.  Keep the nearest depth layer, with
+            # a small metric margin so both jambs and the full window frame survive.
+            depth = camera_inside[:, 2]
+            near = float(np.percentile(depth, 20.0))
+            margin = max(0.30, 0.18 * near)
+            foreground = depth <= near + margin
+            if np.count_nonzero(foreground) >= 4:
+                selected = selected[foreground]
+            # Remove only extreme numerical/cloud outliers after the foreground
+            # selection; this does not trim the measured enclosure in normal cases.
+            if len(selected) >= 8:
+                low_q = np.percentile(selected, 1.0, axis=0)
+                high_q = np.percentile(selected, 99.0, axis=0)
+                inlier = np.all((selected >= low_q) & (selected <= high_q), axis=1)
+                if np.count_nonzero(inlier) >= 4:
+                    selected = selected[inlier]
             mins = np.min(selected, axis=0)
             maxs = np.max(selected, axis=0)
             if np.any((maxs - mins) <= 1e-4):
@@ -581,14 +667,17 @@ class RoomManager:
 
     def _publish_feature_bboxes(self):
         """Publish door/window boxes using perception_2's Bbox3d field convention."""
-        if getattr(self, '_feature_bbox_pub', None) is None:
+        if (getattr(self, '_feature_bbox_pub', None) is None and
+                getattr(self, '_feature_bbox_marker_pub', None) is None):
             return
         try:
-            from lost3dsg.msg import Bbox3d, Bbox3dArray
-            msg = Bbox3dArray()
-            msg.header.frame_id = world_frame()
-            msg.header.stamp = self.node.get_clock().now().to_msg()
-            msg.cycle_id = f'room-features-{time.time_ns()}'
+            msg = None
+            if self._feature_bbox_pub is not None:
+                from lost3dsg.msg import Bbox3d, Bbox3dArray
+                msg = Bbox3dArray()
+                msg.header.frame_id = world_frame()
+                msg.header.stamp = self.node.get_clock().now().to_msg()
+                msg.cycle_id = f'room-features-{time.time_ns()}'
             entries = []
             for item in getattr(self, '_doorway_vlm_state', {}).values():
                 if item.get('status') == 'confirmed' and item.get('bbox_3d'):
@@ -597,16 +686,54 @@ class RoomManager:
                 if item.get('bbox_3d'):
                     entries.append(('window', item))
             for label, item in entries:
-                box = Bbox3d()
-                box.label = label
-                for key, value in item['bbox_3d'].items():
-                    if hasattr(box, key):
-                        setattr(box, key, value)
-                if hasattr(box, 'has_bbox_2d') and len(item.get('bbox', [])) == 4:
-                    box.has_bbox_2d = True
-                    box.bbox_2d = [float(value) for value in item['bbox']]
-                msg.boxes.append(box)
-            self._feature_bbox_pub.publish(msg)
+                bbox = item['bbox_3d']
+                if msg is not None:
+                    box = Bbox3d()
+                    box.label = label
+                    for key, value in bbox.items():
+                        if hasattr(box, key):
+                            setattr(box, key, value)
+                    if hasattr(box, 'has_bbox_2d') and len(item.get('bbox', [])) == 4:
+                        box.has_bbox_2d = True
+                        box.bbox_2d = [float(value) for value in item['bbox']]
+                    msg.boxes.append(box)
+            if msg is not None:
+                self._feature_bbox_pub.publish(msg)
+
+            if getattr(self, '_feature_bbox_marker_pub', None) is not None:
+                markers = MarkerArray()
+                clear = Marker()
+                clear.header.frame_id = world_frame()
+                clear.header.stamp = self.node.get_clock().now().to_msg()
+                clear.action = Marker.DELETEALL
+                markers.markers.append(clear)
+                edges = ((0, 1), (0, 2), (0, 4), (1, 3), (1, 5),
+                         (2, 3), (2, 6), (3, 7), (4, 5), (4, 6),
+                         (5, 7), (6, 7))
+                for marker_id, (label, item) in enumerate(entries):
+                    b = item['bbox_3d']
+                    low = (float(b['x_min']), float(b['y_min']), float(b['z_min']))
+                    high = (float(b['x_max']), float(b['y_max']), float(b['z_max']))
+                    corners = ((low[0], low[1], low[2]), (high[0], low[1], low[2]),
+                               (low[0], high[1], low[2]), (high[0], high[1], low[2]),
+                               (low[0], low[1], high[2]), (high[0], low[1], high[2]),
+                               (low[0], high[1], high[2]), (high[0], high[1], high[2]))
+                    marker = Marker()
+                    marker.header = clear.header
+                    marker.ns = 'room_feature_bbox'
+                    marker.id = marker_id
+                    marker.type = Marker.LINE_LIST
+                    marker.action = Marker.ADD
+                    marker.scale.x = 0.035
+                    marker.color.r, marker.color.g, marker.color.b = (
+                        (0.1, 0.95, 0.2) if label == 'door' else (0.1, 0.8, 1.0))
+                    marker.color.a = 0.95
+                    for start, end in edges:
+                        marker.points.extend((
+                            Point(x=corners[start][0], y=corners[start][1], z=corners[start][2]),
+                            Point(x=corners[end][0], y=corners[end][1], z=corners[end][2])))
+                    markers.markers.append(marker)
+                self._feature_bbox_marker_pub.publish(markers)
         except Exception as exc:
             self._log('warn', f'Feature bbox publish failed: {exc}')
 
@@ -814,8 +941,10 @@ class RoomManager:
                               'bbox': [x0, y0, x1, y1],
                               'confidence': confidence,
                               'updated_at': time.time()})
+            previous_windows = list(getattr(self, '_window_vlm_state', []))
             for item in valid:
                 item['bbox_3d'] = self._feature_bbox_3d(item['bbox'])
+                self._assign_window_element_id(item, previous_windows)
             self._window_vlm_state = valid
             if getattr(self, '_window_vlm_pub', None) is not None:
                 self._window_vlm_pub.publish(String(
@@ -823,6 +952,8 @@ class RoomManager:
                                     ensure_ascii=False)))
             self._publish_feature_bboxes()
             self._publish_window_markers(valid)
+            if getattr(self, 'node', None) is not None:
+                self._save_rooms(force=True)
         except Exception as exc:
             self._log('warn', f'Window VLM failed: {exc}')
         finally:
@@ -983,6 +1114,9 @@ class RoomManager:
                     permanent = confirmed
                     recheck_at = 0.0
                     self._doorway_vlm_state[hypothesis['key']] = {
+                        'element_id': self._structural_element_id(
+                            'door' if object_type != 'window' else 'window',
+                            hypothesis['key']),
                         'status': ('confirmed' if confirmed
                                    else 'pending_confirmation' if positive else 'rejected'),
                         'cuttable': cuttable,
@@ -998,7 +1132,14 @@ class RoomManager:
                         'type': object_type, 'confidence': confidence,
                         'wall_support_score': wall_score,
                         'bbox': bbox,
-                        'bbox_3d': self._feature_bbox_3d(bbox) if len(bbox) == 4 else None,
+                        'bbox_3d': (self._doorway_bbox_3d({
+                            'world': geometry['world'],
+                            'left_world': geometry.get('left_world'),
+                            'right_world': geometry.get('right_world'),
+                            'theta': geometry.get('theta', hypothesis.get('theta', 0.0)),
+                        }) if (geometry.get('left_world') is not None and
+                               geometry.get('right_world') is not None) else
+                                    (self._feature_bbox_3d(bbox) if len(bbox) == 4 else None)),
                         'updated_at': time.time(),
                     }
                 self._doorway_vlm_pending.pop(key, None)
@@ -1010,6 +1151,8 @@ class RoomManager:
                                         ensure_ascii=False)))
                 self._publish_feature_bboxes()
                 self._publish_doorway_markers()
+                if getattr(self, 'node', None) is not None:
+                    self._save_rooms(force=True)
                 resegment_grid = self.last_grid
         except Exception as exc:
             with self._lock:
@@ -2784,6 +2927,10 @@ class RoomManager:
         min_component_px = max(1, int(round(
             float(self._params['min_room_area_m2']) /
             max(resolution ** 2, 1e-12))))
+        locked_min_component_px = max(1, int(round(
+            float(self._params.get('locked_door_min_partition_area_m2',
+                                   self._params['min_room_area_m2'])) /
+            max(resolution ** 2, 1e-12))))
         accepted = []
         accepted_locked = 0
         rejected_small = 0
@@ -2791,6 +2938,7 @@ class RoomManager:
         rejected_parent_empty = 0
         rejected_trial_no_split = 0
         deferred = []
+        deferred_details = []
         accepted_collective = 0
         # Measured wall support first, then narrowest bottleneck. Once a valid partition
         # exists, later cuts are evaluated against the already partitioned map; ordering is
@@ -2877,13 +3025,29 @@ class RoomManager:
                 rejected_no_split += 1
                 rejected_trial_no_split += 1
                 deferred.append((point, trial))
+                deferred_details.append({
+                    'x': int(x), 'y': int(y),
+                    'locked': bool(locked_doorway),
+                    'reason': 'no_split',
+                    'component_areas_m2': [],
+                })
                 continue
             areas = np.asarray([
                 np.count_nonzero(parent & (after_labels == child)) for child in children
             ])
-            if int(areas.min()) < min_component_px:
+            required_component_px = (locked_min_component_px if locked_doorway
+                                     else min_component_px)
+            if int(areas.min()) < required_component_px:
                 rejected_small += 1
                 deferred.append((point, trial))
+                deferred_details.append({
+                    'x': int(x), 'y': int(y),
+                    'locked': bool(locked_doorway),
+                    'reason': 'small_partition',
+                    'required_area_m2': round(required_component_px * resolution ** 2, 3),
+                    'component_areas_m2': [round(float(area) * resolution ** 2, 3)
+                                           for area in areas],
+                })
                 continue
             cut = trial
             accepted.append(point)
@@ -2894,20 +3058,37 @@ class RoomManager:
         # set once against the original topology instead of rejecting every line
         # independently.
         if deferred:
-            collective = cut.copy()
-            for _point, trial in deferred:
-                collective[trial == 0] = 0
+            # A set of doorway lines can be valid even when each line alone leaves
+            # a sliver. Try subsets instead of applying every deferred line at once:
+            # the latter was able to combine one bad cut with several good ones and
+            # discard the whole partition. Cap the search for pathological maps.
+            best_subset = None
+            max_subset = min(len(deferred), 8)
+            subset_indices = [tuple(range(len(deferred)))]
+            if len(deferred) <= max_subset:
+                subset_indices = [combo for size in range(2, len(deferred) + 1)
+                                  for combo in combinations(range(len(deferred)), size)]
             before_count, _ = cv2.connectedComponents(cut, 8)
-            after_count, after_labels = cv2.connectedComponents(collective, 8)
-            if after_count > before_count:
-                sizes = np.bincount(after_labels.ravel())
-                if sizes[1:].size and int(sizes[1:].min()) >= min_component_px:
-                    cut = collective
-                    accepted.extend(point for point, _trial in deferred)
-                    accepted_collective = len(deferred)
-                    accepted_locked += sum(
-                        int(len(point) >= 8 and bool(point[7]))
-                        for point, _trial in deferred)
+            for indices in subset_indices:
+                collective = cut.copy()
+                for index in indices:
+                    collective[deferred[index][1] == 0] = 0
+                after_count, after_labels = cv2.connectedComponents(collective, 8)
+                sizes = np.bincount(after_labels.ravel())[1:]
+                if (after_count <= before_count or not sizes.size or
+                        int(sizes.min()) < min_component_px):
+                    continue
+                if best_subset is None or len(indices) > len(best_subset[0]):
+                    best_subset = (indices, collective)
+            if best_subset is not None:
+                indices, cut = best_subset
+                accepted.extend(deferred[index][0] for index in indices)
+                accepted_collective = len(indices)
+                accepted_locked += sum(
+                    int(len(deferred[index][0]) >= 8 and bool(deferred[index][0][7]))
+                    for index in indices)
+                for index in indices:
+                    deferred_details[index]['reason'] = 'accepted_collective'
 
         self._last_validated_cuts = accepted
         self._last_cut_stats = {
@@ -2922,6 +3103,7 @@ class RoomManager:
             'rejected_parent_empty': rejected_parent_empty,
             'rejected_trial_no_split': rejected_trial_no_split,
             'rejected_small_partition': rejected_small,
+            'deferred_details': deferred_details,
         }
         return cut
 
@@ -3899,17 +4081,19 @@ class RoomManager:
                 # regions again.
                 graph[key] = {
                     **previous_edge,
+                    'element_id': self._structural_element_id('door', key),
                     'doorway_key': key,
                     'room_a': None,
                     'room_b': None,
                     'resolved': False,
-                    'world': self._json_safe(item.get('world')),
+                    'structural_element_id': self._structural_element_id('door', key),
                     'permanent': bool(item.get('permanent_confirmed', True)),
                     'updated_at': time.time(),
                 }
                 continue
             if owners[0] is not None and owners[1] is not None and owners[0] != owners[1]:
                 graph[key] = {
+                    'element_id': self._structural_element_id('door', key),
                     'doorway_key': key,
                     'room_a': owners[0], 'room_b': owners[1],
                     'resolved': True,
@@ -3919,13 +4103,112 @@ class RoomManager:
                     'room_b_polygon': self._json_safe(next(
                         (region.polygon for region in active if region.room_id == owners[1]),
                         previous_edge.get('room_b_polygon', []))),
-                    'world': self._json_safe(item.get('world')),
+                    'structural_element_id': self._structural_element_id('door', key),
                     'permanent': bool(item.get('permanent_confirmed', True)),
                     'updated_at': time.time(),
                 }
         self._doorway_room_edges = graph
+        for room in self.scene_graph.values():
+            room['doorways'] = []
+        for edge in graph.values():
+            element_id = edge.get('structural_element_id')
+            for room_id in (edge.get('room_a'), edge.get('room_b')):
+                if element_id and room_id in self.scene_graph:
+                    self.scene_graph[room_id].setdefault('doorways', []).append(element_id)
         self.last_segmentation_stats['doorway_room_edges'] = self._json_safe(graph)
         return graph
+
+    def _structural_element_id(self, kind, key):
+        """Return a stable ID for one detected architectural element."""
+        if not hasattr(self, '_structural_element_ids'):
+            self._structural_element_ids = {}
+        if not hasattr(self, '_next_structural_element_id'):
+            self._next_structural_element_id = {'door': 0, 'window': 0}
+        token = f'{kind}:{key}'
+        element_id = self._structural_element_ids.get(token)
+        if element_id is None:
+            index = int(self._next_structural_element_id.get(kind, 0))
+            element_id = f'{kind}_{index}'
+            self._next_structural_element_id[kind] = index + 1
+            self._structural_element_ids[token] = element_id
+        return element_id
+
+    def _assign_window_element_id(self, item, previous):
+        """Keep a window ID when consecutive VLM boxes overlap."""
+        best, best_iou = None, 0.0
+        for old in previous or []:
+            try:
+                ax0, ay0, ax1, ay1 = old['bbox']
+                bx0, by0, bx1, by1 = item['bbox']
+                inter = max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(
+                    0.0, min(ay1, by1) - max(ay0, by0))
+                union = ((ax1-ax0)*(ay1-ay0) + (bx1-bx0)*(by1-by0) - inter)
+                iou = inter / union if union > 0.0 else 0.0
+            except (KeyError, TypeError, ValueError):
+                continue
+            if iou > best_iou and old.get('element_id'):
+                best, best_iou = old['element_id'], iou
+        if best_iou >= 0.25:
+            item['element_id'] = best
+        else:
+            item['element_id'] = self._structural_element_id(
+                'window', tuple(round(float(v), 1) for v in item['bbox']))
+
+    def _save_structural_elements(self, output_dir):
+        elements = []
+        for key, item in getattr(self, '_doorway_vlm_state', {}).items():
+            if item.get('status') != 'confirmed':
+                continue
+            element_id = item.get('element_id') or self._structural_element_id('door', key)
+            elements.append({
+                'id': element_id,
+                'type': 'door' if item.get('type') != 'window' else 'window',
+                'bbox': item.get('bbox', []),
+                'bbox_3d': item.get('bbox_3d'),
+                'world': item.get('world'),
+                'theta': item.get('theta'),
+                'confidence': item.get('confidence'),
+                'status': item.get('status'),
+                'source': 'doorway_vlm',
+            })
+        for item in getattr(self, '_window_vlm_state', []):
+            if not item.get('element_id'):
+                continue
+            elements.append({
+                'id': item['element_id'], 'type': 'window',
+                'bbox': item.get('bbox', []), 'bbox_3d': item.get('bbox_3d'),
+                'confidence': item.get('confidence'), 'status': 'confirmed',
+                'source': 'window_vlm',
+            })
+        payload = {'updated_at': time.time(), 'elements': self._json_safe(elements),
+                   'doors': [e for e in elements if e['type'] == 'door'],
+                   'windows': [e for e in elements if e['type'] == 'window']}
+        path = os.path.join(output_dir, 'structural_elements.json')
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as stream:
+            json.dump(self._json_safe(payload), stream, indent=2,
+                      ensure_ascii=False, allow_nan=False)
+        os.replace(tmp, path)
+
+    def _save_walls(self, output_dir):
+        """Persist the accumulated measured wall segments independently."""
+        thickness = float(self._params.get('detected_wall_thickness_m', 0.06))
+        wall_rows = []
+        for wall in getattr(self, '_detected_wall_map', []):
+            row = dict(wall)
+            row.setdefault('thickness_m', thickness)
+            wall_rows.append(row)
+        walls = self._json_safe(wall_rows)
+        payload = {
+            'updated_at': time.time(),
+            'count': len(walls),
+            'walls': walls,
+        }
+        path = os.path.join(output_dir, 'walls.json')
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as stream:
+            json.dump(payload, stream, indent=2, ensure_ascii=False, allow_nan=False)
+        os.replace(tmp, path)
 
     def _room_at(self, xy):
         if xy is None:
@@ -4434,6 +4717,9 @@ class RoomManager:
     def _consolidate_detected_walls(self):
         """Collapse transitive duplicate strokes into one fitted wall segment."""
         walls = list(self._detected_wall_map)
+        thickness = float(self._params.get('detected_wall_thickness_m', 0.06))
+        for wall in walls:
+            wall.setdefault('thickness_m', thickness)
         merges = 0
         changed = True
         while changed and len(walls) > 1:
@@ -4772,6 +5058,8 @@ class RoomManager:
         with open(tmp, 'w', encoding='utf-8') as stream:
             json.dump(payload, stream, indent=2, ensure_ascii=False, allow_nan=False)
         os.replace(tmp, path)
+        self._save_structural_elements(output_dir)
+        self._save_walls(output_dir)
 
     def save_rooms_to_json(self):
         self._save_rooms(force=True)
