@@ -1,185 +1,113 @@
-# Perception module configuration.
-# Every value here reproduces the previous hardcoded behaviour; edit freely.
-# Missing keys fall back to the same defaults (see config.py). Override the
-# file location with GRAPH_API_CONFIG=/path/to/config.yaml.
+# 04_ground_truth_pose.yaml — a complete run configuration. Use it directly:
+#     ./run_sim_headless.sh --config schedules/configs/04_ground_truth_pose.yaml
+# or name it from a schedule arm with `config_file:`.
+#
+# GROUND-TRUTH POSE. Separates localisation error from perception error: every box position
+# in the archive rests on a pose the real robot will never have, and this arm is the upper
+# bound the rtabmap arm is measured against. NOT a base run -- the owner's regime is
+# rtabmap.
+#
+# WHAT DIFFERS FROM THE TRACKED config.yaml:
+#   habitat.localization_mode: 'ground_truth'
+#
+# GENERATED, DO NOT HAND-EDIT. Rewrite it with:
+#     python3 lost3dsg/test/regen_arm_configs.py
+# generated_at:   2026-09-14T17:37:49
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 3f1a61ff99bf23a3
+#
+# A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
+# code then takes its module fallback instead. If a bundle's config is missing a key
+# you expected, compare the sha above against the tracked config before concluding
+# the arm set it deliberately: `regen_arm_configs.py --check` answers that.
 
 vlm:
-  base_url: "https://api.regolo.ai/v1"
-  # Owner ruling 2026-09-14: qwen3.8-27b is the default labelling VLM (was gemma4-31b).
-  # https://obs.regolo.ai/model?model=qwen3.8-27b
-  model: "qwen3.8-27b"
-  api_key: ""          # empty -> OPENAI_API_KEY env, else legacy api.txt, else "ollama"
-  timeout: 180.0        # seconds per request
-  retries: 2           # extra attempts on timeout/malformed response, then raise
-  # REQUIRED WITH A QWEN MODEL, and it is the half that makes the reasoning fix bite.
-  # `vlm_completion_kwargs()` (config.py) returns {} unless this key is exactly False, so
-  # upstream b85a9e6 -- which passes those kwargs into the completion request -- would be
-  # inert without it. A Qwen-style endpoint otherwise ignores the setting and can spend most
-  # of the request budget on hidden reasoning before returning the structured scene result,
-  # against a 30 s timeout.
+  base_url: https://api.regolo.ai/v1
+  model: qwen3.8-27b
+  api_key: ''
+  timeout: 120.0
+  retries: 2
   enable_thinking: false
-
 embedding:
-  word2vec_path: "/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz"
-  word2vec_limit: 200000   # vocabulary cap; keeps RAM bounded
-
-# Runtime image appearance vectors. This is separate from the text/description
-# `embedding` above and from the offline HOV-SG evaluation `embedding` field.
+  word2vec_path: /root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz
+  word2vec_limit: 200000
 appearance:
   enabled: false
-  model_id: "openai/clip-vit-base-patch32"
+  model_id: openai/clip-vit-base-patch32
   device: auto
   require_cuda: false
   min_crop_px: 4
   batch_size: 8
-
-similarity:            # lost_similarity weights, must sum to 1.0
+similarity:
   label: 0.05
-  color: 0.30
+  color: 0.3
   material: 0.15
-  description: 0.50
-
+  description: 0.5
 association:
-  exploration_iou_threshold: 0.10
+  input_silence_timeout_s: 180.0
+  input_silence_max_strikes: 3
+  input_silence_min_stops: 6
+  exploration_iou_threshold: 0.1
   sim_threshold: 0.85
   tracking_iou_threshold: 0.3
   volume_expansion_ratio: 0.01
-  exploration_frame_limit: 10    # frames in exploration before tracking may start
-  object_stability_timeout: 3.0  # min seconds of life before an object can be 'MOVED'
+  exploration_frame_limit: 10
+  object_stability_timeout: 3.0
   pov_scale_factor: 1.0
   max_volume_threshold: 0.5
-  bbox_reduction_ratio: 0.30
-  reevaluation_radius_m: 2.0   # GA-49: radius (m) within which a changed object re-evaluates its neighbours
-                               # (replaced max_match_distance_m, which no code has read since GA-04)
-  association_margin_m: 0.3    # AABB broad-phase margin used before exact association gates
-
-  # --- merge thresholds: THE NAMES THE CODE ACTUALLY READS -------------------------------
-  # `cost_ratio`, `min_consecutive` and `mode` above are read by NOTHING (GA-341). These are
-  # the names object_services reads. The values below are what the code already falls back to,
-  # so writing them down changes no behaviour -- note merge_min_consecutive is 2, which is what
-  # every recipe stamps and every bundle ran with, not the 3 the dead key claims.
-  merge_engine: legacy        # legacy | evidence -- which merge path decides
-  merge_cost_ratio: 20.0      # false-merge cost / missed-merge cost; the commit threshold is
-                              # log(ratio), so raising it makes merging strictly harder
-  merge_min_consecutive: 2    # consecutive sweeps a pair must hold before it commits. Raise it
-                              # and fewer wrong merges commit, but a pair that leaves view
-                              # before confirmation is lost. Override with MERGE_MIN_CONSECUTIVE.
-  merge_max_distance_m: 0.8   # centre distance beyond which a pair is never merged
-  # Geometry dominates the VLM similarity score for a very close duplicate observation.
-  # The override also requires the same base label and sufficient 3D AABB overlap; the
-  # normal optional-evidence requirement still applies.
-  merge_near_distance_m: 0.02    # 2 cm centre distance, configurable for sensor noise
-  merge_near_iou_threshold: 0.25 # minimum 3D AABB IoU for the geometry override
-  merge_aabb_margin_m: 0.8    # AABB broad-phase margin; must be >= merge_max_distance_m
-  # HOW MANY of the three optional terms (colour, material, description) must have been
-  # COMPARABLE before two objects may be fused. At 0 a pair with nothing measurable scores
-  # 1.0000 on label agreement alone and merges -- and adding evidence LOWERS the score, so
-  # the least-informed pair in the map is the highest-scoring one (nlp_utils.py:340).
-  # Declared here, not left to config.py's fallback: a config passed as GRAPH_API_CONFIG
-  # REPLACES this file, so an arm that does not name the key carries no trace of it and a
-  # reader of the bundle cannot tell what guarded the merge. That is how frame_queue_max
-  # sat silently at 0 on 2026-09-11.
-  # It is what makes a LATE description safe: an undescribed pair is refused rather than
-  # fused, and the next post-scan sweep merges it once the description lands.
+  bbox_reduction_ratio: 0.3
+  reevaluation_radius_m: 2.0
+  association_margin_m: 0.3
+  merge_engine: legacy
+  merge_cost_ratio: 20.0
+  merge_min_consecutive: 2
+  merge_max_distance_m: 0.8
+  merge_near_distance_m: 0.02
+  merge_near_iou_threshold: 0.25
+  merge_aabb_margin_m: 0.8
   merge_min_evidence: 1
-  merge_min_similarity: 0.925 # MUST stay strictly above sim_threshold above, or a merge fuses
-                              # pairs the association loop has just refused. object_services
-                              # asserts this at load and the merge service refuses a request
-                              # that carries a lower floor.
-  merge_knn_k: null           # null = the covariance-derived search reach decides how many
-                              # candidates a pair search considers
-  # --- what may absorb, move or delete an object ------------------------------------------
-  update_in_place_distance_m: 0.5   # a new box this close updates the object in place; further
-                                    # away it is treated as a move, which re-files the room
-  transition_move_distance_m: 0.35  # movement that promotes exploration into tracking mode
-  uncertain_move_distance_m: 0.8    # an uncertain object that moves further is a new object
-  max_misses_before_delete: 5       # sweeps an object may go unseen in its own view before it
-                                    # is deleted; lower loses objects behind occluders
-  delete_undetected: true           # remove an object that goes unseen inside its own view
-  max_observations_per_object: 64   # sightings kept per object, oldest dropped. The co-visibility
-                                    # channel walks these pairwise, so raising it is quadratic.
-  # Multi-observation object geometry. Each mask is already projected into the map frame.
-  # For 1-3 views the reconstructed box uses the voxel union. From the fourth view onward,
-  # a voxel must be present in at least two distinct views. These values were selected on
-  # 20260911_173938_hm3d_00861 and need confirmation on a second scene.
+  merge_min_similarity: 0.925
+  merge_knn_k: null
+  update_in_place_distance_m: 0.5
+  transition_move_distance_m: 0.35
+  uncertain_move_distance_m: 0.8
+  max_misses_before_delete: 5
+  delete_undetected: true
+  max_observations_per_object: 64
   bbox_fusion_voxel_m: 0.03
   bbox_fusion_min_views: 2
   bbox_fusion_agreement_start_views: 4
-  # A box larger than either of these is refused as implausible. Both entered as bare literals
-  # with no measured basis; when a reference box exists they scale to the admitted size, so an
-  # object legitimately larger than the cap can still absorb its own re-measurement (GA-365).
   suspicious_max_extent_m: 3.0
   suspicious_max_volume_m3: 1.5
-  # The post-scan merge: object_manager_6 subscribes to this topic and, when a scan reports
-  # complete, waits this long before running the duplicate merge once. The wait lets the last
-  # detections of the scan land and associate first; it is not part of the merge policy.
-  # Both were environment-only until 2026-09-11 and neither reaches the container on the -e
-  # list, so the settle could not be changed for a run at all.
-  scan_complete_topic: "/habitat/scan_complete"
+  scan_complete_topic: /habitat/scan_complete
   scan_merge_settle_s: 1.0
-  # The CEILING on the settle above, which is now a floor rather than the value used: the
-  # merge after a scan waits for the p90 of the description round trips this run has
-  # actually seen, because that round trip is 2.4 s median and 7.9 s p95 on the online VLM
-  # and moves with the arm. This bounds it so one pathological call cannot stall every
-  # later sweep -- a scan is about 12 s at 36 frames and 3 fps.
   scan_merge_settle_max_s: 10.0
-
 frames:
-  # OPTICAL frame (x right, y down, z forward) the perception back-projects
-  # into. If you point this at a BODY frame (x forward, z up), depth lands in
-  # the height axis and every object position is silently wrong.
-  camera: "habitat_camera_optical"
-  # Frame used for the pose published on /agent_camera_pose.
-  agent_pose: "habitat_camera_optical"
-
-  # The motion gate: perception runs only while the camera is still. A score is metres of
-  # translation PLUS radians of rotation since the previous 1 Hz sample, and the camera counts
-  # as moving at or above this value; it must then stay below it for the settle below before a
-  # cycle may run.
-  # MEASURED 2026-09-11 on two COMPLETE tours (20260911_133641, _140421): 4344 frames each and
-  # ONE and TWO perception cycles between them. The tour drives through its waypoints instead
-  # of dwelling -- about 195 waypoint visits, 14 still windows -- and its longest pause is 1
-  # second, the same length as the sampling period.
-  # Raising the threshold is NOT a fix: metres and radians are summed, so a turn on the spot
-  # scores 6.28 without moving, and a threshold that admits it admits six metres of driving.
-  # LEAVE THIS ABSENT unless you mean to override. The default is DERIVED from
-  # perception.frame_queue_max: 4.0 with the queue on (the gate has no job -- a queued
-  # frame carries its own transform), 0.05 with it off (stop-and-look, where the gate is
-  # load-bearing and object_manager_6's "observed during motion" discard is correct).
-  # Setting a high value here WITH the queue off is refused at startup: that pair detects
-  # everything and keeps nothing, and it is the failure that cost 2026-09-11.
-  # So the key is DELIBERATELY ABSENT. Uncomment it only to pin the gate against the queue.
-  #   motion_position_threshold: 4.0
+  camera: habitat_camera_optical
+  agent_pose: habitat_camera
   motion_min_stationary_s: 0.5
-
 paths:
-  operations_log: "/root/exchange/output/operations.txt"
-  # The segmenter weights, as seen INSIDE the container. live_run.sh always mounts the host
-  # directory SAM_MODEL_DIR (default /DATA/models/efficientvit_sam) at /models/vitsam:ro, so
-  # these paths resolve on any machine that ran install.sh or has that directory.
-  # DO NOT LEAVE THESE EMPTY. The code falls back to <package>/utils/l2_*.onnx (utils.py:16)
-  # and those files are in no tree and in no image, so an empty value is a path that does not
-  # resolve. Pre-flight probe a4 refuses the run for it rather than letting the first cycle
-  # discover it.
-  vitsam_encoder: "/root/exchange/lost3dsg/src/perception_module/utils/l2_encoder.onnx"
-  vitsam_decoder: "/root/exchange/lost3dsg/src/perception_module/utils/l2_decoder.onnx"
-  identification_prompt: ""  # empty -> <package>/prompts/object_identification_prompt.txt
-  scene_analysis_prompt: ""  # empty -> <package>/prompts/scene_analysis_prompt.txt
-  visual_prompt: ""          # empty -> <package>/prompts/visual_prompt.txt
-
+  operations_log: /root/exchange/output/operations.txt
+  vitsam_encoder: /models/vitsam/l2_encoder.onnx
+  vitsam_decoder: /models/vitsam/l2_decoder.onnx
+  identification_prompt: ''
+  scene_analysis_prompt: ''
+  visual_prompt: ''
 tf:
-  world_frame: "map"      # TIAGo may override this with its connected localization frame
-  lookup_timeout: 0.1  # seconds to wait for a transform before dropping the frame
+  world_frame: map
+  lookup_timeout: 0.1
 walls:
-  # Fast 2.5D detector: metric cells with vertical support, Hough candidates, TLS refinement.
   min_interval_s: 0.5
-  height_band_m: [0.4, 2.0]
-  depth_range_m: [0.3, 8.0]
+  height_band_m:
+  - 0.4
+  - 2.0
+  depth_range_m:
+  - 0.3
+  - 8.0
   pixel_stride: 4
-  temporal_window_s: 4.0
-  temporal_max_frames: 12
+  temporal_window_s: 2.5
+  temporal_max_frames: 8
   temporal_voxel_m: 0.035
-  floor_reset_m: 0.60
+  floor_reset_m: 0.6
   floor_min_points: 20
   floor_cache_s: 10.0
   floor_fallback_camera_height_m: 1.5
@@ -187,9 +115,8 @@ walls:
   vertical_normal_tolerance_deg: 20.0
   normal_max_depth_jump_ratio: 0.08
   normal_min_component_px: 12
-  # Structural qualification consumed by both wall_detector and RoomManager.
-  min_segment_length_m: 0.50
-  min_vertical_extent_m: 0.80
+  min_segment_length_m: 0.5
+  min_vertical_extent_m: 0.8
   max_inlier_rms_m: 0.05
   min_confidence: 0.45
   confidence_target_frames: 4
@@ -206,324 +133,143 @@ walls:
   min_vertical_bands: 3
   min_cell_points: 3
   hough_threshold: 8
-  max_line_gap_m: 0.20
-  # TLS validation in each candidate's vertical-plane coordinates.  This
-  # rejects tall but one-dimensional returns that share a top-down line.
-  support_cell_m: 0.20
-  min_along_coverage: 0.60
-  min_height_coverage: 0.70
-  min_surface_coverage: 0.30
-  # Consolidate duplicate Hough strokes only when they describe the same
-  # finite vertical-plane landmark (orientation, offset and overlap).
+  max_line_gap_m: 0.2
+  support_cell_m: 0.2
+  min_along_coverage: 0.6
+  min_height_coverage: 0.7
+  min_surface_coverage: 0.3
   plane_cluster_angle_deg: 4.0
   plane_cluster_distance_m: 0.08
   plane_cluster_min_overlap: 0.35
-  max_segments: 32
+  max_segments: 12
 rooms:
-  default_room_id: ""   # empty = strict: no room known -> object rejected (needs SLAM rooms)
+  default_room_id: ''
   gvd_method: ridge
-  # Allow confirmed wall openings to split rooms even if the GVD has no branch
-  # at that particular map update.
-  detected_wall_direct_door_cuts: true
-  detected_wall_topology_dilation_px: 1
-  # 2.5D wall evidence from /rtabmap/cloud_map. Points are measured relative
-  # to the robot's current floor and must occupy multiple vertical bands, so
-  # low furniture and points from another storey do not become room dividers.
   enable_3d_structural_filter: true
-  gvd_3d_min_points_per_cell: 2
-  gvd_3d_min_vertical_span_m: 0.55
+  gvd_3d_min_points_per_cell: 4
+  gvd_3d_min_vertical_span_m: 0.75
   gvd_3d_min_height_m: 0.25
-  gvd_3d_mid_height_m: 0.80
-  gvd_3d_high_height_m: 1.40
-  gvd_3d_max_height_m: 2.20
+  gvd_3d_mid_height_m: 0.8
+  gvd_3d_high_height_m: 1.4
+  gvd_3d_max_height_m: 2.2
   gvd_3d_required_height_bands: 2
   gvd_3d_min_points_per_band: 1
   gvd_3d_max_age_s: 15.0
-  # Estimate map-frame floor z from nearby /rtabmap/cloud_ground points.
-  # This avoids using the base_link mounting height as if it were the floor.
   gvd_3d_floor_radius_m: 2.0
   gvd_3d_floor_min_points: 20
   gvd_3d_support_dilation_px: 1
-  # Use stable, wall-scale depth surfaces as structural evidence.  The detector
-  # already requires wall height/length and the room manager also checks RMS.
-  # Confirmed segments therefore reinforce the occupancy topology instead of
-  # being used only as a doorway hint.
   enable_detected_wall_support: true
   detected_wall_reinforce_obstacles: true
   detected_wall_close_free_space: true
   detected_wall_min_observations: 2
-  # One-frame walls may be proposed, but topology reinforcement requires
-  # persistence to avoid false room barriers.
-  detected_wall_topology_min_observations: 2
-  # RTAB-Map loop closures can move map-frame geometry. Re-observe old wall
-  # segments instead of letting a stale/false line constrain rooms forever.
   detected_wall_max_age_s: 300.0
-  # Geometry/RMS/confidence gates come from the shared `walls` block above.
   detected_wall_merge_angle_deg: 15.0
   detected_wall_merge_distance_m: 0.18
-  detected_wall_merge_gap_m: 0.50
-  detected_wall_interpolation_gap_m: 0.20
-  detected_wall_endpoint_join_max_m: 0.35
+  detected_wall_merge_gap_m: 0.5
+  detected_wall_interpolation_gap_m: 0.2
   detected_wall_thickness_m: 0.06
-  detected_wall_door_endpoint_radius_m: 0.20
+  detected_wall_door_endpoint_radius_m: 0.2
   detected_wall_door_min_support: 0.16
-  detected_wall_door_endpoint_max_extension_m: 0.75
-  detected_wall_map_max_segments: 256
-  detected_wall_door_max_m: 2.00
-  detected_wall_bottleneck_ratio: 0.90
+  detected_wall_door_max_m: 2.0
+  detected_wall_bottleneck_ratio: 0.9
   gvd_wall_network_max_fill_ratio: 0.35
-  # Compact furniture (beds/sofas/tables) is not a room boundary.  Keep it out
-  # of the GVD topology even when the 3D cloud is temporarily sparse.
   gvd_topo_fill_max_area_m2: 20.0
   room_nested_merge_max_area_m2: 8.0
-  room_nested_merge_area_ratio: 0.30
+  room_nested_merge_area_ratio: 0.3
   gvd_3d_nonwall_component_ratio: 0.01
-  # Separate nearby doors along a corridor instead of collapsing everything
-  # inside a 1.6 m radius into one hypothesis.
-  gvd_door_nms_m: 0.80
-  gvd_critical_endpoint_margin_m: 0.20
-  # A GVD branch may end at a junction exactly where the doorway lies. Recover
-  # that endpoint only when measured walls support both sides of the cut.
-  gvd_wall_supported_endpoint_recovery: true
+  gvd_door_nms_m: 1.6
+  gvd_critical_endpoint_margin_m: 0.2
   doorway_vlm_enabled: true
   doorway_vlm_min_confidence: 0.55
   doorway_vlm_min_confirmations: 1
-  # Wall detections are sparse and view-dependent. Use them to strengthen a
-  # candidate, but do not reject a valid GVD bottleneck merely because no wall
-  # segment was measured at that location.
-  doorway_require_wall_support: false
+  doorway_require_wall_support: true
   doorway_vlm_key_resolution_m: 0.25
   doorway_vlm_show_rejected: false
   doorway_vlm_show_pending: false
-  # Yellow means a geometric cut used by segmentation; green is VLM-confirmed.
-  doorway_show_geometric: true
-  doorway_vlm_cluster_distance_m: 0.80
-  # Nearby candidates with different wall orientations are distinct doors.
-  doorway_vlm_cluster_angle_deg: 30.0
+  doorway_vlm_cluster_distance_m: 1.2
   room_use_watershed: false
   doorway_vlm_max_candidates_per_call: 8
   doorway_vlm_retry_s: 8.0
   doorway_vlm_max_image_age_s: 2.0
-  # Height above the current floor used to project a doorway into RGB.
-  doorway_vlm_projection_height_m: 1.0
   doorway_vlm_state_max_age_s: 60.0
-  doorway_vlm_camera_topic: "/camera/rgb"
-  doorway_vlm_camera_info_topic: "/camera/camera_info"
-  doorway_vlm_camera_frame: "habitat_camera_optical"
+  doorway_vlm_camera_topic: /camera/rgb
+  doorway_vlm_camera_info_topic: /camera/camera_info
+  doorway_vlm_camera_frame: habitat_camera_optical
   window_vlm_enabled: true
   window_vlm_retry_s: 10.0
   min_room_area_m2: 1.5
-  # Keep partial room candidates during mapping; only finalized rooms use
-  # min_room_area_m2 for the confirmed semantic state.
-  min_candidate_area_m2: 0.6
-  room_wall_completion_enabled: true
-  room_wall_completion_max_m: 0.35
-  # Include one structural border cell in the room polygon. This follows the
-  # wall centreline and improves coverage without expanding into unknown space.
-  room_boundary_outset_m: 0.05
-  # A split/merge or large boundary change must persist across several map updates.
   room_partition_change_confirmations: 3
   room_partition_min_area_retention_ratio: 0.75
-  room_partition_stable_iou_min: 0.55
-  room_resegment_local_change_max_cells: 100
-  room_resegment_local_change_max_bbox_fraction: 0.002
+  room_partition_stable_iou_min: 0.65
   gvd_fill_cloud_nonwall_direct: true
   gvd_min_robot_component_ratio: 0.15
-
 habitat:
-  # NO scene KEYS HERE. The launcher owns the scene: run_sim.sh picks it from its own
-  # argument (DEF_SCENE) and never reads these. Leaving them made every bundle's config
-  # claim 00824-Dd4bFSTQ8gi while the run drove hm3d_00861, and the evaluation resolver
-  # refused outright rather than score against the wrong house -- correctly, but it
-  # blocked eval on 20260911_173938. config.py still carries them as module defaults for
-  # habitat_nav.py and habitat_camera_objects_node.py, neither of which the live stack
-  # launches (checked: 0 references in live_stack_container.sh).
-  localization_mode: rtabmap  # rtabmap | ground_truth
-  # keep the simulated agent on the floor it starts on: the 2D grid cannot separate
-  # storeys and HM3D navmeshes join them through the stairs (goal filter on height)
+  localization_mode: ground_truth
   single_floor: true
   floor_tolerance_m: 0.5
-  fps: 3.0                # simulator framerate
-
-  # --- the camera the simulator renders ------------------------------------------------
-  hfov: 90.0               # horizontal field of view in degrees; this sets the intrinsics,
-                           # so changing it changes every projected box in the run
-  camera_pitch_deg: -30.0  # owner 2026-09-10: a 30 degree DOWNWARD tilt. Negative looks down. A downward tilt sees more floor clutter and
-                           # loses the top of tall furniture, so it changes WHAT is detected,
-                           # not just how it looks. Override per run with FEED_CAMERA_PITCH_DEG.
-  # --- how the agent tours a house -----------------------------------------------------
-  floor_confinement: teleport  # teleport to the next storey when one is done. `single_floor`
-  tour_end_settle_s: 90.0  # stand still this long at the end of a tour, so merges that need
-                           # one more sighting can commit before the launch closes
-  min_floor_share: 0.10    # a storey holding less than this share of the navmesh is a landing
-                           # or a stairwell, not a storey, and is not toured
+  fps: 3.0
+  hfov: 90.0
+  camera_pitch_deg: -30.0
+  floor_confinement: teleport
+  tour_end_settle_s: 90.0
+  min_floor_share: 0.1
   dataset_root: /root/exchange/lost3dsg/habitat
-
-
-# ---------------------------------------------------------------------------------------
-# run: the choices a person makes when starting a run.
-#
-# PRECEDENCE, one sentence: this file is the source of truth, an environment variable is a
-# documented per-run override, and run_metadata.json records which one won. The pattern is
-# `os.environ.get("FEED_CAMERA_PITCH_DEG", hab_cfg.get("camera_pitch_deg", 0.0))`.
-#
-# STATE, so nobody is misled: the perception side of this file is live. The LAUNCHER keys
-# below are declared here first so the scripts have something to read; until the simulator
-# lane lands its half, the launcher still takes them from the environment and these values
-# are documentation rather than behaviour. Each says which variable overrides it.
-#
-# NOT HERE, deliberately: credentials and machine paths live in lost3dsg/test/env.local.sh.
-# A URL that buys GPU time is a credential, and a machine path committed here is wrong on
-# every machine but one.
-# ---------------------------------------------------------------------------------------
 run:
-  # --- how long, and when to start -------------------------------------------------------
-  # LEAVE UNSET for a base run: a full-house tour has no cap and a completed tour is what
-  # ends a launch. The key exists so a deliberately short run can still be asked for.
-  # Override: CAP_MIN (minutes).
   cap_min: null
-  start_after_stack: true   # wait for the stack to be up before the agent starts moving, so
-                            # the first cycles are not spent on a half-started graph
-  # --- where the run publishes ------------------------------------------------------------
-  bridge_port: 8081         # the dashboard and the object manager both talk to this port; move
-                            # it when another project already answers there. Override: BRIDGE_PORT.
-  rviz: true                # start the RViz sibling beside the stack. Override: RVIZ=0.
-  show: true                # draw the simulator's own window. Override: FEED_SHOW.
-  overlay: true             # draw belief boxes on the simulator's view. Override: FEED_OVERLAY.
-  # --- mapping and localisation ------------------------------------------------------------
-  mapping_only: false       # map and DO NOT run the detector. A mapping bundle with zero
-                            # detections is a mapping run, not a detection run that found
-                            # nothing, and the two are otherwise indistinguishable afterwards.
-  map_draw: true            # render the top-down map into the bundle
-  rtabmap_slam: false       # SLAM is banned by ruling; a run localises against a published map
-  rtabmap_localize_db: ''   # the published map to localise against; empty means map fresh
-  rtabmap_close_timeout: 150  # seconds to let rtabmap close its database cleanly at teardown;
-                              # too short and the map is written half-finished
-  rtabmap_grid_args: ''     # extra grid parameters passed straight to rtabmap
-  localize_db_copy: true    # work on a COPY of the published map, so a run can never modify
-                            # the map every other run localises against
-  pose_source: simulator    # simulator | rtabmap -- where the robot's position comes from.
-                            # Only one may publish map->odom, so this also decides which
-                            # component owns that transform. Override: FEED_POSE_SOURCE.
-  # --- what the perception side runs --------------------------------------------------------
-  # ON since 2026-09-11. With it off the wall detector never runs, `detected_walls` is [],
-  # `max_wall_support` is 0.0, and all 12 accepted doorway candidates fail the wall-support
-  # test -- cut_validation proposed 0, so a whole storey stays ONE room against 12 in ground
-  # truth and Table VI cannot score. The door code was never given walls to anchor to.
-  wall_detector: true       # run the wall detector node. Override: WALL_DETECTOR.
-  gt_semantic: true         # render the simulator's semantic frame so archived detections can
-                            # be joined to ground truth offline. It never reaches the runtime
-                            # decision path; a preflight probe refuses a reader that tries.
-  gt_bbox: true             # publish semantic-GLB object boxes on /ground_truth_bbox for RViz
-                            # comparison only; it never reaches perception or the graph.
-  gt_scene_instance: ''     # the ground-truth inventory a run is scored against; empty lets the
-                            # offline reader pick by scene name, which is what the bundle then
-                            # cannot attest. Override: GT_SCENE_INSTANCE.
-  # --- the house ---------------------------------------------------------------------------
-  house_id: ''              # groups the storey bundles of one house; empty means a single run
-  house_floors: ''          # storeys to tour, empty means every storey the scene has
-  # --- the environment the container runs in -------------------------------------------------
-  hf_offline: true          # NO IN-RUN FETCHES. Everything is cached before a run starts, so a
-                            # missing model fails at the gate instead of downloading mid-run and
-                            # changing what the run measured. Override: FEED_HF_OFFLINE=0.
-  cfg_name: regolo_config.yaml  # which recipe the container loads. Override: CFG_NAME.
-# The size check that ships WITH this repository. It compares a proposal's box against the
-# measured size range for its class and needs no ontology: the detector's label is the lookup
-# key. `hooks.filter` below selects it, so turning it off means either enabled: false here or
-# emptying that line.
+  start_after_stack: true
+  bridge_port: 8081
+  rviz: true
+  show: true
+  overlay: true
+  mapping_only: false
+  map_draw: true
+  rtabmap_slam: false
+  rtabmap_localize_db: ''
+  rtabmap_close_timeout: 150
+  rtabmap_grid_args: ''
+  localize_db_copy: true
+  pose_source: simulator
+  wall_detector: true
+  gt_semantic: true
+  gt_scene_instance: ''
+  house_id: ''
+  house_floors: ''
+  hf_offline: true
+  cfg_name: regolo_config.yaml
 size_check:
   enabled: false
-  # Off on purpose. When false the check ANNOTATES and refuses nothing, which is what lets a
-  # run measure the change before taking it. true makes an out-of-range box a refusal.
   enforce: false
-
 hooks:
-  # extension seam (hooks.py): admission Filter / node Refiner loaded from another
-  # package by dotted path; empty = the pass-through blueprints (today's behaviour)
-  # EMPTY IN THE TRACKED CONFIG, and that is deliberate rather than an oversight. These two lines
-  # named an extension package and a path on one machine, so the shared repository depended on a
-  # checkout nobody else has and the boundary check failed on a clean clone. A DEPLOYMENT wires its
-  # own extension -- through a local config that is not committed, or through the launcher's
-  # EXT_ENV_FILE seam -- and the repository ships the seam, not the wiring.
-  search_paths: []        # where to look for the packages named below
-  # DEFAULTS TO THIS REPOSITORY'S OWN size check, which is not an extension: envelope_size.py
-  # and its corpus ship here, so a clean clone has everything it names. A deployment that wires
-  # an extension replaces this line from its own config.local.yaml, as before.
-  filter: "envelope_size:SizeFilter"   # "pkg.module:ClassName", subclass of hooks.Filter; empty = pass-through
-  refiner: ""             # "pkg.module:ClassName", subclass of hooks.Refiner
-  store: ""               # "pkg.module:ClassName", subclass of hooks.Store; empty = SQLite map
-  decisions_log: ""       # JSONL of decisions/revisions; empty -> output/hook_decisions.jsonl
-
+  search_paths: []
+  filter: envelope_size:SizeFilter
+  refiner: ''
+  store: ''
+  decisions_log: ''
 perception:
-  # THE FRAME QUEUE. 0 is OFF and is what every run before 2026-09-11 did: perception waited
-  # for the motion gate and processed whatever the camera held at that instant.
-  # WHY IT EXISTS, measured on two COMPLETE tours (20260911_133641 and _140421): 4344 frames
-  # each and ONE and TWO perception cycles between them, with no detections file in either
-  # bundle. The tour's longest pause is 1 second, the same length as the gate's sampling
-  # period, so the gate almost never observes a pause; and its score adds metres to radians,
-  # so no threshold can admit a turn on the spot without also admitting six metres of driving.
-  # Above 0, frames are captured regardless of motion and each is processed on its own
-  # captured transform.
-  # CORRECTED 2026-09-11 by the first armed run (20260911_150406). Depth is NOT bounded by the
-  # TF buffer: the queue discards the oldest when full, so a processed frame's age is depth
-  # times the CAPTURE interval (measured 0.53 s) -- about 4.2 s at depth 8, not 30 -- and that
-  # run logged no TF failure at all, sitting full on 261 of 262 cycles.
-  # What depth really costs is STALENESS. While the queue is saturated it processes the oldest
-  # of the most recent frames and drops the rest, so depth buys lag rather than coverage.
-  # queue_age_s on each row of perception_latencies.jsonl is the measurement.
-  # ARMED at 8 by the owner, 2026-09-11, to be tested by a run. 8 sits under the ~9 the TF
-  # buffer allows (30 s of buffer, ~3.2 s a cycle). The code fallback stays 0, so a
-  # deployment whose yaml lacks this key does NOT silently arm.
   frame_queue_max: 8
-  # How far the viewpoint must move before a frame is worth queueing. Translation and
-  # rotation are separate on purpose; 0.26 rad is about 15 degrees.
   frame_queue_min_translation_m: 0.25
   frame_queue_min_rotation_rad: 0.26
-  backend: "local"        # "modal" | "managed" | "local"
-  # DECLARED so probe a10 can compare it. The code has read this key since GA-281
-  # (config.py:468) and the file never named it, so a10 SKIPPED -- and a skipped probe
-  # fails the gate, which is what stopped the first baseline run on Gin, 2026-09-10,
-  # with every other probe passing. Same fault as camera_pitch_deg and room_frame_*:
-  # an undeclared key silently takes the module fallback and nothing can check it.
-  max_frame_age_s: 1.0   # seconds; a frame older than this is not perceived
-  # The deployed endpoint URL is a CREDENTIAL: the Modal app exposes fastapi_endpoint
-  # with no proxy auth, so anyone holding this URL can spend the account's GPU budget.
-  # It is read from MODAL_PERCEPTION_URL in the launcher's environment and must never be
-  # committed again. Empty here on purpose.
-  modal_endpoint: ""
+  backend: local
+  max_frame_age_s: 1.0
+  modal_endpoint: ''
   score_threshold: 0.15
-  nms_threshold: 0.50
-  # seconds; a remote perception call. 25.0 was hardcoded and sat below all
-  # seven measured Modal cold starts (25.3-47.7 s, 2026-08-30/31).
+  nms_threshold: 0.5
   cloud_timeout_s: 60.0
-  # Structural surfaces and openings already come from room geometry. Set [] to let
-  # the whole-scene VLM return them.
-  excluded_labels: ["wall", "floor", "ceiling", "door", "doorway", "door frame", "doorframe"]
-
-# Used only when perception_parallel.enabled is true. The normal
-# launch continues to use perception_2.py. cpu_processes gives actual CPU parallel
-# execution without requiring CUDA. Select cuda explicitly for the packed tensor arm.
+  excluded_labels:
+  - wall
+  - floor
+  - ceiling
+  - door
+  - doorway
+  - door frame
+  - doorframe
 perception_parallel:
-  # SELECTS the batched bbox-fusion encoder inside perception_2.py. Off by default, so an
-  # unchanged configuration runs the sequential reference path. This key replaces the separate
-  # separate node and the PERCEPTION_EXECUTABLE launcher variable that chose it:
-  # one node, one mirror-free source, and the backend named in the config the bundle records.
   enabled: false
-  bbox_backend: "cpu_processes"  # "sequential" | "cpu_processes" | "cuda"
+  bbox_backend: cpu_processes
   bbox_cpu_workers: 4
   bbox_cpu_chunksize: 1
-  bbox_cuda_devices: [0]         # use [0, 1] only if calibration selects two GPUs
-  bbox_cuda_max_batch_points: 0  # 0 = all objects already in this frame in one tensor
-
-# THE FRAME ARCHIVE. The replay dashboard's timeline reads frames/ plus detections.jsonl, and only
-# this writes them (perception_2.py:327 -> detection_archive.py). The module default is False
-# (config.py:322), so with this key absent EVERY bundle reads "NO FRAMES" or "EMPTY" in the picker
-# and nothing can be stepped through.
-#
-# MEASURED 2026-09-11: absent from this file since the 2026-09-10 tree consolidation. The old
-# untracked regolo_config.yaml set it and its own comment warned that losing it made "every run
-# after it produce a bundle the dashboard could only report as recorded no frames". Regenerating
-# the arm configs from this file carried the absence into all of them, so the warning came true a
-# second time. Set HERE, in the tracked config, so no arm can lose it again.
+  bbox_cuda_devices:
+  - 0
+  bbox_cuda_max_batch_points: 0
 archive:
   per_detection: true

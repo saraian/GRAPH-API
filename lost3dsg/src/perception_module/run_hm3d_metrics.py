@@ -110,11 +110,51 @@ def _result_row(report, task):
         return "-" if value is None else str(value)
     return "\t".join(columns) + "\n" + "\t".join(show(v) for v in values)
 
+
+def _polygon_area(row):
+    points = np.asarray(row.get("polygon_xz_m", []), dtype=float)
+    if points.ndim != 2 or points.shape[0] < 3 or points.shape[1] != 2:
+        return 0.0
+    return abs(float(np.sum(
+        points[:, 0] * np.roll(points[:, 1], -1)
+        - points[:, 1] * np.roll(points[:, 0], -1)) / 2.0))
+
+
+def _print_region_diagnostics(scene):
+    """Print the exact directional region quantities used by HOV-SG."""
+    predicted = scene.get("predicted_regions", [])
+    ground_truth = scene.get("ground_truth_regions", [])
+    print("\nREGION DIAGNOSTICS (HOV-SG, raster 5 cm)")
+    if not predicted or not ground_truth:
+        print(f"  prediction regions: {len(predicted)} | GT regions: {len(ground_truth)}")
+        return
+    precision, recall = metrics_eval.hovsg_region_overlap_matrices(
+        predicted, ground_truth, resolution=0.05)
+    print(f"  prediction regions: {len(predicted)} | GT regions: {len(ground_truth)}")
+    print("  GT region | best pred | area GT [m2] | area pred [m2] | recall | precision")
+    for gi, gt_row in enumerate(ground_truth):
+        pi = int(np.argmax(recall[:, gi]))
+        print(
+            f"  {gt_row.get('region_id', gi)!s:9} | "
+            f"{predicted[pi].get('room_id', pi)!s:9} | "
+            f"{_polygon_area(gt_row):12.3f} | "
+            f"{_polygon_area(predicted[pi]):15.3f} | "
+            f"{recall[pi, gi]:.4f} | {precision[pi, gi]:.4f}"
+        )
+    print("  prediction region | best GT | precision")
+    for pi, pred_row in enumerate(predicted):
+        gi = int(np.argmax(precision[pi, :]))
+        print(
+            f"  {pred_row.get('room_id', pi)!s:17} | "
+            f"{ground_truth[gi].get('region_id', gi)!s:8} | "
+            f"{precision[pi, gi]:.4f}"
+        )
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("scene"); ap.add_argument("--run-dir", type=Path, required=True); ap.add_argument("--output-dir", type=Path, default=HERE)
     ap.add_argument("--ground-truth", type=Path); ap.add_argument("--persistent-perception", type=Path)
-    ap.add_argument("--checkpoint", default=str(HERE / "checkpoints" / "laion2b_s32b_b79k.bin")); ap.add_argument("--device", default="cuda"); ap.add_argument("--batch-size", type=int, default=8); ap.add_argument("--max-crop-delta-s", type=float, default=120.0)
+    ap.add_argument("--checkpoint", default=str(HERE / "checkpoints" / "laion2b_s32b_b79k.bin")); ap.add_argument("--device", default="cuda"); ap.add_argument("--batch-size", type=int, default=8); ap.add_argument("--seed", type=int, default=7, help="seed per Python/NumPy/PyTorch (default: 7)"); ap.add_argument("--max-crop-delta-s", type=float, default=120.0)
     ap.add_argument("--region-iou", type=float, default=.5); ap.add_argument("--object-distance", type=float, default=.5)
     args = ap.parse_args(); key = str(args.scene).strip().lower().removeprefix("scene_").lstrip("0") or "0"
     if key not in SCENES: ap.error("scena non supportata")
@@ -142,8 +182,11 @@ def main():
         mapping = embedding_stage.build_mapping(objects, crops, args.max_crop_delta_s)
         ids = {str(x.get("object_id")) for x in manifest.get("predicted_objects", [])}; usable = [x for x in mapping if x["status"] == "matched" and str(x.get("object_id")) in ids]
         if usable:
-            vectors = embedding_stage.encode_crops(usable, args.checkpoint, args.device, args.batch_size)
-            manifest, _ = embedding_stage.enrich_manifest(manifest, vectors); manifest["embedding_crop_map"] = mapping
+            vectors = embedding_stage.encode_crops(
+                usable, args.checkpoint, args.device, args.batch_size, args.seed)
+            manifest, _ = embedding_stage.enrich_manifest(
+                manifest, vectors, args.seed); manifest["embedding_crop_map"] = mapping
+            manifest["embedding_seed"] = args.seed
     manifest["evaluation_protocol"] = (
         "HOV-SG top-k object association + HOV-SG 5 cm directional room overlap "
         "+ object_metrics center3d")
@@ -179,6 +222,7 @@ def main():
         "v1_keys_not_meaningful_here": v1_only if scripted.get("present") else [],
     }
     report["summary"]["AP"] = geometry.get("ap")
+    _print_region_diagnostics(evaluated)
     _write(metrics_path, report)
     metrics_eval_visualize.render([manifest], visual_path, args.object_distance, args.region_iou)
     print("\n" + _result_row(report, canonical))

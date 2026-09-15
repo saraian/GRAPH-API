@@ -14,6 +14,7 @@ import argparse
 import json
 import math
 import os
+import random
 import re
 import tempfile
 from pathlib import Path
@@ -24,6 +25,25 @@ import numpy as np
 
 MODEL_NAME = "ViT-H-14"
 PRETRAINED = "laion2b_s32b_b79k"
+
+
+def _seed_everything(seed: int, torch: Any) -> None:
+    """Imposta tutte le sorgenti di casualita' usate dall'estrazione."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    try:
+        torch.use_deterministic_algorithms(True)
+    except (AttributeError, RuntimeError):
+        # Compatibilita' con versioni Torch che non supportano questa API
+        # o con backend che non espongono algoritmi deterministici.
+        pass
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
 
 
 def _load_json(path: Path) -> Any:
@@ -103,9 +123,11 @@ def build_mapping(objects: list[dict[str, Any]], crops_dir: Path,
 
 
 def encode_crops(rows: list[dict[str, Any]], checkpoint: str,
-                 device: str, batch_size: int) -> dict[str, list[float]]:
+                 device: str, batch_size: int,
+                 seed: int = 7) -> dict[str, list[float]]:
     """Carica OpenCLIP solo quando si esegue davvero l'estrazione."""
     try:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         import open_clip
         import torch
         from PIL import Image
@@ -114,6 +136,7 @@ def encode_crops(rows: list[dict[str, Any]], checkpoint: str,
             "Servono open_clip, torch e Pillow; usa l'ambiente semantic_perception"
         ) from exc
 
+    _seed_everything(seed, torch)
     selected = [row for row in rows if row["status"] == "matched"]
     pretrained = checkpoint or PRETRAINED
     model, _, preprocess = open_clip.create_model_and_transforms(
@@ -142,7 +165,8 @@ def encode_crops(rows: list[dict[str, Any]], checkpoint: str,
 
 
 def enrich_manifest(manifest: dict[str, Any],
-                    vectors: dict[str, list[float]]) -> tuple[dict[str, Any], int]:
+                    vectors: dict[str, list[float]],
+                    seed: int = 7) -> tuple[dict[str, Any], int]:
     enriched = dict(manifest)
     predicted = []
     attached = 0
@@ -163,6 +187,7 @@ def enrich_manifest(manifest: dict[str, Any],
         "architecture": MODEL_NAME,
         "pretrained": PRETRAINED,
         "library": "open_clip",
+        "seed": seed,
         "normalized": True,
         "dimension": 1024,
         "embedded_objects": attached,
@@ -171,7 +196,8 @@ def enrich_manifest(manifest: dict[str, Any],
 
 
 def enrich_persistent(objects: list[dict[str, Any]],
-                      vectors: dict[str, list[float]]) -> tuple[list[dict[str, Any]], int]:
+                      vectors: dict[str, list[float]],
+                      seed: int = 7) -> tuple[list[dict[str, Any]], int]:
     """Attach HOV-SG vectors without destroying runtime CLIP vectors."""
     enriched = []
     attached = 0
@@ -190,7 +216,7 @@ def enrich_persistent(objects: list[dict[str, Any]],
                 bbox["hovsg_embedding"] = vector
                 bbox["hovsg_embedding_model"] = {
                     "architecture": MODEL_NAME, "pretrained": PRETRAINED,
-                    "library": "open_clip", "dimension": 1024,
+                    "library": "open_clip", "dimension": 1024, "seed": seed,
                 }
                 attached += 1
             row["bbox"] = bbox
@@ -223,6 +249,8 @@ def main() -> int:
     parser.add_argument("--device", default="cuda",
                         help="device Torch (default: cuda; usare cpu solo per prove lente)")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=7,
+                        help="seed per Python/NumPy/PyTorch (default: 7)")
     parser.add_argument("--max-delta-s", type=float, default=120.0)
     parser.add_argument("--dry-run", action="store_true",
                         help="verifica solo l'associazione oggetto-crop, senza caricare OpenCLIP")
@@ -263,11 +291,13 @@ def main() -> int:
               if row["status"] == "matched" and str(row["object_id"]) in manifest_ids]
     if not usable:
         parser.error("nessun object_id associato compare nel manifest; run e manifest non coincidono")
-    vectors = encode_crops(usable, args.checkpoint, args.device, args.batch_size)
-    enriched, attached = enrich_manifest(manifest, vectors)
+    vectors = encode_crops(usable, args.checkpoint, args.device,
+                           args.batch_size, args.seed)
+    enriched, attached = enrich_manifest(manifest, vectors, args.seed)
     _atomic_json(args.output, enriched)
     if args.persistent_output:
-        enriched_persistent, persistent_attached = enrich_persistent(objects, vectors)
+        enriched_persistent, persistent_attached = enrich_persistent(
+            objects, vectors, args.seed)
         _atomic_json(args.persistent_output, enriched_persistent)
         print(f"{args.persistent_output}: {persistent_attached} embedding aggiunti ai bbox persistenti")
     report = args.report or args.output.with_suffix(args.output.suffix + ".crop-map.json")
