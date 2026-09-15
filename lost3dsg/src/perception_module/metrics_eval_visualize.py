@@ -16,7 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
-from metrics_eval import assignment, filtered_scene, geometry_iou, load, object_assignment, _centre
+from metrics_eval import (assignment, filtered_scene, geometry_iou,
+                          hovsg_region_assignment, load, object_assignment, _centre)
 
 
 BLUE = "#2563eb"
@@ -151,7 +152,7 @@ def _region_svg(scene, threshold, xz_bounds, width=1260, height=560):
     gt_rows = scene.get("ground_truth_regions", [])
     pred = [(index, row, _polygon(row)) for index, row in enumerate(pred_rows) if _polygon(row) is not None]
     gt = [(index, row, _polygon(row)) for index, row in enumerate(gt_rows) if _polygon(row) is not None]
-    matches = assignment(pred_rows, gt_rows, threshold)
+    matches = hovsg_region_assignment(pred_rows, gt_rows, threshold)
     matched_pred = {pi for pi, _, _ in matches}
     low, high = xz_bounds
     plot_x, plot_y, plot_w, plot_h = 95, 80, width - 150, height - 140
@@ -173,17 +174,18 @@ def _region_svg(scene, threshold, xz_bounds, width=1260, height=560):
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
              '<rect width="100%" height="100%" fill="white"/>',
              f'<text x="24" y="32" fill="{INK}" font-family="sans-serif" font-size="20" font-weight="bold">Scene {scene_name} — region polygons (top view X-Y)</text>',
-             f'<text x="24" y="55" fill="{INK}" font-family="sans-serif" font-size="13">Valid GT regions: {len(gt)} · predictions: {len(pred)} · IoU matches (&gt; {threshold:g}): {len(matches)}</text>',
+             f'<text x="24" y="55" fill="{INK}" font-family="sans-serif" font-size="13">Valid GT regions: {len(gt)} · predictions: {len(pred)} · HOV-SG overlap matches (&gt; {threshold:g}): {len(matches)}</text>',
              f'<rect x="{plot_x}" y="{plot_y}" width="{plot_w}" height="{plot_h}" fill="#fbfcfe" stroke="{GRID}"/>']
     for index, row, polygon in gt:
         label = html.escape("GT region " + _identifier(row, index, True))
         parts.append(f'<polygon points="{points(polygon)}" fill="{BLUE}" fill-opacity=".10" stroke="{BLUE}" stroke-width="1.5"><title>{label}</title></polygon>')
     for index, row, polygon in pred:
         color = GREEN if index in matched_pred else ORANGE
-        best_iou = max((geometry_iou(row, candidate) for candidate in gt_rows), default=0.0)
+        best_overlap = max((score for pi, _gi, score in
+                            hovsg_region_assignment([row], gt_rows, None)), default=0.0)
         label = html.escape("Predicted region " + _identifier(row, index) +
                             (" (matched)" if index in matched_pred else " (unmatched)") +
-                            f"; best IoU: {best_iou:.3f}")
+                            f"; best HOV-SG overlap: {best_overlap:.3f}")
         parts.append(f'<polygon points="{points(polygon)}" fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="6 3"><title>{label}</title></polygon>')
     legend = ((BLUE, "Ground truth"), (GREEN, "Prediction: matched"), (ORANGE, "Prediction: unmatched"))
     for index, (color, text) in enumerate(legend):

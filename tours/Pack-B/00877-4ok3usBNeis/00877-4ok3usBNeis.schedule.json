@@ -1,0 +1,1221 @@
+{
+  "scene_id": "00877-4ok3usBNeis",
+  "navmesh": "/DATA/GRAPH-API/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00877-4ok3usBNeis/4ok3usBNeis.basis.navmesh",
+  "settings": {
+    "mpp": 0.05,
+    "robot_radius": 0.25,
+    "spacing": 2.0,
+    "merge_radius": 0.75,
+    "simplify": 0.2,
+    "step": 0.15,
+    "laps": 3,
+    "seed": 7,
+    "min_area": 5.0,
+    "coverage_radius": 3.0
+  },
+  "settings_sha256_16": "0b918c2d2e9492a3",
+  "storeys_detected": [
+    {
+      "z": -0.54,
+      "share": 0.4884,
+      "samples": 9768,
+      "peak_z": -0.46
+    },
+    {
+      "z": 2.06,
+      "share": 0.4687,
+      "samples": 9374,
+      "peak_z": 2.09
+    }
+  ],
+  "levels_not_toured": [],
+  "stairs_share": 0.0429,
+  "schedule": [
+    {
+      "gt_rooms_without_a_stop": null,
+      "gt_room_stops_added": 0,
+      "ridge_bridges": 2,
+      "room_seeds": 0,
+      "room_seeds_joined": 0,
+      "coverage_share": 1.0,
+      "coverage_radius_m": 3.0,
+      "height": 2.06,
+      "navigable_m2": 36.1,
+      "waypoints": 23,
+      "waypoints_before_merge": 30,
+      "junctions": 11,
+      "junctions_without_a_stop": 0,
+      "stranded_junctions_recovered": 0,
+      "max_degree": 4,
+      "root_candidates": [
+        [
+          8.626,
+          2.06,
+          0.58
+        ],
+        [
+          3.426,
+          2.06,
+          3.18
+        ],
+        [
+          5.276,
+          2.06,
+          3.23
+        ],
+        [
+          6.676,
+          2.06,
+          3.28
+        ]
+      ],
+      "root": [
+        6.676,
+        2.06,
+        3.28
+      ],
+      "unreached": [],
+      "budget": {
+        "drive_m": 216.75,
+        "drive_frames": 1446,
+        "corner_turn_deg": 16431,
+        "corner_turn_frames": 1644,
+        "scan_stops": 69,
+        "scan_frames": 2484,
+        "trajectory_points": 207,
+        "legs_kept_unsimplified": 0,
+        "total_frames": 5574,
+        "per_lap": {
+          "drive_m": 72.25,
+          "drive_frames": 482,
+          "corner_turn_deg": 5477,
+          "corner_turn_frames": 548,
+          "scan_stops": 23,
+          "scan_frames": 828,
+          "trajectory_points": 69,
+          "legs_kept_unsimplified": 0,
+          "total_frames": 1858
+        },
+        "laps": 3
+      },
+      "visit_order": [
+        [
+          6.676,
+          2.06,
+          3.28
+        ],
+        [
+          5.276,
+          2.06,
+          3.23
+        ],
+        [
+          5.226,
+          2.06,
+          4.08
+        ],
+        [
+          5.476,
+          2.06,
+          1.98
+        ],
+        [
+          3.426,
+          2.06,
+          3.18
+        ],
+        [
+          3.626,
+          2.06,
+          4.03
+        ],
+        [
+          2.326,
+          2.06,
+          3.08
+        ],
+        [
+          1.976,
+          2.06,
+          1.88
+        ],
+        [
+          2.126,
+          2.06,
+          0.73
+        ],
+        [
+          1.526,
+          2.06,
+          -0.62
+        ],
+        [
+          -0.274,
+          2.06,
+          -0.17
+        ],
+        [
+          -0.274,
+          2.06,
+          2.18
+        ],
+        [
+          1.376,
+          2.06,
+          4.63
+        ],
+        [
+          0.876,
+          2.06,
+          5.78
+        ],
+        [
+          0.676,
+          2.06,
+          3.73
+        ],
+        [
+          7.626,
+          2.06,
+          2.23
+        ],
+        [
+          8.626,
+          2.06,
+          0.58
+        ],
+        [
+          9.826,
+          2.06,
+          0.03
+        ],
+        [
+          9.626,
+          2.06,
+          2.03
+        ],
+        [
+          7.876,
+          2.06,
+          -0.67
+        ],
+        [
+          7.126,
+          2.06,
+          -0.62
+        ],
+        [
+          7.176,
+          2.06,
+          5.53
+        ],
+        [
+          9.076,
+          2.06,
+          4.73
+        ]
+      ],
+      "trajectory": [
+        {
+          "xyz": [
+            6.676000118255615,
+            2.0644748210906982,
+            3.2799999713897705
+          ],
+          "scan_deg": 360.0,
+          "stop": 0,
+          "leg": null
+        },
+        {
+          "xyz": [
+            5.276000022888184,
+            2.0644748210906982,
+            3.2300000190734863
+          ],
+          "scan_deg": 360.0,
+          "stop": 1,
+          "leg": 0
+        },
+        {
+          "xyz": [
+            4.77603006362915,
+            2.0644748210906982,
+            5.650000095367432
+          ],
+          "scan_deg": 360.0,
+          "stop": 23,
+          "leg": null,
+          "coverage_added": true
+        },
+        {
+          "xyz": [
+            5.22599983215332,
+            2.0644748210906982,
+            4.079999923706055
+          ],
+          "scan_deg": 360.0,
+          "stop": 2,
+          "leg": 1
+        },
+        {
+          "xyz": [
+            5.276000022888184,
+            2.0644748210906982,
+            3.2300000190734863
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 2
+        },
+        {
+          "xyz": [
+            5.47599983215332,
+            1.6820374727249146,
+            1.9800000190734863
+          ],
+          "scan_deg": 360.0,
+          "stop": 3,
+          "leg": 3
+        },
+        {
+          "xyz": [
+            5.276000022888184,
+            2.0644748210906982,
+            3.180000066757202
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 4
+        },
+        {
+          "xyz": [
+            3.4260001182556152,
+            2.0644748210906982,
+            3.180000066757202
+          ],
+          "scan_deg": 360.0,
+          "stop": 4,
+          "leg": 4
+        },
+        {
+          "xyz": [
+            3.625999927520752,
+            2.0644748210906982,
+            4.03000020980835
+          ],
+          "scan_deg": 360.0,
+          "stop": 5,
+          "leg": 5
+        },
+        {
+          "xyz": [
+            3.4260001182556152,
+            2.0644748210906982,
+            3.180000066757202
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 6
+        },
+        {
+          "xyz": [
+            2.3259999752044678,
+            2.0644748210906982,
+            3.0799999237060547
+          ],
+          "scan_deg": 360.0,
+          "stop": 6,
+          "leg": 7
+        },
+        {
+          "xyz": [
+            1.9759999513626099,
+            2.0644748210906982,
+            1.8799999952316284
+          ],
+          "scan_deg": 360.0,
+          "stop": 7,
+          "leg": 8
+        },
+        {
+          "xyz": [
+            2.125999927520752,
+            2.0644748210906982,
+            0.7300000190734863
+          ],
+          "scan_deg": 360.0,
+          "stop": 8,
+          "leg": 9
+        },
+        {
+          "xyz": [
+            2.0759999752044678,
+            2.0644748210906982,
+            -0.3700000047683716
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 10
+        },
+        {
+          "xyz": [
+            1.5260000228881836,
+            2.0644748210906982,
+            -0.6200000047683716
+          ],
+          "scan_deg": 360.0,
+          "stop": 9,
+          "leg": 10
+        },
+        {
+          "xyz": [
+            -0.27399998903274536,
+            2.0644748210906982,
+            -0.17000000178813934
+          ],
+          "scan_deg": 360.0,
+          "stop": 10,
+          "leg": 11
+        },
+        {
+          "xyz": [
+            1.5260000228881836,
+            2.0644748210906982,
+            -0.6200000047683716
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 12
+        },
+        {
+          "xyz": [
+            2.0759999752044678,
+            2.0644748210906982,
+            -0.3700000047683716
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 13
+        },
+        {
+          "xyz": [
+            2.125999927520752,
+            2.0644748210906982,
+            0.7300000190734863
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 13
+        },
+        {
+          "xyz": [
+            1.9759999513626099,
+            2.0644748210906982,
+            1.8799999952316284
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 14
+        },
+        {
+          "xyz": [
+            0.4259999990463257,
+            2.0644748210906982,
+            1.8799999952316284
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 15
+        },
+        {
+          "xyz": [
+            -0.27399998903274536,
+            2.0644748210906982,
+            2.180000066757202
+          ],
+          "scan_deg": 360.0,
+          "stop": 11,
+          "leg": 15
+        },
+        {
+          "xyz": [
+            0.4259999990463257,
+            2.0644748210906982,
+            1.8799999952316284
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 16
+        },
+        {
+          "xyz": [
+            1.9759999513626099,
+            2.0644748210906982,
+            1.8799999952316284
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 16
+        },
+        {
+          "xyz": [
+            2.3259999752044678,
+            2.0644748210906982,
+            3.0799999237060547
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 17
+        },
+        {
+          "xyz": [
+            1.7760000228881836,
+            2.0644748210906982,
+            4.380000114440918
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 18
+        },
+        {
+          "xyz": [
+            1.3760000467300415,
+            2.0644748210906982,
+            4.630000114440918
+          ],
+          "scan_deg": 360.0,
+          "stop": 12,
+          "leg": 18
+        },
+        {
+          "xyz": [
+            1.3259999752044678,
+            2.0644748210906982,
+            5.480000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 19
+        },
+        {
+          "xyz": [
+            0.8759999871253967,
+            2.0644748210906982,
+            5.78000020980835
+          ],
+          "scan_deg": 360.0,
+          "stop": 13,
+          "leg": 19
+        },
+        {
+          "xyz": [
+            1.3259999752044678,
+            2.0644748210906982,
+            5.480000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 20
+        },
+        {
+          "xyz": [
+            1.3760000467300415,
+            2.0644748210906982,
+            4.630000114440918
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 20
+        },
+        {
+          "xyz": [
+            0.5759999752044678,
+            2.0644748210906982,
+            4.329999923706055
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 21
+        },
+        {
+          "xyz": [
+            0.6759999990463257,
+            2.0644748210906982,
+            3.7300000190734863
+          ],
+          "scan_deg": 360.0,
+          "stop": 14,
+          "leg": 21
+        },
+        {
+          "xyz": [
+            0.5759999752044678,
+            2.0644748210906982,
+            4.329999923706055
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 22
+        },
+        {
+          "xyz": [
+            1.3760000467300415,
+            2.0644748210906982,
+            4.630000114440918
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 22
+        },
+        {
+          "xyz": [
+            1.7760000228881836,
+            2.0644748210906982,
+            4.380000114440918
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 23
+        },
+        {
+          "xyz": [
+            2.3259999752044678,
+            2.0644748210906982,
+            3.0799999237060547
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 23
+        },
+        {
+          "xyz": [
+            3.4260001182556152,
+            2.0644748210906982,
+            3.180000066757202
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 24
+        },
+        {
+          "xyz": [
+            5.276000022888184,
+            2.0644748210906982,
+            3.180000066757202
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 25
+        },
+        {
+          "xyz": [
+            5.47599983215332,
+            1.6820374727249146,
+            1.9800000190734863
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 25
+        },
+        {
+          "xyz": [
+            5.276000022888184,
+            2.0644748210906982,
+            3.2300000190734863
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 26
+        },
+        {
+          "xyz": [
+            6.676000118255615,
+            2.0644748210906982,
+            3.2799999713897705
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 27
+        },
+        {
+          "xyz": [
+            7.625999927520752,
+            2.0644748210906982,
+            2.2300000190734863
+          ],
+          "scan_deg": 360.0,
+          "stop": 15,
+          "leg": 28
+        },
+        {
+          "xyz": [
+            8.62600040435791,
+            2.0644748210906982,
+            0.5799999833106995
+          ],
+          "scan_deg": 360.0,
+          "stop": 16,
+          "leg": 29
+        },
+        {
+          "xyz": [
+            8.97599983215332,
+            2.0644748210906982,
+            0.6800000071525574
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 30
+        },
+        {
+          "xyz": [
+            9.826000213623047,
+            2.0644748210906982,
+            0.029999999329447746
+          ],
+          "scan_deg": 360.0,
+          "stop": 17,
+          "leg": 30
+        },
+        {
+          "xyz": [
+            8.97599983215332,
+            2.0644748210906982,
+            0.6800000071525574
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 31
+        },
+        {
+          "xyz": [
+            9.62600040435791,
+            2.0644748210906982,
+            2.0299999713897705
+          ],
+          "scan_deg": 360.0,
+          "stop": 18,
+          "leg": 31
+        },
+        {
+          "xyz": [
+            8.97599983215332,
+            2.0644748210906982,
+            0.6800000071525574
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 32
+        },
+        {
+          "xyz": [
+            9.826000213623047,
+            2.0644748210906982,
+            0.029999999329447746
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 32
+        },
+        {
+          "xyz": [
+            8.97599983215332,
+            2.0644748210906982,
+            0.6800000071525574
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 33
+        },
+        {
+          "xyz": [
+            8.62600040435791,
+            2.0644748210906982,
+            0.5799999833106995
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 33
+        },
+        {
+          "xyz": [
+            7.875999927520752,
+            2.0644748210906982,
+            -0.6700000166893005
+          ],
+          "scan_deg": 360.0,
+          "stop": 19,
+          "leg": 34
+        },
+        {
+          "xyz": [
+            7.426000118255615,
+            2.0644748210906982,
+            -0.8700000047683716
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 35
+        },
+        {
+          "xyz": [
+            7.125999927520752,
+            2.0644748210906982,
+            -0.6200000047683716
+          ],
+          "scan_deg": 360.0,
+          "stop": 20,
+          "leg": 35
+        },
+        {
+          "xyz": [
+            7.426000118255615,
+            2.0644748210906982,
+            -0.8700000047683716
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 36
+        },
+        {
+          "xyz": [
+            7.875999927520752,
+            2.0644748210906982,
+            -0.6700000166893005
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 36
+        },
+        {
+          "xyz": [
+            8.62600040435791,
+            2.0644748210906982,
+            0.5799999833106995
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 37
+        },
+        {
+          "xyz": [
+            7.625999927520752,
+            2.0644748210906982,
+            2.2300000190734863
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 38
+        },
+        {
+          "xyz": [
+            6.676000118255615,
+            2.0644748210906982,
+            3.2799999713897705
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 39
+        },
+        {
+          "xyz": [
+            7.326000213623047,
+            2.0644748210906982,
+            4.929999828338623
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 40
+        },
+        {
+          "xyz": [
+            7.176000118255615,
+            2.0644748210906982,
+            5.53000020980835
+          ],
+          "scan_deg": 360.0,
+          "stop": 21,
+          "leg": 40
+        },
+        {
+          "xyz": [
+            7.326000213623047,
+            2.0644748210906982,
+            4.980000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 41
+        },
+        {
+          "xyz": [
+            8.826000213623047,
+            2.0644748210906982,
+            5.03000020980835
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 41
+        },
+        {
+          "xyz": [
+            9.076000213623047,
+            2.0644748210906982,
+            4.730000019073486
+          ],
+          "scan_deg": 360.0,
+          "stop": 22,
+          "leg": 41
+        },
+        {
+          "xyz": [
+            8.826000213623047,
+            2.0644748210906982,
+            5.03000020980835
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 42
+        },
+        {
+          "xyz": [
+            7.326000213623047,
+            2.0644748210906982,
+            4.980000019073486
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 42
+        },
+        {
+          "xyz": [
+            7.176000118255615,
+            2.0644748210906982,
+            5.53000020980835
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 42
+        },
+        {
+          "xyz": [
+            7.326000213623047,
+            2.0644748210906982,
+            4.929999828338623
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 43
+        },
+        {
+          "xyz": [
+            6.676000118255615,
+            2.0644748210906982,
+            3.2799999713897705
+          ],
+          "scan_deg": 0,
+          "stop": null,
+          "leg": 43
+        }
+      ],
+      "share": 0.4687,
+      "coverage": {
+        "schema": "graphapi.tour_coverage.v1",
+        "scope": "planned static-scene free-floor visibility at scan stops; not recorded observation coverage",
+        "domain": "native floor-height reference plus full-scene collision-supported floor cell centres with clear vertical body columns; no navmesh mask or robot-radius erosion",
+        "free_area_m2": 45.57,
+        "covered_area_m2": 45.32,
+        "uncovered_area_m2": 0.25,
+        "coverage_pct": 99.451,
+        "free_area_outside_navmesh_m2": 11.28,
+        "covered_area_outside_navmesh_m2": 11.03,
+        "free_cells": 4557,
+        "covered_cells": 4532,
+        "obstacle_cells": 718,
+        "grid_resolution_m": 0.1,
+        "range_m": 3.0,
+        "range_source": "schedule coverage_radius_m (horizontal evaluation range)",
+        "camera_height_m": 1.5,
+        "clearance_height_m": 1.5,
+        "hfov_deg": 90.0,
+        "vfov_deg": 73.73979529168804,
+        "image_size": [
+          640,
+          480
+        ],
+        "tilts_deg": [
+          0.0,
+          -45.0
+        ],
+        "floor_band_m": 0.4,
+        "grid": {
+          "path": "00877-4ok3usBNeis/floor-0.coverage.npz",
+          "sha256": "69f39d859e9e2712940a488022ecc1dff767ddd5033f7efd54d30c9ab4538724"
+        },
+        "per_stop": [
+          {
+            "stop": 0,
+            "new_area_m2": 12.9,
+            "cumulative_area_m2": 12.9
+          },
+          {
+            "stop": 1,
+            "new_area_m2": 2.35,
+            "cumulative_area_m2": 15.25
+          },
+          {
+            "stop": 23,
+            "new_area_m2": 0.8,
+            "cumulative_area_m2": 16.05
+          },
+          {
+            "stop": 2,
+            "new_area_m2": 0.11,
+            "cumulative_area_m2": 16.16
+          },
+          {
+            "stop": 3,
+            "new_area_m2": 0.0,
+            "cumulative_area_m2": 16.16
+          },
+          {
+            "stop": 4,
+            "new_area_m2": 3.59,
+            "cumulative_area_m2": 19.75
+          },
+          {
+            "stop": 5,
+            "new_area_m2": 0.32,
+            "cumulative_area_m2": 20.07
+          },
+          {
+            "stop": 6,
+            "new_area_m2": 6.04,
+            "cumulative_area_m2": 26.11
+          },
+          {
+            "stop": 7,
+            "new_area_m2": 3.74,
+            "cumulative_area_m2": 29.85
+          },
+          {
+            "stop": 8,
+            "new_area_m2": 2.26,
+            "cumulative_area_m2": 32.11
+          },
+          {
+            "stop": 9,
+            "new_area_m2": 0.45,
+            "cumulative_area_m2": 32.56
+          },
+          {
+            "stop": 10,
+            "new_area_m2": 0.0,
+            "cumulative_area_m2": 32.56
+          },
+          {
+            "stop": 11,
+            "new_area_m2": 0.0,
+            "cumulative_area_m2": 32.56
+          },
+          {
+            "stop": 12,
+            "new_area_m2": 2.14,
+            "cumulative_area_m2": 34.7
+          },
+          {
+            "stop": 13,
+            "new_area_m2": 0.07,
+            "cumulative_area_m2": 34.77
+          },
+          {
+            "stop": 14,
+            "new_area_m2": 0.06,
+            "cumulative_area_m2": 34.83
+          },
+          {
+            "stop": 15,
+            "new_area_m2": 5.22,
+            "cumulative_area_m2": 40.05
+          },
+          {
+            "stop": 16,
+            "new_area_m2": 3.09,
+            "cumulative_area_m2": 43.14
+          },
+          {
+            "stop": 17,
+            "new_area_m2": 0.08,
+            "cumulative_area_m2": 43.22
+          },
+          {
+            "stop": 18,
+            "new_area_m2": 0.08,
+            "cumulative_area_m2": 43.3
+          },
+          {
+            "stop": 19,
+            "new_area_m2": 0.36,
+            "cumulative_area_m2": 43.66
+          },
+          {
+            "stop": 20,
+            "new_area_m2": 0.02,
+            "cumulative_area_m2": 43.68
+          },
+          {
+            "stop": 21,
+            "new_area_m2": 1.64,
+            "cumulative_area_m2": 45.32
+          },
+          {
+            "stop": 22,
+            "new_area_m2": 0.0,
+            "cumulative_area_m2": 45.32
+          }
+        ],
+        "limitations": [
+          "Cell-centre grid approximation of physical floor area, not exact polygon area.",
+          "Static stage collisions only; planned dynamic objects are not yet instantiated.",
+          "Coverage includes the floor surface within the configured camera vertical FOV, not object detection quality.",
+          "Motion frames and cross-floor transitions are excluded; only scheduled 360-degree scans contribute.",
+          "Missing/open mesh surfaces cannot contribute a supported floor cell."
+        ],
+        "sources": {
+          "scene": {
+            "path": "/home/phd_student/Argenziano/habitat-MP3D/data/scene_datasets/hm3d/val/00877-4ok3usBNeis/4ok3usBNeis.basis.glb",
+            "sha256": "f66665cea56e7da7f0862bff989b5f4911764d4768a221dbebb642e8c7ad353b"
+          },
+          "native_floor_gt": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/packB-attempts/00877-4ok3usBNeis-floor1/00877-4ok3usBNeis.gt.json",
+            "sha256": "d2a04d62b8d151072c2928759488536be4631390d0c5563df4a05d54f31f5934"
+          },
+          "evaluator": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/tools/baselines/tour_coverage.py",
+            "sha256": "a4dafcfafed113e0bbdea999ce4f55cbee623fa555c6f3b90e74a635996c30ef"
+          },
+          "previous_grid": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/packB-attempts/00877-4ok3usBNeis-floor1/floor-0.coverage.npz",
+            "sha256": "8aa92eb0e46016b4391f648b7f31bc70273573830c1b8288420db1a19af9032b"
+          },
+          "optimizer": {
+            "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/tools/baselines/optimize_tours.py",
+            "sha256": "1efdd8734a49f139e1eee0920b90d1134383aa61e68f57e25969b72ba4eb6df7"
+          }
+        }
+      },
+      "scan_plan": {
+        "mode": "continuous",
+        "hold_frames": 1,
+        "tilts_deg": [
+          0.0,
+          -45.0
+        ],
+        "turn_step_deg": 10.0
+      },
+      "coverage_optimization": {
+        "method": "two camera tilts plus greedy visibility set cover; cheapest geodesic insertion preserving original order",
+        "previous_coverage_pct": 81.786,
+        "tilt_only_coverage_pct": 98.903,
+        "candidate_spacing_m": 0.5,
+        "candidate_count": 270,
+        "added_scan_stops": 1,
+        "candidate_visible_area_m2": 45.47,
+        "candidate_visibility_ceiling_pct": 99.781,
+        "candidate_union_target_fraction": 0.995,
+        "fraction_of_candidate_visible_area_covered": 0.996701,
+        "unseen_by_candidate_set_m2": 0.1,
+        "limitations": "Finite 0.5m candidate-grid ceiling, not proof of continuous global optimum. Coverage evaluated at planned target poses; native follower arrival tolerance can alter visibility."
+      },
+      "previous_duration": {
+        "scope": "nominal action clock from imported ScheduledTour with native sensorless navigation; not acquisition wall time",
+        "fps": 3.0,
+        "forward_step_m": 0.15,
+        "turn_step_deg": 10.0,
+        "first_lap_frames": 1721,
+        "three_lap_frames": 5186,
+        "first_lap_seconds": 573.667,
+        "three_lap_seconds": 1728.667,
+        "three_lap_driven_distance_m": 170.444,
+        "skipped": [],
+        "valid_complete_tour": true,
+        "executor": {
+          "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/test/habitat_feed_host.py",
+          "sha256": "971dfd6ef7817dc2114615cdb0d84b904c5780fe8b3bddcb93a0e504a7e6e8db"
+        },
+        "exclusions": [
+          "Rendering, image writing, IPC and native baseline inference.",
+          "Dynamic object script processing and extra waits.",
+          "Inter-floor transfer, localization/map reset and startup.",
+          "Sensorless action counting does not verify camera tilt application."
+        ]
+      },
+      "duration": {
+        "scope": "nominal action clock from imported ScheduledTour with native sensorless navigation; not acquisition wall time",
+        "fps": 3.0,
+        "forward_step_m": 0.15,
+        "turn_step_deg": 10.0,
+        "first_lap_frames": 2670,
+        "three_lap_frames": 7990,
+        "first_lap_seconds": 890.0,
+        "three_lap_seconds": 2663.333,
+        "three_lap_driven_distance_m": 180.804,
+        "skipped": [],
+        "valid_complete_tour": true,
+        "executor": {
+          "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/test/habitat_feed_host.py",
+          "sha256": "971dfd6ef7817dc2114615cdb0d84b904c5780fe8b3bddcb93a0e504a7e6e8db"
+        },
+        "exclusions": [
+          "Rendering, image writing, IPC and native baseline inference.",
+          "Dynamic object script processing and extra waits.",
+          "Inter-floor transfer, localization/map reset and startup.",
+          "Sensorless action counting does not verify camera tilt application."
+        ],
+        "configured_laps": 3,
+        "configured_laps_seconds": 2670.0
+      }
+    }
+  ],
+  "navigation_projection": {
+    "source": {
+      "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/schedules/00877-4ok3usBNeis.schedule.json",
+      "sha256": "0cd6d5e18688771a28ff58d055a40a51e7e5aaab3868f11e231be86bffa6fa42"
+    },
+    "method": "native PathFinder.snap_point for every goal; all stops retained",
+    "max_displacement_m": 0.37796252727512325
+  },
+  "coverage": {
+    "schema": "graphapi.tour_coverage.v1",
+    "scope": "planned static-scene free-floor visibility at scan stops; not recorded observation coverage",
+    "free_area_m2": 45.57,
+    "covered_area_m2": 45.32,
+    "coverage_pct": 99.451,
+    "aggregation": "area-weighted across floors"
+  },
+  "coverage_optimization": {
+    "source_schedule": {
+      "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/packB-attempts/00877-4ok3usBNeis-floor1/00877-4ok3usBNeis.schedule.json",
+      "sha256": "fd3d98340961d6dee7b278102089879a428c45052409fe08da68f3557519b5a0"
+    },
+    "optimizer": {
+      "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/tools/baselines/optimize_tours.py",
+      "sha256": "1efdd8734a49f139e1eee0920b90d1134383aa61e68f57e25969b72ba4eb6df7"
+    }
+  },
+  "duration": {
+    "first_lap_seconds": 890.0,
+    "three_lap_seconds": 2663.333,
+    "fps": 3.0,
+    "valid_complete_tour": true,
+    "scope": "sum of floor action clocks; excludes cross-floor transfer and acquisition overhead",
+    "configured_laps": 3,
+    "configured_laps_seconds": 2670.0
+  },
+  "previous_duration": {
+    "first_lap_seconds": 573.667,
+    "three_lap_seconds": 1728.667,
+    "configured_laps": 3,
+    "configured_laps_seconds": 1721.001
+  }
+}

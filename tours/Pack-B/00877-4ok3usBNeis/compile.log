@@ -1,0 +1,29 @@
+Renderer: NVIDIA GeForce RTX 4090/PCIe/SSE2 by NVIDIA Corporation
+OpenGL version: 4.6.0 NVIDIA 580.126.09
+Using optional features:
+    GL_ARB_vertex_array_object
+    GL_ARB_separate_shader_objects
+    GL_ARB_robustness
+    GL_ARB_texture_storage
+    GL_ARB_texture_view
+    GL_ARB_framebuffer_no_attachments
+    GL_ARB_invalidate_subdata
+    GL_ARB_texture_storage_multisample
+    GL_ARB_multi_bind
+    GL_ARB_direct_state_access
+    GL_ARB_get_texture_sub_image
+    GL_ARB_texture_filter_anisotropic
+    GL_KHR_debug
+    GL_KHR_parallel_shader_compile
+    GL_NV_depth_buffer_float
+Using driver workarounds:
+    no-forward-compatible-core-context
+    nv-egl-incorrect-gl11-function-pointers
+    no-layout-qualifiers-on-old-glsl
+    nv-zero-context-profile-mask
+    nv-implementation-color-read-format-dsa-broken
+    nv-cubemap-inconsistent-compressed-image-size
+    nv-cubemap-broken-full-compressed-image-query
+    nv-compressed-block-size-in-bits
+[00:28:27:795600]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00877-4ok3usBNeis' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+Support diagnostic: {"counts": {"semantic_objects": 136, "support_categories": 136, "no_matching_collision_surface": 329, "points": 191, "height_filter": 2}, "source": "rendered semantic+depth", "support_categories": {"statue/art": 1, "cloth": 3, "alarm clock": 2, "bed": 3, "nightstand": 3, "bedframe": 2, "dresser": 1, "bathroom cabinet": 3, "desk chair": 2, "desk": 4, "armchair": 11, "file cabinet": 3, "recycle bin": 3, "brochure": 3, "machine": 1, "unknown": 5, "washbasin": 3, "safe": 1, "towel": 2, "box of tissues": 1, "kitchen counter": 3, "dishwasher": 2, "dining table": 2, "toilet": 1, "trashcan": 1, "laundry machine": 1, "refrigerator": 3, "couch": 7, "bathroom accessory": 2, "towel bar": 1, "dining chair": 29, "toaster": 3, "kitchen lower cabinet": 4, "blanket": 2, "pillow": 5, "tv": 3, "tv stand": 1, "entertainment set": 2, "sink cabinet": 1, "sink": 2, "oven and stove": 3, "stairs railing": 1}, "categories_sample": {"dining chair": 29, "armchair": 11, "couch": 7, "unknown": 5, "pillow": 5, "desk": 4, "kitchen lower cabinet": 4, "cloth": 3, "bed": 3, "nightstand": 3, "bathroom cabinet": 3, "file cabinet": 3, "recycle bin": 3, "brochure": 3, "washbasin": 3, "kitchen counter": 3, "refrigerator": 3, "toaster": 3, "tv": 3, "oven and stove": 3, "alarm clock": 2, "bedframe": 2, "desk chair": 2, "towel": 2, "dishwasher": 2, "dining table": 2, "bathroom accessory": 2, "blanket": 2, "entertainment set": 2, "sink": 2}, "aabb_samples": [{"category": "statue/art", "min": [-0.5770456790924072, 3.187833786010742, -0.7507069110870361], "max": [-0.5329999923706055, 3.2039954662323, -0.6830607652664185], "size": [0.04404568672180176, 0.016161680221557617, 0.06764614582061768]}, {"category": "cloth", "min": [-0.5672615766525269, 3.1600098609924316, -1.0921601057052612], "max": [-0.18759089708328247, 3.1873409748077393, -0.5471590161323547], "size": [0.3796706795692444, 0.027331113815307617, 0.5450010895729065]}, {"category": "alarm clock", "min": [-0.4966450333595276, 2.567780017852783, 1.507531762123108], "max": [-0.22628942131996155, 2.5999581813812256, 1.7264212369918823], "size": [0.27035561203956604, 0.03217816352844238, 0.21888947486877441]}, {"category": "alarm clock", "min": [-0.4054989814758301, 2.6013946533203125, 1.5408570766448975], "max": [-0.267342746257782, 2.610173225402832, 1.6930475234985352], "size": [0.1381562352180481, 0.008778572082519531, 0.1521904468536377]}, {"category": "bed", "min": [-0.34157565236091614, 2.6225643157958984, 0.24011898040771484], "max": [1.4182628393173218, 2.67985200881958, 1.286077857017517], "size": [1.759838491678238, 0.05728769302368164, 1.0459588766098022]}, {"category": "nightstand", "min": [-0.16560089588165283, 2.4530141353607178, 1.7962419986724854], "max": [-0.16560089588165283, 2.4530141353607178, 1.7962419986724854], "size": [0.0, 0.0, 0.0]}, {"category": "bedframe", "min": [-0.5637912750244141, 2.855046033859253, 0.2658911943435669], "max": [-0.5212435126304626, 2.8771023750305176, 0.3516950011253357], "size": [0.042547762393951416, 0.02205634117126465, 0.0858038067817688]}, {"category": "bed", "min": [-0.5265198945999146, 2.6800284385681152, 0.27146515250205994], "max": [-0.036012809723615646, 2.7323954105377197, 1.1415293216705322], "size": [0.4905070848762989, 0.05236697196960449, 0.8700641691684723]}, {"category": "cloth", "min": [-0.5584807395935059, 3.1437461376190186, -1.1922259330749512], "max": [-0.1431061178445816, 3.159916400909424, -0.5218947529792786], "size": [0.41537462174892426, 0.016170263290405273, 0.6703311800956726]}, {"category": "dresser", "min": [-0.30952775478363037, 3.145397424697876, -1.2738151550292969], "max": [-0.17022617161273956, 3.1563057899475098, -0.8077707290649414], "size": [0.1393015831708908, 0.010908365249633789, 0.46604442596435547]}, {"category": "cloth", "min": [-0.37162894010543823, 3.1726174354553223, -0.9976053237915039], "max": [-0.21055898070335388, 3.1990036964416504, -0.7316167950630188], "size": [0.16106995940208435, 0.026386260986328125, 0.2659885287284851]}, {"category": "bathroom cabinet", "min": [4.441356658935547, 3.3328187465667725, 4.98075008392334], "max": [4.465704441070557, 3.376892328262329, 5.204212665557861], "size": [0.024347782135009766, 0.04407358169555664, 0.22346258163452148]}]}

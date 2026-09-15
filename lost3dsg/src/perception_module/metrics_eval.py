@@ -234,6 +234,54 @@ def _region_overlap_shares(predicted, ground_truth, resolution=.05):
     return (float(intersection / pred_count) if pred_count else 0.0,
             float(intersection / gt_count) if gt_count else 0.0)
 
+
+def hovsg_region_overlap_matrices(predicted, ground_truth, resolution=.05):
+    """Return the two directional room-overlap matrices used by HOV-SG.
+
+    Rows are predicted rooms and columns are GT rooms.  The first matrix is
+    normalized by predicted-room area (HyDRA precision); the second by GT-room
+    area (HyDRA recall).  HOV-SG's room association score is the maximum of
+    those two values, rather than polygon IoU.
+    """
+    over_pred = np.zeros((len(predicted), len(ground_truth)), dtype=float)
+    over_gt = np.zeros_like(over_pred)
+    for pi, pred_row in enumerate(predicted):
+        for gi, gt_row in enumerate(ground_truth):
+            if ("polygon_xz_m" in pred_row and
+                    "polygon_xz_m" in gt_row):
+                over_pred[pi, gi], over_gt[pi, gi] = _region_overlap_shares(
+                    pred_row, gt_row, resolution=resolution)
+            else:
+                # Retain mask-only fixture compatibility.  Identical masks
+                # have identical denominators, so IoU is the least surprising
+                # legacy fallback; real HM3D runs always use polygons.
+                score = geometry_iou(pred_row, gt_row)
+                over_pred[pi, gi] = score
+                over_gt[pi, gi] = score
+    return over_pred, over_gt
+
+
+def hovsg_region_assignment(predicted, ground_truth, threshold=None,
+                            resolution=.05):
+    """One-to-one HOV-SG room association for serialized region polygons."""
+    if not predicted or not ground_truth:
+        return []
+    over_pred, over_gt = hovsg_region_overlap_matrices(
+        predicted, ground_truth, resolution)
+    scores = np.maximum(over_pred, over_gt)
+    try:
+        from scipy.optimize import linear_sum_assignment
+        ii, jj = linear_sum_assignment(scores, maximize=True)
+    except ImportError:
+        ii, jj = [], []
+        for i, j in sorted(np.ndindex(scores.shape),
+                           key=lambda pair: scores[pair], reverse=True):
+            if i not in ii and j not in jj:
+                ii.append(i)
+                jj.append(j)
+    return [(int(i), int(j), float(scores[i, j])) for i, j in zip(ii, jj)
+            if threshold is None or scores[i, j] > threshold]
+
 def geometry_iou(a,b):
     if "mask" in a and "mask" in b: return iou(a["mask"],b["mask"])
     if all(k in a and k in b for k in ("aabb_min_m","aabb_max_m")): return _aabb_iou(a,b)
@@ -363,10 +411,11 @@ def match_details(scenes, region_threshold, object_threshold, include_all_pairs=
                 object_scene = filtered_scene(scene)
                 pred, gt = object_scene.get(pred_key, []), object_scene.get(gt_key, [])
             else:
-                pred, gt = scene.get(pred_key, []), scene.get(gt_key, [])
+                region_scene = filtered_scene(scene, include_regions=True)
+                pred, gt = region_scene.get(pred_key, []), region_scene.get(gt_key, [])
             rows = []
             associations = (object_assignment(pred, gt, None)
-                            if name == "objects" else assignment(pred, gt, None))
+                            if name == "objects" else hovsg_region_assignment(pred, gt, None))
             for pi, gi, score in associations:
                 rows.append({
                     "predicted_index": pi,
@@ -382,13 +431,20 @@ def match_details(scenes, region_threshold, object_threshold, include_all_pairs=
                      "predicted_count": len(pred), "ground_truth_count": len(gt)}
             if name == "objects":
                 block["threshold_unit"] = "metres_3d"
+            else:
+                block["association_metric"] = "HOV-SG max directional overlap"
             if include_all_pairs:
+                region_scores = None
+                if name == "regions" and pred and gt:
+                    over_pred, over_gt = hovsg_region_overlap_matrices(pred, gt)
+                    region_scores = np.maximum(over_pred, over_gt)
                 block["all_candidate_pairs"] = [
                     {"predicted_index": pi,
                      "predicted_id": _entity_id(p, pi, name[:-1]),
                      "ground_truth_index": gi,
                      "ground_truth_id": _entity_id(g, gi, name[:-1]),
-                     "iou": round(geometry_iou(p, g), 6)}
+                     "iou": round(float(region_scores[pi, gi]) if region_scores is not None
+                                  else geometry_iou(p, g), 6)}
                     for pi, p in enumerate(pred) for gi, g in enumerate(gt)
                 ]
             scene_row[name] = block
@@ -439,25 +495,29 @@ def floor_regions(scenes, threshold):
             # This is the region metric reported by HOV-SG (HyDRA), not
             # polygon IoU: directional coverage is maximized independently
             # for every prediction and every GT region.
-            overlap_pred = np.zeros((len(pr), len(gr)), dtype=float)
-            overlap_gt = np.zeros_like(overlap_pred)
-            for pi, predicted in enumerate(pr):
-                for gi, ground_truth in enumerate(gr):
-                    overlap_pred[pi, gi], overlap_gt[pi, gi] = _region_overlap_shares(
-                        predicted, ground_truth, resolution=.05)
+            overlap_pred, overlap_gt = hovsg_region_overlap_matrices(pr, gr, .05)
             region_precision_total += float(np.max(overlap_pred, axis=1).sum())
             region_recall_total += float(np.max(overlap_gt, axis=0).sum())
             # HOV-SG's acc@IoU=0.5 uses its symmetric overlap matrix and a
             # one-to-one Hungarian assignment.
-            symmetric = np.maximum(overlap_pred, overlap_gt)
-            from scipy.optimize import linear_sum_assignment
-            ii, jj = linear_sum_assignment(symmetric, maximize=True)
-            rh += sum(symmetric[pi, gi] > threshold for pi, gi in zip(ii, jj))
+            rh += len(hovsg_region_assignment(pr, gr, threshold, .05))
         else:
             rh += 0
+    region_fp = pt - rh
+    region_fn = gt - rh
+    region_accuracy_denominator = rh + region_fp + region_fn
     return {"acc_f_pct": round(100*fh/ft,4) if ft else None,
             "region_precision_pct": round(100*region_precision_total/pt,4) if pt else None,
             "region_recall_pct": round(100*region_recall_total/gt,4) if gt else None,
+            "region_accuracy_at_threshold_pct": (
+                round(100*rh/region_accuracy_denominator, 4)
+                if region_accuracy_denominator else None),
+            "region_detection_precision_at_threshold_pct": (
+                round(100*rh/pt, 4) if pt else None),
+            "region_detection_recall_at_threshold_pct": (
+                round(100*rh/gt, 4) if gt else None),
+            "region_overlap_threshold": threshold,
+            "region_association_metric": "HOV-SG max directional overlap",
             "floor_matches": fh, "floor_gt": ft, "region_matches": rh,
             "predicted_regions": pt, "ground_truth_regions": gt}
 

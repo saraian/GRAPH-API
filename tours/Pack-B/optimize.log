@@ -1,0 +1,68 @@
+[config] loaded=<defaults, no file found> single_floor=True floor_tolerance_m=0.5
+[config] WARNING: running on config.py defaults — no file was read. Any value set in a yaml is NOT in force.
+[feed] pending merges read from /dev/shm/graphapi-dynamic-tour-replan-20260913/packB-optimized-v3/dry-executor/merge_pending.json
+SCENE 00815-h1zeeAwLh9Z
+[23:59:22:918076]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00815-h1zeeAwLh9Z' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+OPTIMIZED 0.05 {'method': 'two camera tilts plus greedy visibility set cover; cheapest geodesic insertion preserving original order', 'previous_coverage_pct': 82.71, 'tilt_only_coverage_pct': 98.857, 'candidate_spacing_m': 0.5, 'candidate_count': 471, 'added_scan_stops': 2, 'candidate_visible_area_m2': 80.5, 'candidate_visibility_ceiling_pct': 99.988, 'candidate_union_target_fraction': 0.995, 'fraction_of_candidate_visible_area_covered': 0.996273, 'unseen_by_candidate_set_m2': 0.01, 'limitations': 'Finite 0.5m candidate-grid ceiling, not proof of continuous global optimum. Coverage evaluated at planned target poses; native follower arrival tolerance can alter visibility.'} coverage 99.615
+[feed] SCHEDULE: 111 points, 37 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 111 scans
+[feed] SCHEDULE: 113 points, 39 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 117 scans
+RESULT 00815-h1zeeAwLh9Z {'schema': 'graphapi.tour_coverage.v1', 'scope': 'planned static-scene free-floor visibility at scan stops; not recorded observation coverage', 'free_area_m2': 80.51, 'covered_area_m2': 80.2, 'coverage_pct': 99.615, 'aggregation': 'area-weighted across floors'} {'first_lap_seconds': 1402.0, 'three_lap_seconds': 4215.333, 'fps': 3.0, 'valid_complete_tour': True, 'scope': 'sum of floor action clocks; excludes cross-floor transfer and acquisition overhead'}
+SCENE 00835-q3zU7Yy5E5s
+[23:59:34:724691]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00835-q3zU7Yy5E5s' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+OPTIMIZED 0.04 {'method': 'two camera tilts plus greedy visibility set cover; cheapest geodesic insertion preserving original order', 'previous_coverage_pct': 60.759, 'tilt_only_coverage_pct': 85.635, 'candidate_spacing_m': 0.5, 'candidate_count': 221, 'added_scan_stops': 3, 'candidate_visible_area_m2': 34.21, 'candidate_visibility_ceiling_pct': 99.883, 'candidate_union_target_fraction': 0.995, 'fraction_of_candidate_visible_area_covered': 0.995323, 'unseen_by_candidate_set_m2': 0.04, 'limitations': 'Finite 0.5m candidate-grid ceiling, not proof of continuous global optimum. Coverage evaluated at planned target poses; native follower arrival tolerance can alter visibility.'} coverage 99.416
+[feed] SCHEDULE: 39 points, 15 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 45 scans
+[feed] SCHEDULE: 42 points, 18 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 54 scans
+RESULT 00835-q3zU7Yy5E5s {'schema': 'graphapi.tour_coverage.v1', 'scope': 'planned static-scene free-floor visibility at scan stops; not recorded observation coverage', 'free_area_m2': 34.25, 'covered_area_m2': 34.05, 'coverage_pct': 99.416, 'aggregation': 'area-weighted across floors'} {'first_lap_seconds': 653.333, 'three_lap_seconds': 1954.0, 'fps': 3.0, 'valid_complete_tour': True, 'scope': 'sum of floor action clocks; excludes cross-floor transfer and acquisition overhead'}
+SCENE 00853-5cdEh9F2hJL
+[23:59:41:252173]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00853-5cdEh9F2hJL' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+OPTIMIZED 0.02 {'method': 'two camera tilts plus greedy visibility set cover; cheapest geodesic insertion preserving original order', 'previous_coverage_pct': 74.312, 'tilt_only_coverage_pct': 99.195, 'candidate_spacing_m': 0.5, 'candidate_count': 614, 'added_scan_stops': 1, 'candidate_visible_area_m2': 104.08, 'candidate_visibility_ceiling_pct': 99.799, 'candidate_union_target_fraction': 0.995, 'fraction_of_candidate_visible_area_covered': 0.996061, 'unseen_by_candidate_set_m2': 0.21, 'limitations': 'Finite 0.5m candidate-grid ceiling, not proof of continuous global optimum. Coverage evaluated at planned target poses; native follower arrival tolerance can alter visibility.'} coverage 99.406
+[feed] SCHEDULE: 159 points, 53 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 159 scans
+[feed] SCHEDULE: 160 points, 54 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 162 scans
+RESULT 00853-5cdEh9F2hJL {'schema': 'graphapi.tour_coverage.v1', 'scope': 'planned static-scene free-floor visibility at scan stops; not recorded observation coverage', 'free_area_m2': 104.29, 'covered_area_m2': 103.67, 'coverage_pct': 99.406, 'aggregation': 'area-weighted across floors'} {'first_lap_seconds': 2001.333, 'three_lap_seconds': 6011.0, 'fps': 3.0, 'valid_complete_tour': True, 'scope': 'sum of floor action clocks; excludes cross-floor transfer and acquisition overhead'}
+SCENE 00861-GLAQ4DNUx5U
+[23:59:58:510029]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00861-GLAQ4DNUx5U' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+OPTIMIZED 1.21 {'method': 'two camera tilts plus greedy visibility set cover; cheapest geodesic insertion preserving original order', 'previous_coverage_pct': 75.669, 'tilt_only_coverage_pct': 95.871, 'candidate_spacing_m': 0.5, 'candidate_count': 414, 'added_scan_stops': 4, 'candidate_visible_area_m2': 74.14, 'candidate_visibility_ceiling_pct': 99.718, 'candidate_union_target_fraction': 0.995, 'fraction_of_candidate_visible_area_covered': 0.995279, 'unseen_by_candidate_set_m2': 0.21, 'limitations': 'Finite 0.5m candidate-grid ceiling, not proof of continuous global optimum. Coverage evaluated at planned target poses; native follower arrival tolerance can alter visibility.'} coverage 99.247
+[feed] SCHEDULE: 99 points, 33 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 99 scans
+[feed] SCHEDULE: 103 points, 37 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 111 scans
+RESULT 00861-GLAQ4DNUx5U {'schema': 'graphapi.tour_coverage.v1', 'scope': 'planned static-scene free-floor visibility at scan stops; not recorded observation coverage', 'free_area_m2': 74.35, 'covered_area_m2': 73.79, 'coverage_pct': 99.247, 'aggregation': 'area-weighted across floors'} {'first_lap_seconds': 1339.0, 'three_lap_seconds': 4013.0, 'fps': 3.0, 'valid_complete_tour': True, 'scope': 'sum of floor action clocks; excludes cross-floor transfer and acquisition overhead'}
+SCENE 00877-4ok3usBNeis
+[00:00:10:642108]:[Warning]:[Metadata] SceneDatasetAttributes.cpp(107)::addNewSceneInstanceToDataset : Dataset : '00877-4ok3usBNeis' : Lighting Layout Attributes 'no_lights' specified in Scene Attributes but does not exist in dataset, so creating default.
+OPTIMIZED 2.06 {'method': 'two camera tilts plus greedy visibility set cover; cheapest geodesic insertion preserving original order', 'previous_coverage_pct': 81.786, 'tilt_only_coverage_pct': 98.903, 'candidate_spacing_m': 0.5, 'candidate_count': 270, 'added_scan_stops': 1, 'candidate_visible_area_m2': 45.47, 'candidate_visibility_ceiling_pct': 99.781, 'candidate_union_target_fraction': 0.995, 'fraction_of_candidate_visible_area_covered': 0.996701, 'unseen_by_candidate_set_m2': 0.1, 'limitations': 'Finite 0.5m candidate-grid ceiling, not proof of continuous global optimum. Coverage evaluated at planned target poses; native follower arrival tolerance can alter visibility.'} coverage 99.451
+[feed] SCHEDULE: 69 points, 23 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 69 scans
+[feed] SCHEDULE: 70 points, 24 stops, 3 lap(s), navigation_mode navigate
+[feed] SCHEDULE: lap 2 of 3
+[feed] SCHEDULE: lap 3 of 3
+[feed] SCHEDULE COMPLETE: 3 lap(s), 72 scans
+RESULT 00877-4ok3usBNeis {'schema': 'graphapi.tour_coverage.v1', 'scope': 'planned static-scene free-floor visibility at scan stops; not recorded observation coverage', 'free_area_m2': 45.57, 'covered_area_m2': 45.32, 'coverage_pct': 99.451, 'aggregation': 'area-weighted across floors'} {'first_lap_seconds': 890.0, 'three_lap_seconds': 2663.333, 'fps': 3.0, 'valid_complete_tour': True, 'scope': 'sum of floor action clocks; excludes cross-floor transfer and acquisition overhead'}
+/dev/shm/graphapi-dynamic-tour-replan-20260913/packB-optimized-v3/00815-h1zeeAwLh9Z-tour-changes.png
+/dev/shm/graphapi-dynamic-tour-replan-20260913/packB-optimized-v3/00835-q3zU7Yy5E5s-tour-changes.png
+/dev/shm/graphapi-dynamic-tour-replan-20260913/packB-optimized-v3/00853-5cdEh9F2hJL-tour-changes.png
+/dev/shm/graphapi-dynamic-tour-replan-20260913/packB-optimized-v3/00861-GLAQ4DNUx5U-tour-changes.png
+/dev/shm/graphapi-dynamic-tour-replan-20260913/packB-optimized-v3/00877-4ok3usBNeis-tour-changes.png

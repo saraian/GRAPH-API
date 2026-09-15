@@ -62,6 +62,7 @@ from bbox_fusion import (  # noqa: E402
     VOXEL_SIZE_M,
     fusion_payload_from_points,
 )
+from bbox_fusion_parallel import ParallelFusionEncoder  # noqa: E402
 from cloud import get_perception_backend  # noqa: E402
 from clip_embedder import ClipEmbedder  # noqa: E402
 from cv_utils import (  # noqa: E402
@@ -299,6 +300,22 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.vitsam = None
             self.clip_embedder = None
             self.file_logger.info(f"Using Cloud Perception Backend: {backend_type}")
+        # `perception_parallel.enabled` selects the batched bbox-fusion encoder. It is OFF by
+        # default, so an unchanged configuration runs the sequential reference path. The
+        # backend identity is logged at startup because a measured encode time means nothing
+        # without saying which backend produced it.
+        _pp = (CFG.get("perception_parallel") or {})
+        self._bbox_fusion_measurement = None
+        if _pp.get("enabled", False):
+            self._bbox_fusion_encoder = ParallelFusionEncoder.from_config(CFG)
+            self.log_both(
+                "info",
+                "[BBOX PARALLEL] selected and verified backend: "
+                + json.dumps(self._bbox_fusion_encoder.identity, sort_keys=True),
+            )
+        else:
+            self._bbox_fusion_encoder = None
+
         self.vlm = VlmClient(
             vlm_call_fn=partial(
                 vlm_call,
@@ -1183,6 +1200,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         if not isinstance(lat, dict):
             lat = {}
             self.latest_latencies = lat
+        bbox_parallel = getattr(self, "_bbox_fusion_measurement", None)
+        if isinstance(bbox_parallel, dict):
+            lat["bbox_fusion_encode_ms"] = bbox_parallel["elapsed_ms"]
+            lat["bbox_fusion_encoder"] = dict(bbox_parallel)
         lat["cycle_ms"] = round(cycle_seconds * 1000.0, 1)
         if stages:
             lat["stages_ms"] = dict(stages)
@@ -1401,14 +1422,29 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         for det, pts_map in zip(detections, points):
             det.points_map = pts_map
 
-        # Reuse the map-frame points already computed for the AABB and PCA
-        # stages. A frame-grouped benchmark rejected a thread pool here: the
-        # small batches made two workers slower than one.
+        # Reuse the map-frame points already computed for the AABB and PCA stages.
+        #
+        # ONE NODE, TWO BACKENDS, chosen by `perception_parallel.enabled` in the YAML.
+        # This used to be a second file, perception_parallel.py: 2,261 lines kept in step with
+        # this one by a mirror contract and a SHA pin, whose only real difference was which
+        # encoder ran here. The pin went stale on every edit to this file and had to be
+        # re-audited by hand -- a standing cost for a 102-line difference.
+        #
+        # The sequential path stays the DEFAULT and the reference. A frame-grouped benchmark
+        # rejected a thread pool for it: the small batches made two workers slower than one.
+        # The parallel encoder keeps the cycle as one batch and returns payloads in detection
+        # order; its startup check compares the selected backend against
+        # fusion_payload_from_points, so the reference is what verifies it.
         fusion_labels = [det.instance_label for det in detections]
-        payloads = [
-            fusion_payload_from_points(pts_map, label)
-            for pts_map, label in zip(points, fusion_labels)
-        ]
+        if self._bbox_fusion_encoder is not None:
+            payloads = self._bbox_fusion_encoder.encode(points, fusion_labels)
+            self._bbox_fusion_measurement = dict(
+                self._bbox_fusion_encoder.last_measurement)
+        else:
+            payloads = [
+                fusion_payload_from_points(pts_map, label)
+                for pts_map, label in zip(points, fusion_labels)
+            ]
         for det, payload in zip(detections, payloads):
             det.fusion_voxel_keys = payload
         return centroids_3d, bboxes_3d
@@ -2127,6 +2163,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self.log_both("info", "Stop published to /robot_movement_detected")
 
     def destroy_node(self):
+        if getattr(self, "_bbox_fusion_encoder", None) is not None:
+            self._bbox_fusion_encoder.shutdown()
         try:
             self._io_executor.shutdown(wait=True)
         except Exception:

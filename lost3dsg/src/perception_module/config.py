@@ -52,7 +52,7 @@ _DEFAULTS = {
         # OpenAI-compatible endpoint, then the legacy api.txt next to cv_utils.py, else
         # "ollama" (local server ignores it)
         "api_key": "",
-        "timeout": 30.0,
+        "timeout": 180.0,
         "retries": 2,
         "crop_concurrency": 4,
         # GA-303: seconds per describer call (single crop and crop grid). Declared since
@@ -457,16 +457,18 @@ _DEFAULTS = {
         "doorway_vlm_enabled": True,
         "doorway_vlm_min_confidence": 0.55,
         "doorway_vlm_min_confirmations": 1,
-        "doorway_require_wall_support": True,
+        "doorway_require_wall_support": False,
         "doorway_vlm_key_resolution_m": 0.25,
         "doorway_vlm_show_rejected": False,
         "doorway_vlm_show_pending": False,
-        "doorway_vlm_cluster_distance_m": 1.20,
+        "doorway_show_geometric": True,
+        "doorway_vlm_cluster_distance_m": 0.80,
         "room_use_watershed": False,
         "gvd_fill_cloud_nonwall_direct": True,
         "doorway_vlm_max_candidates_per_call": 8,
         "doorway_vlm_retry_s": 8.0,
         "doorway_vlm_max_image_age_s": 2.0,
+        "doorway_vlm_projection_height_m": 1.0,
         "doorway_vlm_state_max_age_s": 60.0,
         "doorway_vlm_camera_topic": "/camera/rgb",
         "doorway_vlm_camera_info_topic": "/camera/camera_info",
@@ -654,7 +656,8 @@ _DEFAULTS = {
         "excluded_labels": ["wall", "floor", "ceiling", "door", "doorway",
                             "door frame", "doorframe"],
     },
-    # Execution settings used only by perception_parallel.py. The existing launch
+    # Execution settings for the batched bbox-fusion encoder inside perception_2.py, selected by
+    # perception_parallel.enabled. The existing launch
     # still starts perception_2.py. Four spawned CPU processes are the portable
     # measured candidate; CUDA remains an explicit calibration arm.
     "perception_parallel": {
@@ -745,6 +748,29 @@ def _load():
 # A consumer that records the configuration must record BOTH, or an overridden run and a plain
 # one look the same in the bundle.
 CFG, CFG_PATH, CFG_LOCAL_PATH = _load()
+
+
+def habitat_value(key):
+    """Return one Habitat setting with its command-line environment override.
+
+    Host-side tools such as scene_script.py are also run outside ROS and need
+    the same precedence as the launch scripts: a per-run environment value
+    wins over config.yaml, while the merged config remains the default.
+    """
+    env_key = {
+        "scene": "HABITAT_SCENE",
+        "scene_dataset": "HABITAT_SCENE_DATASET",
+        "nav_scene": "HABITAT_NAV_SCENE",
+        "nav_scene_dataset": "HABITAT_NAV_SCENE_DATASET",
+        "nav_navmesh": "HABITAT_NAVMESH",
+    }.get(key)
+    if env_key and os.environ.get(env_key, "").strip():
+        return os.path.expanduser(os.environ[env_key].strip())
+    try:
+        return CFG["habitat"][key]
+    except KeyError as exc:
+        raise KeyError(f"configurazione habitat.{key} mancante") from exc
+
 
 # Backward compatibility: utils.py does `import config` / `config.simulation`.
 simulation = CFG["simulation"]

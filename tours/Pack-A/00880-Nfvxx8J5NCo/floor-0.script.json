@@ -1,0 +1,369 @@
+{
+  "steps": [
+    {
+      "action": "spawn",
+      "target_point": "surface_0021",
+      "position": [
+        -10.500051498413086,
+        0.9301011285185814,
+        0.756380558013916
+      ],
+      "capture_eye": [
+        -11.30005168914795,
+        1.0801011323928833,
+        0.756380558013916
+      ],
+      "target_category": "table",
+      "target_surface_point": [
+        -10.500051498413086,
+        0.891412615776062,
+        0.756380558013916
+      ],
+      "target_surface_group": "rendered:49:11",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_001",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 0,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0046",
+      "position": [
+        -9.458456993103027,
+        0.9642805179953575,
+        2.986783266067505
+      ],
+      "capture_eye": [
+        -8.658456802368164,
+        1.1142805814743042,
+        2.697662353515625
+      ],
+      "target_category": "oven and stove",
+      "target_surface_point": [
+        -9.458456993103027,
+        0.9255920052528381,
+        2.986783266067505
+      ],
+      "target_surface_group": "rendered:48:12",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 6,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 8,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0066",
+      "position": [
+        -9.13473892211914,
+        0.5204746446013451,
+        6.004128932952881
+      ],
+      "capture_eye": [
+        -8.066624641418457,
+        0.670474648475647,
+        6.004128932952881
+      ],
+      "target_category": "bench",
+      "target_surface_point": [
+        -9.13473892211914,
+        0.4817861318588257,
+        6.004128932952881
+      ],
+      "target_surface_group": "rendered:297:6",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_002",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 9,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0021",
+      "position": [
+        -10.500051498413086,
+        0.9301011285185814,
+        0.756380558013916
+      ],
+      "capture_eye": [
+        -11.30005168914795,
+        1.0801011323928833,
+        0.756380558013916
+      ],
+      "target_category": "table",
+      "target_surface_point": [
+        -10.500051498413086,
+        0.891412615776062,
+        0.756380558013916
+      ],
+      "target_surface_group": "rendered:49:11",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_002",
+      "at_waypoint": {
+        "stop": 14,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_002",
+      "at_waypoint": {
+        "stop": 16,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0046",
+      "position": [
+        -9.458456993103027,
+        0.9642805179953575,
+        2.986783266067505
+      ],
+      "capture_eye": [
+        -8.658456802368164,
+        1.1142805814743042,
+        2.697662353515625
+      ],
+      "target_category": "oven and stove",
+      "target_surface_point": [
+        -9.458456993103027,
+        0.9255920052528381,
+        2.986783266067505
+      ],
+      "target_surface_group": "rendered:48:12",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_003",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 17,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0021",
+      "position": [
+        -10.500051498413086,
+        0.9301011285185814,
+        0.756380558013916
+      ],
+      "capture_eye": [
+        -11.30005168914795,
+        1.0801011323928833,
+        0.756380558013916
+      ],
+      "target_category": "table",
+      "target_surface_point": [
+        -10.500051498413086,
+        0.891412615776062,
+        0.756380558013916
+      ],
+      "target_surface_group": "rendered:49:11",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_003",
+      "at_waypoint": {
+        "stop": 23,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_003",
+      "at_waypoint": {
+        "stop": 25,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0023",
+      "position": [
+        -9.9459867477417,
+        0.9305382093787193,
+        0.8238996267318726
+      ],
+      "capture_eye": [
+        -11.016624450683594,
+        1.080538272857666,
+        0.8238996267318726
+      ],
+      "target_category": "table",
+      "target_surface_point": [
+        -9.9459867477417,
+        0.8918496966362,
+        0.8238996267318726
+      ],
+      "target_surface_group": "rendered:49:11",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_004",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 26,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0174",
+      "position": [
+        1.3703638315200806,
+        0.6284565052390099,
+        -3.8909506797790527
+      ],
+      "capture_eye": [
+        2.1703639030456543,
+        0.7784565091133118,
+        -3.802337646484375
+      ],
+      "target_category": "cabinet",
+      "target_surface_point": [
+        1.3703638315200806,
+        0.5897679924964905,
+        -3.8909506797790527
+      ],
+      "target_surface_group": "rendered:272:7",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_004",
+      "at_waypoint": {
+        "stop": 32,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_004",
+      "at_waypoint": {
+        "stop": 33,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0174",
+      "position": [
+        1.3703638315200806,
+        0.6284565052390099,
+        -3.8909506797790527
+      ],
+      "capture_eye": [
+        2.1703639030456543,
+        0.7784565091133118,
+        -3.802337646484375
+      ],
+      "target_category": "cabinet",
+      "target_surface_point": [
+        1.3703638315200806,
+        0.5897679924964905,
+        -3.8909506797790527
+      ],
+      "target_surface_group": "rendered:272:7",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_005",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 34,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0020",
+      "position": [
+        -8.425971984863281,
+        0.9286830148100853,
+        0.7723171710968018
+      ],
+      "capture_eye": [
+        -7.625971794128418,
+        1.0786830186843872,
+        0.7723171710968018
+      ],
+      "target_category": "table",
+      "target_surface_point": [
+        -8.425971984863281,
+        0.8899945020675659,
+        0.7723171710968018
+      ],
+      "target_surface_group": "rendered:49:11",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_005",
+      "at_waypoint": {
+        "stop": 40,
+        "lap": 0
+      }
+    }
+  ],
+  "object_scale": 1.0,
+  "description": "One action at every scan stop: medium object spawn, relocate, remove and persistence lifecycles",
+  "scene": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00880-Nfvxx8J5NCo/Nfvxx8J5NCo.basis.glb",
+  "floor_height": 0.18,
+  "plan_scope": "per-floor script; multi-floor orchestration awaits certification",
+  "source_compiler": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/scene_script.py",
+    "sha256": "84e798753ff54c9e88081ef654fcf6b426f3018dd8aecb4d7513834a3a197888"
+  },
+  "trigger_parser": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/src/perception_module/script_runner.py",
+    "sha256": "9fbd94a4957e04d67eef2ad9e0998378260212014ee6a7ea33c682ecc327426c"
+  }
+}

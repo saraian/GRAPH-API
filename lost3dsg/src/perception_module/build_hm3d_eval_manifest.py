@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import math
+
+import script_ledger
 import re
 from pathlib import Path
 
 import numpy as np
 
-from metrics_eval import assignment
+from metrics_eval import hovsg_region_assignment
 
 
 def _load(path, default, required=False):
@@ -266,7 +268,7 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
         or int(region["floor_index"]) == floor_for_rooms
     ]
     candidate_rows = [region for _, region in gt_region_candidates]
-    for pi, candidate_index, score in assignment(
+    for pi, candidate_index, score in hovsg_region_assignment(
             predicted_regions, candidate_rows, 0.0):
         gi, _ = gt_region_candidates[candidate_index]
         predicted_label = str(predicted_room_by_index[pi].get("semantic_label", ""))
@@ -277,7 +279,11 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
             "predicted_label": predicted_label,
             "ground_truth_label": ground_truth_label,
             "approximately_correct": predicted_label.strip().casefold() == ground_truth_label.strip().casefold(),
+            # Compatibility key consumed by room_objects().  The value is the
+            # HOV-SG room-association overlap, not polygon IoU.
             "region_iou": score,
+            "region_overlap": score,
+            "region_association_metric": "HOV-SG max directional overlap",
         })
     result["rooms"] = room_trials
 
@@ -297,6 +303,18 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
                "room_id": obj.get("room_id"),
                "bbox_source": "fused_bbox" if isinstance(fused, dict) else "bbox",
                "aabb_min_m": box[0].tolist(), "aabb_max_m": box[1].tolist()}
+        # WHEN this object was last seen. The world model has carried it all along as
+        # `last_perception_timestamp`; the manifest used to drop it, which is why a scripted scene
+        # could not be scored -- a prediction with no time cannot be placed against a ground truth
+        # that changes. Absent on an object that was never perceived, and absent is left absent
+        # rather than defaulted, because a fabricated time would match the wrong window silently.
+        observed = obj.get("last_perception_timestamp")
+        try:
+            observed = float(observed)
+        except (TypeError, ValueError):
+            observed = None
+        if observed is not None and observed == observed:
+            row["observed_at"] = observed
         # Keep both appearance channels visible in the adapter output.  The
         # runtime CLIP vector is useful for auditing/association, while only
         # the offline HOV-SG vector belongs in the evaluator's historical
@@ -312,6 +330,30 @@ def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
             row["embedding"] = embedding
         predicted_objects.append(row)
     result["predicted_objects"] = predicted_objects
+
+    # A scripted scene's objects are NOT in the HM3D semantic mesh -- they are created at run time
+    # -- so they cannot come from the static ground truth. The runner's ledger supplies them, each
+    # pose carrying the window it was true for (script_ledger). A run with no ledger adds nothing
+    # and behaves exactly as before.
+    ledger = script_ledger.load_ledger(str(run_dir))
+    scripted_gt = script_ledger.ground_truth_rows(ledger)
+    if scripted_gt:
+        # THROUGH _habitat_aabb_to_ros, like every other ground-truth row (see the static rows
+        # above). The ledger records placements in HABITAT coordinates; the manifest is ROS. Appended
+        # raw, a scripted pose sat 6.811 m from where it belonged on the real compiled_script.json
+        # against a 0.5 m gate -- so no scripted object could EVER match, and the scripted column
+        # would have read 0% recall for a perfect tracker. The helper returns {**row, ...}, so
+        # valid_from, valid_to and scripted survive the conversion.
+        result["ground_truth_objects"] = (list(result.get("ground_truth_objects") or [])
+                                          + [_habitat_aabb_to_ros(row) for row in scripted_gt])
+    result["scene_script"] = {
+        "present": ledger is not None,
+        "steps_recorded": len(((ledger or {}).get("steps")) or []),
+        "ground_truth_poses": len(scripted_gt),
+        "note": ("present=false means a STATIC scene and the evaluation is unchanged. "
+                 "present=true with ground_truth_poses=0 means the script ran and moved nothing, "
+                 "which is a different state from no script at all."),
+    }
 
     # Una matrice categorie è valida solo se ogni categoria GT ha un embedding
     # con la stessa dimensionalità. Non vengono fabbricati vettori mancanti.

@@ -1,0 +1,153 @@
+{
+  "schema": "graph-api.baseline-tour-pack-validation.v3",
+  "complete": true,
+  "scope": "short two-lap single-floor change-and-confirmation input pack; planned integrity, not baseline execution certification",
+  "pack": "A",
+  "scenes": [
+    {
+      "scene_id": "00813-svBbv1Pavdk",
+      "complete": true,
+      "native_gt_objects": 394,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 17,
+      "maximum_trigger_object_distance_m": 3.939382,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 98.938,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0
+      ],
+      "metric_eligible_gt_objects": 381,
+      "zero_volume_gt_objects_excluded": 13,
+      "configured_execution_laps": 2,
+      "actions_by_human_lap": {
+        "1": 17
+      },
+      "confirmation_laps_human": [
+        2
+      ]
+    },
+    {
+      "scene_id": "00824-Dd4bFSTQ8gi",
+      "complete": true,
+      "native_gt_objects": 392,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 14,
+      "maximum_trigger_object_distance_m": 3.927135,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 99.447,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0
+      ],
+      "metric_eligible_gt_objects": 391,
+      "zero_volume_gt_objects_excluded": 1,
+      "configured_execution_laps": 2,
+      "actions_by_human_lap": {
+        "1": 14
+      },
+      "confirmation_laps_human": [
+        2
+      ]
+    },
+    {
+      "scene_id": "00827-BAbdmeyTvMZ",
+      "complete": true,
+      "native_gt_objects": 393,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 14,
+      "maximum_trigger_object_distance_m": 3.944391,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 96.901,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0
+      ],
+      "metric_eligible_gt_objects": 382,
+      "zero_volume_gt_objects_excluded": 11,
+      "configured_execution_laps": 2,
+      "actions_by_human_lap": {
+        "1": 14
+      },
+      "confirmation_laps_human": [
+        2
+      ]
+    },
+    {
+      "scene_id": "00829-QaLdnwvtxbs",
+      "complete": true,
+      "native_gt_objects": 251,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 17,
+      "maximum_trigger_object_distance_m": 3.992172,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 99.707,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0
+      ],
+      "metric_eligible_gt_objects": 248,
+      "zero_volume_gt_objects_excluded": 3,
+      "configured_execution_laps": 2,
+      "actions_by_human_lap": {
+        "1": 17
+      },
+      "confirmation_laps_human": [
+        2
+      ]
+    },
+    {
+      "scene_id": "00880-Nfvxx8J5NCo",
+      "complete": true,
+      "native_gt_objects": 360,
+      "floors": 1,
+      "floors_with_object_actions": 1,
+      "scheduled_actions": 14,
+      "maximum_trigger_object_distance_m": 3.890762,
+      "all_action_kinds": [
+        "move",
+        "remove",
+        "spawn"
+      ],
+      "coverage_pct": 99.432,
+      "exact_stable_stop_remap": true,
+      "full_tour_each_lap": true,
+      "action_trigger_laps": [
+        0
+      ],
+      "metric_eligible_gt_objects": 359,
+      "zero_volume_gt_objects_excluded": 1,
+      "configured_execution_laps": 2,
+      "actions_by_human_lap": {
+        "1": 14
+      },
+      "confirmation_laps_human": [
+        2
+      ]
+    }
+  ]
+}

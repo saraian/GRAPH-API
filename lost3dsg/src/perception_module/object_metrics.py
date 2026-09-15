@@ -9,6 +9,8 @@ import math
 import re
 
 import numpy as np
+
+import script_ledger
 from scipy.optimize import linear_sum_assignment
 
 DEFAULT_DISTANCE_M = 0.5
@@ -63,13 +65,43 @@ def center(row):
     return (box[0] + box[1]) / 2 if box is not None else None
 
 
+def observed_at(row):
+    """When a predicted object was last seen, or None when the manifest does not say."""
+    for key in ("observed_at", "last_perception_timestamp"):
+        value = (row or {}).get(key)
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            continue
+        if out == out:
+            return out
+    return None
+
+
 def distances(pred, gt):
+    """Centre-to-centre distance, INFINITE where the pair could not have coexisted.
+
+    A scripted scene spawns, moves and removes objects while the run is under way, so a
+    ground-truth row is not true for the whole run -- it is true for a window (script_ledger).
+    Scoring a prediction against a row that was not true when the prediction was made is what made
+    a spawned object a false positive and a removed one a false negative, neither of which is a
+    perception error.
+
+    The gate is HERE rather than in the assignment, because `match_costs` already treats an
+    infinite cost as "not a candidate". Every caller therefore gets time-awareness without
+    changing, and a run with no ledger is untouched: static rows carry no window and hold at every
+    time, so the matrix is identical to what it was.
+    """
     result = np.full((len(pred), len(gt)), np.inf)
     pc, gc = [center(p) for p in pred], [center(g) for g in gt]
+    pt = [observed_at(p) for p in pred]
     for i, p in enumerate(pc):
         for j, g in enumerate(gc):
-            if p is not None and g is not None:
-                result[i, j] = np.linalg.norm(p - g)
+            if p is None or g is None:
+                continue
+            if not script_ledger.holds_at(gt[j], pt[i]):
+                continue
+            result[i, j] = np.linalg.norm(p - g)
     return result
 
 
@@ -166,6 +198,84 @@ def average_precision(scene_inputs, threshold):
             'ap_mode': mode}
 
 
+
+def _scripted_counts(scenes, matches_by_scene):
+    """Score the scene script's own objects as their OWN column.
+
+    Pooling them with the static scene hides both. A spawned object that the robot found is a
+    different result from a chair that was always there and was found: one says the system tracks
+    change, the other says it maps a room. And a missed scripted object is the only miss whose
+    ground truth we placed ourselves, so it is the one we can be sure was really there.
+
+    Returns `present: False` when no scene had a script -- NOT zeros, which would read as a script
+    that ran and was entirely missed (working rule 61: asserted, present-but-empty, and absent are
+    three states, and the middle one is the interesting one).
+    """
+    total = matched = defaulted = 0
+    per_object = {}
+    for scene, matches in zip(scenes, matches_by_scene):
+        gt = scene.get('ground_truth_objects', [])
+        scripted_idx = {i for i, g in enumerate(gt) if isinstance(g, dict) and g.get('scripted')}
+        if not scripted_idx:
+            continue
+        total += len(scripted_idx)
+        hit = {gi for _, gi, _ in matches if gi in scripted_idx}
+        matched += len(hit)
+        for i in scripted_idx:
+            name = str(gt[i].get('script_object_id') or gt[i].get('object_id'))
+            slot = per_object.setdefault(name, {'poses': 0, 'found': 0})
+            slot['poses'] += 1
+            slot['found'] += int(i in hit)
+            if gt[i].get('extents_source') == 'default':
+                defaulted += 1
+    if not total:
+        return {'present': False,
+                'note': 'no scene had a script; the static evaluation is unchanged'}
+    # HOW MANY PREDICTIONS THE GATE COULD NOT JUDGE. holds_at() lets an untimed prediction match any
+    # window on purpose -- refusing it would turn every pre-change bundle into 0% scripted recall,
+    # and an absent timestamp cannot be told from a system that genuinely has none. But that
+    # permissiveness EXEMPTS an untimed system from the very gate a timed one is held to, and until
+    # this counter existed nothing in the output said so. MEASURED on identical geometry: with
+    # observed_at set on all three predictions, precision 66.7% / scripted recall 50.0%; with the key
+    # simply absent, 100% / 100%. A scripted column is comparable across systems ONLY when this is 0
+    # for every system in the table; otherwise the untimed one is exempt, and must be marked so
+    # rather than quoted.
+    untimed = sum(observed_at(p) is None
+                  for scene in scenes for p in scene.get('predicted_objects', []))
+    predicted = sum(len(scene.get('predicted_objects', [])) for scene in scenes)
+    return {
+        'present': True,
+        'untimed_predictions': untimed,
+        'gate_applied_to_pct': round(100.0 * (predicted - untimed) / predicted, 4) if predicted else None,
+        'comparable': untimed == 0,
+        'poses': total,
+        'poses_matched': matched,
+        'poses_missed': total - matched,
+        'recall_pct': round(100.0 * matched / total, 4),
+        # OBJECT recall, beside pose recall, because pose recall has a CEILING BELOW 100%.
+        # A predicted object carries ONE observation time and the assignment is one-to-one, so a
+        # perfectly tracked object that was moved can satisfy only ONE of its two disjoint windows:
+        # a flawless tracker scores 50% pose recall on a single move. Quoting pose recall alone
+        # would report that ceiling as a failure. `poses_reachable` states the ceiling explicitly
+        # rather than leaving a reader to discover it.
+        'objects': len(per_object),
+        'objects_found': sum(1 for v in per_object.values() if v['found']),
+        'object_recall_pct': (round(100.0 * sum(1 for v in per_object.values() if v['found'])
+                                    / len(per_object), 4) if per_object else None),
+        'poses_reachable': len(per_object),
+        'pose_recall_ceiling_pct': (round(100.0 * len(per_object) / total, 4) if total else None),
+        # Volume metrics are meaningless on a pose whose size was fabricated (script_ledger's
+        # default cube). This is the count, not a silent degradation.
+        'box_quality_defaulted': defaulted,
+        'box_quality_quotable': defaulted == 0,
+        'per_object': per_object,
+        'note': ('one POSE per spawn and per move: an object moved once contributes two poses, '
+                 'and finding it at only one of them is a partial result, not a miss. A pose is '
+                 'matched only by a prediction observed while that pose was true. With one '
+                 'observation time per predicted object, pose recall cannot exceed '
+                 'pose_recall_ceiling_pct -- read object_recall_pct beside it.'),
+    }
+
 def evaluate_geometry(scenes, threshold=DEFAULT_DISTANCE_M):
     inputs, matches_by_scene = [], []
     quality = defaultdict(list)
@@ -190,6 +300,7 @@ def evaluate_geometry(scenes, threshold=DEFAULT_DISTANCE_M):
     predicted = sum(len(p) for _, p in inputs)
     ground_truth = sum(c.shape[1] for c, _ in inputs)
     out = detection_counts(len(center_errors), predicted, ground_truth)
+    out['scripted'] = _scripted_counts(scenes, matches_by_scene)
     out.update(average_precision(inputs, threshold))
     out.update({
         'protocol': 'objects_v2_center3d', 'distance_threshold_m': threshold,

@@ -1,0 +1,536 @@
+{
+  "scene_id": "00880-Nfvxx8J5NCo",
+  "selected": true,
+  "annotated_room_regions": 12,
+  "native_gt_objects": 360,
+  "assets": {
+    "scene": {
+      "path": "/home/phd_student/Argenziano/habitat-MP3D/data/scene_datasets/hm3d/val/00880-Nfvxx8J5NCo/Nfvxx8J5NCo.basis.glb",
+      "sha256": "c794eb86a4385d7fe9854ad332e2925ab215db0edc7711256710c2c307384573"
+    },
+    "navmesh": {
+      "path": "00880-Nfvxx8J5NCo/scene.navmesh",
+      "sha256": "a4d8d2708a62cc8af51f1ced302a23203e52dec2b0c0347d433db609bb567788"
+    },
+    "semantic_mesh": {
+      "path": "/home/phd_student/Argenziano/habitat-MP3D/data/scene_datasets/hm3d/val/00880-Nfvxx8J5NCo/Nfvxx8J5NCo.semantic.glb",
+      "sha256": "7946a8079518b56bad24af81ef2f9dc86c614643fa013095b35e0352a4790758"
+    },
+    "annotations": {
+      "path": "00880-Nfvxx8J5NCo/semantic-annotations.txt",
+      "sha256": "a4e189c15a1f3e08121a2a2d7fa3ff7e260cbc03af449824ccff810eba31e6ee"
+    },
+    "original_schedule": {
+      "path": "00880-Nfvxx8J5NCo/full-source.schedule.json",
+      "sha256": "371bb5ab6db7ecf8091a7bb64472143d84f999a3fb98e90203a0953ed1a32ee3"
+    },
+    "schedule": {
+      "path": "00880-Nfvxx8J5NCo/00880-Nfvxx8J5NCo.schedule.json",
+      "sha256": "08fe36141a9b3b1c179bb652edf40a15da99057b2ba6fec0bc8a6aae11a2abdd"
+    },
+    "dataset_config": {
+      "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/habitat/hm3d-val-semantic-configs-v0.2/hm3d_annotated_basis.scene_dataset_config.json",
+      "sha256": "c16fa23b09e36d528c3f12c9799eaa9cf0d733dcd22c9f329c0508d551b640a4"
+    },
+    "resolved_dataset_config": {
+      "path": "00880-Nfvxx8J5NCo/00880-Nfvxx8J5NCo.scene_dataset_config.json",
+      "sha256": "faabd1ba78a998e438a43fe588e0372ef5ff582f79b56be1edb90b6e7926acab"
+    },
+    "previous_schedule": {
+      "path": "00880-Nfvxx8J5NCo/source.schedule.json",
+      "sha256": "13109e3d82c1f1cba46f2e788044e18ffa0436e4ae054fb86e2f6c4085357133"
+    }
+  },
+  "ground_truth": {
+    "path": "00880-Nfvxx8J5NCo/00880-Nfvxx8J5NCo.gt.json",
+    "sha256": "29adde9184ed8cc8bbcc0790463f5ad0c8fafad933a4a2e182f402f2a4b9afe4"
+  },
+  "original_goal_projection_max_m": 0.0009356684584516358,
+  "detected_storeys": [
+    {
+      "z": 0.18,
+      "share": 1.0,
+      "samples": 20000,
+      "peak_z": 0.11
+    }
+  ],
+  "minor_levels": [],
+  "unassigned_navmesh_share": 0.0,
+  "schedule_points": 201,
+  "scan_stops": 47,
+  "floors": [
+    {
+      "height": 0.18,
+      "schedule_points": 197,
+      "scan_stops": 43,
+      "max_goal_snap_m": 0.0,
+      "height_range_m": [
+        0.1808570772409439,
+        0.1808570772409439
+      ],
+      "route_with_lap_closure_m": 145.17442299053073
+    }
+  ],
+  "floor_transitions": [],
+  "dynamic_plans": [
+    {
+      "floor_index": 0,
+      "height": 0.18,
+      "events": [
+        {
+          "id": "F1E1",
+          "action": "spawn",
+          "object": "dynamic_object_001",
+          "trigger": {
+            "stop": 0,
+            "lap": 0
+          },
+          "scan_visit_number": 1,
+          "robot_position": [
+            -8.517000198364258,
+            0.1808570772409439,
+            -0.7020000219345093
+          ],
+          "object_position": [
+            -10.500051498413086,
+            0.9301011285185814,
+            0.756380558013916
+          ],
+          "trigger_object_distance_m": 2.461578025291104,
+          "range_policy": "nominal_3m",
+          "previous_object_position": null,
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E2",
+          "action": "move",
+          "object": "dynamic_object_001",
+          "trigger": {
+            "stop": 6,
+            "lap": 0
+          },
+          "scan_visit_number": 7,
+          "robot_position": [
+            -11.616999626159668,
+            0.1808570772409439,
+            4.047999858856201
+          ],
+          "object_position": [
+            -9.458456993103027,
+            0.9642805179953575,
+            2.986783266067505
+          ],
+          "trigger_object_distance_m": 2.405303921655878,
+          "range_policy": "nominal_3m",
+          "previous_object_position": [
+            -10.500051498413086,
+            0.9301011285185814,
+            0.756380558013916
+          ],
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E3",
+          "action": "remove",
+          "object": "dynamic_object_001",
+          "trigger": {
+            "stop": 8,
+            "lap": 0
+          },
+          "scan_visit_number": 9,
+          "robot_position": [
+            -10.317000389099121,
+            0.1808570772409439,
+            5.8480000495910645
+          ],
+          "object_position": [
+            -9.458456993103027,
+            0.9642805179953575,
+            2.986783266067505
+          ],
+          "trigger_object_distance_m": 2.987249277366288,
+          "range_policy": "nominal_3m",
+          "previous_object_position": null,
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E4",
+          "action": "spawn",
+          "object": "dynamic_object_002",
+          "trigger": {
+            "stop": 9,
+            "lap": 0
+          },
+          "scan_visit_number": 10,
+          "robot_position": [
+            -8.217000007629395,
+            0.1808570772409439,
+            4.947999954223633
+          ],
+          "object_position": [
+            -9.13473892211914,
+            0.5204746446013451,
+            6.004128932952881
+          ],
+          "trigger_object_distance_m": 1.3991615828346997,
+          "range_policy": "nominal_3m",
+          "previous_object_position": null,
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E5",
+          "action": "move",
+          "object": "dynamic_object_002",
+          "trigger": {
+            "stop": 14,
+            "lap": 0
+          },
+          "scan_visit_number": 15,
+          "robot_position": [
+            -12.916999816894531,
+            0.1808570772409439,
+            3.3980000019073486
+          ],
+          "object_position": [
+            -10.500051498413086,
+            0.9301011285185814,
+            0.756380558013916
+          ],
+          "trigger_object_distance_m": 3.5804737759919614,
+          "range_policy": "relaxed_4m",
+          "previous_object_position": [
+            -9.13473892211914,
+            0.5204746446013451,
+            6.004128932952881
+          ],
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E6",
+          "action": "remove",
+          "object": "dynamic_object_002",
+          "trigger": {
+            "stop": 16,
+            "lap": 0
+          },
+          "scan_visit_number": 17,
+          "robot_position": [
+            -12.067000389099121,
+            0.1808570772409439,
+            1.2480000257492065
+          ],
+          "object_position": [
+            -10.500051498413086,
+            0.9301011285185814,
+            0.756380558013916
+          ],
+          "trigger_object_distance_m": 1.642260188605486,
+          "range_policy": "nominal_3m",
+          "previous_object_position": null,
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E7",
+          "action": "spawn",
+          "object": "dynamic_object_003",
+          "trigger": {
+            "stop": 17,
+            "lap": 0
+          },
+          "scan_visit_number": 18,
+          "robot_position": [
+            -11.817000389099121,
+            0.1808570772409439,
+            -0.0020000000949949026
+          ],
+          "object_position": [
+            -9.458456993103027,
+            0.9642805179953575,
+            2.986783266067505
+          ],
+          "trigger_object_distance_m": 3.8073025047781224,
+          "range_policy": "relaxed_4m",
+          "previous_object_position": null,
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E8",
+          "action": "move",
+          "object": "dynamic_object_003",
+          "trigger": {
+            "stop": 23,
+            "lap": 0
+          },
+          "scan_visit_number": 25,
+          "robot_position": [
+            -13.866999626159668,
+            0.1808570772409439,
+            1.7480000257492065
+          ],
+          "object_position": [
+            -10.500051498413086,
+            0.9301011285185814,
+            0.756380558013916
+          ],
+          "trigger_object_distance_m": 3.5099357349854476,
+          "range_policy": "relaxed_4m",
+          "previous_object_position": [
+            -9.458456993103027,
+            0.9642805179953575,
+            2.986783266067505
+          ],
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E9",
+          "action": "remove",
+          "object": "dynamic_object_003",
+          "trigger": {
+            "stop": 25,
+            "lap": 0
+          },
+          "scan_visit_number": 27,
+          "robot_position": [
+            -7.767000198364258,
+            0.1808570772409439,
+            -1.5019999742507935
+          ],
+          "object_position": [
+            -10.500051498413086,
+            0.9301011285185814,
+            0.756380558013916
+          ],
+          "trigger_object_distance_m": 3.5453987134327813,
+          "range_policy": "relaxed_4m",
+          "previous_object_position": null,
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E10",
+          "action": "spawn",
+          "object": "dynamic_object_004",
+          "trigger": {
+            "stop": 26,
+            "lap": 0
+          },
+          "scan_visit_number": 28,
+          "robot_position": [
+            -6.166999816894531,
+            0.1808570772409439,
+            -0.10199999809265137
+          ],
+          "object_position": [
+            -9.9459867477417,
+            0.9305382093787193,
+            0.8238996267318726
+          ],
+          "trigger_object_distance_m": 3.8907624366907694,
+          "range_policy": "relaxed_4m",
+          "previous_object_position": null,
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E11",
+          "action": "move",
+          "object": "dynamic_object_004",
+          "trigger": {
+            "stop": 32,
+            "lap": 0
+          },
+          "scan_visit_number": 34,
+          "robot_position": [
+            1.4830000400543213,
+            0.1808570772409439,
+            -3.3519999980926514
+          ],
+          "object_position": [
+            1.3703638315200806,
+            0.6284565052390099,
+            -3.8909506797790527
+          ],
+          "trigger_object_distance_m": 0.5505949080432961,
+          "range_policy": "nominal_3m",
+          "previous_object_position": [
+            -9.9459867477417,
+            0.9305382093787193,
+            0.8238996267318726
+          ],
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E12",
+          "action": "remove",
+          "object": "dynamic_object_004",
+          "trigger": {
+            "stop": 33,
+            "lap": 0
+          },
+          "scan_visit_number": 36,
+          "robot_position": [
+            3.5329999923706055,
+            0.1808570772409439,
+            -1.6019999980926514
+          ],
+          "object_position": [
+            1.3703638315200806,
+            0.6284565052390099,
+            -3.8909506797790527
+          ],
+          "trigger_object_distance_m": 3.1490141929516513,
+          "range_policy": "relaxed_4m",
+          "previous_object_position": null,
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E13",
+          "action": "spawn",
+          "object": "dynamic_object_005",
+          "trigger": {
+            "stop": 34,
+            "lap": 0
+          },
+          "scan_visit_number": 38,
+          "robot_position": [
+            -0.46700000762939453,
+            0.1808570772409439,
+            -3.002000093460083
+          ],
+          "object_position": [
+            1.3703638315200806,
+            0.6284565052390099,
+            -3.8909506797790527
+          ],
+          "trigger_object_distance_m": 2.0411122022884824,
+          "range_policy": "nominal_3m",
+          "previous_object_position": null,
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        },
+        {
+          "id": "F1E14",
+          "action": "move",
+          "object": "dynamic_object_005",
+          "trigger": {
+            "stop": 40,
+            "lap": 0
+          },
+          "scan_visit_number": 45,
+          "robot_position": [
+            -4.767000198364258,
+            0.1808570772409439,
+            1.7979999780654907
+          ],
+          "object_position": [
+            -8.425971984863281,
+            0.9286830148100853,
+            0.7723171710968018
+          ],
+          "trigger_object_distance_m": 3.8000131256229923,
+          "range_policy": "relaxed_4m",
+          "previous_object_position": [
+            1.3703638315200806,
+            0.6284565052390099,
+            -3.8909506797790527
+          ],
+          "scope": "expected pose at waypoint trigger; execution not recorded"
+        }
+      ],
+      "script": {
+        "path": "00880-Nfvxx8J5NCo/floor-0.script.json",
+        "sha256": "1a151b091f1b457ef71fba5d3c2fa8fe060cd9a49f1d8d927ebc5dad162e6ac9"
+      },
+      "action_coverage": {
+        "required_scan_stops": 43,
+        "scheduled_actions": 14,
+        "complete": true,
+        "supported_scan_stops": 28,
+        "supported_removal_scan_stops": 37,
+        "template": "035_power_drill",
+        "template_scaled_max_extent_m": 0.1872439980506897,
+        "max_live_objects": 1,
+        "front_half_plane_policy": "reject placement when dot(robot_to_object, travel_heading) > 0",
+        "trigger_range_policy": {
+          "nominal_m": 3.0,
+          "relaxed_m": 4.0,
+          "applies_to": [
+            "spawn",
+            "move",
+            "remove"
+          ]
+        },
+        "persistent_final_object": true
+      }
+    }
+  ],
+  "max_goal_snap_m": 0.0,
+  "disconnected_legs": 0,
+  "route_with_lap_closure_m": 145.17442299053073,
+  "route_height_range_m": [
+    0.1808570772409439,
+    0.1808570772409439
+  ],
+  "navmesh_area_m2": 69.91402435302734,
+  "floor_detector": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/test/schedule_batch.py",
+    "sha256": "9bed2937ff8c143b9963756713a43b63e5c708f0500f1f91458cf7a68ac6ca24"
+  },
+  "limitations": [
+    "Annotated room regions are not proof that a run observes every room.",
+    "Single-floor check uses canonical navmesh sampling and complete route connectivity.",
+    "No baseline run or room reconstruction certification performed by this check."
+  ],
+  "cohort_group": "Pack A \u00b7 full single-storey GT scene",
+  "coverage": {
+    "schema": "graphapi.tour_coverage.v1",
+    "scope": "planned static-scene free-floor visibility at scan stops; not recorded observation coverage",
+    "free_area_m2": 86.29,
+    "covered_area_m2": 85.8,
+    "coverage_pct": 99.432,
+    "aggregation": "area-weighted across floors"
+  },
+  "duration": {
+    "first_lap_seconds": 1734.0,
+    "three_lap_seconds": 5200.0,
+    "fps": 3.0,
+    "valid_complete_tour": true,
+    "scope": "sum of floor action clocks; excludes cross-floor transfer and acquisition overhead",
+    "configured_laps": 2,
+    "configured_laps_seconds": 3468.0
+  },
+  "previous_duration": {
+    "first_lap_seconds": 1095.667,
+    "three_lap_seconds": 3284.333,
+    "configured_laps": 2,
+    "configured_laps_seconds": 2191.334
+  },
+  "selected_for_current_evaluation": true,
+  "source_schedule": {
+    "path": "/tmp/baselines-overnight-20260913/inputs/00880-Nfvxx8J5NCo/schedule.json",
+    "sha256": "2e68afffbd4631cc4fdf0856ea54fa51e25caf58195208e66104834ae34b3b78"
+  },
+  "selected_floor_index": null,
+  "lap_policy": {
+    "route_execution": "the complete selected-floor trajectory is executed once per lap; it is never partitioned across laps",
+    "configured_execution_laps": 2,
+    "object_action_trigger_laps": [
+      0
+    ],
+    "object_action_trigger_laps_human": [
+      1
+    ],
+    "confirmation_laps": [
+      1
+    ],
+    "confirmation_laps_human": [
+      2
+    ],
+    "experiment_design": "lap 1 applies every scheduled object change; lap 2 repeats the complete route with no actions to confirm the changed state",
+    "laps_are_runtime_configurable": true,
+    "runtime_authority": "tools.baselines.runtime --laps 2"
+  },
+  "pack_provenance": {
+    "regenerated_plan": "/dev/shm/graphapi-dynamic-tour-replan-20260913/replan-v3/Pack-A/00880-Nfvxx8J5NCo/plan.json",
+    "optimized_route_source": "/dev/shm/graphapi-dynamic-tour-replan-20260913/packA-render/00880-Nfvxx8J5NCo/00880-Nfvxx8J5NCo.schedule.json",
+    "event_remap": "exact stable stop ID and robot XYZ; scan visit recomputed after coverage insertions",
+    "evaluation_denominator": "full-scene native semantic GT"
+  }
+}

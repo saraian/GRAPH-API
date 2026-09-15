@@ -1,0 +1,260 @@
+{
+  "schema": "graphapi.tour_coverage.v1",
+  "scope": "planned static-scene free-floor visibility at scan stops; not recorded observation coverage",
+  "domain": "native floor-height reference plus full-scene collision-supported floor cell centres with clear vertical body columns; no navmesh mask or robot-radius erosion",
+  "free_area_m2": 86.81,
+  "covered_area_m2": 84.12,
+  "uncovered_area_m2": 2.69,
+  "coverage_pct": 96.901,
+  "free_area_outside_navmesh_m2": 24.97,
+  "covered_area_outside_navmesh_m2": 22.72,
+  "free_cells": 8681,
+  "covered_cells": 8412,
+  "obstacle_cells": 1470,
+  "grid_resolution_m": 0.1,
+  "range_m": 3.0,
+  "range_source": "schedule coverage_radius_m (horizontal evaluation range)",
+  "camera_height_m": 1.5,
+  "clearance_height_m": 1.5,
+  "hfov_deg": 90.0,
+  "vfov_deg": 73.73979529168804,
+  "image_size": [
+    640,
+    480
+  ],
+  "tilts_deg": [
+    0.0,
+    -45.0
+  ],
+  "floor_band_m": 0.4,
+  "grid": {
+    "path": "/DATA/GRAPH-API/tours/00827-BAbdmeyTvMZ/floor-0.coverage.npz",
+    "sha256": "afeb565fc1454882a878840a375bfddb2126577b27ff60f04232ae909b06f518"
+  },
+  "per_stop": [
+    {
+      "stop": 0,
+      "new_area_m2": 10.9,
+      "cumulative_area_m2": 10.9
+    },
+    {
+      "stop": 38,
+      "new_area_m2": 0.56,
+      "cumulative_area_m2": 11.46
+    },
+    {
+      "stop": 1,
+      "new_area_m2": 0.05,
+      "cumulative_area_m2": 11.51
+    },
+    {
+      "stop": 2,
+      "new_area_m2": 3.99,
+      "cumulative_area_m2": 15.5
+    },
+    {
+      "stop": 3,
+      "new_area_m2": 0.94,
+      "cumulative_area_m2": 16.44
+    },
+    {
+      "stop": 4,
+      "new_area_m2": 0.02,
+      "cumulative_area_m2": 16.46
+    },
+    {
+      "stop": 5,
+      "new_area_m2": 7.92,
+      "cumulative_area_m2": 24.38
+    },
+    {
+      "stop": 6,
+      "new_area_m2": 5.47,
+      "cumulative_area_m2": 29.85
+    },
+    {
+      "stop": 25,
+      "new_area_m2": 3.31,
+      "cumulative_area_m2": 33.16
+    },
+    {
+      "stop": 33,
+      "new_area_m2": 1.18,
+      "cumulative_area_m2": 34.34
+    },
+    {
+      "stop": 7,
+      "new_area_m2": 1.33,
+      "cumulative_area_m2": 35.67
+    },
+    {
+      "stop": 8,
+      "new_area_m2": 3.67,
+      "cumulative_area_m2": 39.34
+    },
+    {
+      "stop": 28,
+      "new_area_m2": 5.19,
+      "cumulative_area_m2": 44.53
+    },
+    {
+      "stop": 24,
+      "new_area_m2": 4.24,
+      "cumulative_area_m2": 48.77
+    },
+    {
+      "stop": 30,
+      "new_area_m2": 3.6,
+      "cumulative_area_m2": 52.37
+    },
+    {
+      "stop": 34,
+      "new_area_m2": 2.25,
+      "cumulative_area_m2": 54.62
+    },
+    {
+      "stop": 23,
+      "new_area_m2": 2.55,
+      "cumulative_area_m2": 57.17
+    },
+    {
+      "stop": 29,
+      "new_area_m2": 0.38,
+      "cumulative_area_m2": 57.55
+    },
+    {
+      "stop": 31,
+      "new_area_m2": 0.35,
+      "cumulative_area_m2": 57.9
+    },
+    {
+      "stop": 27,
+      "new_area_m2": 2.1,
+      "cumulative_area_m2": 60.0
+    },
+    {
+      "stop": 22,
+      "new_area_m2": 0.54,
+      "cumulative_area_m2": 60.54
+    },
+    {
+      "stop": 35,
+      "new_area_m2": 0.15,
+      "cumulative_area_m2": 60.69
+    },
+    {
+      "stop": 36,
+      "new_area_m2": 0.29,
+      "cumulative_area_m2": 60.98
+    },
+    {
+      "stop": 9,
+      "new_area_m2": 0.01,
+      "cumulative_area_m2": 60.99
+    },
+    {
+      "stop": 10,
+      "new_area_m2": 0.17,
+      "cumulative_area_m2": 61.16
+    },
+    {
+      "stop": 11,
+      "new_area_m2": 0.05,
+      "cumulative_area_m2": 61.21
+    },
+    {
+      "stop": 12,
+      "new_area_m2": 2.2,
+      "cumulative_area_m2": 63.41
+    },
+    {
+      "stop": 13,
+      "new_area_m2": 0.9,
+      "cumulative_area_m2": 64.31
+    },
+    {
+      "stop": 14,
+      "new_area_m2": 7.35,
+      "cumulative_area_m2": 71.66
+    },
+    {
+      "stop": 26,
+      "new_area_m2": 3.53,
+      "cumulative_area_m2": 75.19
+    },
+    {
+      "stop": 37,
+      "new_area_m2": 0.56,
+      "cumulative_area_m2": 75.75
+    },
+    {
+      "stop": 32,
+      "new_area_m2": 0.29,
+      "cumulative_area_m2": 76.04
+    },
+    {
+      "stop": 15,
+      "new_area_m2": 0.03,
+      "cumulative_area_m2": 76.07
+    },
+    {
+      "stop": 16,
+      "new_area_m2": 0.55,
+      "cumulative_area_m2": 76.62
+    },
+    {
+      "stop": 17,
+      "new_area_m2": 7.09,
+      "cumulative_area_m2": 83.71
+    },
+    {
+      "stop": 18,
+      "new_area_m2": 0.15,
+      "cumulative_area_m2": 83.86
+    },
+    {
+      "stop": 19,
+      "new_area_m2": 0.14,
+      "cumulative_area_m2": 84.0
+    },
+    {
+      "stop": 20,
+      "new_area_m2": 0.12,
+      "cumulative_area_m2": 84.12
+    },
+    {
+      "stop": 21,
+      "new_area_m2": 0.0,
+      "cumulative_area_m2": 84.12
+    }
+  ],
+  "limitations": [
+    "Cell-centre grid approximation of physical floor area, not exact polygon area.",
+    "Static stage collisions only; planned dynamic objects are not yet instantiated.",
+    "Coverage includes the floor surface within the configured camera vertical FOV, not object detection quality.",
+    "Motion frames and cross-floor transitions are excluded; only scheduled 360-degree scans contribute.",
+    "Missing/open mesh surfaces cannot contribute a supported floor cell."
+  ],
+  "sources": {
+    "scene": {
+      "path": "/DATA/GRAPH-API/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00827-BAbdmeyTvMZ/BAbdmeyTvMZ.basis.glb",
+      "sha256": "ca47ebc44e9bf0eaf2e450eb44f4de8ecf9e41eebda50b340b7b58d37790fa31"
+    },
+    "native_floor_gt": {
+      "path": "/DATA/GRAPH-API/artifacts/baselines/cohort-10/00827-BAbdmeyTvMZ/00827-BAbdmeyTvMZ.gt.json",
+      "sha256": "3b84236ac51beba759055bad61bb0284fc4598823ae93f7b7e840e576d8e11c7"
+    },
+    "evaluator": {
+      "path": "/DATA/GRAPH-API/tools/baselines/tour_coverage.py",
+      "sha256": "a4dafcfafed113e0bbdea999ce4f55cbee623fa555c6f3b90e74a635996c30ef"
+    },
+    "previous_grid": {
+      "path": "/DATA/GRAPH-API/artifacts/baselines/cohort-10/00827-BAbdmeyTvMZ/floor-0.coverage.npz",
+      "sha256": "589c4fe3b127cb37f0b7a277e36ee6dcc294ac5f58dc7d53e01d9e074d398757"
+    },
+    "optimizer": {
+      "path": "/DATA/GRAPH-API/tools/baselines/optimize_tours.py",
+      "sha256": "f9398ce2a16ebc53b536541e7462c09eaaab435a572121c2bc96de22d053f163"
+    }
+  }
+}

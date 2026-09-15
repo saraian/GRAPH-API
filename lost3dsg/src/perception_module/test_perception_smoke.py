@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import pathlib
+import yaml
 import sys
 import types
 
@@ -33,12 +34,11 @@ rosstub.install()
 import object_info      # noqa: E402
 import object_services  # noqa: E402
 import perception_2     # noqa: E402
-import perception_parallel  # noqa: E402
 import room_manager     # noqa: E402
 from bbox_fusion import add_fusion_view  # noqa: E402
 from world_model import wm  # noqa: E402
 
-for mod in (object_services, perception_2, perception_parallel, room_manager):
+for mod in (object_services, perception_2, room_manager):
     assert pathlib.Path(mod.__file__).resolve().parent == HERE, \
         f"testing the wrong tree: imported {mod.__file__}"
 
@@ -105,28 +105,41 @@ def bbox_fusion_message():
     assert box.fusion_voxel_keys == [0, 0, 0, 1, 2, 3]
 
 
-def parallel_perception_tracks_its_base():
-    """The parallel copy names the exact perception_2.py revision it mirrors."""
-    base_bytes = (HERE / "perception_2.py").read_bytes()
-    digest = hashlib.sha256(base_bytes).hexdigest()
-    assert digest == perception_parallel.PERCEPTION_2_BASELINE_SHA256, (
-        "perception_2.py changed: audit and apply the same semantic change to "
-        "perception_parallel.py before updating PERCEPTION_2_BASELINE_SHA256"
-    )
-    parallel_source = (HERE / "perception_parallel.py").read_text()
-    begin = sum(line.lstrip().startswith("# PARALLEL_VARIANT_BEGIN:")
-                for line in parallel_source.splitlines())
-    end = sum(line.lstrip().startswith("# PARALLEL_VARIANT_END:")
-              for line in parallel_source.splitlines())
-    assert begin == end and begin >= 5, (begin, end)
-    assert "ParallelFusionEncoder.from_config(CFG)" in parallel_source
+
+
+def parallel_backend_is_selected_by_the_config_key():
+    """`perception_parallel.enabled` decides which encoder runs -- BOTH ways.
+
+    perception_parallel.py is gone; the node chooses its bbox-fusion backend from the YAML.
+    A config key with no reader is the project's most-repeated defect (GA-40 and its family),
+    so this exercises the key where the answer is PRESENT and where it is ABSENT, and asserts
+    the encode site actually branches on the attribute rather than on the old file name.
+    """
+    src = (HERE / "perception_2.py").read_text()
+    # the key is READ, not merely declared
+    assert 'CFG.get("perception_parallel")' in src, "nothing reads the selecting key"
+    assert '_pp.get("enabled", False)' in src, "the key is read but not used to select"
+    # both arms exist at the encode site
+    assert "self._bbox_fusion_encoder.encode(points, fusion_labels)" in src, "no parallel arm"
+    assert "fusion_payload_from_points(pts_map, label)" in src, "no sequential arm"
+    # the default is OFF: an unchanged config runs the reference path
+    cfg = yaml.safe_load((HERE / "config.yaml").read_text())
+    assert cfg["perception_parallel"]["enabled"] is False, "the parallel path must default OFF"
+    # the workers are stopped only when they were started
+    assert 'if getattr(self, "_bbox_fusion_encoder", None) is not None:' in src
+    # and the file it replaced is really gone, so nothing can select it by name again
+    assert not (HERE / "perception_parallel.py").exists(), "the mirror is back"
 
 
 def parallel_timing_names_the_backend():
-    """The directly measured encoder time and identity reach the cycle row."""
+    """The directly measured encoder time and identity reach the cycle row.
+
+    The encoder now lives in perception_2 behind `perception_parallel.enabled`, so this
+    exercises the unified node. It asserts the SAME three values it always did.
+    """
     rows = []
-    node = perception_parallel.DetectObjectsNode.__new__(
-        perception_parallel.DetectObjectsNode
+    node = perception_2.DetectObjectsNode.__new__(
+        perception_2.DetectObjectsNode
     )
     node.latest_latencies = {}
     node._bbox_fusion_measurement = {
@@ -136,17 +149,17 @@ def parallel_timing_names_the_backend():
         "cpu_workers": 4,
     }
     node._cycle_count = 0
-    original_paths = perception_parallel.LATENCY_JSON_PATHS
-    original_append = perception_parallel._append_cycle_row
-    perception_parallel.LATENCY_JSON_PATHS = ()
-    perception_parallel._append_cycle_row = rows.append
+    original_paths = perception_2.LATENCY_JSON_PATHS
+    original_append = perception_2._append_cycle_row
+    perception_2.LATENCY_JSON_PATHS = ()
+    perception_2._append_cycle_row = rows.append
     try:
-        perception_parallel.DetectObjectsNode._record_cycle_ms(
+        perception_2.DetectObjectsNode._record_cycle_ms(
             node, 0.100, frame_id="frame-1", n_detections=3
         )
     finally:
-        perception_parallel.LATENCY_JSON_PATHS = original_paths
-        perception_parallel._append_cycle_row = original_append
+        perception_2.LATENCY_JSON_PATHS = original_paths
+        perception_2._append_cycle_row = original_append
     assert node.latest_latencies["bbox_fusion_encode_ms"] == 12.375
     assert node.latest_latencies["bbox_fusion_encoder"]["backend"] == "cpu_processes"
     assert rows[0]["bbox_fusion_encoder"]["cpu_workers"] == 4
@@ -1663,7 +1676,6 @@ def localisation_gate():
 
 for name, fn in [("description chain (build -> publish -> world model)", description_chain),
                  ("bbox fusion keys and view ID reach the typed message", bbox_fusion_message),
-                 ("parallel perception mirrors the named base", parallel_perception_tracks_its_base),
                  ("parallel timing names the measured backend", parallel_timing_names_the_backend),
                  ("install list covers every import (GA-128)", install_list),
                  ("empty embedding is absent, not a crash (GA-171)", empty_embedding),
@@ -1698,6 +1710,7 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                   merge_request_distance_survives_the_broad_phase),
                  ("frame queue processes a snapshot while the gate says moving",
                   frame_queue_decouples_processing_from_the_motion_gate),
+                 ("parallel backend selected by the config key", parallel_backend_is_selected_by_the_config_key),
                  ("merge path (dry run)", merge_path)]:
     check(name, fn)
 

@@ -1,0 +1,220 @@
+{
+  "schema": "graphapi.tour_coverage.v1",
+  "scope": "planned static-scene free-floor visibility at scan stops; not recorded observation coverage",
+  "domain": "native floor-height reference plus full-scene collision-supported floor cell centres with clear vertical body columns; no navmesh mask or robot-radius erosion",
+  "free_area_m2": 68.25,
+  "covered_area_m2": 68.05,
+  "uncovered_area_m2": 0.2,
+  "coverage_pct": 99.707,
+  "free_area_outside_navmesh_m2": 16.64,
+  "covered_area_outside_navmesh_m2": 16.44,
+  "free_cells": 6825,
+  "covered_cells": 6805,
+  "obstacle_cells": 1266,
+  "grid_resolution_m": 0.1,
+  "range_m": 3.0,
+  "range_source": "schedule coverage_radius_m (horizontal evaluation range)",
+  "camera_height_m": 1.5,
+  "clearance_height_m": 1.5,
+  "hfov_deg": 90.0,
+  "vfov_deg": 73.73979529168804,
+  "image_size": [
+    640,
+    480
+  ],
+  "tilts_deg": [
+    0.0,
+    -45.0
+  ],
+  "floor_band_m": 0.4,
+  "grid": {
+    "path": "/DATA/GRAPH-API/tours/00829-QaLdnwvtxbs/floor-0.coverage.npz",
+    "sha256": "c204c9b640526666b84a92ecf9686680550505e57f8754562c400d57c03b9719"
+  },
+  "per_stop": [
+    {
+      "stop": 0,
+      "new_area_m2": 12.17,
+      "cumulative_area_m2": 12.17
+    },
+    {
+      "stop": 1,
+      "new_area_m2": 1.95,
+      "cumulative_area_m2": 14.12
+    },
+    {
+      "stop": 2,
+      "new_area_m2": 1.6,
+      "cumulative_area_m2": 15.72
+    },
+    {
+      "stop": 3,
+      "new_area_m2": 2.33,
+      "cumulative_area_m2": 18.05
+    },
+    {
+      "stop": 4,
+      "new_area_m2": 0.04,
+      "cumulative_area_m2": 18.09
+    },
+    {
+      "stop": 5,
+      "new_area_m2": 1.47,
+      "cumulative_area_m2": 19.56
+    },
+    {
+      "stop": 6,
+      "new_area_m2": 0.05,
+      "cumulative_area_m2": 19.61
+    },
+    {
+      "stop": 7,
+      "new_area_m2": 5.72,
+      "cumulative_area_m2": 25.33
+    },
+    {
+      "stop": 8,
+      "new_area_m2": 2.57,
+      "cumulative_area_m2": 27.9
+    },
+    {
+      "stop": 9,
+      "new_area_m2": 1.69,
+      "cumulative_area_m2": 29.59
+    },
+    {
+      "stop": 10,
+      "new_area_m2": 0.24,
+      "cumulative_area_m2": 29.83
+    },
+    {
+      "stop": 30,
+      "new_area_m2": 0.3,
+      "cumulative_area_m2": 30.13
+    },
+    {
+      "stop": 11,
+      "new_area_m2": 5.14,
+      "cumulative_area_m2": 35.27
+    },
+    {
+      "stop": 12,
+      "new_area_m2": 2.17,
+      "cumulative_area_m2": 37.44
+    },
+    {
+      "stop": 13,
+      "new_area_m2": 5.07,
+      "cumulative_area_m2": 42.51
+    },
+    {
+      "stop": 14,
+      "new_area_m2": 2.95,
+      "cumulative_area_m2": 45.46
+    },
+    {
+      "stop": 15,
+      "new_area_m2": 7.57,
+      "cumulative_area_m2": 53.03
+    },
+    {
+      "stop": 16,
+      "new_area_m2": 1.47,
+      "cumulative_area_m2": 54.5
+    },
+    {
+      "stop": 17,
+      "new_area_m2": 1.21,
+      "cumulative_area_m2": 55.71
+    },
+    {
+      "stop": 18,
+      "new_area_m2": 0.23,
+      "cumulative_area_m2": 55.94
+    },
+    {
+      "stop": 19,
+      "new_area_m2": 4.29,
+      "cumulative_area_m2": 60.23
+    },
+    {
+      "stop": 20,
+      "new_area_m2": 2.21,
+      "cumulative_area_m2": 62.44
+    },
+    {
+      "stop": 21,
+      "new_area_m2": 0.09,
+      "cumulative_area_m2": 62.53
+    },
+    {
+      "stop": 22,
+      "new_area_m2": 0.0,
+      "cumulative_area_m2": 62.53
+    },
+    {
+      "stop": 23,
+      "new_area_m2": 2.48,
+      "cumulative_area_m2": 65.01
+    },
+    {
+      "stop": 24,
+      "new_area_m2": 1.08,
+      "cumulative_area_m2": 66.09
+    },
+    {
+      "stop": 25,
+      "new_area_m2": 0.0,
+      "cumulative_area_m2": 66.09
+    },
+    {
+      "stop": 26,
+      "new_area_m2": 0.0,
+      "cumulative_area_m2": 66.09
+    },
+    {
+      "stop": 27,
+      "new_area_m2": 0.05,
+      "cumulative_area_m2": 66.14
+    },
+    {
+      "stop": 28,
+      "new_area_m2": 1.73,
+      "cumulative_area_m2": 67.87
+    },
+    {
+      "stop": 29,
+      "new_area_m2": 0.18,
+      "cumulative_area_m2": 68.05
+    }
+  ],
+  "limitations": [
+    "Cell-centre grid approximation of physical floor area, not exact polygon area.",
+    "Static stage collisions only; planned dynamic objects are not yet instantiated.",
+    "Coverage includes the floor surface within the configured camera vertical FOV, not object detection quality.",
+    "Motion frames and cross-floor transitions are excluded; only scheduled 360-degree scans contribute.",
+    "Missing/open mesh surfaces cannot contribute a supported floor cell."
+  ],
+  "sources": {
+    "scene": {
+      "path": "/DATA/GRAPH-API/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00829-QaLdnwvtxbs/QaLdnwvtxbs.basis.glb",
+      "sha256": "acfabc0994b4e2769d0c53a6542166800892df084a3d9611d4ab4aa73d2a8b0e"
+    },
+    "native_floor_gt": {
+      "path": "/DATA/GRAPH-API/artifacts/baselines/cohort-10/00829-QaLdnwvtxbs/00829-QaLdnwvtxbs.gt.json",
+      "sha256": "880779b6d2513b3604a8227fccfbb405e3f64e8aa4d90be0d0bf905d12769acb"
+    },
+    "evaluator": {
+      "path": "/DATA/GRAPH-API/tools/baselines/tour_coverage.py",
+      "sha256": "a4dafcfafed113e0bbdea999ce4f55cbee623fa555c6f3b90e74a635996c30ef"
+    },
+    "previous_grid": {
+      "path": "/DATA/GRAPH-API/artifacts/baselines/cohort-10/00829-QaLdnwvtxbs/floor-0.coverage.npz",
+      "sha256": "fa76c538310c21c539d40b0816cb3601921a70261cfedd550f8e8e514db764c5"
+    },
+    "optimizer": {
+      "path": "/DATA/GRAPH-API/tools/baselines/optimize_tours.py",
+      "sha256": "f9398ce2a16ebc53b536541e7462c09eaaab435a572121c2bc96de22d053f163"
+    }
+  }
+}

@@ -1589,7 +1589,6 @@ def test_a12_refuses_a_gt_reader_outside_the_allow_list_and_passes_the_clean_tre
         needle = "    def publish_objects("
         detail_keys = {
             "perception_2.py": "perception_2_functions_not_allowed",
-            "perception_parallel.py": "perception_parallel_functions_not_allowed",
         }
         for filename, detail_key in detail_keys.items():
             path = os.path.join(root, "src", "perception_module", filename)

@@ -1,0 +1,442 @@
+{
+  "steps": [
+    {
+      "action": "spawn",
+      "target_point": "surface_0120",
+      "position": [
+        6.95955753326416,
+        0.721906336247921,
+        0.18802118301391602
+      ],
+      "capture_eye": [
+        6.159557342529297,
+        1.5219063758850098,
+        0.18802118301391602
+      ],
+      "target_category": "sofa",
+      "target_surface_point": [
+        6.95955753326416,
+        0.6832178235054016,
+        0.18802118301391602
+      ],
+      "target_surface_group": "rendered:297:9",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_001",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 0,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0114",
+      "position": [
+        8.988597869873047,
+        0.47173574775457383,
+        1.9441277980804443
+      ],
+      "capture_eye": [
+        9.78859806060791,
+        0.8217357397079468,
+        1.9441277980804443
+      ],
+      "target_category": "chair",
+      "target_surface_point": [
+        8.988597869873047,
+        0.43304723501205444,
+        1.9441277980804443
+      ],
+      "target_surface_group": "rendered:275:6",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 5,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_001",
+      "at_waypoint": {
+        "stop": 6,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0114",
+      "position": [
+        8.988597869873047,
+        0.47173574775457383,
+        1.9441277980804443
+      ],
+      "capture_eye": [
+        9.78859806060791,
+        0.8217357397079468,
+        1.9441277980804443
+      ],
+      "target_category": "chair",
+      "target_surface_point": [
+        8.988597869873047,
+        0.43304723501205444,
+        1.9441277980804443
+      ],
+      "target_surface_group": "rendered:275:6",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_002",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 7,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0000",
+      "position": [
+        1.240350604057312,
+        0.9618735036253929,
+        2.8734848499298096
+      ],
+      "capture_eye": [
+        2.2649574279785156,
+        1.1118735074996948,
+        2.8235723972320557
+      ],
+      "target_category": "worktop",
+      "target_surface_point": [
+        1.240350604057312,
+        0.9231849908828735,
+        2.8734848499298096
+      ],
+      "target_surface_group": "rendered:369:12",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_002",
+      "at_waypoint": {
+        "stop": 12,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_002",
+      "at_waypoint": {
+        "stop": 13,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0147",
+      "position": [
+        2.8820695877075195,
+        0.5129593333601952,
+        -2.5544731616973877
+      ],
+      "capture_eye": [
+        3.6820695400238037,
+        0.6629593372344971,
+        -2.5544731616973877
+      ],
+      "target_category": "toilet",
+      "target_surface_point": [
+        2.8820695877075195,
+        0.4742708206176758,
+        -2.5544731616973877
+      ],
+      "target_surface_group": "rendered:41:6",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_003",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 14,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0035",
+      "position": [
+        -0.3747764229774475,
+        0.9377250990271568,
+        2.0808117389678955
+      ],
+      "capture_eye": [
+        0.42522358894348145,
+        1.0877251625061035,
+        2.0808117389678955
+      ],
+      "target_category": "stove",
+      "target_surface_point": [
+        -0.3747764229774475,
+        0.8990365862846375,
+        2.0808117389678955
+      ],
+      "target_surface_group": "rendered:347:12",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_003",
+      "at_waypoint": {
+        "stop": 19,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_003",
+      "at_waypoint": {
+        "stop": 20,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0038",
+      "position": [
+        0.9602718353271484,
+        0.949754031598568,
+        6.500578880310059
+      ],
+      "capture_eye": [
+        0.16027182340621948,
+        1.0997540950775146,
+        6.500578880310059
+      ],
+      "target_category": "washing machine",
+      "target_surface_point": [
+        0.9602718353271484,
+        0.9110655188560486,
+        6.500578880310059
+      ],
+      "target_surface_group": "rendered:220:12",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_004",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 21,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0050",
+      "position": [
+        3.4233992099761963,
+        0.518919857442379,
+        1.9527900218963623
+      ],
+      "capture_eye": [
+        4.2233991622924805,
+        0.6689198613166809,
+        1.9527900218963623
+      ],
+      "target_category": "chair",
+      "target_surface_point": [
+        3.4233992099761963,
+        0.4802313446998596,
+        1.9527900218963623
+      ],
+      "target_surface_group": "rendered:339:6",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_004",
+      "at_waypoint": {
+        "stop": 24,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_004",
+      "at_waypoint": {
+        "stop": 27,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0114",
+      "position": [
+        8.988597869873047,
+        0.47173574775457383,
+        1.9441277980804443
+      ],
+      "capture_eye": [
+        9.78859806060791,
+        0.8217357397079468,
+        1.9441277980804443
+      ],
+      "target_category": "chair",
+      "target_surface_point": [
+        8.988597869873047,
+        0.43304723501205444,
+        1.9441277980804443
+      ],
+      "target_surface_group": "rendered:275:6",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_005",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 29,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0050",
+      "position": [
+        3.4233992099761963,
+        0.518919857442379,
+        1.9527900218963623
+      ],
+      "capture_eye": [
+        4.2233991622924805,
+        0.6689198613166809,
+        1.9527900218963623
+      ],
+      "target_category": "chair",
+      "target_surface_point": [
+        3.4233992099761963,
+        0.4802313446998596,
+        1.9527900218963623
+      ],
+      "target_surface_group": "rendered:339:6",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_005",
+      "at_waypoint": {
+        "stop": 33,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "remove",
+      "object": "dynamic_object_005",
+      "at_waypoint": {
+        "stop": 34,
+        "lap": 0
+      }
+    },
+    {
+      "action": "spawn",
+      "target_point": "surface_0050",
+      "position": [
+        3.4233992099761963,
+        0.518919857442379,
+        1.9527900218963623
+      ],
+      "capture_eye": [
+        4.2233991622924805,
+        0.6689198613166809,
+        1.9527900218963623
+      ],
+      "target_category": "chair",
+      "target_surface_point": [
+        3.4233992099761963,
+        0.4802313446998596,
+        1.9527900218963623
+      ],
+      "target_surface_group": "rendered:339:6",
+      "visual_surface_validated": true,
+      "name": "dynamic_object_006",
+      "template": "035_power_drill",
+      "at_waypoint": {
+        "stop": 35,
+        "lap": 0
+      }
+    },
+    {
+      "action": "wait",
+      "seconds": 10.0,
+      "reason": "settle"
+    },
+    {
+      "action": "move",
+      "target_point": "surface_0110",
+      "position": [
+        8.5999116897583,
+        0.564951511323452,
+        6.8546319007873535
+      ],
+      "capture_eye": [
+        7.7999114990234375,
+        0.7149515151977539,
+        6.8546319007873535
+      ],
+      "target_category": "bed",
+      "target_surface_point": [
+        8.5999116897583,
+        0.5262629985809326,
+        6.8546319007873535
+      ],
+      "target_surface_group": "rendered:144:7",
+      "visual_surface_validated": true,
+      "object": "dynamic_object_006",
+      "at_waypoint": {
+        "stop": 39,
+        "lap": 0
+      }
+    }
+  ],
+  "object_scale": 1.0,
+  "description": "One action at every scan stop: medium object spawn, relocate, remove and persistence lifecycles",
+  "scene": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/habitat/hm3d-val-habitat-v0.2/00813-svBbv1Pavdk/svBbv1Pavdk.basis.glb",
+  "floor_height": 0.08,
+  "plan_scope": "per-floor script; multi-floor orchestration awaits certification",
+  "source_compiler": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/FOUND-Dataset/scene_script.py",
+    "sha256": "84e798753ff54c9e88081ef654fcf6b426f3018dd8aecb4d7513834a3a197888"
+  },
+  "trigger_parser": {
+    "path": "/dev/shm/graphapi-dynamic-tour-replan-20260913/lost3dsg/src/perception_module/script_runner.py",
+    "sha256": "9fbd94a4957e04d67eef2ad9e0998378260212014ee6a7ea33c682ecc327426c"
+  }
+}

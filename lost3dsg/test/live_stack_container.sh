@@ -308,7 +308,7 @@ _finalize_ga493_capture() {
   fi
   _capture_t=${GA493_CAPTURE_CLOSE_TIMEOUT:-30}
   echo ">>> GA-493: asking replay capture owners to finalize (up to ${_capture_t}s)"
-  pkill -INT -f 'perception_parallel.py' 2>/dev/null || true
+  pkill -INT -f 'perception_2.py' 2>/dev/null || true
   pkill -INT -f 'object_manager_6.py' 2>/dev/null || true
   for _ in $(seq 1 "$_capture_t"); do
     if [ -f "$_capture_root/producer/complete.json" ] && \

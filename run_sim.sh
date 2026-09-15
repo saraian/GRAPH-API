@@ -939,7 +939,7 @@ try:
 except Exception:
     print(sys.argv[3])" "${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" "$1" "$2" 2>/dev/null || echo "$2"
 }
-export WALL_DETECTOR="${WALL_DETECTOR:-$(_cfg_run wall_detector 0)}"
+export WALL_DETECTOR="${WALL_DETECTOR:-$(_cfg_run wall_detector 1)}"
 echo "    wall detector: $WALL_DETECTOR (config run.wall_detector)"
 
 export FEED_GT_SEMANTIC="${FEED_GT_SEMANTIC:-1}"
@@ -1883,8 +1883,11 @@ if [ -n "${CAP_MIN:-}" ] && [ "${GA493_DEBUG_MODE:-0}" != "1" ]; then
 fi
 if [ "${GA493_DEBUG_MODE:-0}" = "1" ]; then
   [ "$ONE_STOREY" = "1" ] || { echo "!! GA-493 debug mode requires --one-storey" >&2; exit 2; }
-  [ "${PERCEPTION_EXECUTABLE:-}" = "perception_parallel.py" ] || {
-    echo "!! GA-493 debug mode requires PERCEPTION_EXECUTABLE=perception_parallel.py" >&2; exit 2;
+  # The parallel encoder is a CONFIG key now, not a second executable: perception_parallel.py
+  # was folded into perception_2.py, which selects the backend from perception_parallel.enabled.
+  [ "${GRAPH_API_PARALLEL_FUSION:-}" = "1" ] || {
+    echo "!! GA-493 debug mode needs the parallel encoder: set perception_parallel.enabled: true" >&2
+    echo "   in the run config, and GRAPH_API_PARALLEL_FUSION=1 to confirm it here." >&2; exit 2;
   }
   [ "${FEED_GT_SEMANTIC:-}" = "0" ] || {
     echo "!! GA-493 debug mode requires FEED_GT_SEMANTIC=0" >&2; exit 2;
