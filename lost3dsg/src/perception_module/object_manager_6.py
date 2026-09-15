@@ -1313,9 +1313,10 @@ class ObjectManagerService(Node):
         try:
             self._merge_dirty = False
             merged_count = self.merge_duplicate_objects(scan_id=f"event-{int(time.time())}")
-            if merged_count:
-                self.object_services.log_both(
-                    'info', f"[EVENT MERGE] completed: {merged_count} merge(s) applied")
+            # Logged on EVERY event sweep, not only on a merge: 20260915_014149 produced no
+            # line at all and it took a reconstruction to learn the event path never ran.
+            self.object_services.log_both(
+                'info', f"[EVENT MERGE] sweep: {merged_count} merge(s) applied")
         finally:
             self._merge_call_lock.release()
 
@@ -3114,6 +3115,13 @@ class ObjectManagerService(Node):
         object cannot flood the queue and one update cannot re-examine a whole room.
         """
         import time as _t
+        # Event-driven merge: mark the map dirty BEFORE the debounce and the node lookup below
+        # can return. A change is a change whether or not this object is re-queued for
+        # refinement. MEASURED on 20260915_014149: with the flag set only at the end of this
+        # method, 15 merges happened and every one came from the periodic timer -- the event
+        # sweep never ran once, because an admission's _find_node can miss an object the
+        # world model has not yet published and the 2 s debounce swallows the rest.
+        self._merge_dirty = True
         now = _t.monotonic() if now is None else now
         last = self._reeval_last.get(object_id)
         if last is not None and now - last < REEVALUATION_DEBOUNCE_S:

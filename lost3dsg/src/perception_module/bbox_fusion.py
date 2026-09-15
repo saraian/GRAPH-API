@@ -23,6 +23,11 @@ MIN_AGREEING_VIEWS = int(_ASSOCIATION.get("bbox_fusion_min_views", 2))
 AGREEMENT_START_VIEWS = int(
     _ASSOCIATION.get("bbox_fusion_agreement_start_views", 4)
 )
+# The smallest share of observed voxels a view-agreement box may keep before it is treated
+# as a collapse rather than a consensus (see fused_bbox_from_state). 0.10 separates the two
+# measured collapses (0.7 %, 2.2 %) from the four measured consensuses (13-52 %) on the
+# 2026-09-15 runs. A sample of six; re-measure before defending it.
+MIN_RETAINED_FRACTION = float(_ASSOCIATION.get("bbox_fusion_min_retained_fraction", 0.10))
 
 if VOXEL_SIZE_M <= 0.0:
     raise ValueError("association.bbox_fusion_voxel_m must be positive")
@@ -136,13 +141,36 @@ def fused_bbox_from_state(state):
     selected = [key for key, view_ids in state["voxels"].items()
                 if len(view_ids) >= need]
     used_fallback = False
+    observed = len(state["voxels"])
+    retained_fraction = len(selected) / float(observed) if observed else 0.0
+    # CONSENSUS COLLAPSE (2026-09-15). The agreement rule assumes every view saw ONE object.
+    # After a merge the keeper holds views of two tracks, and views of two distinct objects
+    # agree on almost no voxels -- so the "consensus" is a sliver. MEASURED on
+    # 20260915_014149: a merged sofa retained 43 of 5,849 voxels (0.7 %) and fitted a
+    # 0.60 x 0.42 x 0.03 m box, IoU 0.015 against ground truth; a merged plant retained 88 of
+    # 3,987 (2.2 %), IoU 0.068. Genuine consensus on the same runs retained 13-52 %
+    # (sofa 1,046/8,171 -> IoU 0.83; rug 4,505/8,658 -> IoU 0.44). Below the floor the
+    # agreement is not a measurement of the object, and the box falls back to every observed
+    # voxel exactly as it already did when NOTHING agreed. The floor is from that sample of
+    # 2 collapsed against 4 healthy and must be re-measured on more runs before it is
+    # defended; it is recorded on the box so a reader can re-derive the decision.
+    if selected and retained_fraction < MIN_RETAINED_FRACTION:
+        selected = list(state["voxels"])
+        used_fallback = True
     if not selected:
         selected = list(state["voxels"])
         used_fallback = True
     keys = np.asarray(selected, dtype=np.float64)
     centres = (keys + 0.5) * float(state["voxel_m"])
-    low = centres.min(axis=0)
-    high = centres.max(axis=0)
+    # A VOXEL HAS EXTENT (2026-09-15). The box was fitted to voxel CENTRES, so an object whose
+    # voxels lie in one layer -- every flat object: rug, table top, book, picture -- got a box
+    # of zero thickness and therefore zero volume, and IoU 0.0 against ground truth however
+    # well it was placed. MEASURED on 20260915_014149: rug 156/156 voxels, table#1 832/832,
+    # book 74/74, all volume 0.0, all IoU 0.0. Half a voxel on each side is the voxel's own
+    # extent, not a tolerance.
+    half = 0.5 * float(state["voxel_m"])
+    low = centres.min(axis=0) - half
+    high = centres.max(axis=0) + half
     return {
         "x_min": float(low[0]), "x_max": float(high[0]),
         "y_min": float(low[1]), "y_max": float(high[1]),
@@ -153,6 +181,9 @@ def fused_bbox_from_state(state):
         "required_views": need,
         "voxel_count": len(selected),
         "agreement_fallback": used_fallback,
+        # ADDITIVE: what the agreement rule kept before any fallback, and the floor applied.
+        "retained_fraction": round(retained_fraction, 4),
+        "min_retained_fraction": MIN_RETAINED_FRACTION,
     }
 
 
