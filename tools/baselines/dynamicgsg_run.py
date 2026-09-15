@@ -90,6 +90,11 @@ def _flatten_config(value, prefix=""):
         yield prefix, value
 
 
+def _color_book_rows(path: Path) -> list[str]:
+    """Colour rows only; the first line is the R G B header upstream skips."""
+    return [line for line in Path(path).read_text().splitlines() if line.strip()][1:]
+
+
 def _native_resource(root: Path, field: str, configured) -> tuple[Path, bool]:
     path = Path(configured)
     if not path.is_absolute():
@@ -106,7 +111,8 @@ def _native_resource(root: Path, field: str, configured) -> tuple[Path, bool]:
 
 def prepare_config(root: Path, dataset: Path, output: Path, models: Path, profile: Path,
                    stride=None, enable_dam=False, dynamic_start_frame=None,
-                   variant="delivered-found-fork") -> tuple[Path, dict]:
+                   variant="delivered-found-fork", use_gt_poses=None,
+                   mapping_num_iters=None, color_book=None) -> tuple[Path, dict]:
     manifest = json.loads((dataset / "export_manifest.json").read_text())
     if manifest.get("schema") != INPUT_SCHEMA or not manifest.get("complete"):
         raise ValueError("DynamicGSG input export is incomplete or unknown")
@@ -158,11 +164,31 @@ def prepare_config(root: Path, dataset: Path, output: Path, models: Path, profil
             raise ValueError("dynamic start frame must be non-negative")
         data["frame_begin_update"] = dynamic_start_frame
         sourced("data.frame_begin_update", "dataset_scheduler")
-    if stride is not None:
-        if stride < 1:
-            raise ValueError("stride must be positive")
-        data["stride"] = stride
-        sourced("data.stride", "explicit_test_override")
+    required_stride = int(manifest["native_stride_required"])
+    if stride is not None and stride != required_stride:
+        raise ValueError(
+            "Frame sampling is declared by the input export, not by the native profile. "
+            f"This export requires native stride {required_stride}; re-export with "
+            "--stride to change the sampling."
+        )
+    data["stride"] = required_stride
+    sourced("data.stride", "input_contract_sampling")
+    if use_gt_poses is not None:
+        # The profile already sets tracking.modify_real_gt_poses, which writes the exact
+        # supplied pose into cam_unnorm_rots/cam_trans. With use_gt_poses False the native
+        # code then runs tracking.num_iters gradient steps starting from that exact value
+        # and keeps what the photometric loss prefers. Setting this True stops at the
+        # supplied pose. It CHANGES the published pipeline, so it is an explicit override
+        # and belongs to the algorithm-experiment variant.
+        config["tracking"]["use_gt_poses"] = bool(use_gt_poses)
+        sourced("tracking.use_gt_poses", "explicit_test_override")
+    if mapping_num_iters is not None:
+        # Gaussian-optimisation steps per frame. Fewer steps build a measurably different
+        # map, so this is an explicit experiment, never a default.
+        if mapping_num_iters < 1:
+            raise ValueError("mapping iterations must be positive")
+        config["mapping"]["num_iters"] = int(mapping_num_iters)
+        sourced("mapping.num_iters", "explicit_test_override")
     camera_path = output / "data_config.yaml"
     camera_doc = {"dataset_name": "replica", "camera_params": {
         "image_height": manifest["height"], "image_width": manifest["width"],
@@ -186,12 +212,42 @@ def prepare_config(root: Path, dataset: Path, output: Path, models: Path, profil
                 else "upstream_resource_path")
         resource_stamps.append({"field": field, "configured": original,
                                 "relocated": relocated, **file_stamp(path)})
+    if color_book is not None:
+        # Upstream indexes color_book by the native object index, which is assigned
+        # monotonically and never reused, so its 201 ScanNet200 rows cap a run at 201
+        # objects and a longer tour dies with IndexError. The replacement keeps those
+        # rows verbatim in place and only adds entries past the end; see
+        # tools/baselines/dynamicgsg_color_book.py.
+        replacement = Path(color_book).resolve(strict=True)
+        upstream_rows = _color_book_rows(Path(config["lang"]["color_book_path"]))
+        if _color_book_rows(replacement)[:len(upstream_rows)] != upstream_rows:
+            raise ValueError(
+                "The replacement colour book does not begin with the upstream rows verbatim; "
+                "every object already built would change colour"
+            )
+        config["lang"]["color_book_path"] = str(replacement)
+        sourced("lang.color_book_path", "explicit_test_override")
+        resource_stamps.append({"field": "color_book_path", "configured": str(replacement),
+                                "relocated": False, "upstream_entries": len(upstream_rows),
+                                "total_entries": len(_color_book_rows(replacement)),
+                                **file_stamp(replacement)})
     config["lang"]["use_dam"] = bool(enable_dam)
     sourced("lang.use_dam", "output_adapter")
     if enable_dam:
         raise ValueError("DAM requires an explicitly prepared local LLM service; offline runner refuses it")
     config["viz"]["clip_model_path"] = str(models / MODEL_FIELDS["clip_model_path"])
     sourced("viz.clip_model_path", "pinned_model_path")
+    (output / "frame_mapping.jsonl").write_bytes(mapping.read_bytes())
+    (output / "input_sampling.json").write_text(json.dumps({
+        "schema": "graphapi.dynamicgsg_sampled_input.v1",
+        "source_recording": manifest["recording"],
+        "source_frames": manifest["source_frames_total"],
+        "source_frames_sha256": manifest["frames_sha256"],
+        "uniform_stride": manifest["sampling_stride"],
+        "sampled_frames": manifest["exported_frames"],
+        "sampled_source_frame_indices": manifest["sampled_source_frame_indices"],
+        "method": manifest["sampling_method"],
+    }, indent=2) + "\n")
     config_path = output / "adapter_config.py"
     config_path.write_text("# Generated outside frozen DynamicGSG source.\nconfig = " +
                            pprint.pformat(config, sort_dicts=False, width=100) + "\n")
@@ -306,14 +362,37 @@ def run(args):
             root, dataset, output, models, profile, args.stride,
             dynamic_start_frame=args.dynamic_start_frame,
             variant=args.variant,
+            use_gt_poses=args.tracking_use_gt_poses,
+            mapping_num_iters=args.mapping_num_iters,
+            color_book=args.color_book,
         )
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                TRANSFORMERS_OFFLINE="1", WANDB_MODE="disabled", MPLBACKEND="Agg")
     with phase(phases, "native_pipeline"):
         with (output / "native.log").open("w") as log:
-            subprocess.run(["xvfb-run", "-a", sys.executable,
-                            str(root / "scripts/dynamic_gsg_real_ssim.py"), str(config_path)],
-                           cwd=output, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+            # A sys.setprofile observer would fire on every Python call inside the native
+            # per-frame optimisation loop and distort the very time being measured. Stamping
+            # the native process's own output costs one clock read per line and changes
+            # nothing the pipeline computes.
+            script = root / "scripts/dynamic_gsg_real_ssim.py"
+            native_command = (
+                ["-m", "tools.baselines.dynamicgsg_observer", "--script", str(script),
+                 "--config", str(config_path), "--output", str(output),
+                 "--checkpoint-every", str(args.checkpoint_every)]
+                if args.record_native_observations else [str(script), str(config_path)]
+            )
+            process = subprocess.Popen(
+                ["xvfb-run", "-a", "-e", "/dev/stderr", sys.executable, "-u",
+                 *native_command],
+                cwd=output, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            origin = time.perf_counter()
+            for line in process.stdout:
+                log.write(f"{time.perf_counter() - origin:.6f}\t{line}")
+            process.stdout.close()
+            if process.wait() != 0:
+                raise subprocess.CalledProcessError(process.returncode, "dynamic_gsg_real_ssim.py")
     with phase(phases, "adapter_verification"):
         graph = export_graph(output, dataset)
     phases["run_wall_time"] = time.perf_counter() - started
@@ -328,9 +407,22 @@ def run(args):
         "recording": input_manifest["recording"], "dataset_export": str(dataset),
         "input_frames": input_manifest["exported_frames"], "stride": config["data"]["stride"],
         "effective_frames": len(range(0, input_manifest["exported_frames"], config["data"]["stride"])),
+        "source_recording_frames": input_manifest["source_frames_total"],
+        "input_sampling_stride": input_manifest["sampling_stride"],
+        "input_sampling_strategy": input_manifest["sampling_strategy"],
+        "native_log_line_stamps": "seconds from the native process start, tab-separated prefix",
+        "native_observations_recorded": bool(args.record_native_observations),
+        "checkpoint_every": args.checkpoint_every,
         "objects": len(graph["nodes"]), "gaussians": graph["native_gaussians"],
         "excluded_objects_without_gaussians": graph["excluded_objects_without_gaussians"],
         "dynamic_update_enabled": bool(config["whether_to_update"]),
+        "tracking_use_gt_poses": bool(config["tracking"]["use_gt_poses"]),
+        "tracking_num_iters": config["tracking"]["num_iters"],
+        "mapping_num_iters": config["mapping"]["num_iters"],
+        "color_book_entries": len(_color_book_rows(Path(config["lang"]["color_book_path"]))),
+        "pose_scope": ("supplied ground-truth camera poses used directly"
+                       if config["tracking"]["use_gt_poses"] else
+                       "native photometric tracking, initialised at the supplied pose"),
         "dynamic_update_start_frame": config["data"]["frame_begin_update"],
         "dam_descriptions_enabled": False,
         "evaluation_scope": graph["semantic_output"]["evaluation_scope"],
@@ -360,9 +452,31 @@ def main(argv=None):
         default="delivered-found-fork",
         help="Provenance class; upstream-execfix requires an exact source patch hash",
     )
-    parser.add_argument("--stride", type=int, help="Override the native profile stride")
+    parser.add_argument("--stride", type=int,
+                        help="Assert the native stride the input export declares; sampling is "
+                             "chosen with dynamicgsg_export --stride, not here")
     parser.add_argument("--dynamic-start-frame", type=int,
                         help="Dataset-scheduler effective frame where native updating begins")
+    parser.add_argument("--tracking-use-gt-poses", dest="tracking_use_gt_poses",
+                        action="store_true", default=None,
+                        help="Stop at the supplied ground-truth camera pose instead of running "
+                             "tracking.num_iters photometric steps from it. Changes the published "
+                             "pipeline; use with --variant algorithm-experiment")
+    parser.add_argument("--mapping-num-iters", dest="mapping_num_iters", type=int,
+                        help="Gaussian-optimisation steps per frame (profile default 80). "
+                             "Fewer steps build a different map; use with "
+                             "--variant algorithm-experiment")
+    parser.add_argument("--color-book",
+                        help="Replacement colour book whose first rows are the upstream rows "
+                             "verbatim; lifts the 201-object ceiling. Build it with "
+                             "tools.baselines.dynamicgsg_color_book")
+    parser.add_argument("--checkpoint-every", type=int, default=0,
+                        help="Export an evaluable partial graph every N frames, so a run "
+                             "stopped before the end still yields a usable map "
+                             "(requires --record-native-observations)")
+    parser.add_argument("--record-native-observations", action="store_true",
+                        help="Record the read-only per-frame native object stream the "
+                             "temporal evaluator reads")
     parser.add_argument("--source-patch-sha256",
                         help="Required exact git diff hash when native tracked source is patched")
     args = parser.parse_args(argv)

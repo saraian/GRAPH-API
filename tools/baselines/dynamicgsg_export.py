@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-SCHEMA = "graphapi.dynamicgsg_input.v2"
+SCHEMA = "graphapi.dynamicgsg_input.v3"
 OPENGL_TO_OPENCV_CAMERA = np.diag([1.0, -1.0, -1.0, 1.0])
 
 
@@ -35,7 +35,7 @@ def _link(source: Path, target: Path) -> None:
         raise RuntimeError(f"Export is not a hard link: {target}")
 
 
-def export(recording, output, max_frames=None):
+def export(recording, output, max_frames=None, stride=1):
     recording, output = Path(recording).resolve(), Path(output).resolve()
     if output.exists():
         raise FileExistsError(output)
@@ -53,6 +53,14 @@ def export(recording, output, max_frames=None):
         if max_frames < 1:
             raise ValueError("max_frames must be positive")
         frames = frames[:max_frames]
+    if stride < 1:
+        raise ValueError("stride must be positive")
+    source_frames_considered = len(frames)
+    # Same uniform, ground-truth-independent rule HOV-SG applies in
+    # tools/baselines/hovsg_run.py:select_hov_frames. Sampling is declared here
+    # once; the native profile must then consume every exported frame.
+    selected_source_indices = list(range(0, source_frames_considered, stride))
+    frames = [frames[index] for index in selected_source_indices]
 
     sequence = output / "scene"
     results = sequence / "results"
@@ -61,8 +69,9 @@ def export(recording, output, max_frames=None):
     pose_lines = []
     aggregate = hashlib.sha256()
     for exported_index, row in enumerate(frames):
-        if row.get("index") != exported_index or Path(row["stem"]).name != row["stem"]:
-            raise ValueError("Export only supports the acquisition's ordered prefix")
+        if (row.get("index") != selected_source_indices[exported_index]
+                or Path(row["stem"]).name != row["stem"]):
+            raise ValueError("Export only supports the acquisition's ordered uniform sample")
         stem = row["stem"]
         rgb = recording / "rgb" / f"{stem}.png"
         depth = recording / "depth" / f"{stem}.png"
@@ -115,7 +124,16 @@ def export(recording, output, max_frames=None):
         "acquisition_sha256": _sha256(acquisition_path),
         "frames_sha256": _sha256(frames_path),
         "source_frames_total": acquisition["frames"],
+        "source_frames_considered": source_frames_considered,
         "exported_frames": len(frames),
+        "sampling_stride": stride,
+        "sampling_strategy": "uniform GT-independent frame stride",
+        "sampling_method": ("Uniform temporal coverage only. Ground-truth visibility, object "
+                            "actions and evaluation outcomes do not select DynamicGSG input "
+                            "frames. This matches the HOV-SG sampling rule so the two "
+                            "baselines observe the same frames of the same tour."),
+        "sampled_source_frame_indices": selected_source_indices,
+        "native_stride_required": 1,
         "sequence": "scene",
         "rgb_storage": "original PNG bytes hard-linked under native frame*.jpg names",
         "depth_storage": "original uint16 millimetre PNG bytes hard-linked",
@@ -139,8 +157,10 @@ def main(argv=None):
     parser.add_argument("--recording", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-frames", type=int, help="Ordered prefix for a bounded smoke export")
+    parser.add_argument("--stride", type=int, default=1,
+                        help="Uniform sampling stride over the recording, as HOV-SG applies it")
     args = parser.parse_args(argv)
-    print(json.dumps(export(args.recording, args.output, args.max_frames), indent=2))
+    print(json.dumps(export(args.recording, args.output, args.max_frames, args.stride), indent=2))
 
 
 if __name__ == "__main__":

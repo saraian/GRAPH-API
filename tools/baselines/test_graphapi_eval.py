@@ -8,17 +8,19 @@ from unittest.mock import patch
 
 import numpy as np
 
+from tools.baselines.clio_graph_observer import snapshot
 from tools.baselines.graphapi_eval import (
     clio_temporal,
+    dynamicgsg_frame_times,
+    dynamicgsg_temporal,
     final_ground_truth,
-    hov_temporal,
     hov_manifest,
+    hov_temporal,
+    latency_report,
     occupancy_outline,
     require_ground_truth,
 )
-from tools.baselines.hovsg_run import prepare_sampled_recording, select_hov_frames
-from tools.baselines.clio_graph_observer import snapshot
-from tools.baselines.hovsg_run import verify_evaluation_outputs
+from tools.baselines.hovsg_run import prepare_sampled_recording, select_hov_frames, verify_evaluation_outputs
 
 
 def write_json(path, value):
@@ -274,6 +276,53 @@ class EndToEndEvaluationTests(unittest.TestCase):
             removal = report['actions'][1]
             self.assertTrue(removal['removal_confirmed_active_layer'])
             self.assertTrue(removal['historical_evidence_retained'])
+
+    def test_dynamicgsg_temporal_tracks_native_object_indices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recording = self._recording(root)
+            result = root / 'dynamicgsg'
+            result.mkdir()
+            (result / 'frame_mapping.jsonl').write_text(''.join(
+                json.dumps({'exported_index': index, 'source_index': index,
+                            'source_stem': f'{index:06d}', 'time_s': index + 1.}) + '\n'
+                for index in range(5)))
+            inside = {'idx': 7, 'category': 'banana', 'detections': 3,
+                      'centroid': [.5, .5, .5]}
+            outside = {'idx': 2, 'category': 'sofa', 'detections': 9,
+                       'centroid': [8., 8., 8.]}
+            stream = [
+                {'frame': 0, 'objects': [outside], 'removed': []},
+                {'frame': 1, 'objects': [outside, inside], 'removed': []},
+                {'frame': 2, 'objects': [outside, inside], 'removed': []},
+                {'frame': 3, 'objects': [outside], 'removed': [7]},
+                {'frame': 4, 'objects': [outside], 'removed': []},
+            ]
+            (result / 'graph_stream.jsonl').write_text(
+                ''.join(json.dumps(row) + '\n' for row in stream))
+            report = dynamicgsg_temporal(recording, result)
+            spawn, remove = report['actions']
+            self.assertEqual(spawn['new_native_object_idx'], [7])
+            self.assertEqual(spawn['first_evidence_frame'], 1)
+            self.assertEqual(spawn['response_latency_s'], 0.)
+            self.assertEqual(remove['pre_removal_tracked_native_idx'], [7])
+            self.assertTrue(remove['removal_confirmed_in_final_map'])
+            self.assertTrue(remove['native_delete_event_observed'])
+            self.assertEqual(remove['native_removal_events'],
+                             [{'frame_index': 3, 'native_object_idx': [7]}])
+
+    def test_dynamicgsg_frame_times_come_from_the_stamped_native_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = Path(tmp)
+            (result / 'native.log').write_text(
+                '0.500000\tframe 0 num of objects: 1\n'
+                '0.750000\tloading model\n'
+                '2.000000\tframe 1 num of objects: 2\n'
+                '3.250000\tframe 2 num of objects: 2\n')
+            self.assertEqual(dynamicgsg_frame_times(result), [1.5, 1.25])
+            report = latency_report('dynamicgsg', result)
+            self.assertEqual(report['samples'], 2)
+            self.assertIn('DynamicGSG', report['scope'])
 
 
 if __name__ == '__main__':

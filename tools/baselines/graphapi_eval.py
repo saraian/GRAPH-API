@@ -14,6 +14,7 @@ import hashlib
 import importlib
 import json
 import math
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -602,10 +603,14 @@ def _clio_snapshot_nodes(result):
 
 
 def _inside_box(node, truth, margin=.10):
-    if 'corners' not in node:
+    if 'corners' in node:
+        center = np.asarray(node['corners'], dtype=float).mean(axis=0)
+    elif node.get('centroid') is not None:
+        center = np.asarray(node['centroid'], dtype=float)
+    else:
         return False
-    corners = np.asarray(node['corners'], dtype=float)
-    center = corners.mean(axis=0)
+    if center.shape != (3,) or not np.isfinite(center).all():
+        return False
     low = np.asarray(truth['aabb_min'], dtype=float) - margin
     high = np.asarray(truth['aabb_max'], dtype=float) + margin
     return bool(np.all(center >= low) and np.all(center <= high))
@@ -683,9 +688,199 @@ def clio_temporal(recording, result):
         'limitations': ['Semantic primitives are map fragments, not object instances.']}
 
 
+def _dynamicgsg_snapshots(result):
+    """Native per-frame object state, re-indexed into source recording frames."""
+    result = Path(result)
+    rows = read_rows(result / 'graph_stream.jsonl')
+    if not rows:
+        raise ValueError('DynamicGSG wrote no native graph stream for this run')
+    mapping = read_rows(result / 'frame_mapping.jsonl')
+    by_native = {int(row['exported_index']): row for row in mapping}
+    snapshots = []
+    for row in rows:
+        native_index = int(row['frame'])
+        entry = by_native.get(native_index)
+        if entry is None:
+            raise ValueError(f'Native frame {native_index} is outside the exported input')
+        snapshots.append({'native_frame_index': native_index,
+                          'frame_index': int(entry['source_index']),
+                          'time_s': float(entry['time_s']),
+                          'objects': row.get('objects', []),
+                          'removed': [int(value) for value in row.get('removed', [])],
+                          'num_gaussians': row.get('num_gaussians')})
+    snapshots.sort(key=lambda row: (row['frame_index'], row['native_frame_index']))
+    return snapshots
+
+
+def dynamicgsg_temporal(recording, result):
+    """Measure the native DynamicGSG object layer around every scheduled change."""
+    frames, actions = action_timeline(recording)
+    dynamic = _dynamic_by_frame(frames)
+    snapshots = _dynamicgsg_snapshots(result)
+    stamps = np.asarray([row['frame_index'] for row in snapshots])
+    final = {int(node['idx']): node for node in snapshots[-1]['objects']}
+    rows = []
+    tracked_ids = defaultdict(set)
+    for action, end in _action_windows(actions, len(frames)):
+        object_id = _evaluation_id(action['result'])
+        start = action['first_post_action_frame']
+        before_index = max(0, int(np.searchsorted(stamps, start, side='left')) - 1)
+        before_ids = {int(node['idx']) for node in snapshots[before_index]['objects']}
+        previous_dynamic_ids = set(tracked_ids[object_id])
+        evidence = []
+        following = []
+        removal_events = []
+        for index in np.flatnonzero((stamps >= start) & (stamps < end)):
+            snapshot = snapshots[int(index)]
+            # A removed object leaves the dynamic ground truth, so the native delete
+            # events must be read whether or not the object still has a scheduled box.
+            gone = sorted(set(snapshot['removed']) & previous_dynamic_ids)
+            if gone:
+                removal_events.append({'frame_index': snapshot['frame_index'],
+                                       'native_object_idx': gone})
+            truth = dynamic[snapshot['frame_index']].get(object_id)
+            if truth is None:
+                continue
+            inside = [int(node['idx']) for node in snapshot['objects']
+                      if _inside_box(node, truth)]
+            ids = [value for value in inside if value not in before_ids]
+            if ids:
+                evidence.append((snapshot['frame_index'], snapshot['time_s'], ids))
+            # A move relocates an object that already exists, so an implementation that
+            # carries the same native index to the new position is behaving correctly and
+            # would show no NEW index. Record that separately instead of scoring it a miss.
+            followed = sorted(set(inside) & previous_dynamic_ids)
+            if followed:
+                following.append((snapshot['frame_index'], snapshot['time_s'], followed))
+        first = evidence[0] if evidence else None
+        first_follow = following[0] if following else None
+        discovered = {value for _, _, ids in evidence for value in ids}
+        if action['action'] != 'remove':
+            tracked_ids[object_id].update(discovered)
+        retained = sorted(value for value in tracked_ids[object_id] if value in final)
+        item = {'action': action['action'], 'object_id': object_id,
+            'action_frame': start, 'action_time_s': action['time_s'],
+            'new_native_object_idx': sorted(discovered),
+            'first_evidence_frame': first[0] if first else None,
+            'response_latency_s': first[1] - action['time_s'] if first else None,
+            'tracked_dynamic_native_idx': sorted(tracked_ids[object_id]),
+            'retained_native_idx_in_final_map': retained,
+            'native_removal_events': removal_events,
+            'tracked_idx_inside_new_box': sorted({v for _, _, ids in following for v in ids}),
+            'first_tracked_follow_frame': first_follow[0] if first_follow else None,
+            'follow_latency_s': (first_follow[1] - action['time_s']) if first_follow else None,
+            'observed_snapshots_in_window': int(np.count_nonzero(
+                (stamps >= start) & (stamps < end)))}
+        if action['action'] == 'remove':
+            item['pre_removal_tracked_native_idx'] = sorted(previous_dynamic_ids)
+            item['removal_confirmed_in_final_map'] = (
+                not retained if previous_dynamic_ids else None)
+            item['native_delete_event_observed'] = (
+                bool(removal_events) if previous_dynamic_ids else None)
+            item['status'] = ('evaluated_native_deletion_and_persistence'
+                              if previous_dynamic_ids else 'no_pre_removal_object_evidence')
+        else:
+            item['presence_confirmed_in_final_map'] = bool(retained) if discovered else None
+            if discovered:
+                item['status'] = 'evaluated'
+            elif following:
+                # The object kept its native identity and moved with the schedule.
+                item['status'] = 'evaluated_tracked_identity_followed'
+            else:
+                item['status'] = 'no_native_object_evidence'
+        rows.append(item)
+    return {'status': 'supported',
+        'observation_unit': 'native DynamicGSG Gaussian-backed object instance',
+        'actions': rows, 'snapshots': len(snapshots),
+        'method': ('New native object indices whose Gaussian centroid lies inside the '
+                   'scheduled object box, relative to the last pre-action native snapshot. '
+                   'Removal checks the native delete list and the final object set.'),
+        'limitations': [
+            'The native stream reports a Gaussian centroid per object, not a per-frame box, '
+            'so containment is judged at the centroid.',
+            'A move is credited either by a new native index inside the scheduled box or by a '
+            'already-tracked index following the object there; the two are reported separately.',
+            'Snapshots are appended only on frames where the native pipeline updates the map, '
+            'so a window can contain fewer snapshots than sampled frames.']}
+
+
+def dynamicgsg_objects(result, active_floor=None):
+    """Read the final native object layer from the adapter's exported graph."""
+    graph = read_json(Path(result) / 'dynamicgsg_graph.json')
+    rows = []
+    for node in graph.get('nodes', []):
+        corners = np.asarray(node.get('corners'), dtype=float)
+        if corners.shape != (8, 3) or not np.isfinite(corners).all():
+            continue
+        rows.append({'object_id': str(node['id']), 'label': str(node.get('label', '')),
+            'floor_index': active_floor,
+            'aabb_min_m': corners.min(axis=0).tolist(),
+            'aabb_max_m': corners.max(axis=0).tolist(),
+            'evaluation_unit': 'native_object_instance',
+            'native_object_idx': node.get('native_object_idx'),
+            'semantic_label_available': bool(node.get('semantic_label_available'))})
+    if not rows:
+        raise ValueError('DynamicGSG produced no usable 3-D object predictions')
+    return rows, graph
+
+
+def dynamicgsg_table_report(gt, recording, result):
+    acquisition = read_json(Path(recording) / 'acquisition.json')
+    active_floor = _active_floor(gt, acquisition)
+    predicted, graph = dynamicgsg_objects(result, active_floor)
+    manifest = dict(gt, active_floor_index=active_floor, predicted_objects=predicted)
+    _, objects = evaluators()
+    geometry, matches = objects.evaluate_geometry([manifest])
+    semantic = bool(graph.get('semantic_output', {}).get('semantic_accuracy_eligible'))
+    labels = objects.evaluate_labels([manifest], matches) if semantic else None
+    representation = [Path(result) / name for name in
+                      ('params_with_idx.npz', 'objects.pkl.gz', 'dynamicgsg_graph.json')]
+    size = sum(path.stat().st_size for path in representation if path.is_file()) / 1e6
+    reason = ('DynamicGSG builds a flat object layer over a Gaussian map; it has no '
+              'native room or floor layer.')
+    report = {
+        'table_ii_floor_regions': {'status': 'unsupported', 'reason': reason},
+        'table_iii_rooms': {'status': 'unsupported', 'reason': reason},
+        'table_iv_objects': {'status': 'supported', 'evaluation_unit': 'native_object_instance',
+            'geometry': geometry,
+            'labels': labels if semantic else None,
+            'semantic_classification_status': 'supported' if semantic else 'missing_inputs',
+            'semantic_classification_reason': (None if semantic else
+                'This run used the class-agnostic scope: the official DAM + qwen category '
+                'postprocessor did not label every node.'),
+            'evaluation_scope': graph.get('semantic_output', {}).get('evaluation_scope')},
+        'table_vi_room_objects': {'status': 'unsupported', 'reason': reason},
+        'table_vii_representation': {'status': 'supported',
+            'size_mb_total': round(size, 6),
+            'files': [stamp(path) for path in representation if path.is_file()]},
+        'construction_time_s': _timing(result),
+    }
+    return report
+
+
+DYNAMICGSG_FRAME_LINE = re.compile(r'^([0-9.]+)\tframe (\d+) num of objects:')
+
+
+def dynamicgsg_frame_times(result):
+    """Per-frame native wall time, read from the adapter's stamped native log."""
+    stamps = []
+    for line in (Path(result) / 'native.log').read_text(errors='replace').splitlines():
+        match = DYNAMICGSG_FRAME_LINE.match(line)
+        if match:
+            stamps.append((int(match.group(2)), float(match.group(1))))
+    stamps.sort()
+    return [second - first for (_, first), (_, second) in zip(stamps, stamps[1:])]
+
+
 def latency_report(baseline, result):
     result = Path(result)
-    if baseline == 'hovsg':
+    if baseline == 'dynamicgsg':
+        rows = dynamicgsg_frame_times(result)
+        scope = ('Native DynamicGSG wall time between consecutive frame-complete prints of '
+                 'the native process: detection, association, merge and Gaussian '
+                 'optimisation for one sampled frame. The first frame has no predecessor '
+                 'and is not counted.')
+    elif baseline == 'hovsg':
         rows = [row['stage_wall_time_s'] for row in
                 read_rows(result / 'native_observations/observations.jsonl')
                 if row['stage'] == 'sam_clip']
@@ -722,6 +917,17 @@ def evaluate_baseline(baseline, recording, result, ground_truth, output):
         table_report['table_iv_objects_v2'] = {**geometry, **labels}
         temporal = hov_temporal(recording, result)
         support = hov_support(manifest)
+    elif baseline == 'dynamicgsg':
+        manifest = None
+        table_report = dynamicgsg_table_report(final_gt, recording, result)
+        table_report['protocol_exclusions'] = [
+            'Table V retrieval/navigation: excluded by experiment protocol']
+        temporal = dynamicgsg_temporal(recording, result)
+        support = {key: {'status': value.get('status', 'supported'),
+                         'reason': value.get('reason')}
+                   for key, value in table_report.items()
+                   if key.startswith('table_')}
+        support['table_v_retrieval'] = {'status': 'excluded_by_protocol'}
     elif baseline == 'clio':
         manifest = None
         table_report = clio_table_report(final_gt, recording, result)
@@ -741,6 +947,8 @@ def evaluate_baseline(baseline, recording, result, ground_truth, output):
         'temporal_object_actions': temporal,
         'latency': latency_report(baseline, result),
         'coverage': read_json(recording / 'acquisition.json').get('tour', {}),
+        'input_sampling': (read_json(result / 'input_sampling.json')
+                           if (result / 'input_sampling.json').is_file() else None),
         'inputs': {'ground_truth': stamp(ground_truth),
                    'acquisition': stamp(recording / 'acquisition.json'),
                    'frames': stamp(recording / 'frames.jsonl'),
@@ -769,7 +977,8 @@ def evaluate_baseline(baseline, recording, result, ground_truth, output):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--baseline', required=True, choices=('clio', 'hovsg'))
+    parser.add_argument('--baseline', required=True,
+                        choices=('clio', 'hovsg', 'dynamicgsg'))
     parser.add_argument('--recording', required=True, type=Path)
     parser.add_argument('--result', required=True, type=Path)
     parser.add_argument('--ground-truth', type=Path,

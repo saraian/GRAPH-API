@@ -11,7 +11,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from tools.baselines.dynamicgsg_color_book import extend
 from tools.baselines.dynamicgsg_export import export
+from tools.baselines.dynamicgsg_observer import (
+    ObjectStreamObserver,
+    _centroids,
+    tolerate_empty_detections,
+    write_checkpoint,
+)
 from tools.baselines.dynamicgsg_run import (
     MODEL_FIELDS,
     NATIVE_RESOURCE_FIELDS,
@@ -45,6 +52,26 @@ class DynamicGSGTests(unittest.TestCase):
             "pose_convention": "Habitat/OpenGL camera-to-world",
         }))
         return recording
+
+    def make_native_tree(self, root: Path):
+        native = root / "native"
+        profile = native / "configs/found/profile.py"
+        profile.parent.mkdir(parents=True, exist_ok=True)
+        resources = {}
+        for index, field in enumerate(NATIVE_RESOURCE_FIELDS):
+            resource = native / f"resource-{index}.txt"
+            resource.write_text(field)
+            resources[field] = str(resource.relative_to(native))
+        profile.write_text(
+            "config={'data': {'stride': 4}, 'lang': " + repr(resources) + ", 'viz': {}, "
+            "'tracking': {'use_gt_poses': False, 'num_iters': 200}, "
+            "'mapping': {'num_iters': 80}, "
+            "'whether_to_update': True}\n")
+        models = root / "models"
+        models.mkdir(exist_ok=True)
+        for filename in MODEL_FIELDS.values():
+            (models / filename).write_bytes(b"model")
+        return native, profile, models
 
     def test_lossless_native_export_and_generated_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -87,7 +114,11 @@ class DynamicGSGTests(unittest.TestCase):
                 native, dataset, output, models, profile,
                 dynamic_start_frame=2, variant="upstream-execfix",
             )
-            self.assertEqual(config["data"]["stride"], 4)
+            # Sampling is declared by the export, so the profile's own stride never wins.
+            self.assertEqual(config["data"]["stride"], 1)
+            with self.assertRaises(ValueError):
+                prepare_config(native, dataset, root / "result-strided", models, profile,
+                               stride=4, variant="upstream-execfix")
             self.assertEqual(config["data"]["desired_image_width"], 4)
             self.assertFalse(config["lang"]["use_dam"])
             self.assertFalse(config["live_viewer"])
@@ -98,7 +129,12 @@ class DynamicGSGTests(unittest.TestCase):
             provenance = json.loads((output / "config_provenance.json").read_text())
             by_key = {row["key"]: row["source"] for row in provenance["rows"]}
             self.assertEqual(by_key["data.sequence"], "dataset_adapter")
-            self.assertEqual(by_key["data.stride"], "upstream_profile")
+            self.assertEqual(by_key["data.stride"], "input_contract_sampling")
+            sampling = json.loads((output / "input_sampling.json").read_text())
+            self.assertEqual(sampling["uniform_stride"], 1)
+            self.assertEqual(sampling["sampled_source_frame_indices"], [0, 1])
+            self.assertEqual((output / "frame_mapping.jsonl").read_text(),
+                             (dataset / "frame_mapping.jsonl").read_text())
             self.assertEqual(by_key["data.frame_begin_update"], "dataset_scheduler")
             self.assertEqual(provenance["variant"], "upstream-execfix")
             self.assertEqual(provenance["experimental_rows"], [])
@@ -147,6 +183,165 @@ class DynamicGSGTests(unittest.TestCase):
             )
             self.assertTrue(relocated)
             self.assertEqual(resolved, expected.resolve())
+
+    def test_observer_centroids_are_per_object_means_in_habitat(self):
+        # Two objects, one Gaussian apart, under a camera-to-world that shifts by +10 in x
+        # and flips y and z -- the same basis the adapter applies to the final graph.
+        params = {"means3D": np.array([[0., 0., 0.], [2., 0., 0.], [0., 4., 0.]]),
+                  "object_idx": np.array([[5], [5], [9]])}
+        transform = np.array([[1., 0, 0, 10], [0, -1., 0, 0], [0, 0, -1., 0], [0, 0, 0, 1.]])
+        centroids = _centroids(params, transform)
+        self.assertEqual(sorted(centroids), [5, 9])
+        np.testing.assert_allclose(centroids[5][0], [11., 0., 0.])
+        self.assertEqual(centroids[5][1], 2)
+        np.testing.assert_allclose(centroids[9][0], [10., -4., 0.])
+        self.assertEqual(centroids[9][1], 1)
+        self.assertEqual(_centroids({}, transform), {})
+
+    def test_observer_stream_names_removed_objects_by_difference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            observer = ObjectStreamObserver(output, np.eye(4))
+            params = {"means3D": np.zeros((2, 3)), "object_idx": np.array([[1], [2]])}
+            observer.record(0, [{"idx": 1, "num_detections": 3}, {"idx": 2}], params)
+            observer.record(1, [{"idx": 1, "num_detections": 4}], params)
+            rows = [json.loads(line) for line in
+                    (output / "graph_stream.jsonl").read_text().splitlines()]
+            self.assertEqual(rows[0]["removed"], [])
+            self.assertEqual(rows[1]["removed"], [2])
+            self.assertEqual(rows[0]["objects"][0]["detections"], 3)
+            self.assertFalse(observer.receipt()["native_algorithm_modified"])
+            self.assertEqual(observer.receipt()["recorded_frames"], 2)
+
+    def test_gt_pose_override_is_recorded_as_an_explicit_experiment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recording = self.make_recording(root)
+            dataset = root / "dataset"
+            export(recording, dataset)
+            native, profile, models = self.make_native_tree(root)
+            (root / "gt-poses").mkdir()
+            (root / "as-published").mkdir()
+            _, config = prepare_config(native, dataset, root / "gt-poses", models, profile,
+                                       use_gt_poses=True, mapping_num_iters=40,
+                                       variant="algorithm-experiment")
+            self.assertTrue(config["tracking"]["use_gt_poses"])
+            self.assertEqual(config["mapping"]["num_iters"], 40)
+            provenance = json.loads((root / "gt-poses/config_provenance.json").read_text())
+            by_key = {row["key"]: row["source"] for row in provenance["rows"]}
+            self.assertEqual(by_key["tracking.use_gt_poses"], "explicit_test_override")
+            self.assertEqual(by_key["mapping.num_iters"], "explicit_test_override")
+            self.assertEqual(sorted(provenance["experimental_rows"]),
+                             ["mapping.num_iters", "tracking.use_gt_poses"])
+            # Left alone, the profile's own value must survive untouched.
+            _, untouched = prepare_config(native, dataset, root / "as-published", models, profile)
+            self.assertFalse(untouched["tracking"]["use_gt_poses"])
+            self.assertEqual(untouched["mapping"]["num_iters"], 80)
+            other = json.loads((root / "as-published/config_provenance.json").read_text())
+            self.assertEqual(other["experimental_rows"], [])
+
+    def test_checkpoint_graph_matches_what_the_final_export_would_produce(self):
+        class FakeObjects(list):
+            def to_serializable(self):
+                return list(self)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset = root / "dataset"
+            (dataset / "scene").mkdir(parents=True)
+            np.savetxt(dataset / "scene/traj.txt", np.eye(4).reshape(1, -1))
+            output = root / "run"
+            output.mkdir()
+            params = {"means3D": np.array([[0., 0., 0.], [1., 1., 1.], [5., 5., 5.]]),
+                      "object_idx": np.array([[3], [3], [8]])}
+            objects = FakeObjects([{"idx": 3, "class_name": "chair", "num_detections": 4},
+                                   {"idx": 8, "class_name": "table", "num_detections": 2}])
+            graph = write_checkpoint(output, dataset, 120, objects, params)
+
+            checkpoint = output / "checkpoint"
+            self.assertTrue((checkpoint / "dynamicgsg_graph.json").is_file())
+            marker = json.loads((checkpoint / "checkpoint.json").read_text())
+            self.assertEqual(marker["native_frame_index"], 120)
+            self.assertEqual(marker["objects"], 2)
+            # The checkpoint must be the SAME artefact a completed run produces: running
+            # the final export over the checkpoint's own files must reproduce the graph.
+            saved = json.loads((checkpoint / "dynamicgsg_graph.json").read_text())
+            self.assertEqual(export_graph(checkpoint, dataset)["nodes"], saved["nodes"])
+            self.assertEqual(saved["schema"], graph["schema"])
+            self.assertEqual([n["id"] for n in saved["nodes"]], ["object:3", "object:8"])
+            self.assertEqual(saved["native_gaussians"], 3)
+            # A second checkpoint replaces the first and leaves no staging directory.
+            write_checkpoint(output, dataset, 240, objects, params)
+            self.assertEqual(json.loads((output / "checkpoint/checkpoint.json").read_text())
+                             ["native_frame_index"], 240)
+            self.assertEqual(sorted(p.name for p in output.glob(".checkpoint*")), [])
+
+    def test_extended_colour_book_keeps_the_upstream_prefix_verbatim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            upstream = root / "scannet200.txt"
+            original = ["1.040000000000000000e+02 2.040000000000000000e+02 2.550000000000000000e+02",
+                        "1.880000000000000000e+02 1.890000000000000000e+02 3.400000000000000000e+01",
+                        "0.000000000000000000e+00 0.000000000000000000e+00 0.000000000000000000e+00"]
+            upstream.write_text("R G B\n" + "\n".join(original) + "\n")
+            report = extend(upstream, root / "extended.txt", entries=64)
+            self.assertEqual(report["upstream_entries"], 3)
+            self.assertEqual(report["total_entries"], 64)
+            written = (root / "extended.txt").read_text().splitlines()
+            # Every index the upstream book could serve must resolve to the same colour.
+            self.assertEqual(written[0], "R G B")
+            self.assertEqual(written[1:4], original)
+            self.assertEqual(upstream.read_text(), "R G B\n" + "\n".join(original) + "\n")
+            triplets = [tuple(round(float(v)) for v in row.split()) for row in written[1:]]
+            self.assertEqual(len(set(triplets)), 64)
+            # Refuse to shrink: that would silently drop colours already in use.
+            with self.assertRaises(ValueError):
+                extend(upstream, root / "smaller.txt", entries=2)
+
+    def test_empty_detection_guard_returns_upstreams_own_empty_value(self):
+        class Sentinel(list):
+            pass
+
+        class FakeNative:
+            DetectionList = Sentinel
+
+            @staticmethod
+            def process_this_frame_detection(flag):
+                if flag == "empty":
+                    raise UnboundLocalError(
+                        "local variable 'xyxy_tensor' referenced before assignment")
+                if flag == "other":
+                    raise UnboundLocalError("local variable 'masks_np' referenced before assignment")
+                return ["a detection"]
+
+        native, counter = FakeNative(), []
+        tolerate_empty_detections(native, counter)
+        self.assertEqual(native.process_this_frame_detection("ok"), ["a detection"])
+        self.assertEqual(counter, [])
+        self.assertEqual(native.process_this_frame_detection("empty"), Sentinel())
+        self.assertEqual(counter, [1])
+        # Any other unbound variable must still raise; the guard is not a blanket catch.
+        with self.assertRaises(UnboundLocalError):
+            native.process_this_frame_detection("other")
+
+    def test_export_stride_samples_the_recording_uniformly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recording = self.make_recording(root, count=5)
+            dataset = root / "dataset"
+            manifest = export(recording, dataset, stride=2)
+            self.assertEqual(manifest["sampling_stride"], 2)
+            self.assertEqual(manifest["exported_frames"], 3)
+            self.assertEqual(manifest["sampled_source_frame_indices"], [0, 2, 4])
+            self.assertEqual(manifest["native_stride_required"], 1)
+            mapping = [json.loads(line) for line in
+                       (dataset / "frame_mapping.jsonl").read_text().splitlines()]
+            self.assertEqual([row["source_index"] for row in mapping], [0, 2, 4])
+            self.assertEqual([row["exported_index"] for row in mapping], [0, 1, 2])
+            # The native reader indexes frame000000.. contiguously; a strided export
+            # must still hand it the source bytes of the sampled frame.
+            self.assertEqual((dataset / "scene/results/frame000001.jpg").stat().st_ino,
+                             (recording / "rgb/000002.png").stat().st_ino)
 
     def test_native_gaussians_become_habitat_graph_and_scene(self):
         with tempfile.TemporaryDirectory() as tmp:
