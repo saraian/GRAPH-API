@@ -923,6 +923,7 @@ class ObjectManagerService(Node):
         self.graph_api_base_url = GRAPH_API_BASE_URL.rstrip('/')
         self.graph_api_timeout = GRAPH_API_TIMEOUT
         self._graph_api_strikes = 0        # GA-09: consecutive failed calls, reset by any answer
+        self._graph_api_timeouts = 0       # busy-bridge timeouts: logged, never a strike
         self._graph_api_process = None
         self.get_logger().info(f"Graph API base URL: {self.graph_api_base_url}")
         self.get_logger().info('Object Tracking Service ready')
@@ -2378,6 +2379,21 @@ class ObjectManagerService(Node):
         url = self._graph_api_url(path)
         try:
             response = requests.request(method=method, url=url, json=json_body, timeout=self.graph_api_timeout)
+        except requests.exceptions.Timeout as e:
+            # A TIMEOUT IS "BUSY", NOT "DEAD" (2026-09-15), and GA-09 was written for dead.
+            # This call travels bridge -> ROS service -> back into THIS process, and the
+            # service cannot be served while the callback that made the call is waiting
+            # (GA-183 documents the same loop for merges). MEASURED on 20260915_020428: om6
+            # ended the run on strike 5/5 after five consecutive 10 s timeouts on POST
+            # /objects, t=264..311, one per perception cycle -- while the bridge served 123
+            # GET /bev_data in that same window. Nothing was dead. The call is still lost
+            # and still raises, so the caller handles it exactly as before; it just no
+            # longer counts toward ending the run. A connection error below still does.
+            self._graph_api_timeouts += 1
+            self.get_logger().warn(
+                f"[GRAPH-API] TIMEOUT after {self.graph_api_timeout:.0f}s ({method} {url}): "
+                f"busy, not a strike; timeouts so far {self._graph_api_timeouts}")
+            raise RuntimeError(f"Graph API timeout ({method} {url}): {e}")
         except requests.RequestException as e:
             self._graph_api_strike(f"unreachable ({method} {url}): {e}")
             raise RuntimeError(f"Graph API non raggiungibile ({method} {url}): {e}")
