@@ -208,19 +208,30 @@ Visualization Manager:
       Reliability Policy: Best Effort
       Value: /bbox_marker
     Namespaces: {}
-  # GT-ONLY. The feed host decodes the semantic GLB and the ROS side publishes one latched,
-  # independently colored wireframe layer with a dark border. It is independent from both the
-  # frame-local detections and the persistent graph boxes, so uncheck it to compare the graph alone.
+  # GT-ONLY. The feed host decodes the semantic GLB and the ROS side publishes two latched,
+  # independently colored wireframe layers with dark borders. Structure (doors, windows, walls,
+  # ...) and actual objects have separate checkboxes, so either can be hidden for comparison.
   - Class: rviz_default_plugins/MarkerArray
-    Enabled: true
-    Name: 'ground truth objects: semantic boxes (colored + border)'
+    Enabled: false
+    Name: 'ground truth structural: semantic boxes'
     Value: true
     Topic:
       Depth: 1
       Durability Policy: Transient Local
       History Policy: Keep Last
       Reliability Policy: Reliable
-      Value: /ground_truth_bbox
+      Value: /ground_truth_bbox_structural
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: 'ground truth objects: semantic boxes'
+    Value: true
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /ground_truth_bbox_objects
     Namespaces: {}
   - Class: rviz_default_plugins/MarkerArray
     Enabled: true

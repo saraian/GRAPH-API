@@ -6,7 +6,9 @@ habitat_feed_node.py connects, converts, and publishes to ROS topics + TF.
 Protocol: length-prefixed pickle dicts {rgb, depth, cam_pos, cam_quat,
 base_pos, base_quat, t, w, h, hfov}; a frame may also carry a
 `scan_complete` event after one uninterrupted 360-degree turn and a
-one-per-connection `ground_truth_objects` semantic-box catalog for RViz.
+one-per-connection `ground_truth_objects` semantic-box catalog for RViz. Each
+catalog row carries `is_structural`, so architectural classes and actual objects
+can be published to separate RViz displays.
 
 The HTTP control port also accepts runtime rigid-object commands from
 habitat_feed_node.py, so run_habitat_script.py works with this headless feed
@@ -161,7 +163,6 @@ GT_BBOX = os.environ.get(
     "FEED_GT_BBOX", "1" if run_cfg.get("gt_bbox", False) else "0"
 ) == "1"
 GT_BBOX_ALL_FLOORS = os.environ.get("FEED_GT_BBOX_ALL_FLOORS", "0") == "1"
-GT_BBOX_INCLUDE_STRUCTURE = os.environ.get("FEED_GT_BBOX_INCLUDE_STRUCTURE", "0") == "1"
 CTRL_PORT = int(os.environ.get("FEED_CTRL_PORT", "7790"))
 # Where the per-frame stats and the BEV payload go. ONE directory, and it is an error for the
 # run not to know which.
@@ -193,13 +194,52 @@ else:
 SINGLE_FLOOR = bool(hab_cfg.get("single_floor", True))
 FLOOR_TOL = float(hab_cfg.get("floor_tolerance_m", 0.5))
 
-# These are semantic annotation entities, not movable objects that the perception graph should
-# compare against.  They make the visualization unreadable (for example, a floor box spans the
-# entire storey), so they are omitted by default.  FEED_GT_BBOX_INCLUDE_STRUCTURE=1 restores every
-# decoded semantic entity when a structural audit is desired.
-_GT_STRUCTURE_CATEGORIES = frozenset(
-    set(_gt_manifest.WALL_CATEGORY_NAMES) | {"floor", "ceiling", "shower floor"}
+# The configured `perception.excluded_labels` list is also the ontology boundary used by the GT
+# RViz comparison layer. The labels are architectural surfaces/openings that the whole-scene VLM
+# is not supposed to return as movable objects. Keep the manifest's structural wall vocabulary as
+# a fallback/union because older custom configs may not yet carry all of the HM3D variants.
+_GT_CONFIGURED_STRUCTURE_CATEGORIES = frozenset(
+    str(value).strip().lower()
+    for value in ((CFG.get("perception", {}) or {}).get("excluded_labels", []) or [])
+    if str(value).strip()
 )
+# Keep the classifier safe for complete arm snapshots generated from an older config. Those files
+# intentionally replace the tracked config rather than layering over it, so their excluded-label
+# list can predate a later HM3D variant even though the semantic label is still architectural.
+_GT_KNOWN_STRUCTURE_CATEGORIES = frozenset({
+    "wall", "wall panel", "fireplace wall", "shower wall", "partition", "column",
+    "compound wall", "recessed wall", "panel", "floor", "flooring", "shower floor",
+    "ceiling", "shower ceiling", "ceiling dome", "door", "doorway", "door frame",
+    "doorframe", "shower door frame", "window", "window frame", "window shutter",
+    "stairs", "staircase", "railing", "stairs railing", "handrail",
+})
+_GT_STRUCTURE_CATEGORIES = frozenset(
+    set(_GT_CONFIGURED_STRUCTURE_CATEGORIES)
+    | set(_GT_KNOWN_STRUCTURE_CATEGORIES)
+    | set(_gt_manifest.WALL_CATEGORY_NAMES)
+    | {"floor", "ceiling", "shower floor"}
+)
+
+
+def _is_gt_structural_category(category):
+    """Return whether an HM3D semantic label belongs in the structural GT layer.
+
+    Exact configured labels are authoritative. The small suffix rules cover the naming variants
+    used by HM3D when a custom config still has only the generic structural labels (for example,
+    ``recessed wall`` or ``shower door frame``).
+    """
+    label = str(category or "").strip().lower()
+    if label in _GT_STRUCTURE_CATEGORIES:
+        return True
+    if label.endswith("s") and label[:-1] in _GT_STRUCTURE_CATEGORIES:
+        return True
+    if label.endswith((" wall", " floor", " ceiling")):
+        return True
+    if label.endswith(" frame") and label.startswith(("door", "window", "shower")):
+        return True
+    if label.endswith(" railing") or label in {"stairs", "staircase"}:
+        return True
+    return False
 
 
 def _ground_truth_bbox_catalog():
@@ -220,13 +260,9 @@ def _ground_truth_bbox_catalog():
         return []
 
     catalog = []
-    skipped_structure = 0
     skipped_floor = 0
     for item in decoded:
         category = str(item.get("category_name", "unknown")).strip().lower() or "unknown"
-        if not GT_BBOX_INCLUDE_STRUCTURE and category in _GT_STRUCTURE_CATEGORIES:
-            skipped_structure += 1
-            continue
         try:
             low, high = (np.asarray(item["aabb"][i], dtype=np.float64) for i in (0, 1))
         except (KeyError, IndexError, TypeError, ValueError):
@@ -248,6 +284,7 @@ def _ground_truth_bbox_catalog():
             "object_id": str(item.get("object_id", len(catalog))),
             "semantic_id": int(item.get("object_id", 0)),
             "category_name": category,
+            "is_structural": _is_gt_structural_category(category),
             "region_id": item.get("region_id"),
             "aabb_min_m": [float(v) for v in low],
             "aabb_max_m": [float(v) for v in high],
@@ -255,9 +292,11 @@ def _ground_truth_bbox_catalog():
 
     catalog.sort(key=lambda item: (int(item["semantic_id"]), item["object_id"]))
     floor_note = "all floors" if GT_BBOX_ALL_FLOORS or SPAWN_FLOOR is None else f"floor {SPAWN_FLOOR:+.2f}"
+    structural_count = sum(bool(item["is_structural"]) for item in catalog)
     print(
-        f"[feed] ground-truth bbox catalog: {len(catalog)} objects ({floor_note}); "
-        f"semantic GLB={mesh.name}, skipped_structure={skipped_structure}, "
+        f"[feed] ground-truth bbox catalog: {len(catalog)} entities ({floor_note}); "
+        f"objects={len(catalog) - structural_count}, structural={structural_count}, "
+        f"semantic GLB={mesh.name}, "
         f"skipped_other_floors={skipped_floor}",
         flush=True,
     )

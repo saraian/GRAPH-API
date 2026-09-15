@@ -257,12 +257,36 @@ perception:
   cloud_timeout_s: 60.0
   excluded_labels:
   - wall
+  - wall panel
+  - fireplace wall
+  - shower wall
+  - partition
+  - column
+  - compound wall
+  - recessed wall
+  - panel
   - floor
+  - flooring
+  - shower floor
   - ceiling
+  - shower ceiling
+  - ceiling dome
   - door
   - doorway
   - door frame
   - doorframe
+  - shower door frame
+  - window
+  - window frame
+  - window shutter
+  - stairs
+  - staircase
+  - railing
+  - stairs railing
+  - handrail
+  # This is the canonical structural-label list for GT RViz routing as well as
+  # the whole-scene VLM exclusion list. Keep architectural variants explicit so
+  # the two GT layers remain useful on HM3D scenes.
 perception_parallel:
   enabled: false
   bbox_backend: cpu_processes

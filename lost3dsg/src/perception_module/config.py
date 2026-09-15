@@ -660,8 +660,19 @@ _DEFAULTS = {
         "provider": "fal",   # managed backend when perception.backend is "managed"
         # Structural surfaces and openings already come from room geometry. Keep them
         # out of the whole-scene VLM response; set [] to let the model return them.
-        "excluded_labels": ["wall", "floor", "ceiling", "door", "doorway",
-                            "door frame", "doorframe"],
+        # The GT RViz layer uses this same list to route semantic-GLB boxes into its
+        # structural and actual-object displays. Keep architectural variants here too:
+        # HM3D uses labels such as "shower wall" and "window frame", not only the
+        # generic wall/door/window names.
+        "excluded_labels": [
+            "wall", "wall panel", "fireplace wall", "shower wall", "partition",
+            "column", "compound wall", "recessed wall", "panel",
+            "floor", "flooring", "shower floor",
+            "ceiling", "shower ceiling", "ceiling dome",
+            "door", "doorway", "door frame", "doorframe", "shower door frame",
+            "window", "window frame", "window shutter",
+            "stairs", "staircase", "railing", "stairs railing", "handrail",
+        ],
     },
     # Execution settings for the batched bbox-fusion encoder inside perception_2.py, selected by
     # perception_parallel.enabled. The existing launch

@@ -212,12 +212,14 @@ class HabitatFeedNode(Node):
         # in run 20260906_234050. The payload is gt_codec's lossless run-length form (~3% of
         # raw, milliseconds each way); the perception node decodes it with the same module.
         self.pub_gt_semantic = self.create_publisher(CompressedImage, "/gt/semantic_instance", qos)
-        # GT-ONLY VISUAL CHANNEL. The host sends semantic-GLB AABBs once per connection; this
-        # publisher latches one independently colored wireframe layer so RViz can subscribe after
-        # the first frame. Each GT box has a thick dark border and a thinner colored inner line.
-        # No perception or object-manager node subscribes to this topic.
-        self.pub_ground_truth_bbox = self.create_publisher(
-            MarkerArray, "/ground_truth_bbox", catalog_qos)
+        # GT-ONLY VISUAL CHANNEL. The host sends semantic-GLB AABBs once per connection; these
+        # two latched publishers keep architectural structure (doors, windows, walls, ...) apart
+        # from movable/actual objects in RViz. Each box has a thick dark border and a thinner
+        # stable color. No perception or object-manager node subscribes to either topic.
+        self.pub_ground_truth_bbox_objects = self.create_publisher(
+            MarkerArray, "/ground_truth_bbox_objects", catalog_qos)
+        self.pub_ground_truth_bbox_structural = self.create_publisher(
+            MarkerArray, "/ground_truth_bbox_structural", catalog_qos)
         self._ground_truth_bbox_published = False
         # GA-479 (owner 2026-09-10). THE EXPLORATION SCHEDULE IN RVIZ. The feed host sends it once,
         # on the first frame of a connection; this publishes it as markers in the map frame.
@@ -308,18 +310,13 @@ class HabitatFeedNode(Node):
         self.get_logger().info(
             f"object catalog relayed: {len(catalog.get('templates', []))} templates")
 
-    def _publish_ground_truth_bboxes(self, objects, stamp):
-        """Publish all supplied GT AABBs as an independently toggleable RViz layer.
-
-        Each semantic instance gets two markers in separate namespaces: a thick dark outline and
-        a thinner stable color. This makes the GT layer identifiable when it overlaps a persistent
-        box, while the semantic ID keeps the color attached to the same object across runs.
-        """
+    def _publish_ground_truth_bbox_layer(self, publisher, namespace, objects, stamp):
+        """Publish one independently toggleable GT AABB layer."""
         arr = MarkerArray()
         clear = Marker()
         clear.header.frame_id = FRAME_MAP
         clear.header.stamp = stamp
-        clear.ns = "ground_truth_bbox"
+        clear.ns = namespace
         clear.action = Marker.DELETEALL
         arr.markers.append(clear)
 
@@ -359,7 +356,7 @@ class HabitatFeedNode(Node):
             border = Marker()
             border.header.frame_id = FRAME_MAP
             border.header.stamp = stamp
-            border.ns = "ground_truth_bbox_border"
+            border.ns = f"{namespace}_border"
             border.id = marker_id
             border.type = Marker.LINE_LIST
             border.action = Marker.ADD
@@ -373,7 +370,7 @@ class HabitatFeedNode(Node):
             inner = Marker()
             inner.header.frame_id = FRAME_MAP
             inner.header.stamp = stamp
-            inner.ns = "ground_truth_bbox"
+            inner.ns = namespace
             inner.id = marker_id
             inner.type = Marker.LINE_LIST
             inner.action = Marker.ADD
@@ -385,10 +382,35 @@ class HabitatFeedNode(Node):
             arr.markers.append(inner)
             valid += 1
 
-        self.pub_ground_truth_bbox.publish(arr)
+        publisher.publish(arr)
+        return valid
+
+    def _publish_ground_truth_bboxes(self, objects, stamp):
+        """Publish GT AABBs in separate structural and actual-object RViz layers.
+
+        The host annotates each semantic-GLB row with ``is_structural`` from the configured
+        structural-label vocabulary. Keep the split here, at the visualization boundary, so the
+        GT catalog remains one coherent payload while RViz gets two independent checkboxes.
+        """
+        structural = [item for item in (objects or []) if item.get("is_structural", False)]
+        actual_objects = [item for item in (objects or []) if not item.get("is_structural", False)]
+        structural_valid = self._publish_ground_truth_bbox_layer(
+            self.pub_ground_truth_bbox_structural,
+            "ground_truth_bbox_structural",
+            structural,
+            stamp,
+        )
+        objects_valid = self._publish_ground_truth_bbox_layer(
+            self.pub_ground_truth_bbox_objects,
+            "ground_truth_bbox_objects",
+            actual_objects,
+            stamp,
+        )
         self._ground_truth_bbox_published = True
         self.get_logger().info(
-            f"ground-truth boxes: published {valid} valid AABBs on /ground_truth_bbox")
+            "ground-truth boxes: published "
+            f"{objects_valid} actual objects on /ground_truth_bbox_objects and "
+            f"{structural_valid} structural entities on /ground_truth_bbox_structural")
 
     def _forward_object_command(self, action, msg):
         """Forward run_habitat_script commands to the host-side simulator."""
