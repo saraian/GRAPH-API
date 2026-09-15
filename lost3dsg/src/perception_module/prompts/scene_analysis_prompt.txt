@@ -1,23 +1,13 @@
-Analyze the full image once and return every relevant object as one entry in the requested JSON structure.
+Analyze this habitat-sim scene and return every object as one entry in the requested JSON structure.
 
 Object selection:
-- Include clearly visible foreground objects and visible functional or fixture objects.
-- Structural architecture is scene context, not an object to detect. Do not return structural
-  classes or create boxes for them: this includes walls, floors, ceilings, doors, doorways,
-  door frames, and equivalent fixed building surfaces or openings. They are supplied by the
-  room/wall geometry pipeline, even when they are prominent in the image or partially occlude
-  a target object.
-- Exclude background clutter, tiny partially visible objects, and components that belong to a
-  larger object (for example, do not list sofa cushions separately from the sofa).
-{EXCLUDED_LABELS_RULE}
+- Exclude structural objects like walls, flooring, staircases and similar objects
 - Create a separate entry for every visible object instance, including multiple instances of the same type.
 
 For every object provide:
-- "label": exactly one lowercase word using the most common object name. Use "bottle", not "water bottle"; "chair", not "office chair"; "plant", not "potted plant".
+- "label": when in doubt about which label to assign, use facebookresearch/habitat-sim style-label or COCO-style label
 - "bbox": a tight box around the complete visible object. Coordinates use the image coordinate system with top-left as the origin and must be integers normalized to 0 through 1000: x_min=0 is the left edge, y_min=0 is the top edge, x_max=1000 is the right edge, and y_max=1000 is the bottom edge. Ensure x_min < x_max and y_min < y_max.
 - "color": exactly one word for the dominant or most representative color, or "unknown" when unclear. Never return a color combination.
 - "shape": choose the closest permitted value in the response schema, or "unknown" when unclear.
 - "material": exactly one word for the main visible material, or "unknown" when unclear.
 - "description": a concise visual description of distinguishing details that identify this instance among objects of the same type. Prioritize visible text, logos, patterns, designs, stickers, marks, or decorations. Do not repeat the label, color, material, or shape merely to fill the description; use "unknown" if there are no reliable distinguishing details.
-
-Do not merge separate instances and do not invent occluded details.
