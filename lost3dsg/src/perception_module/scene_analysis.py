@@ -30,18 +30,6 @@ def is_excluded_label(label: str, excluded) -> bool:
     )
 
 
-def excluded_labels_rule(excluded) -> str:
-    """Render the configured exclusion rule for the structured scene prompt."""
-    excluded = normalize_excluded_labels(excluded)
-    if not excluded:
-        return ""
-    names = ", ".join(f"'{name}'" for name in sorted(excluded))
-    return (
-        "- Never return any of these configured excluded categories, in singular or "
-        f"plural form: {names}. They are structural and already come from room geometry."
-    )
-
-
 SCENE_ANALYSIS_RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {

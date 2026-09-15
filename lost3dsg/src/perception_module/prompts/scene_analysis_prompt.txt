@@ -1,7 +1,6 @@
 Analyze this habitat-sim scene and return every object as one entry in the requested JSON structure.
 
 Object selection:
-- Exclude structural objects like walls, flooring, staircases and similar objects
 - Create a separate entry for every visible object instance, including multiple instances of the same type.
 
 For every object provide:

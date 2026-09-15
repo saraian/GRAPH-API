@@ -109,7 +109,6 @@ class VlmClient:
         """
         from scene_analysis import (
             SCENE_ANALYSIS_RESPONSE_FORMAT,
-            excluded_labels_rule,
             normalize_excluded_labels,
             parse_scene_analysis,
         )
@@ -120,7 +119,6 @@ class VlmClient:
 
         with open(prompt_path, encoding="utf-8") as prompt_file:
             prompt = prompt_file.read()
-        prompt = prompt.replace("{EXCLUDED_LABELS_RULE}", excluded_labels_rule(excluded))
         raw = self._vlm_call(
             prompt,
             self._encode(rgb),
