@@ -279,6 +279,9 @@ perception:
   - window
   - window frame
   - window shutter
+  - bar
+  - air conditioner
+  - lamp
   - stairs
   - staircase
   - railing

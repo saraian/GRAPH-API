@@ -671,6 +671,7 @@ _DEFAULTS = {
             "ceiling", "shower ceiling", "ceiling dome",
             "door", "doorway", "door frame", "doorframe", "shower door frame",
             "window", "window frame", "window shutter",
+            "bar", "air conditioner", "lamp",
             "stairs", "staircase", "railing", "stairs railing", "handrail",
         ],
     },

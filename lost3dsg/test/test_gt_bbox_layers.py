@@ -39,7 +39,8 @@ def _structural_classifier(source):
               and node.name == "_is_gt_structural_category")
     namespace = {"_GT_STRUCTURE_CATEGORIES": {
         "wall", "floor", "ceiling", "door", "doorway", "door frame", "window",
-        "window frame", "window shutter", "shower wall", "shower floor",
+        "window frame", "window shutter", "bar", "air conditioner", "lamp",
+        "shower wall", "shower floor",
         "shower ceiling", "shower door frame", "stairs", "stairs railing",
         "compound wall", "recessed wall", "wall panel", "ceiling dome",
     }}
@@ -54,7 +55,7 @@ def test_config_contains_the_structural_hm3d_labels():
         "door", "door frame", "window", "window frame", "window shutter",
         "wall", "wall panel", "shower wall", "shower floor", "shower ceiling",
         "shower door frame", "stairs", "stairs railing", "compound wall",
-        "recessed wall", "ceiling dome",
+        "recessed wall", "ceiling dome", "bar", "air conditioner", "lamp",
     }
     assert expected <= labels
 
@@ -64,9 +65,10 @@ def test_gt_classifier_separates_architecture_from_real_objects():
     for label in (
         "door", "window", "window frame", "window shutter", "shower wall",
         "shower door frame", "stairs railing", "recessed wall", "ceiling dome",
+        "bar", "air conditioner", "lamp",
     ):
         assert is_structural(label), label
-    for label in ("chair", "bed", "air conditioner", "bathroom cabinet", "glass"):
+    for label in ("chair", "bed", "bathroom cabinet", "glass"):
         assert not is_structural(label), label
 
 
