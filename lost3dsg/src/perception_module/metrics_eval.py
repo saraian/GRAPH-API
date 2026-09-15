@@ -48,6 +48,7 @@ STRUCTURAL_ELEMENT_LABELS = {
 }
 WALL_LABELS = {"wall", "wall panel", "fireplace wall", "shower wall",
                "partition", "column"}
+SENSOR_HEIGHT = 1.5
 
 
 def _row_label(row):
@@ -153,8 +154,12 @@ def filtered_scene(scene, include_regions=False):
 
 
 def _structural_box_metrics(predicted, ground_truth, kind, threshold):
-    pred = [row for row in predicted if _structural_kind(row) == kind]
-    gt = [row for row in ground_truth if _structural_kind(row) == kind]
+    pred = [_visible_structural_box(row) for row in predicted
+            if _structural_kind(row) == kind]
+    gt = [_visible_structural_box(row) for row in ground_truth
+          if _structural_kind(row) == kind]
+    pred = [row for row in pred if row is not None]
+    gt = [row for row in gt if row is not None]
     all_scores = [[geometry_iou(p, g) for g in gt] for p in pred]
     matches = assignment(pred, gt, threshold) if pred and gt else []
     tp = len(matches)
@@ -164,7 +169,26 @@ def _structural_box_metrics(predicted, ground_truth, kind, threshold):
                                              if scores])), 4)
         if all_scores and gt else None,
         "iou_threshold": threshold,
+        "sensor_height_m": SENSOR_HEIGHT,
     }
+
+
+def _visible_structural_box(row):
+    """Clip a structural AABB to the part visible below the camera height."""
+    try:
+        low = [float(v) for v in row["aabb_min_m"]]
+        high = [float(v) for v in row["aabb_max_m"]]
+        if len(low) != 3 or len(high) != 3:
+            return None
+        high[2] = min(high[2], SENSOR_HEIGHT)
+        if high[2] <= low[2]:
+            return None
+        clipped = dict(row)
+        clipped["aabb_min_m"] = low
+        clipped["aabb_max_m"] = high
+        return clipped
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _gt_wall_segment(row):
@@ -279,8 +303,7 @@ def structural_metrics(scenes, object_iou=.5):
     return {"doors": _structural_box_metrics(doors, structural_ground_truth,
                                                "door", object_iou),
             "windows": _structural_box_metrics(windows, structural_ground_truth,
-                                                 "window", object_iou),
-            "walls": _wall_metrics(walls, structural_ground_truth)}
+                                                 "window", object_iou)}
 
 @lru_cache(maxsize=1)
 def hm3d_object_types(path=HM3D_OBJECT_TYPES):

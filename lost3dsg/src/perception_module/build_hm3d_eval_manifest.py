@@ -17,7 +17,19 @@ from metrics_eval import hovsg_region_assignment
 
 def _load(path, default, required=False):
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            # Some interrupted room snapshots end with one extra closing
+            # brace (``}}``). Accept only that narrow corruption; do not mask
+            # arbitrary concatenated or truncated JSON documents.
+            decoder = json.JSONDecoder()
+            value, end = decoder.raw_decode(text.lstrip())
+            trailing = text.lstrip()[end:].strip()
+            if exc.msg == "Extra data" and trailing == "}":
+                return value
+            raise
     except (OSError, ValueError) as exc:
         if required:
             raise RuntimeError(f"impossibile leggere il JSON richiesto {path}: {exc}") from exc

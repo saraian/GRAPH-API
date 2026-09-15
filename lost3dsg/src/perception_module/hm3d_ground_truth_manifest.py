@@ -411,10 +411,9 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
             points = np.rint((triangle - surface_low) / resolution).astype(np.int32)
             if polygon_area(points) >= 1.0:
                 raster_polygon(surface_mask, points, np.zeros(2), 1.0)
-        # Include the complete wall geometry assigned to this region.  Most
-        # wall faces are vertical and collapse to line segments in X-Z, so
-        # rasterize those with a small physical thickness instead of dropping
-        # them as zero-area triangles.
+        # Keep the wall-adjacent perimeter in the room GT. Floor meshes may
+        # stop short of the semantic wall face, while objects can legitimately
+        # occupy that perimeter.
         wall_thickness = max(1, int(round(0.10 / resolution)))
         for triangle in projected_walls:
             points = np.rint((triangle - surface_low) / resolution).astype(np.int32)
@@ -523,7 +522,16 @@ def _reconstruct_region_from_walls(objects, region_id, resolution=0.05):
         hull = points[ConvexHull(points).vertices]
         if len(hull) < 3 or polygon_area(hull) < 4.0:
             return None
-        return result_from_contour(hull)
+        # Wall-only reconstruction follows the outside of the wall mesh. Move
+        # it to the walkable/interior side before using it as a room GT.
+        # Floor/ceiling-derived regions do not pass through this branch.
+        inner = np.zeros((int(shape[1]), int(shape[0])), dtype=np.uint8)
+        raster_polygon(inner, hull, np.zeros(2), 1.0)
+        erosion = max(1, int(round(0.10 / resolution)))
+        inner = ndimage.binary_erosion(
+            inner, structure=np.ones((2 * erosion + 1, 2 * erosion + 1), bool))
+        contour = largest_contour(inner)
+        return result_from_contour(contour) if contour is not None else result_from_contour(hull)
 
     free = (mask == 0)
     labels, count = ndimage.label(free, structure=np.array([[0, 1, 0],
