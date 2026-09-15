@@ -140,6 +140,99 @@ def test_the_old_behaviour_would_have_got_these_wrong():
     assert gated["matched_objects"] == 0, "with windows it correctly does not"
 
 
+# --- the frame join, which the tests above cannot see ---------------------------------------
+# Every test above calls evaluate_geometry directly with hand-built rows. That is why all eight
+# passed while the scripted ground truth was being appended to the manifest in the WRONG FRAME:
+# the bug lives in build(), and nothing here called build(). These two close that gap.
+
+def test_scripted_rows_are_converted_to_the_manifest_frame():
+    """The ledger records HABITAT coordinates; the manifest is ROS.
+
+    MEASURED on the real /DATA/GRAPH-API/lost3dsg/FOUND-Dataset/scripts/compiled_script.json: a
+    scripted pose appended raw sits 6.811 m from where it belongs, against object_metrics'
+    0.5 m gate. Not "less accurate" -- no scripted object could EVER match, and a perfect tracker
+    would have scored 0% scripted recall with nothing in the report to say why.
+    """
+    import build_hm3d_eval_manifest as b
+    src = open(b.__file__).read()
+    i = src.index('scripted_gt = script_ledger.ground_truth_rows')
+    tail = src[i:i + 900]
+    assert "_habitat_aabb_to_ros(row) for row in scripted_gt" in tail, (
+        "scripted ground-truth rows must go through _habitat_aabb_to_ros, like every other row")
+
+
+def test_the_conversion_keeps_the_window_and_the_flag():
+    """A converter that dropped valid_from would silently disable the gate it enables."""
+    import build_hm3d_eval_manifest as b
+    row = script_ledger.ground_truth_rows(_ledger())[0]
+    out = b._habitat_aabb_to_ros(row)
+    assert out["valid_from"] == row["valid_from"] and out["valid_to"] == row["valid_to"]
+    assert out["scripted"] is True
+    assert out["aabb_min_m"] != row["aabb_min_m"], "the frame must actually change"
+
+
+def test_the_report_says_how_much_of_the_gate_it_applied():
+    """An untimed prediction is exempt from the window by design; the report must admit it."""
+    timed = [dict(_box(OLD_POSE), object_id="p1", observed_at=150.0)]
+    untimed = [dict(_box(OLD_POSE), object_id="p1")]
+    a, _ = om.evaluate_geometry(_scene(timed))
+    b_, _ = om.evaluate_geometry(_scene(untimed))
+    assert a["scripted"]["untimed_predictions"] == 0 and a["scripted"]["comparable"] is True
+    assert b_["scripted"]["untimed_predictions"] == 1 and b_["scripted"]["comparable"] is False
+    assert b_["scripted"]["gate_applied_to_pct"] == 0.0
+
+
+# --- the three the baseline review turned up ------------------------------------------------
+
+def test_pose_recall_has_a_ceiling_and_the_report_states_it():
+    """A perfectly tracked moved object CANNOT reach 100% pose recall, and that is not a failure.
+
+    A predicted object carries one observation time and the assignment is one-to-one, so it can
+    satisfy only ONE of two disjoint windows. Quoting pose recall alone would report an arithmetic
+    ceiling as a tracking failure.
+    """
+    pred = [dict(_box(OLD_POSE), object_id="p1", observed_at=150.0)]
+    out, _ = om.evaluate_geometry(_scene(pred))
+    sc = out["scripted"]
+    assert sc["poses"] == 2 and sc["poses_matched"] == 1
+    assert sc["recall_pct"] == 50.0, "the pose number a flawless tracker gets on one move"
+    assert sc["objects"] == 1 and sc["objects_found"] == 1
+    assert sc["object_recall_pct"] == 100.0, "the object WAS found; only one pose was reachable"
+    assert sc["pose_recall_ceiling_pct"] == 50.0, "the ceiling must be stated, not discovered"
+
+
+def test_a_fabricated_size_cannot_be_quoted_as_a_volume():
+    """script_ledger invents a 0.2 m cube when the runner reported no extent.
+
+    Centre matching is unaffected, but every volume metric on such a pose is meaningless. The
+    report must say so rather than degrade silently (working rule 5).
+    """
+    pred = [dict(_box(OLD_POSE), object_id="p1", observed_at=150.0)]
+    out, _ = om.evaluate_geometry(_scene(pred))          # the fixture reports no extents
+    assert out["scripted"]["box_quality_defaulted"] == 2
+    assert out["scripted"]["box_quality_quotable"] is False
+
+    measured = {"steps": [dict(st, extents=[0.18, 0.09, 0.05]) for st in _ledger()["steps"]]}
+    gt = _static_gt() + script_ledger.ground_truth_rows(measured)
+    out2, _ = om.evaluate_geometry([{"predicted_objects": pred, "ground_truth_objects": gt}])
+    assert out2["scripted"]["box_quality_defaulted"] == 0
+    assert out2["scripted"]["box_quality_quotable"] is True
+
+
+def test_the_report_names_which_protocol_produced_which_key():
+    """metrics_eval's table is IoU-based and time-blind; object_metrics' is time-gated.
+
+    They are merged into one dict, so without a provenance stamp a reader cannot tell a gated
+    number from an ungated one -- which matters exactly when a script ran.
+    """
+    import run_hm3d_metrics as r
+    src = open(r.__file__).read()
+    assert "protocol_provenance" in src
+    assert "v1_keys_not_meaningful_here" in src
+    i = src.index('report["table_iv_objects"].update(geometry)')
+    assert "v1_only = sorted(" in src[:i], "the v1 key set must be captured BEFORE the merge"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

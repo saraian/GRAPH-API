@@ -158,8 +158,26 @@ def main():
     report = metrics_eval.evaluate([manifest], out, args.region_iou, args.object_distance, True, False)
     # The old report fields remain available, while the authoritative object
     # table follows the HOV-SG-compatible v2 protocol in object_metrics.py.
+    #
+    # TWO PROTOCOLS LAND IN ONE TABLE, so say which key came from which. metrics_eval's own
+    # objects() is IoU-based and TIME-BLIND -- it has no reference to object_metrics and never sees
+    # a scripted window -- while object_metrics' v2 is centre-distance and time-gated. Merging them
+    # key by key leaves a reader unable to tell a gated number from an ungated one, which matters
+    # exactly when a scene script ran: the v1 keys it did not overwrite still describe a world with
+    # no timeline in it.
+    v1_only = sorted(set(report["table_iv_objects"]) - set(geometry) - set(labels))
     report["table_iv_objects"].update(geometry)
     report["table_iv_objects"].update(labels)
+    scripted = (geometry.get("scripted") or {})
+    report["table_iv_objects"]["protocol_provenance"] = {
+        "v2_time_gated": sorted(set(geometry) | set(labels)),
+        "v1_iou_time_blind": v1_only,
+        "note": ("v2 keys come from object_metrics (centre-distance, scripted windows honoured); "
+                 "v1 keys come from metrics_eval.objects (IoU, no notion of time). When a scene "
+                 "script ran, only the v2 keys describe the world as it was."),
+        "scripted_run": bool(scripted.get("present")),
+        "v1_keys_not_meaningful_here": v1_only if scripted.get("present") else [],
+    }
     report["summary"]["AP"] = geometry.get("ap")
     _write(metrics_path, report)
     metrics_eval_visualize.render([manifest], visual_path, args.object_distance, args.region_iou)

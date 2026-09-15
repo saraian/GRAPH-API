@@ -2,6 +2,8 @@
 import hashlib
 import os
 import urllib.parse
+import urllib.error
+import urllib.request
 import re
 import numpy as np
 from sensor_msgs.msg import CameraInfo
@@ -819,6 +821,23 @@ def _stable_marker_id(obj, fallback_index):
     return marker_id or (fallback_index + 1)
 
 
+def persistent_bbox_color(obj, fallback_index, alpha=0.38):
+    """Return a stable, per-object color for a persistent RViz box.
+
+    The object ID, rather than the current list position, selects the hue.  This means a
+    merge, deletion, or reordering of the world-model list does not make every remaining box
+    change color on the next publication.
+    """
+    color = get_distinct_color(stable_bbox_marker_id(obj, fallback_index))
+    color.a = float(alpha)
+    return color
+
+
+def stable_bbox_marker_id(obj, fallback_index):
+    """Public stable ID helper shared by all persistent-box rendering paths."""
+    return _stable_marker_id(obj, fallback_index)
+
+
 def _publish_centroid_markers(node, objects, pub, ns, color, label_suffix="",
                               prefer_fused=False):
     if not pub:
@@ -879,28 +898,57 @@ def publish_uncertain_centroids(node, uncertain_objects, uncertain_centroids_pub
     _publish_centroid_markers(node, uncertain_objects, uncertain_centroids_pub,
                               "uncertain_centroids", (1.0, 0.6, 0.0, 1.0), label_suffix="[?]")
 
-def _publish_bbox_markers(node, objects, pub, ns, color, prefer_fused=False):
+def _publish_bbox_markers(node, objects, pub, ns, color, prefer_fused=False, distinct=False):
     if not pub:
         return
     ma = MarkerArray()
+    clear = Marker()
+    clear.header.frame_id = world_frame()
+    clear.header.stamp = node.get_clock().now().to_msg()
+    clear.ns = ns
+    clear.action = Marker.DELETEALL
+    ma.markers.append(clear)
     for i, obj in enumerate(objects):
         bbox = (getattr(obj, "fused_bbox", None) if prefer_fused else None) or obj.bbox
         if bbox is None:
             continue
         obj_stamp = getattr(obj, "last_perception_time", None)
         stamp = _stamp_from_seconds(obj_stamp) if obj_stamp else node.get_clock().now().to_msg()
-        m = _make_marker(world_frame(), stamp, ns, i * 2, Marker.CUBE, None, color,
+        marker_id = stable_bbox_marker_id(obj, i) if distinct else i * 2
+        m = _make_marker(world_frame(), stamp, ns, marker_id, Marker.CUBE, None,
+                         persistent_bbox_color(obj, i) if distinct else color,
                          (0.0, 0.0, 0.0))
         if not set_marker_from_bbox(m, bbox):
             continue
         ma.markers.append(m)
-    if ma.markers:
-        pub.publish(ma)
+        if distinct:
+            # Add a dark outline over the translucent colored cube. This keeps adjacent boxes
+            # separable in RViz and also makes the persistent layer remain readable over the map
+            # cloud. The outline uses the same stable ID in a separate namespace, so updates and
+            # deletions cannot leave stale borders behind.
+            corners, _ = box_corners_map(bbox)
+            if len(corners) == 8:
+                outline = _make_marker(
+                    world_frame(), stamp, ns + "_outline", marker_id,
+                    Marker.LINE_LIST, 0.055, (0.02, 0.02, 0.02, 0.90), (0.0, 0.0, 0.0))
+                # LINE_LIST needs two points per edge; construct the paired list explicitly so the
+                # outline follows the same AABB/OBB corner ordering as set_marker_from_bbox().
+                outline.points = [
+                    Point(x=float(corners[index][0]), y=float(corners[index][1]),
+                          z=float(corners[index][2]))
+                    for start, end in BOX_EDGES
+                    for index in (start, end)
+                ]
+                ma.markers.append(outline)
+    # Publish the DELETEALL even when the world model is temporarily empty, so a deleted or
+    # merged object's colored cube and outline cannot remain visible in the latched RViz topic.
+    pub.publish(ma)
 
 
 def publish_persistent_bboxes(node, wm, persistent_bboxes_pub=None):
     _publish_bbox_markers(node, wm.persistent_perceptions, persistent_bboxes_pub,
-                          "persistent_bboxes", (0.0, 1.0, 0.0, 0.3), prefer_fused=True)
+                          "persistent_bboxes", (0.0, 1.0, 0.0, 0.3),
+                          prefer_fused=True, distinct=True)
 
 
 def publish_uncertain_bboxes(node, uncertain_objects, uncertain_bbox_pub):
@@ -939,8 +987,9 @@ _client = None
 
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"})
 
-_KEY_SOURCES = ("config vlm.api_key", "$OPENAI_API_KEY", "$REGOLO_API_KEY",
-                "$OPENROUTER_API_KEY", "the legacy api.txt beside cv_utils.py")
+_KEY_SOURCES = ("config vlm.api_key", "$GEMINI_API_KEY", "$GOOGLE_API_KEY",
+                "$OPENAI_API_KEY", "$REGOLO_API_KEY", "$OPENROUTER_API_KEY",
+                "the legacy api.txt beside cv_utils.py")
 
 
 def _endpoint_is_local(base_url):
@@ -956,13 +1005,47 @@ def _endpoint_is_local(base_url):
     return host in _LOCAL_HOSTS
 
 
+def _is_gemini_vlm():
+    """Whether the configured VLM uses Google's ``generateContent`` REST contract.
+
+    The explicit provider flag is the unambiguous option. URL detection is intentionally also
+    supported because a config containing the Vertex endpoint from Google's curl example should
+    work without a second provider-specific switch.
+    """
+    vlm = CFG.get("vlm", {}) or {}
+    provider = str(vlm.get("provider", "auto") or "auto").strip().lower()
+    if provider in {"gemini", "google", "google_gemini", "vertex", "vertex_ai"}:
+        return True
+    if provider in {"openai", "openai_compatible", "openai-compatible"}:
+        return False
+    try:
+        host = urllib.parse.urlparse(str(vlm.get("base_url", ""))).hostname or ""
+    except Exception:
+        host = ""
+    return host.lower() in {
+        "aiplatform.googleapis.com",
+        "generativelanguage.googleapis.com",
+    }
+
+
 def _resolve_api_key():
-    key = (
-        CFG.get("vlm", {}).get("api_key")
-        or os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("REGOLO_API_KEY")
-        or os.environ.get("OPENROUTER_API_KEY", "")
-    )
+    vlm = CFG.get("vlm", {}) or {}
+    if _is_gemini_vlm():
+        key = (
+            vlm.get("api_key")
+            or os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("REGOLO_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY", "")
+        )
+    else:
+        key = (
+            vlm.get("api_key")
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("REGOLO_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY", "")
+        )
     if not key:
         legacy = os.path.join(os.path.dirname(__file__), "api.txt")
         if os.path.exists(legacy):
@@ -982,14 +1065,15 @@ def _resolve_api_key():
     # that reads as "the key you configured was rejected" when the truth is that no key was
     # ever found. The misdirection is the defect, not the placeholder -- a wrong credential
     # and an absent one are different faults and were indistinguishable at the call site.
-    base_url = CFG.get("vlm", {}).get("base_url", "")
+    base_url = vlm.get("base_url", "")
     if _endpoint_is_local(base_url):
         return "ollama"
+    env_hint = "$GEMINI_API_KEY or $GOOGLE_API_KEY" if _is_gemini_vlm() else "$OPENAI_API_KEY"
     raise RuntimeError(
         f"no VLM API key found for {base_url!r}, which is not a local endpoint. "
         f"Searched, in order: {', '.join(_KEY_SOURCES)}. Refusing to send the literal "
         f'string "ollama" as a credential: the 401 it produces reads as a rejected key '
-        f"rather than a missing one."
+        f"rather than a missing one. Set {env_hint} or vlm.api_key."
     )
 
 
@@ -1036,8 +1120,163 @@ def _header_value(headers, name):
     return None
 
 
-def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_detail=None,
-             trace_fn=None, request_kind="vlm"):
+class _GeminiHttpError(RuntimeError):
+    """HTTP failure carrying the fields used by the shared VLM telemetry path."""
+
+    def __init__(self, status_code, headers, detail):
+        super().__init__(f"Gemini HTTP {status_code}: {detail}")
+        self.status_code = status_code
+        self.headers = headers
+
+
+def _gemini_endpoint(model=None):
+    """Build a Vertex/Generative Language ``generateContent`` endpoint.
+
+    ``base_url`` may be the concise Vertex base from the README, a full
+    ``.../models/<model>:generateContent`` endpoint, or the Generative Language API base.
+    Supporting all three keeps the config portable while the user's Vertex curl remains a
+    direct copy/paste configuration.
+    """
+    vlm = CFG.get("vlm", {}) or {}
+    base_url = str(vlm.get("base_url", "")).rstrip("/")
+    model = str(model or vlm.get("model", "")).strip()
+    if base_url.endswith(":generateContent"):
+        return base_url
+
+    if base_url.endswith("/publishers/google/models"):
+        return f"{base_url}/{urllib.parse.quote(model, safe='-_.~')}:generateContent"
+    if "/publishers/google/models/" in base_url:
+        return f"{base_url}:generateContent"
+
+    try:
+        host = urllib.parse.urlparse(base_url).hostname or ""
+    except Exception:
+        host = ""
+    if host.lower() == "generativelanguage.googleapis.com":
+        return f"{base_url}/models/{urllib.parse.quote(model, safe='-_.~')}:generateContent"
+    return (
+        f"{base_url}/publishers/google/models/"
+        f"{urllib.parse.quote(model, safe='-_.~')}:generateContent"
+    )
+
+
+def _gemini_schema(schema):
+    """Translate the OpenAI JSON-schema subset into Gemini's Schema representation."""
+    if not isinstance(schema, dict):
+        return schema
+    result = {}
+    for key in ("description", "enum", "format", "nullable", "required"):
+        if key in schema:
+            result[key] = schema[key]
+    if "type" in schema:
+        result["type"] = str(schema["type"]).upper()
+    if isinstance(schema.get("properties"), dict):
+        result["properties"] = {
+            str(name): _gemini_schema(value)
+            for name, value in schema["properties"].items()
+        }
+    if "items" in schema:
+        result["items"] = _gemini_schema(schema["items"])
+    return result
+
+
+def _gemini_generation_config(response_format=None):
+    """Return Gemini generationConfig for thinking and optional structured JSON output."""
+    vlm = CFG.get("vlm", {}) or {}
+    generation = {}
+    thinking_level = vlm.get("thinking_level")
+    if thinking_level not in (None, ""):
+        generation["thinkingConfig"] = {"thinkingLevel": str(thinking_level).lower()}
+
+    if response_format:
+        response_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if response_type == "json_schema":
+            json_schema = response_format.get("json_schema") or {}
+            generation["responseMimeType"] = "application/json"
+            if json_schema.get("schema"):
+                generation["responseSchema"] = _gemini_schema(json_schema["schema"])
+        elif response_type == "json_object":
+            generation["responseMimeType"] = "application/json"
+    return generation
+
+
+def _gemini_payload(prompt, encoded_image=None, response_format=None, image_mime_type=None):
+    """Build the REST body used by Google's ``contents``/``parts`` API."""
+    vlm = CFG.get("vlm", {}) or {}
+    parts = [{"text": prompt}]
+    if encoded_image:
+        parts.append({
+            "inlineData": {
+                "mimeType": image_mime_type or vlm.get("image_mime_type", "image/png"),
+                "data": encoded_image,
+            }
+        })
+    payload = {"contents": [{"role": "user", "parts": parts}]}
+    generation_config = _gemini_generation_config(response_format)
+    if generation_config:
+        payload["generationConfig"] = generation_config
+    return payload
+
+
+def _gemini_completion(prompt, encoded_image, timeout, response_format=None, model=None,
+                       image_mime_type=None):
+    """Perform one Gemini REST request and return ``(text, usage, request_id)``."""
+    payload = _gemini_payload(
+        prompt,
+        encoded_image,
+        response_format=response_format,
+        image_mime_type=image_mime_type,
+    )
+    request = urllib.request.Request(
+        _gemini_endpoint(model=model),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": _resolve_api_key(),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            response_headers = getattr(response, "headers", None)
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            detail = str(exc)
+        raise _GeminiHttpError(exc.code, getattr(exc, "headers", None), detail) from exc
+
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Gemini returned a non-JSON response") from exc
+
+    candidates = document.get("candidates") or []
+    if not candidates:
+        feedback = document.get("promptFeedback") or {}
+        reason = feedback.get("blockReason") or "no candidates"
+        raise RuntimeError(f"Gemini returned no candidates ({reason})")
+    content = candidates[0].get("content") or {}
+    parts = content.get("parts") or []
+    # Gemini may return internal thought parts alongside the user-visible answer. The parser
+    # must receive only the answer; otherwise a JSON response becomes invalid JSON merely
+    # because thinking was enabled.
+    text_parts = [
+        part.get("text", "")
+        for part in parts
+        if isinstance(part, dict) and part.get("text") and not part.get("thought", False)
+    ]
+    text = "".join(text_parts).strip()
+    if not text:
+        finish_reason = candidates[0].get("finishReason") or "unknown"
+        raise RuntimeError(f"Gemini returned no text (finishReason={finish_reason})")
+    request_id = _header_value(response_headers, "x-request-id")
+    return text, document.get("usageMetadata") or {}, request_id
+
+
+def vlm_call(prompt, encoded_image=None, timeout=None, response_format=None, image_detail=None,
+             trace_fn=None, request_kind="vlm", model=None, image_mime_type=None):
     """One VLM round-trip. Transport failures (timeout, malformed envelope)
     retry up to cfg vlm.retries times, then raise — never silently degraded.
     A well-formed response is returned as-is (may be empty: a semantic outcome
@@ -1048,11 +1287,13 @@ def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_de
 
     `response_format` and `image_detail` are optional so existing label/crop callers
     keep byte-for-byte request semantics. The unified scene caller uses both to ask
-    the configured OpenAI-compatible endpoint for one strict JSON object containing
+    the configured endpoint for one strict JSON object containing
     the boxes and attributes for the entire frame.
     """
     last_err = None
     attempts_total = CFG["vlm"]["retries"] + 1
+    model_name = model or CFG["vlm"]["model"]
+    gemini = _is_gemini_vlm()
     call_started = time.perf_counter()
     for attempt in range(CFG["vlm"]["retries"] + 1):
         # GA-288. BACKOFF, because there was none. Run 20260903_135823 died at 18 cycles on
@@ -1065,45 +1306,50 @@ def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_de
             time.sleep(backoff_s)
         attempt_started = time.perf_counter()
         try:
-            image_url = {"url": f"data:image/png;base64,{encoded_image}"}
-            if image_detail is not None:
-                image_url["detail"] = image_detail
-            request = {
-                "model": CFG["vlm"]["model"],
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": image_url,
-                            }
-                        ],
-                    }
-                ],
-            }
-            if timeout is not None:
-                request["timeout"] = timeout
-            if response_format is not None:
-                request["response_format"] = response_format
-            # Pass provider-specific completion options through the OpenAI-compatible
-            # client.  In particular, Qwen-style endpoints otherwise ignore the YAML
-            # `enable_thinking: false` setting and may spend most of the request budget
-            # generating hidden reasoning before returning the structured scene result.
-            request.update(vlm_completion_kwargs())
-            agent = _vlm_client().chat.completions.create(**request)
-            if not getattr(agent, "choices", None) or agent.choices[0].message is None:
-                raise RuntimeError(f"malformed VLM response: {agent!r:.200}")
-            message = agent.choices[0].message
-            refusal = getattr(message, "refusal", None)
-            if refusal:
-                raise RuntimeError(f"VLM refused the image request: {refusal}")
-            if not message.content:
-                raise RuntimeError("VLM returned an empty response")
+            if gemini:
+                content, usage, request_id = _gemini_completion(
+                    prompt,
+                    encoded_image,
+                    timeout=CFG["vlm"]["timeout"] if timeout is None else timeout,
+                    response_format=response_format,
+                    model=model_name,
+                    image_mime_type=image_mime_type,
+                )
+            else:
+                image_content = [{"type": "text", "text": prompt}]
+                if encoded_image:
+                    mime_type = image_mime_type or "image/png"
+                    image_url = {"url": f"data:{mime_type};base64,{encoded_image}"}
+                    if image_detail is not None:
+                        image_url["detail"] = image_detail
+                    image_content.append({"type": "image_url", "image_url": image_url})
+                request = {
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": image_content}],
+                }
+                if timeout is not None:
+                    request["timeout"] = timeout
+                if response_format is not None:
+                    request["response_format"] = response_format
+                # Pass provider-specific completion options through the OpenAI-compatible
+                # client.  In particular, Qwen-style endpoints otherwise ignore the YAML
+                # `enable_thinking: false` setting and may spend most of the request budget
+                # generating hidden reasoning before returning the structured scene result.
+                request.update(vlm_completion_kwargs())
+                agent = _vlm_client().chat.completions.create(**request)
+                if not getattr(agent, "choices", None) or agent.choices[0].message is None:
+                    raise RuntimeError(f"malformed VLM response: {agent!r:.200}")
+                message = agent.choices[0].message
+                refusal = getattr(message, "refusal", None)
+                if refusal:
+                    raise RuntimeError(f"VLM refused the image request: {refusal}")
+                if not message.content:
+                    raise RuntimeError("VLM returned an empty response")
+                content = message.content
+                usage = getattr(agent, "usage", None)
+                request_id = getattr(agent, "_request_id", None)
 
             attempt_ms = (time.perf_counter() - attempt_started) * 1000.0
-            usage = getattr(agent, "usage", None)
             _emit_vlm_trace(trace_fn, {
                 "request_kind": request_kind,
                 "status": "ok",
@@ -1114,17 +1360,20 @@ def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_de
                 "request_ms": round(attempt_ms, 1),
                 "call_ms": round((time.perf_counter() - call_started) * 1000.0, 1),
                 "backoff_ms": round(backoff_s * 1000.0, 1),
-                "model": CFG["vlm"]["model"],
+                "model": model_name,
                 "prompt_chars": len(prompt),
-                "image_b64_chars": len(encoded_image),
+                "image_b64_chars": len(encoded_image or ""),
                 "image_detail": image_detail,
                 "structured_response": response_format is not None,
-                "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                "completion_tokens": getattr(usage, "completion_tokens", None),
-                "total_tokens": getattr(usage, "total_tokens", None),
-                "request_id": getattr(agent, "_request_id", None),
+                "prompt_tokens": (usage.get("promptTokenCount") if isinstance(usage, dict)
+                                  else getattr(usage, "prompt_tokens", None)),
+                "completion_tokens": (usage.get("candidatesTokenCount") if isinstance(usage, dict)
+                                       else getattr(usage, "completion_tokens", None)),
+                "total_tokens": (usage.get("totalTokenCount") if isinstance(usage, dict)
+                                 else getattr(usage, "total_tokens", None)),
+                "request_id": request_id,
             })
-            return message.content
+            return content
         except Exception as e:
             attempt_ms = (time.perf_counter() - attempt_started) * 1000.0
             response = getattr(e, "response", None)
@@ -1137,14 +1386,14 @@ def vlm_call(prompt, encoded_image, timeout=None, response_format=None, image_de
                 "request_ms": round(attempt_ms, 1),
                 "call_ms": round((time.perf_counter() - call_started) * 1000.0, 1),
                 "backoff_ms": round(backoff_s * 1000.0, 1),
-                "model": CFG["vlm"]["model"],
+                "model": model_name,
                 "prompt_chars": len(prompt),
-                "image_b64_chars": len(encoded_image),
+                "image_b64_chars": len(encoded_image or ""),
                 "image_detail": image_detail,
                 "structured_response": response_format is not None,
-                "http_status": getattr(e, "status_code", None),
-                "retry_after": _header_value(headers, "retry-after"),
-                "request_id": _header_value(headers, "x-request-id"),
+                "http_status": getattr(e, "status_code", None) or getattr(e, "code", None),
+                "retry_after": _header_value(headers or getattr(e, "headers", None), "retry-after"),
+                "request_id": _header_value(headers or getattr(e, "headers", None), "x-request-id"),
                 "error_type": type(e).__name__,
                 "error": str(e)[:300],
             })

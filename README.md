@@ -25,8 +25,27 @@ object_manager_6.py    container association (locality, then similarity), merge 
 graph_api_bridge.py    container FastAPI world model + viewer on :8081
 detector backend       Modal     OWLv2 + SAM + CLIP on a cloud GPU (perception.backend: modal),
                                  or the local EfficientViT-SAM path (backend: local)
-VLM                    regolo    any OpenAI-compatible endpoint; vlm.base_url / vlm.model
+VLM                    regolo    OpenAI-compatible or Gemini endpoint; vlm.base_url / vlm.model
 ```
+
+The VLM seam also supports Gemini's Vertex AI `generateContent` API. Use the Vertex base URL and
+model shown below; the adapter builds the `/publishers/google/models/<model>:generateContent`
+path, sends the image as Gemini `inlineData`, authenticates with
+`x-goog-api-key`, and maps the existing structured-scene schema to Gemini's JSON response schema.
+The provider is detected automatically from `aiplatform.googleapis.com`, but setting it explicitly
+makes the deployment intent clear:
+
+```yaml
+vlm:
+  provider: gemini
+  base_url: "https://aiplatform.googleapis.com/v1"
+  model: "gemini-3.8-flash"
+  api_key: ""                 # keep credentials in config.local.yaml, or use GEMINI_API_KEY
+  thinking_level: low          # sent as generationConfig.thinkingConfig.thinkingLevel
+```
+
+`GEMINI_API_KEY` and `GOOGLE_API_KEY` are accepted environment variables. Existing
+OpenAI-compatible configurations continue to use the Chat Completions transport unchanged.
 
 ## Quick start
 

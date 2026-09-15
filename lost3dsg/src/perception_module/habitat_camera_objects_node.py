@@ -431,6 +431,23 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
             )
             return False
 
+    def _object_extents(self, object_id):
+        """-> [sx, sy, sz] of the object's real AABB, or None when it cannot be read.
+
+        The scene-script ledger records a placement POINT; without a size the evaluator falls back
+        to a fabricated cube and every volume metric on that pose is meaningless (script_ledger
+        marks such rows extents_source="default"). The simulator is the only place the true extent
+        exists, so it is reported here, with the command result that placed the object.
+        None rather than a guess: a fabricated size that looks measured is the defect this avoids.
+        """
+        try:
+            obj = self._rigid_object_mgr.get_object_by_id(int(object_id))
+            if obj is None:
+                return None
+            return [float(obj.aabb.size_x()), float(obj.aabb.size_y()), float(obj.aabb.size_z())]
+        except Exception:
+            return None
+
     def _handle_set_object_position(self, msg: String) -> None:
         """Riceve una posizione 3D oppure un pixel da proiettare nella scena.
 
@@ -451,6 +468,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                     "success": bool(success),
                     "action": "move",
                     "object_id": object_id,
+                    "extents": self._object_extents(object_id),
                     "mode": "position",
                     "target_category": command.get("target_category"),
                     "target_surface_point": command.get("target_surface_point"),
@@ -479,6 +497,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                         "success": False,
                         "action": "move",
                         "object_id": object_id,
+                        "extents": self._object_extents(object_id),
                         "mode": "pixel",
                         "pixel": [int(pixel[0]), int(pixel[1])],
                         "message": "il pixel non interseca la scena",
@@ -500,6 +519,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                     "success": bool(success),
                     "action": "move",
                     "object_id": object_id,
+                    "extents": self._object_extents(object_id),
                     "mode": "pixel",
                     "pixel": [int(pixel[0]), int(pixel[1])],
                     "hit_object_id": int(hit_object_id),
@@ -719,6 +739,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                 "success": True,
                 "action": "spawn",
                 "object_id": object_id,
+                "extents": self._object_extents(object_id),
                 "handle": str(obj.handle) if obj is not None else None,
                 "target_category": command.get("target_category"),
                 "target_surface_point": command.get("target_surface_point"),
@@ -856,6 +877,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                     raise ValueError(f"oggetto id={object_id} non trovato")
                 self._pending_object_captures.append({
                     "object_id": object_id,
+                    "extents": self._object_extents(object_id),
                     "request_id": command.get("request_id"),
                     "preferred_eye": preferred_eye,
                     "capture_attempt": capture_attempt,
@@ -986,6 +1008,7 @@ class HabitatRosViewerWithObjects(HabitatSimInteractiveViewer):
                     "success": True,
                     "action": "capture",
                     "object_id": object_id,
+                    "extents": self._object_extents(object_id),
                 }, request_id=request_id)
             finally:
                 # Riporta il sensore nella trasformazione prevista dal suo spec.

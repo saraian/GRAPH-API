@@ -5,7 +5,8 @@ Runs in a plain habitat_sim environment (no ROS). The container-side
 habitat_feed_node.py connects, converts, and publishes to ROS topics + TF.
 Protocol: length-prefixed pickle dicts {rgb, depth, cam_pos, cam_quat,
 base_pos, base_quat, t, w, h, hfov}; a frame may also carry a
-`scan_complete` event after one uninterrupted 360-degree turn.
+`scan_complete` event after one uninterrupted 360-degree turn and a
+one-per-connection `ground_truth_objects` semantic-box catalog for RViz.
 
 The HTTP control port also accepts runtime rigid-object commands from
 habitat_feed_node.py, so run_habitat_script.py works with this headless feed
@@ -59,6 +60,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  (ROS-free)
 from config import CFG, CFG_PATH  # noqa: E402
 import gt_codec as _gt_codec  # noqa: E402
+import hm3d_ground_truth_manifest as _gt_manifest  # noqa: E402
 # FullTurnDetector (scan_hook.py) counted a full turn for the SAMPLING tour, which turned in
 # 10-degree steps and had no idea when a circle closed. A schedule states its scan angle per
 # stop, so ScheduledTour fires the same hook from its own scan counter at :1597 and the
@@ -73,6 +75,7 @@ def print(*args, **kw):  # noqa: A001  — keep the module's existing print() ca
     _print(*args, **kw)
 
 hab_cfg = CFG.get("habitat", {}) if isinstance(CFG, dict) else {}
+run_cfg = CFG.get("run", {}) if isinstance(CFG, dict) else {}
 SCENE = os.environ.get("HABITAT_SCENE", "train_99248")
 DATASET = os.environ.get("HABITAT_DATASET", "/DATA/habitat_hospital/holodeck_clinical.scene_dataset_config.json")
 PORT = int(os.environ.get("FEED_PORT", "7799"))
@@ -152,6 +155,13 @@ SEND_TIMEOUT = float(os.environ.get("FEED_SEND_TIMEOUT", "10"))
 SPAWN_FLOOR = float(os.environ["FEED_SPAWN_FLOOR"]) if os.environ.get("FEED_SPAWN_FLOOR") else None
 # GA-131. Ground-truth instance ids in the frame, for VALIDATION ONLY. Off by default.
 GT_SEMANTIC = os.environ.get("FEED_GT_SEMANTIC", "1" if hab_cfg.get("gt_semantic", False) else "0") == "1"
+# Ground-truth object boxes are a visualization-only channel.  They are extracted from the
+# scene's semantic GLB and never enter perception, admission, association, or the graph.
+GT_BBOX = os.environ.get(
+    "FEED_GT_BBOX", "1" if run_cfg.get("gt_bbox", False) else "0"
+) == "1"
+GT_BBOX_ALL_FLOORS = os.environ.get("FEED_GT_BBOX_ALL_FLOORS", "0") == "1"
+GT_BBOX_INCLUDE_STRUCTURE = os.environ.get("FEED_GT_BBOX_INCLUDE_STRUCTURE", "0") == "1"
 CTRL_PORT = int(os.environ.get("FEED_CTRL_PORT", "7790"))
 # Where the per-frame stats and the BEV payload go. ONE directory, and it is an error for the
 # run not to know which.
@@ -182,6 +192,76 @@ else:
 
 SINGLE_FLOOR = bool(hab_cfg.get("single_floor", True))
 FLOOR_TOL = float(hab_cfg.get("floor_tolerance_m", 0.5))
+
+# These are semantic annotation entities, not movable objects that the perception graph should
+# compare against.  They make the visualization unreadable (for example, a floor box spans the
+# entire storey), so they are omitted by default.  FEED_GT_BBOX_INCLUDE_STRUCTURE=1 restores every
+# decoded semantic entity when a structural audit is desired.
+_GT_STRUCTURE_CATEGORIES = frozenset(
+    set(_gt_manifest.WALL_CATEGORY_NAMES) | {"floor", "ceiling", "shower floor"}
+)
+
+
+def _ground_truth_bbox_catalog():
+    """Decode semantic-GLB instance extents for the RViz comparison layer.
+
+    The HM3D semantic scene exposed by the installed Habitat-Sim 0.3.3 build reports zero-sized
+    native object AABBs for this asset.  The repository's GT manifest therefore uses the semantic
+    GLB as the reliable object-geometry source for this scene.  This function deliberately uses
+    only that source and returns JSON/pickle-friendly values for the feed protocol.
+    """
+    if not GT_BBOX:
+        return []
+    try:
+        mesh, descriptor = _gt_manifest._semantic_paths(Path(SCENE))
+        decoded = _gt_manifest._semantic_mesh_aabbs(mesh, descriptor)
+    except Exception as exc:
+        print(f"[feed] ground-truth boxes unavailable: {type(exc).__name__}: {exc}", flush=True)
+        return []
+
+    catalog = []
+    skipped_structure = 0
+    skipped_floor = 0
+    for item in decoded:
+        category = str(item.get("category_name", "unknown")).strip().lower() or "unknown"
+        if not GT_BBOX_INCLUDE_STRUCTURE and category in _GT_STRUCTURE_CATEGORIES:
+            skipped_structure += 1
+            continue
+        try:
+            low, high = (np.asarray(item["aabb"][i], dtype=np.float64) for i in (0, 1))
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        if low.shape != (3,) or high.shape != (3,):
+            continue
+        if not np.all(np.isfinite(low)) or not np.all(np.isfinite(high)):
+            continue
+        if np.any(high <= low):
+            continue
+        # A one-storey run should compare the graph against the objects on the storey it maps.
+        # Use interval overlap rather than object centre: tall wardrobes and wall-mounted items
+        # can have their centre well above the floor while still belonging to it.
+        if SPAWN_FLOOR is not None and not GT_BBOX_ALL_FLOORS:
+            if high[1] < SPAWN_FLOOR - FLOOR_TOL or low[1] > SPAWN_FLOOR + FLOOR_TOL:
+                skipped_floor += 1
+                continue
+        catalog.append({
+            "object_id": str(item.get("object_id", len(catalog))),
+            "semantic_id": int(item.get("object_id", 0)),
+            "category_name": category,
+            "region_id": item.get("region_id"),
+            "aabb_min_m": [float(v) for v in low],
+            "aabb_max_m": [float(v) for v in high],
+        })
+
+    catalog.sort(key=lambda item: (int(item["semantic_id"]), item["object_id"]))
+    floor_note = "all floors" if GT_BBOX_ALL_FLOORS or SPAWN_FLOOR is None else f"floor {SPAWN_FLOOR:+.2f}"
+    print(
+        f"[feed] ground-truth bbox catalog: {len(catalog)} objects ({floor_note}); "
+        f"semantic GLB={mesh.name}, skipped_structure={skipped_structure}, "
+        f"skipped_other_floors={skipped_floor}",
+        flush=True,
+    )
+    return catalog
 
 # GA-52: say WHICH config was loaded, and the two values that come only from it.
 # Every other habitat value the feed host reads has an environment override that the launcher
@@ -1848,10 +1928,20 @@ class RevisitState:
 # a random-sampling baseline is ever wanted: it is at habitat_feed_host.py in commit eae203e.
 
 
-def main():
+def main(sim=None, session_context=None, runtime=None):
     global SCHEDULE_OVERLAY
     global SHOW
-    sim = make_sim()
+    global FLOOR_SESSION_CONTEXT
+    global _MERGE_PENDING_DIR
+    global _MERGE_PENDING_PATH
+    FLOOR_SESSION_CONTEXT = dict(session_context or {})
+    runtime = runtime if runtime is not None else {}
+    if sim is None:
+        sim = make_sim()
+    gt_bbox_catalog = runtime.get("ground_truth_bbox_catalog")
+    if gt_bbox_catalog is None:
+        gt_bbox_catalog = _ground_truth_bbox_catalog()
+        runtime["ground_truth_bbox_catalog"] = gt_bbox_catalog
     agent = sim.initialize_agent(0)
     # Apply the requested pitch to the live sensor nodes as well as to their
     # specifications. Some Habitat builds expose the sensor specification in
@@ -2158,6 +2248,7 @@ def main():
     conn, addr = srv.accept()
     conn.settimeout(SEND_TIMEOUT)  # a hard-killed container must not hang sendall forever
     print(f"[feed] connected: {addr}")
+    gt_bbox_sent = False
     period = 1.0 / FPS
 
     # RESOLVED values, printed AFTER the environment has beaten the config file. Asked for by the
@@ -2482,6 +2573,12 @@ def main():
             # where a stop is. About 180 points on hm3d_00861, next to a 921 kB RGB frame, so it
             # rides on every frame rather than on the first one: a reconnect then needs no state.
             "schedule": schedule_payload,
+            # The catalog is sent once per TCP connection.  It is intentionally not repeated on
+            # every RGB/depth frame: 625 boxes are useful metadata, but duplicating them at 3 FPS
+            # only inflates the feed.  Resetting this flag after reconnect makes the latched ROS
+            # topic recover if the container is restarted during a run.
+            **({"ground_truth_objects": gt_bbox_catalog}
+               if GT_BBOX and not gt_bbox_sent else {}),
             "w": W, "h": H, "hfov": HFOV,
         }
         frame_seq += 1
@@ -2578,6 +2675,7 @@ def main():
         try:
             conn.sendall(struct.pack("!I", len(blob)) + blob)
             frames_sent_ok += 1
+            gt_bbox_sent = True
             # GA-37. The viewpoint line is appended AFTER the send succeeds, so the series
             # holds only frames the ROS side was handed; it carries frame_id so a reader can
             # join it to feed_node_stats.json. CAMERA pose (1.5 m above the base), which is
@@ -2614,6 +2712,7 @@ def main():
                     conn, addr = srv.accept()
                     conn.settimeout(SEND_TIMEOUT)
                     print(f"[feed] client reconnected: {addr}")
+                    gt_bbox_sent = False
                     break
                 except Exception:
                     time.sleep(0.5)

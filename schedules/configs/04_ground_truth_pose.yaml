@@ -2,18 +2,21 @@
 #     ./run_sim_headless.sh --config schedules/configs/04_ground_truth_pose.yaml
 # or name it from a schedule arm with `config_file:`.
 #
-# GROUND-TRUTH POSE. Separates localisation error from perception error: every box position
-# in the archive rests on a pose the real robot will never have, and this arm is the upper
-# bound the rtabmap arm is measured against. NOT a base run -- the owner's regime is
-# rtabmap.
+# GROUND-TRUTH POSE WITHOUT AN ADMISSION FILTER. Separates localisation error from
+# perception error: every box position in the archive rests on a pose the real robot will
+# never have, and no Found/ontology or size filter can refuse the detector's proposals.
+# The filter seam remains pass-through so the normal object-manager path and its audit log
+# stay active, but every proposal is admitted.
 #
 # WHAT DIFFERS FROM THE TRACKED config.yaml:
 #   habitat.localization_mode: 'ground_truth'
+#   hooks.filter: ''
+#   size_check.enabled: False
 #
 # GENERATED, DO NOT HAND-EDIT. Rewrite it with:
 #     python3 lost3dsg/test/regen_arm_configs.py
-# generated_at:   2026-09-14T15:13:14
-# generated_from: lost3dsg/src/perception_module/config.yaml sha256 209e43e4c30d7795
+# generated_at:   2026-09-15T11:50:04
+# generated_from: lost3dsg/src/perception_module/config.yaml sha256 a63711f7d3403b19
 #
 # A SNAPSHOT CANNOT MENTION A KEY THAT DID NOT EXIST WHEN IT WAS WRITTEN, and the
 # code then takes its module fallback instead. If a bundle's config is missing a key
@@ -24,12 +27,19 @@ vlm:
   base_url: https://api.regolo.ai/v1
   model: qwen3.8-27b
   api_key: ''
-  timeout: 30.0
+  timeout: 180.0
   retries: 2
   enable_thinking: false
 embedding:
   word2vec_path: /root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz
   word2vec_limit: 200000
+appearance:
+  enabled: false
+  model_id: openai/clip-vit-base-patch32
+  device: auto
+  require_cuda: false
+  min_crop_px: 4
+  batch_size: 8
 similarity:
   label: 0.05
   color: 0.3
@@ -51,6 +61,8 @@ association:
   merge_cost_ratio: 20.0
   merge_min_consecutive: 2
   merge_max_distance_m: 0.8
+  merge_near_distance_m: 0.02
+  merge_near_iou_threshold: 0.25
   merge_aabb_margin_m: 0.8
   merge_min_evidence: 1
   merge_min_similarity: 0.925
@@ -71,12 +83,12 @@ association:
   scan_merge_settle_max_s: 10.0
 frames:
   camera: habitat_camera_optical
-  agent_pose: habitat_camera
+  agent_pose: habitat_camera_optical
   motion_min_stationary_s: 0.5
 paths:
   operations_log: /root/exchange/output/operations.txt
-  vitsam_encoder: /models/vitsam/l2_encoder.onnx
-  vitsam_decoder: /models/vitsam/l2_decoder.onnx
+  vitsam_encoder: /root/exchange/lost3dsg/src/perception_module/utils/l2_encoder.onnx
+  vitsam_decoder: /root/exchange/lost3dsg/src/perception_module/utils/l2_decoder.onnx
   identification_prompt: ''
   scene_analysis_prompt: ''
   visual_prompt: ''
@@ -92,8 +104,8 @@ walls:
   - 0.3
   - 8.0
   pixel_stride: 4
-  temporal_window_s: 2.5
-  temporal_max_frames: 8
+  temporal_window_s: 4.0
+  temporal_max_frames: 12
   temporal_voxel_m: 0.035
   floor_reset_m: 0.6
   floor_min_points: 20
@@ -129,13 +141,15 @@ walls:
   plane_cluster_angle_deg: 4.0
   plane_cluster_distance_m: 0.08
   plane_cluster_min_overlap: 0.35
-  max_segments: 12
+  max_segments: 32
 rooms:
   default_room_id: ''
   gvd_method: ridge
+  detected_wall_direct_door_cuts: true
+  detected_wall_topology_dilation_px: 1
   enable_3d_structural_filter: true
-  gvd_3d_min_points_per_cell: 4
-  gvd_3d_min_vertical_span_m: 0.75
+  gvd_3d_min_points_per_cell: 2
+  gvd_3d_min_vertical_span_m: 0.55
   gvd_3d_min_height_m: 0.25
   gvd_3d_mid_height_m: 0.8
   gvd_3d_high_height_m: 1.4
@@ -150,14 +164,18 @@ rooms:
   detected_wall_reinforce_obstacles: true
   detected_wall_close_free_space: true
   detected_wall_min_observations: 2
+  detected_wall_topology_min_observations: 2
   detected_wall_max_age_s: 300.0
   detected_wall_merge_angle_deg: 15.0
   detected_wall_merge_distance_m: 0.18
   detected_wall_merge_gap_m: 0.5
   detected_wall_interpolation_gap_m: 0.2
+  detected_wall_endpoint_join_max_m: 0.35
   detected_wall_thickness_m: 0.06
   detected_wall_door_endpoint_radius_m: 0.2
   detected_wall_door_min_support: 0.16
+  detected_wall_door_endpoint_max_extension_m: 0.75
+  detected_wall_map_max_segments: 256
   detected_wall_door_max_m: 2.0
   detected_wall_bottleneck_ratio: 0.9
   gvd_wall_network_max_fill_ratio: 0.35
@@ -165,20 +183,24 @@ rooms:
   room_nested_merge_max_area_m2: 8.0
   room_nested_merge_area_ratio: 0.3
   gvd_3d_nonwall_component_ratio: 0.01
-  gvd_door_nms_m: 1.6
+  gvd_door_nms_m: 0.8
   gvd_critical_endpoint_margin_m: 0.2
+  gvd_wall_supported_endpoint_recovery: true
   doorway_vlm_enabled: true
   doorway_vlm_min_confidence: 0.55
   doorway_vlm_min_confirmations: 1
-  doorway_require_wall_support: true
+  doorway_require_wall_support: false
   doorway_vlm_key_resolution_m: 0.25
   doorway_vlm_show_rejected: false
   doorway_vlm_show_pending: false
-  doorway_vlm_cluster_distance_m: 1.2
+  doorway_show_geometric: true
+  doorway_vlm_cluster_distance_m: 0.8
+  doorway_vlm_cluster_angle_deg: 30.0
   room_use_watershed: false
   doorway_vlm_max_candidates_per_call: 8
   doorway_vlm_retry_s: 8.0
   doorway_vlm_max_image_age_s: 2.0
+  doorway_vlm_projection_height_m: 1.0
   doorway_vlm_state_max_age_s: 60.0
   doorway_vlm_camera_topic: /camera/rgb
   doorway_vlm_camera_info_topic: /camera/camera_info
@@ -186,9 +208,15 @@ rooms:
   window_vlm_enabled: true
   window_vlm_retry_s: 10.0
   min_room_area_m2: 1.5
+  min_candidate_area_m2: 0.6
+  room_wall_completion_enabled: true
+  room_wall_completion_max_m: 0.35
+  room_boundary_outset_m: 0.05
   room_partition_change_confirmations: 3
   room_partition_min_area_retention_ratio: 0.75
-  room_partition_stable_iou_min: 0.65
+  room_partition_stable_iou_min: 0.55
+  room_resegment_local_change_max_cells: 100
+  room_resegment_local_change_max_bbox_fraction: 0.002
   gvd_fill_cloud_nonwall_direct: true
   gvd_min_robot_component_ratio: 0.15
 habitat:
@@ -219,17 +247,18 @@ run:
   pose_source: simulator
   wall_detector: true
   gt_semantic: true
+  gt_bbox: true
   gt_scene_instance: ''
   house_id: ''
   house_floors: ''
   hf_offline: true
   cfg_name: regolo_config.yaml
 size_check:
-  enabled: true
+  enabled: false
   enforce: false
 hooks:
   search_paths: []
-  filter: envelope_size:SizeFilter
+  filter: ''
   refiner: ''
   store: ''
   decisions_log: ''
@@ -252,6 +281,7 @@ perception:
   - door frame
   - doorframe
 perception_parallel:
+  enabled: false
   bbox_backend: cpu_processes
   bbox_cpu_workers: 4
   bbox_cpu_chunksize: 1

@@ -44,7 +44,8 @@
 #     FEED_NAVIGATION_MODE   navigate (drive it) or teleport (set the pose)
 #   FEED (each also readable from the config's habitat.* section)
 #     FEED_FPS  FEED_WIDTH  FEED_HEIGHT  FEED_MOVE_FN  FEED_CAMERA_PITCH_DEG
-#     FEED_GT_SEMANTIC  FEED_SHOW  FEED_OVERLAY
+#     FEED_GT_SEMANTIC  FEED_GT_BBOX  FEED_GT_BBOX_ALL_FLOORS  FEED_GT_BBOX_INCLUDE_STRUCTURE
+#     FEED_SHOW  FEED_OVERLAY
 #   STACK
 #     RVIZ            0 to run headless; also skipped automatically with no X socket
 #     WALL_DETECTOR   1 starts the wall detector (default 0)
@@ -942,6 +943,13 @@ export WALL_DETECTOR="${WALL_DETECTOR:-$(_cfg_run wall_detector 1)}"
 echo "    wall detector: $WALL_DETECTOR (config run.wall_detector)"
 
 export FEED_GT_SEMANTIC="${FEED_GT_SEMANTIC:-1}"
+# GT object boxes are a visualization-only, latched RViz layer. The host derives them from the
+# semantic GLB; it does not send them to perception/admission. By default only the requested
+# storey is drawn, which keeps a one-storey map readable. Set FEED_GT_BBOX_ALL_FLOORS=1 to draw
+# every storey, or FEED_GT_BBOX_INCLUDE_STRUCTURE=1 to include wall/floor/ceiling annotation boxes.
+export FEED_GT_BBOX="${FEED_GT_BBOX:-$(_cfg_run gt_bbox 1)}"
+export FEED_GT_BBOX_ALL_FLOORS="${FEED_GT_BBOX_ALL_FLOORS:-0}"
+export FEED_GT_BBOX_INCLUDE_STRUCTURE="${FEED_GT_BBOX_INCLUDE_STRUCTURE:-0}"
 # MAPPING_ONLY builds a localization map and runs no detector. 900 s is a STARTING POINT AND
 # NOT A MEASUREMENT: the only dwell=0 coverage figure that exists is run A's 7.5 m in 636 s, and
 # run A did not achieve full coverage -- it is the run that died. hm3d_00861's navmesh has FOUR
@@ -1446,6 +1454,9 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
                "source": "same validated tuple exported to the feed and written to calibration.json",
                "note": "A resolution gain is a gain of the system: detector, segmentation, depth and describer change together."},
     "gt_semantic": ${FEED_GT_SEMANTIC:-0},
+    "gt_bbox": ${FEED_GT_BBOX:-0},
+    "gt_bbox_all_floors": ${FEED_GT_BBOX_ALL_FLOORS:-0},
+    "gt_bbox_include_structure": ${FEED_GT_BBOX_INCLUDE_STRUCTURE:-0},
     "localize_db": $([ -n "${RTABMAP_LOCALIZE_DB:-}" ] && echo "\"$RTABMAP_LOCALIZE_DB\"" || echo null),
     "rtabmap_session_mode": "$RTABMAP_SESSION_MODE",
     "rtabmap_database_path": "$RTABMAP_DATABASE_PATH",
@@ -1709,7 +1720,7 @@ fi
 # a "#" line here is not a comment -- docker receives "#" and each following word as ARGUMENTS.
 # `bash -n` accepts it, because it is valid syntax; only the run fails. Done once, 2026-09-11.
 docker run --name "${GRAPH_API_CONTAINER_NAME:-graphapi_live}" --rm --entrypoint bash --gpus "${GRAPH_API_GPUS:-all}" --network=host \
-  -e OPENAI_API_KEY -e CFG_NAME -e PERCEPTION_EXECUTABLE -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
+  -e OPENAI_API_KEY -e GEMINI_API_KEY -e GOOGLE_API_KEY -e CFG_NAME -e PERCEPTION_EXECUTABLE -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
   -e GRAPH_API_RUN_ID -e FEED_GT_SEMANTIC -e ROS_DOMAIN_ID \
   -e GA493_REPLAY_CAPTURE_DIR -e GA493_REPLAY_CAPTURE_MAX_CYCLES -e GA493_REPLAY_CAPTURE_MAX_BYTES \
   -e FRAME_QUEUE_MAX -e SCAN_COMPLETE_TOPIC -e SCAN_MERGE_SETTLE_S -e MOTION_POSITION_THRESHOLD \

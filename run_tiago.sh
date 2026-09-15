@@ -821,7 +821,9 @@ make_robot_env() {
     VITSAM_REQUIRE_CUDA \
     VITSAM_CUDNN_CONV_ALGO_SEARCH \
     REGOLO_API_KEY \
-    OPENAI_API_KEY; do
+    OPENAI_API_KEY \
+    GEMINI_API_KEY \
+    GOOGLE_API_KEY; do
     if [ -n "${!key:-}" ]; then
       robot_env+=(-e "$key=${!key}")
     fi

@@ -211,7 +211,7 @@ def _scripted_counts(scenes, matches_by_scene):
     that ran and was entirely missed (working rule 61: asserted, present-but-empty, and absent are
     three states, and the middle one is the interesting one).
     """
-    total = matched = 0
+    total = matched = defaulted = 0
     per_object = {}
     for scene, matches in zip(scenes, matches_by_scene):
         gt = scene.get('ground_truth_objects', [])
@@ -226,19 +226,54 @@ def _scripted_counts(scenes, matches_by_scene):
             slot = per_object.setdefault(name, {'poses': 0, 'found': 0})
             slot['poses'] += 1
             slot['found'] += int(i in hit)
+            if gt[i].get('extents_source') == 'default':
+                defaulted += 1
     if not total:
         return {'present': False,
                 'note': 'no scene had a script; the static evaluation is unchanged'}
+    # HOW MANY PREDICTIONS THE GATE COULD NOT JUDGE. holds_at() lets an untimed prediction match any
+    # window on purpose -- refusing it would turn every pre-change bundle into 0% scripted recall,
+    # and an absent timestamp cannot be told from a system that genuinely has none. But that
+    # permissiveness EXEMPTS an untimed system from the very gate a timed one is held to, and until
+    # this counter existed nothing in the output said so. MEASURED on identical geometry: with
+    # observed_at set on all three predictions, precision 66.7% / scripted recall 50.0%; with the key
+    # simply absent, 100% / 100%. A scripted column is comparable across systems ONLY when this is 0
+    # for every system in the table; otherwise the untimed one is exempt, and must be marked so
+    # rather than quoted.
+    untimed = sum(observed_at(p) is None
+                  for scene in scenes for p in scene.get('predicted_objects', []))
+    predicted = sum(len(scene.get('predicted_objects', [])) for scene in scenes)
     return {
         'present': True,
+        'untimed_predictions': untimed,
+        'gate_applied_to_pct': round(100.0 * (predicted - untimed) / predicted, 4) if predicted else None,
+        'comparable': untimed == 0,
         'poses': total,
         'poses_matched': matched,
         'poses_missed': total - matched,
         'recall_pct': round(100.0 * matched / total, 4),
+        # OBJECT recall, beside pose recall, because pose recall has a CEILING BELOW 100%.
+        # A predicted object carries ONE observation time and the assignment is one-to-one, so a
+        # perfectly tracked object that was moved can satisfy only ONE of its two disjoint windows:
+        # a flawless tracker scores 50% pose recall on a single move. Quoting pose recall alone
+        # would report that ceiling as a failure. `poses_reachable` states the ceiling explicitly
+        # rather than leaving a reader to discover it.
+        'objects': len(per_object),
+        'objects_found': sum(1 for v in per_object.values() if v['found']),
+        'object_recall_pct': (round(100.0 * sum(1 for v in per_object.values() if v['found'])
+                                    / len(per_object), 4) if per_object else None),
+        'poses_reachable': len(per_object),
+        'pose_recall_ceiling_pct': (round(100.0 * len(per_object) / total, 4) if total else None),
+        # Volume metrics are meaningless on a pose whose size was fabricated (script_ledger's
+        # default cube). This is the count, not a silent degradation.
+        'box_quality_defaulted': defaulted,
+        'box_quality_quotable': defaulted == 0,
         'per_object': per_object,
         'note': ('one POSE per spawn and per move: an object moved once contributes two poses, '
                  'and finding it at only one of them is a partial result, not a miss. A pose is '
-                 'matched only by a prediction observed while that pose was true.'),
+                 'matched only by a prediction observed while that pose was true. With one '
+                 'observation time per predicted object, pose recall cannot exceed '
+                 'pose_recall_ceiling_pct -- read object_recall_pct beside it.'),
     }
 
 def evaluate_geometry(scenes, threshold=DEFAULT_DISTANCE_M):

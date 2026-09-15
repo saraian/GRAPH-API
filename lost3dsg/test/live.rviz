@@ -2,7 +2,8 @@
 # (rviz2 -d /graph_api/lost3dsg/test/live.rviz) against the live stack. Fixed frame map.
 # Topics named here were measured on the mapping stack of run 20260907_172205 (ros2 topic list -t);
 # the object-manager MarkerArrays are published by object_manager_6.py / object_services.py.
-# NOT shown: /detected_wall_segments and /room_areas are std_msgs/String, no rviz display exists.
+# /bbox_3d, /detected_wall_segments and /room_areas are custom/String data topics; their
+# renderable MarkerArray counterparts are shown below.
 # Under FEED_POSE_SOURCE=rtabmap the localization_pose display shows where rtabmap thinks the base is.
 Panels:
 - Class: rviz_common/Displays
@@ -193,13 +194,52 @@ Visualization Manager:
       Value: false
     Topic Filter: true
     Decay Time: 0
+  # Perception's frame-local box corners are BEST_EFFORT/VOLATILE.  The persistent
+  # boxes below are stable per-object colored world-model boxes with dark outlines; this
+  # display is useful for checking the detector before object-manager admission has completed.
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: 'objects: current detection bbox corners'
+    Value: true
+    Topic:
+      Depth: 10
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /bbox_marker
+    Namespaces: {}
+  # GT-ONLY. The feed host decodes the semantic GLB and the ROS side publishes one latched,
+  # independently colored wireframe layer with a dark border. It is independent from both the
+  # frame-local detections and the persistent graph boxes, so uncheck it to compare the graph alone.
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: 'ground truth objects: semantic boxes (colored + border)'
+    Value: true
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /ground_truth_bbox
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: 'objects: current detection centroids'
+    Value: true
+    Topic:
+      Depth: 10
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /centroid_markers
+    Namespaces: {}
   - Class: rviz_default_plugins/MarkerArray
     Enabled: true
     Name: 'objects: persistent boxes'
     Value: true
     Topic:
       Depth: 5
-      Durability Policy: Volatile
+      Durability Policy: Transient Local
       History Policy: Keep Last
       Reliability Policy: Reliable
       Value: /persistent_bbox
@@ -210,7 +250,7 @@ Visualization Manager:
     Value: true
     Topic:
       Depth: 5
-      Durability Policy: Volatile
+      Durability Policy: Transient Local
       History Policy: Keep Last
       Reliability Policy: Reliable
       Value: /persistent_centroids
@@ -221,7 +261,7 @@ Visualization Manager:
     Value: true
     Topic:
       Depth: 5
-      Durability Policy: Volatile
+      Durability Policy: Transient Local
       History Policy: Keep Last
       Reliability Policy: Reliable
       Value: /uncertain_object
@@ -232,10 +272,56 @@ Visualization Manager:
     Value: true
     Topic:
       Depth: 5
-      Durability Policy: Volatile
+      Durability Policy: Transient Local
       History Policy: Keep Last
       Reliability Policy: Reliable
       Value: /room_areas_array
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: room boundaries (fused detected walls)
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /room_detected_wall_markers
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: room doorways (VLM-confirmed)
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /room_doorway_vlm_markers
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: room windows (VLM)
+    Value: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /room_window_vlm_markers
+    Namespaces: {}
+  # wall_detector is opt-in and publishes a separate, non-latched topic.  Keep the
+  # display available without making an absent optional node look like a failure.
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: false
+    Name: room boundaries (raw wall detector)
+    Value: true
+    Topic:
+      Depth: 10
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /detected_wall_markers
     Namespaces: {}
   - Class: rviz_default_plugins/MarkerArray
     Enabled: false
@@ -243,7 +329,7 @@ Visualization Manager:
     Value: true
     Topic:
       Depth: 5
-      Durability Policy: Volatile
+      Durability Policy: Transient Local
       History Policy: Keep Last
       Reliability Policy: Reliable
       Value: /considered_volume

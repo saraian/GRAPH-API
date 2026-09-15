@@ -414,6 +414,8 @@ run:
   gt_semantic: true         # render the simulator's semantic frame so archived detections can
                             # be joined to ground truth offline. It never reaches the runtime
                             # decision path; a preflight probe refuses a reader that tries.
+  gt_bbox: true             # publish semantic-GLB object boxes on /ground_truth_bbox for RViz
+                            # comparison only; it never reaches perception or the graph.
   gt_scene_instance: ''     # the ground-truth inventory a run is scored against; empty lets the
                             # offline reader pick by scene name, which is what the bundle then
                             # cannot attest. Override: GT_SCENE_INSTANCE.
