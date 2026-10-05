@@ -22,14 +22,62 @@ Every command includes option descriptions and usage examples. The
 
 ## Habitat
 
+Download the [public HM3D example](https://github.com/matterport/habitat-matterport-3dresearch#-downloading-hm3d-v02),
+which needs no account. Run these commands from the
+repository; change `HM3D_DIR` to choose where the files are stored:
+
 ```bash
-./graphapi setup sim --dataset /path/to/hm3d
+HM3D_DIR="$HOME/datasets/hm3d_example"
+mkdir -p "$HM3D_DIR"
+./graphapi --help >/dev/null  # prepare the small CLI Docker image
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$HM3D_DIR:/data" --entrypoint bash graphapi-cli:latest -c '
+    set -euo pipefail
+    base=https://github.com/matterport/habitat-matterport-3dresearch/raw/main/example
+    for archive in hm3d-example-habitat-v0.2.tar hm3d-example-configs.tar \
+      hm3d-example-semantic-annots-v0.2.tar hm3d-example-semantic-configs-v0.2.tar; do
+      curl -fsSL "$base/$archive" | tar -xf - -C /data
+    done
+    cp /data/hm3d_annotated_example_basis.scene_dataset_config.json \
+       /data/hm3d_annotated_basis.scene_dataset_config.json
+  '
+./graphapi setup sim --dataset "$HM3D_DIR"
 export REGOLO_API_KEY='your-key'
 ./graphapi run sim --scene hm3d_00861 --detach
 ```
 
-The dataset must contain scene folders and
-`hm3d_annotated_basis.scene_dataset_config.json`. Setup prepares Docker and models.
+Already downloaded HM3D? Use `./graphapi setup sim --dataset /path/to/hm3d`.
+That folder must contain the scene folders and
+`hm3d_annotated_basis.scene_dataset_config.json`. Setup prepares Docker and models;
+the download commands above also run in Docker.
+
+<details>
+<summary>Download more HM3D scenes</summary>
+
+Request [Matterport dataset access](https://matterport.com/habitat-matterport-3d-research-dataset),
+then create a [Matterport API token](https://my.matterport.com/settings/account/devtools).
+After the setup above, download the validation split using Habitat's
+[official downloader](https://github.com/facebookresearch/habitat-sim/blob/v0.3.3/DATASETS.md#downloading-hm3d-with-the-download-utility).
+Replace `TOKEN_ID` and `TOKEN_SECRET` with the token's ID and secret; these are
+separate from your VLM API key:
+
+```bash
+HM3D_DATA="$HOME/datasets/hm3d"
+mkdir -p "$HM3D_DATA"
+docker run --rm -it --user "$(id -u):$(id -g)" \
+  -v "$HM3D_DATA:/data" --entrypoint python3 graphapi-sim:latest \
+  -m habitat_sim.utils.datasets_download --uids hm3d_val_v0.2 --data-path /data \
+  --username TOKEN_ID --password TOKEN_SECRET
+cp "$HM3D_DATA/scene_datasets/hm3d/val/hm3d_annotated_val_basis.scene_dataset_config.json" \
+   "$HM3D_DATA/scene_datasets/hm3d/val/hm3d_annotated_basis.scene_dataset_config.json"
+./graphapi setup sim --dataset "$HM3D_DATA/scene_datasets/hm3d/val"
+```
+
+Use `--uids hm3d` to download all available splits. Register the split containing
+your scene and copy its `hm3d_annotated_SPLIT_basis.scene_dataset_config.json` to
+`hm3d_annotated_basis.scene_dataset_config.json` inside that split, as above.
+
+</details>
 
 ## TIAGO
 
