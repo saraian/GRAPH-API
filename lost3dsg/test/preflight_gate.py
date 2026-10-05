@@ -1406,6 +1406,7 @@ A12_ALLOWED_FILES = {
     # 2026-09-11 (owner: "live_run will have to be discarded"), which moved it OUT of the tree
     # this probe greps. The scan below reaches it by name for that reason.
     "../run_sim.sh": "exports FEED_GT_SEMANTIC and stamps gt_semantic",
+    "../graphapi_cli/runtime/run_sim.sh": "managed launcher exports and stamps the same semantic validation channel",
     "test/preflight_gate.py": "this probe names the tokens",
     # Added 2026-09-11. Verified before listing, the same way the two entries below were:
     # nothing in CMakeLists' install list carries it (grep: 0), nothing under src/ or test/ imports
@@ -1423,6 +1424,8 @@ A12_ALLOWED_FILES = {
     "src/perception_module/run_metrics.py": "offline metrics driver; imported by nothing, installed nowhere",
 
     "test/test_preflight_gate.py": "the negative test names the tokens",
+    "test/test_gt_bbox_layers.py":
+        "offline AST/config/RViz contract test; not installed or imported by runtime code",
     "src/perception_module/habitat_feed_node.py": "relays the blob to /gt/semantic_instance (transport)",
     "src/perception_module/gt_codec.py": "the run-length codec",
     "src/perception_module/detection_archive.py": "the archive join: habitat_gt_* row keys, validation only",
@@ -1504,12 +1507,14 @@ def a12_gt_isolation(root=None):
     # which silently took the file that exports FEED_GT_SEMANTIC out of a12's reach. A probe whose
     # coverage shrinks when a file moves, and which keeps passing, is rule 78 exactly: frozen on a
     # pass. Reached by name, and its absence is NOT a pass -- a missing launcher is reported.
-    launcher = os.path.join(os.path.dirname(root), "run_sim.sh")
+    repository = os.path.dirname(root)
+    managed_launcher = os.path.join(repository, "graphapi_cli", "runtime", "run_sim.sh")
+    launcher = managed_launcher if os.path.isfile(managed_launcher) else os.path.join(repository, "run_sim.sh")
     if not os.path.isfile(launcher):
         return SKIPPED, {"reason": f"the launcher {launcher} is absent, so its GT tokens were "
                                    f"not examined; a12 cannot attest a tree it could not read"}
     if subprocess.run(["/bin/grep", "-qE", GT_TOKENS, launcher]).returncode == 0:
-        files = sorted(files + ["../run_sim.sh"])
+        files = sorted(files + [os.path.relpath(launcher, root).replace(os.sep, "/")])
     not_allowed = [f for f in files if f not in A12_ALLOWED_FILES]
     bad_functions_by_file = {}
     # perception_parallel.py was folded into perception_2.py (one node, backend chosen by

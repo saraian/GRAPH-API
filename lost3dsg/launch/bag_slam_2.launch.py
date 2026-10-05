@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.substitutions import LaunchConfiguration, Command
@@ -12,7 +15,7 @@ def generate_launch_description():
     slam_params = LaunchConfiguration('slam_params')
 
     # ── 2. Descrizione robot (solo per robot_description, NON per TF) ─────────
-    xacro_file = '/root/tiago_public_ws/src/tiago_robot/tiago_description/robots/tiago.urdf.xacro'
+    xacro_file = str(Path(get_package_share_directory('tiago_description')) / 'robots/tiago.urdf.xacro')
     robot_description_content = Command(['xacro ', xacro_file])
 
     # ── 3. Riproduzione BAG ───────────────────────────────────────────────────
@@ -87,15 +90,15 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'bag_path',
-            default_value='/root/exchange/portone'
+            default_value=str(Path(os.environ.get('TIAGO_BAG_PATH', '/bags/portone')))
         ),
         DeclareLaunchArgument(
             'rviz_config',
-            default_value='/root/exchange/lost3dsg/rviz/default.rviz'
+            default_value='/graph_api/config/live.rviz'
         ),
         DeclareLaunchArgument(
             'slam_params',
-            default_value='/root/tiago_public_ws/src/pmb2_navigation/pmb2_2dnav/config/nav_public_sim.yaml'
+            default_value=str(Path(get_package_share_directory('pmb2_2dnav')) / 'config/nav_public_sim.yaml')
         ),
 
         play_bag,

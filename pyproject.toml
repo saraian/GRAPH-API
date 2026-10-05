@@ -1,3 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graph-api-cli"
+version = "0.1.0"
+description = "Unified startup for GRAPH-API simulation, TIAGO and research tools"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+graphapi = "graphapi_cli.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["graphapi_cli*"]
+
+[tool.setuptools.package-data]
+graphapi_cli = ["runtime/*.sh"]
+
 [tool.ruff]
 line-length = 120
 extend-exclude = [

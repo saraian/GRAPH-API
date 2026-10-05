@@ -245,14 +245,16 @@ def page():
         # link that would open an empty player.
         act = (f'<a class="go" href="#" onclick="return openBundle(\'{r["name"]}\')">OPEN</a>'
                if r["replayable"] else f'<span class="no" title="{r["why_not"]}">—</span>')
+        resolution_warning = (
+      f" <span title=\"config says {c['resolution_config']}; the frames are {c['resolution']}\">&#9888;</span>"
+      if c.get('resolution_source') == 'frames' and c.get('resolution_config')
+      and c['resolution_config'] != c['resolution'] else ""
+        )
         body.append(f"""<tr>
 <td class="id">{r['name']}<div class="sub">{_cell(c['config_file'])} · {r['size']}</div></td>
 <td><span class="tag {eng_cls}">{engine}</span>
     <div class="sub">enforce={_cell(p.get('enforce'))} · {_cell(c['gvd_method'])} ·
-    crop {_cell(c['crop'])} · {_cell(c['resolution'])}{
-      f" <span title=\"config says {c['resolution_config']}; the frames are {c['resolution']}\">&#9888;</span>"
-      if c.get('resolution_source') == 'frames' and c.get('resolution_config')
-      and c['resolution_config'] != c['resolution'] else ""}</div></td>
+    crop {_cell(c['crop'])} · {_cell(c['resolution'])}{resolution_warning}</div></td>
 <td class="num">{_cell(r['frames'])}</td>
 <td class="num">{_cell(r['detections'])}</td>
 <td class="num">{_cell(r['gt_joined_pct'] and str(r['gt_joined_pct']) + '%')}</td>

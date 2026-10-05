@@ -4,7 +4,7 @@ import yaml
 
 ROOT = Path(__file__).parents[2]
 CONFIG = ROOT / "lost3dsg/test/debug_configs/ga493_bbox_replay.yaml"
-RUN_SIM = ROOT / "run_sim.sh"
+RUN_SIM = ROOT / "graphapi_cli/runtime/run_sim.sh"
 CMAKE = ROOT / "lost3dsg/CMakeLists.txt"
 DEBUG_RUN = ROOT / "lost3dsg/test/ga493_debug_run.sh"
 LIVE_STACK = ROOT / "lost3dsg/test/live_stack_container.sh"

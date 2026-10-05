@@ -1,4 +1,5 @@
-FROM ros:humble
+ARG BASE_IMAGE=graphapi-sim:latest
+FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Base dependencies
@@ -50,7 +51,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ONNX Runtime 1.18.1 is built against the CUDA 11 ABI.  PyTorch in this image
 # remains on CUDA 12.1, so keep the CUDA 11 math/runtime libraries side by side;
 # the image's existing CUDA 12 cuDNN 8 library satisfies both consumers.
-RUN python3 -m pip install --no-cache-dir \
+RUN python3 -m pip install --upgrade "pip>=24,<26" && python3 -m pip install --no-cache-dir \
+    "torch==2.2.2" "torchvision==0.17.2" "transformers==4.44.2" "numpy==1.26.4" \
     "sentence-transformers==3.0.1" \
     "onnxruntime-gpu==1.18.1" \
     "nvidia-cublas-cu11" \

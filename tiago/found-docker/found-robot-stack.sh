@@ -78,6 +78,7 @@ BAG_TOPICS=(
   /map
   /scan
   /joint_states
+  /robot_description
 )
 
 q() { printf '%q' "$1"; }
@@ -237,10 +238,26 @@ start_stack() {
     local cyclone_uri=${CYCLONEDDS_URI:-}
   fi
   local common
-  common="$transport; export ROS_DOMAIN_ID=$(q "$ros_domain_id") RMW_IMPLEMENTATION=$(q "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}") CYCLONEDDS_URI=$(q "$cyclone_uri") PAL_ROBOT_CONNECTED=$(q "${PAL_ROBOT_CONNECTED:-0}") DISPLAY=$(q "${DISPLAY:-}") XAUTHORITY=$(q "${XAUTHORITY:-}") GRAPH_API_CONFIG=$(q "$CONFIG") GRAPH_API_OUTPUT_DIR=$(q "$OUTPUT") GRAPH_API_AUTOSTART=0 TIAGO_RTABMAP_DB=$(q "$RTABMAP_DB") BRIDGE_PORT=$(q "$BRIDGE_PORT") GRAPH_API_BASE_URL=$(q "http://127.0.0.1:$BRIDGE_PORT") VITSAM_REQUIRE_CUDA=$(q "$VITSAM_REQUIRE_CUDA") VITSAM_CUDNN_CONV_ALGO_SEARCH=$(q "$VITSAM_CUDNN_CONV_ALGO_SEARCH") TIAGO_BAG_FILTER_CONFLICTING=$(q "$BAG_FILTER_CONFLICTING") TIAGO_BAG_TF_DROP_FRAMES=$(q "$BAG_TF_DROP_FRAMES") TIAGO_RVIZ_CONFIG=$(q "$RVIZ_CONFIG") PYTHONUNBUFFERED=1; mkdir -p $(q "$OUTPUT"); cd $(q "${GRAPH_API_SRC}/src/perception_module")"
+  common="$transport; export ROS_DOMAIN_ID=$(q "$ros_domain_id") RMW_IMPLEMENTATION=$(q "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}") CYCLONEDDS_URI=$(q "$cyclone_uri") PAL_ROBOT_CONNECTED=$(q "${PAL_ROBOT_CONNECTED:-0}") DISPLAY=$(q "${DISPLAY:-}") XAUTHORITY=$(q "${XAUTHORITY:-}") GRAPH_API_CONFIG=$(q "$CONFIG") GRAPH_API_OUTPUT_DIR=$(q "$OUTPUT") GRAPH_API_AUTOSTART=0 GRAPHAPI_RECORD=$(q "${GRAPHAPI_RECORD:-1}") FOUND_START_PERCEPTION=$(q "$START_PERCEPTION") TIAGO_BAG_MODE=$(q "$BAG_MODE") GRAPHAPI_RESOLVED_CONFIG=$(q "${GRAPHAPI_RESOLVED_CONFIG:-0}") GRAPH_API_RUN_ID=$(q "${GRAPH_API_RUN_ID:-}") TIAGO_RTABMAP_DB=$(q "$RTABMAP_DB") BRIDGE_PORT=$(q "$BRIDGE_PORT") GRAPH_API_BASE_URL=$(q "http://127.0.0.1:$BRIDGE_PORT") VITSAM_REQUIRE_CUDA=$(q "$VITSAM_REQUIRE_CUDA") VITSAM_CUDNN_CONV_ALGO_SEARCH=$(q "$VITSAM_CUDNN_CONV_ALGO_SEARCH") TIAGO_BAG_FILTER_CONFLICTING=$(q "$BAG_FILTER_CONFLICTING") TIAGO_BAG_TF_DROP_FRAMES=$(q "$BAG_TF_DROP_FRAMES") TIAGO_RVIZ_CONFIG=$(q "$RVIZ_CONFIG") PYTHONUNBUFFERED=1; mkdir -p $(q "$OUTPUT"); cd $(q "${GRAPH_API_SRC}/src/perception_module")"
 
-  tmux new-session -d -s "$SESSION" -n bridge
+  # A tmux server can survive earlier runs. Give this session its own current
+  # source paths, GPU selection and credentials instead of inheriting the
+  # environment of the server's first launch. Credentials stay out of pane
+  # commands, shell history and output logs.
+  local session_env=() key
+  for key in GRAPH_API_SRC PYTHONPATH CUDA_VISIBLE_DEVICES \
+    REGOLO_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY GOOGLE_API_KEY; do
+    if [ "$key" = CUDA_VISIBLE_DEVICES ] && [ -z "${CUDA_VISIBLE_DEVICES+x}" ]; then
+      continue
+    fi
+    session_env+=(-e "$key=${!key:-}")
+  done
+  tmux new-session -d -s "$SESSION" -n bridge "${session_env[@]}"
   tmux set-window-option -t "$SESSION:bridge" remain-on-exit on
+  printf '%s\n' "${GRAPH_API_RUN_ID:-legacy}" > "$OUTPUT/operation_id"
+  if [ "${GRAPHAPI_RECORD:-1}" = 1 ]; then
+    new_window recording "$common; exec ros2 bag record -a --include-hidden-topics -o $(q "$OUTPUT/recording")"
+  fi
   send bridge "$common; exec python3 graph_api_bridge.py --ros-args -p use_sim_time:=$(q "$USE_SIM_TIME") -r /camera/rgb:=$RGB"
 
   if [ "$START_PERCEPTION" = "1" ]; then
@@ -267,7 +284,7 @@ start_stack() {
 
   if [ "$BAG_MODE" = 1 ]; then
     local bag_cmd
-    bag_cmd="ros2 bag play $(q "$BAG_PATH") --clock --rate $(q "$BAG_RATE")"
+    bag_cmd="ros2 bag play $(q "$BAG_PATH") --clock --rate $(q "$BAG_RATE") --qos-profile-overrides-path /etc/found/tiago_bag_qos.yaml"
     if [ "$BAG_LOOP" = 1 ]; then
       bag_cmd="$bag_cmd --loop"
     fi
@@ -284,7 +301,11 @@ start_stack() {
       # the recorded TF publishers from competing with RTAB-Map on /tf.
       bag_cmd="$bag_cmd --remap /tf:=/bag/tf /tf_static:=/bag/tf_static"
     fi
-    new_window bag "$common; sleep 2; exec $bag_cmd"
+    # Preserve a numeric exit status when the native player dies by signal.
+    # tmux 3.2 exposes no pane_dead_signal and otherwise leaves its status blank.
+    local bag_exit_file="$OUTPUT/bag_exit_${GRAPH_API_RUN_ID:-legacy}"
+    local supervised_bag="trap : HUP INT TERM; $bag_cmd; bag_status=\$?; printf '%s\\n' \"\$bag_status\" > $(q "$bag_exit_file"); exit \$bag_status"
+    new_window bag "$common; sleep 2; exec bash -c $(q "$supervised_bag")"
   fi
 
   if [ "$BAG_MODE" = 1 ]; then
@@ -302,7 +323,7 @@ start_stack() {
     echo "rviz: enabled ($RVIZ_CONFIG)"
   fi
   if [ "$BAG_MODE" = 1 ]; then
-    if [ "$START_RTABMAP" = 1 ]; then
+  if [ "$START_RTABMAP" = 1 ]; then
       echo "bag: $BAG_PATH (rate=$BAG_RATE loop=$BAG_LOOP; fresh RTAB-Map SLAM; TF filter=$BAG_TF_DROP_FRAMES)"
     else
       echo "bag: $BAG_PATH (rate=$BAG_RATE loop=$BAG_LOOP; recorded map; RTAB-Map disabled)"

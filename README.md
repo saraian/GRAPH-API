@@ -1,498 +1,1132 @@
-# GRAPH-API — `main`
+# GRAPH-API
 
-The LOST-3DSG perception and world-model stack: a containerised ROS 2 stack, a Habitat simulator
-feed, a run harness with a pre-flight gate, cloud perception, and a generic extension seam that an
-external package plugs into through configuration only.
+A ROS 2 scene-graph pipeline for Habitat and TIAGO. Requires Bash, Docker and
+NVIDIA container support. No host Python or virtual environment is needed.
 
-Upstream LOST-3DSG — the paper, the authors, and the ROS 2 install on a real robot — is documented
-in [`lost3dsg/README.md`](lost3dsg/README.md).
+Commands that use a remote VLM check for an API key before starting the pipeline.
+Export `REGOLO_API_KEY` in the terminal that launches the run. Local VLM servers,
+TIAGO `--no-perception`, help, dashboards and replay do not need a VLM key.
 
-**Start at [Quick start](#quick-start): `./install.sh`, `./run_sim.sh` for Habitat, or
-`./run_tiago.sh` for a physical TIAGo / TIAGo RGB-D bag.**
+## CLI help
 
-## What runs where
-
-```
-habitat_feed_host.py   HOST      renders the scene (habitat-sim, GPU + display), walks a coverage
-                                 tour, serves RGB-D + pose over TCP :7799, control surface :7790
-habitat_feed_node.py   container relays the feed to ROS 2 topics /camera/* and TF
-rtabmap                container SLAM; localization mode against a prebuilt map; map->odom TF
-perception_2.py        container detection cycle (fires when the robot is stopped): VLM label
-                                 call -> detector/segmenter backend -> 3D boxes from depth ->
-                                 async VLM crop describer -> /bbox_3d, /object_descriptions
-object_manager_6.py    container association (locality, then similarity), merge sweep, the
-                                 hooks seam (admission filter), POST to the bridge
-graph_api_bridge.py    container FastAPI world model + viewer on :8081
-detector backend       Modal     OWLv2 + SAM + CLIP on a cloud GPU (perception.backend: modal),
-                                 or the local EfficientViT-SAM path (backend: local)
-VLM                    regolo    OpenAI-compatible or Gemini endpoint; vlm.base_url / vlm.model
-```
-
-The VLM seam also supports Gemini's Vertex AI `generateContent` API. Use the Vertex base URL and
-model shown below; the adapter builds the `/publishers/google/models/<model>:generateContent`
-path, sends the image as Gemini `inlineData`, authenticates with
-`x-goog-api-key`, and maps the existing structured-scene schema to Gemini's JSON response schema.
-The provider is detected automatically from `aiplatform.googleapis.com`, but setting it explicitly
-makes the deployment intent clear:
-
-```yaml
-vlm:
-  provider: gemini
-  base_url: "https://aiplatform.googleapis.com/v1"
-  model: "gemini-3.8-flash"
-  api_key: ""                 # keep credentials in config.local.yaml, or use GEMINI_API_KEY
-  thinking_level: low          # sent as generationConfig.thinkingConfig.thinkingLevel
-```
-
-`GEMINI_API_KEY` and `GOOGLE_API_KEY` are accepted environment variables. Existing
-OpenAI-compatible configurations continue to use the Chat Completions transport unchanged.
-
-## Quick start
-
-Five scripts at the top of the repository. Nothing else is needed for Habitat;
-TIAGo additionally needs the private bundle described below.
+Every command includes option descriptions and usage examples. The
+[complete help reference](#complete-cli-help) is included below.
 
 ```bash
-./install.sh          # once. Finds what this machine has and writes your settings file.
-./run_sim.sh              # a base run: the whole house, every storey, no time limit.
-./run_sim_headless.sh     # the same run on a machine with no screen.
-./run_tiago.sh physical      # fresh physical TIAGo run.
-./run_tiago.sh bag BAG        # fresh offline TIAGo RGB-D bag run.
-./eval.sh             # score the newest run against the scene's ground truth.
+./graphapi --help
+./graphapi run sim --help
+./graphapi run tiago bag --help
+./graphapi dashboard --help
+./graphapi stop --help
 ```
 
-For a physical TIAGo or an offline RGB-D recording, use the concise TIAGo
-launcher instead of the Habitat runner:
+## Habitat
 
 ```bash
-./run_tiago.sh physical
-./run_tiago.sh bag BAG_NAME
-./run_tiago.sh bag BAG_NAME --rtabmap
-./run_tiago.sh physical --resume
-./run_tiago.sh bag BAG_NAME --rtabmap --resume
+./graphapi setup sim --dataset /path/to/hm3d
+export REGOLO_API_KEY='your-key'
+./graphapi run sim --scene hm3d_00861 --detach
 ```
 
-The concise TIAGo modes are fresh by default: an existing tmux stack is
-stopped, `/ws/output` is archived under `/ws/runs/tiago_<timestamp>`, and a new
-run is started. Use `--resume` to reuse the current session/output instead.
-The compatibility action `start` means resume; `new` explicitly means fresh:
+The dataset must contain scene folders and
+`hm3d_annotated_basis.scene_dataset_config.json`. Setup prepares Docker and models.
+
+## TIAGO
+
+Supply **your private PAL Docker**. Reuse a prepared container:
 
 ```bash
-./run_tiago.sh start  # compatibility resume form
-./run_tiago.sh new    # explicit fresh form
+./graphapi setup tiago --container tiago-127-dev
 ```
 
-The public TIAGo runtime files are under [`tiago/`](tiago/). The PAL image,
-ISO and keys are private; place them under [`TIAGO_ISO/`](TIAGO_ISO/) as
-described in its setup note. Relative bag names use the repository-local
-`bags/` directory by default; `TIAGO_BAG_DIR` can override it. The compatibility
-launcher `./run_tiago.sh --help` documents physical DDS, bag replay, fresh
-RTAB-Map filtering, RViz, VLM authentication and automatic container creation.
+To create one, supply these files (not included in this repository) and run
+`./graphapi setup tiago --pal-bundle /private/TIAGO_ISO`:
 
-`install.sh` **discovers** the container image, the renderer, the scene library, the model cache and
-the results directory, then writes them into your settings file and names the one value no search can
-find —
-the labelling endpoint, which is a credential. Without it, it configures the local detector so a run
-works anyway. It ends by telling you which run script this machine needs. It is safe to run again.
+```text
+TIAGO_ISO/
+├── ROS2_Alum.iso
+├── uni-sap-rome-build-docker.sh
+└── keys/
+    └── pal-apt-keys.deb
+```
 
-`./run_sim.sh hm3d_00861` picks a scene for one run. `./run_sim.sh --one-storey` does a single storey.
-**Everything else is a setting, not a flag.**
-
-### One run with a config of your own
+Keep any other files required by your private builder in the same bundle.
+Once setup is complete:
 
 ```bash
-./run_sim.sh --config schedules/configs/01_reference.yaml
-./run_sim_headless.sh --config schedules/configs/03_size_gate.yaml
+export REGOLO_API_KEY='your-key'
+./graphapi run tiago physical --detach
+./graphapi run tiago bag /data/bags/example --no-record --detach
 ```
 
-`--config` takes any config file. It sets both variables the launcher reads, so the bundle can never
-name one file while loading another.
+`physical` connects to a robot and starts RTAB-Map. `bag` uses its recorded map;
+add `--map-source slam` for a new map or `--loop` to repeat playback.
+The bag folder must contain `metadata.yaml`.
 
-### Several runs, each with its own configuration
+Perception and recording are on by default. `--no-perception` skips detection;
+`--no-record` skips recording. TIAGO needs recording space in `/ws/output`.
+Movement during detection can discard that cycle.
+
+## View results and stop
 
 ```bash
-./run_sim_headless.sh --schedule schedules/full.runs.yaml
+./graphapi dashboard --mode live          # http://127.0.0.1:8082
+./graphapi status                         # find RUN_ID
+./graphapi logs RUN_ID --follow
+./graphapi stop RUN_ID                    # leave the dashboard open
+./graphapi status RUN_ID                  # check that shutdown finished
+./graphapi dashboard latest --mode replay
+./graphapi eval latest
 ```
 
-`schedules/full.runs.yaml` is the set of runs we have to perform, and each arm **names its own
-complete config file** in `schedules/configs/` — so what runs is the file you reviewed, not a copy
-generated from a list of overrides:
+Click **ANNOTATIONS** for the latest annotated image. Replace `RUN_ID` with an
+ID from `status`. `latest` selects the last completed run.
+**Open RViz** uses the active run's camera, map and frames. Habitat shows the
+agent position; TIAGO shows the robot model using your private PAL image.
 
-| config | what differs |
-|---|---|
-| `01_reference.yaml` | the reference run: local detector, rtabmap pose, a mapping phase, no size gate |
-| `02_no_mapping_phase.yaml` | the control: `mapping_seconds: 0`, which is what recent runs used |
-| `03_size_gate.yaml` | the reference plus the size-envelope filter, annotating only |
-| `04_ground_truth_pose.yaml` | ground-truth pose, to separate localisation error from perception error |
-| `05_noise_floor.yaml` | identical to the reference, run three times |
+Settings live in `config/`; local paths go in ignored `config/local.yaml`.
+Use `./graphapi tools list` for other tools and `./graphapi COMMAND --help`
+for more options and examples.
 
-**`mapping_seconds` is not a duration knob, it is a motion policy.** At 0 the whole run uses the
-detection cycle, which gives the agent six frames in ninety-six to move and spends most of those
-turning. The archive splits on that one setting: runs with a mapping phase move in 20–26% of frames,
-runs without it in 1.0–1.8%. That is why `01` and `02` differ only there.
+## Complete CLI help
 
-**`repeat: 3` on the noise-floor arm is a prerequisite, not an extra.** No two archived runs are
-comparable *and* normalisable, so the spread between runs of one configuration cannot be recovered
-by analysis. Until it is measured, no figure from any arm supports a regression claim.
+The output below includes every public command and subcommand. Expand a
+command to see all its options and examples. Run the same `--help` command
+in your terminal for the current help.
 
-An arm may instead give `config:` with dotted keys (`perception.backend: local`) to override the
-base, and `env:` for the few settings that have no config key yet. **An arm may not give both a
-config file and overrides** — with both, a reader of the bundle cannot tell which won.
+<!-- Generated from graphapi_cli.cli; keep in sync with CLI --help. -->
 
-One bundle per run, and a `manifest.json` naming which arm produced which bundle and how it ended.
-A failed arm does not stop the schedule, and the manifest is rewritten after every arm, so a sweep
-stopped halfway still says what it did. Arms run in the order written: one GPU, one container.
+<details>
+<summary><code>./graphapi --help</code></summary>
 
-### What you must fill in
+```text
+usage: graphapi [-h] [--project DIRECTORY] [--local FILE] [--config FILE]
+                [--json]
+                {init,setup,run,doctor,batch,status,logs,stop,attach,dashboard,view,eval,tools,launch,baseline,cloud,tiago,maps}
+                ...
 
-`install.sh` creates the settings file and names these. They are per-machine, so no committed value
-can be right for yours.
+Run GRAPH-API in Docker: Habitat scenes, TIAGO robots and recorded TIAGO bags.
+Use COMMAND --help to see its options and examples.
+Replace paths with your own paths and RUN_ID with an ID from ./graphapi status.
 
-| value | what it is |
-|---|---|
-| `WORKSPACE_ROOT` | the directory holding `maps/`, `runs/` and `results/` |
-| `HF_SHARED_CACHE` | where the models are cached |
-| `HM3D_ROOT` | the scene library |
-| `SAM_MODEL_DIR` | the two EfficientViT-SAM `.onnx` files |
-| `IMAGE_TAG` | only if your container image is not tagged `graphapi-run:humble` |
-| `MODAL_PERCEPTION_URL` | the labelling endpoint. **Required:** both shipped configs set `perception.backend` to `modal`, so without it the run fails its gate at probe a4. It is a credential — the URL alone spends the account's GPU budget — so it is never committed. |
+positional arguments:
+  {init,setup,run,doctor,batch,status,logs,stop,attach,dashboard,view,eval,tools,launch,baseline,cloud,tiago,maps}
+    init                Create local settings. Keep settings that already
+                        exist.
+    setup               Prepare Docker, dependencies and data paths for a run.
+    run                 Start a Habitat scene, a physical TIAGO robot or a
+                        recorded TIAGO bag.
+    doctor              Check Docker, settings and the files needed for your
+                        chosen run.
+    batch               Run the experiments listed in a YAML schedule, one
+                        after another.
+    status              Show running or starting runs and dashboards. Use
+                        --all to include stopped runs.
+    logs                Read the startup log for a run. Use --follow to see
+                        new lines as they arrive.
+    stop                Stop a run or dashboard and let it finish saving its
+                        files.
+    attach              Watch a run log until the run stops. Press Ctrl+C to
+                        stop watching.
+    dashboard           Open the web dashboard. The default address is
+                        http://127.0.0.1:8082.
+    view                Open RViz on this computer for a running pipeline.
+    eval                Evaluate saved run results inside Docker. Write
+                        reports into the run folder.
+    tools               Find and run the other tools included in this
+                        repository.
+    launch              Start a TIAGO ROS launch file. Gazebo uses the public
+                        image; bag launches need private PAL Docker.
+    baseline            Run or prepare comparison methods using their existing
+                        tools.
+    cloud               Deploy or run the existing perception service on
+                        Modal.
+    tiago               Manage private PAL Docker and the physical robot
+                        network.
+    maps                List the saved RTAB-Map databases in the workspace.
 
-**Never let `WORKSPACE_ROOT` derive itself.** The launcher computes it as two levels above the
-checkout, which from this repository is `/` — a run would write its bundle to `/runs` and publish
-maps to `/maps`. The launcher refuses that, which is why the value must be set.
+options:
+  -h, --help            show this help message and exit
+  --project DIRECTORY   repository folder; normally found automatically
+  --local FILE          local paths and Docker settings (default:
+                        config/local.yaml)
+  --config FILE         pipeline settings; otherwise use the default for the
+                        chosen run
+  --json                print results as JSON; send progress messages to
+                        stderr
 
-### If the machine has no display
+Examples:
+  Prepare Habitat:
+    ./graphapi setup sim --dataset /path/to/hm3d
 
-**A run will pass its gate and then die.** `rviz`, the camera window and the box overlay all default
-to on, and each one aborts without an X server. Measured on a headless lab machine on 2026-09-10:
-six attempts, all ended with `rviz2 exited with status -6` **after** preflight had passed, because
-the launcher treats a missing node as fatal.
+  Run a Habitat scene in the background:
+    ./graphapi run sim --scene hm3d_00861 --detach
 
-**Use `./run_sim_headless.sh` instead of `./run_sim.sh`.** It takes the same arguments and turns off the two
-things that need a window:
+  Run a recorded TIAGO bag (requires private PAL Docker):
+    ./graphapi run tiago bag /data/bags/example --no-record --detach
 
-```bash
-./run_sim_headless.sh                 # the whole house
-./run_sim_headless.sh --one-storey    # a single storey
+  Open the live dashboard:
+    ./graphapi dashboard --mode live
+
+  Find a run and stop it:
+    ./graphapi status
+    ./graphapi stop RUN_ID
 ```
 
-It leaves the box overlay on, because the overlay draws into the frame the dashboard serves over
-HTTP and opens no window — so you still see the boxes in the browser.
+</details>
 
-`install.sh` detects whether a display exists and tells you which of the two scripts to use.
+<details>
+<summary><code>./graphapi init --help</code></summary>
 
-## Where settings live
+```text
+usage: graphapi init [-h] [--workspace DIRECTORY]
 
-| file | what belongs there | committed? |
-|---|---|---|
-| `config.yaml` | every choice about a run: the tour, the camera, mapping, perception | yes |
-| `config.local.yaml` | your machine's paths and your credentials | **no, and never** |
+Create local settings. Keep settings that already exist.
 
-`config.yaml` is the source of truth. A missing key falls back to the default in `config.py`.
-`config.local.yaml` wins key by key and announces which keys it changed on stderr, so a run is never
-silently different from the file you read.
+options:
+  -h, --help            show this help message and exit
+  --workspace DIRECTORY
+                        folder for results, maps, schedules and build files
 
-**`config.local.yaml` must sit beside the config that is actually LOADED**, which is the one
-`GRAPH_API_CONFIG` names — not beside the tracked `config.yaml`. An override next to the wrong file
-is ignored without a word.
+Examples:
+  Create config/local.yaml:
+    ./graphapi init
 
-**Known defect, and it fails the gate: with a local override in force, probe a2 cannot find the
-config.** The config module reports the path as `"<config> + <local>"`, and a2 tries to open that
-string as a file, so the probe skips and a skipped probe fails the gate. Until that is fixed, a run
-that must pass the gate cannot use a local override.
-
-**A credential is not a setting.** The labelling endpoint URL alone spends the account's GPU budget,
-so it lives in the local file. It sat in the tracked config once and was therefore committed; that
-must not happen again.
-
-*The tracked config is at `lost3dsg/src/perception_module/config.yaml` while it is being moved to
-the root, and the local values are still in `lost3dsg/test/env.local.sh`. `install.sh` creates
-whichever is current. The plan is in `.handoff/RUN_SURFACE_SPEC_2026-09-10.md`.*
-
-| section | what it decides |
-|---|---|
-| `habitat` | the scene, how the agent moves, how many storeys it tours, the camera |
-| `perception` | which detector backend runs, and what it is allowed to label |
-| `association` | when two sightings are the same object |
-| `similarity` | the weights of that decision; they must sum to 1.0 |
-| `frames` | which TF frame is which — `frames.camera` must be an OPTICAL frame |
-| `vlm` | the labelling service, its timeout and its retries |
-| `rooms`, `walls` | room splitting and wall detection |
-| `hooks` | the extension seam, below |
-
----
-
-# Reference
-
-Nothing below is a step. It is here to be looked up.
-
-## What a base run does
-
-It tours a storey until its waypoints are exhausted, closes that storey's map, moves to the next
-storey and starts a fresh map. **You get one bundle per storey, not one per run**, plus a
-`manifest.json` naming every storey with its bundle and how that launch ended.
-
-**Every launch builds its own map.** Nothing localises against a previously published map, so two
-storeys are never compared against the same map. That is deliberate: one map spanning two storeys
-puts the upper walls on top of the lower rooms. **The map library is therefore unused under this
-configuration** — publishing a per-floor map, the canonical read-only mount and asking to localise
-against one are all unreachable, and the variable that used to ask for it now refuses rather than
-being quietly ignored.
-
-**Before any node starts,** `preflight_gate.py` (probes a1 to a13) asserts that what is about to run
-is what was asked for: the config the container loaded is the one the launcher intended, the executed
-tree is the mounted one, every model the run loads is already cached, a detection round-trip
-completes. A skipped probe fails the gate. Then the nodes start: feed, rtabmap, perception, object
-manager, bridge.
-
-## Exploration schedules
-
-A schedule is one scene's roadmap and the order to walk it. **It is the only motion policy** — the
-sampling tour that used to stand behind it was removed on 2026-09-11, so a run without a schedule
-would publish frames from a robot that never moves. `run_sim.sh` refuses to start one.
-
-**You do not normally generate a schedule by hand.** `run_sim.sh` builds or reuses the scene's
-schedule before it starts anything, and caches it in `$WORKSPACE_ROOT/schedules`. Generate one
-yourself when you want a variant, a scene the launcher does not know, or the whole dataset at once.
-
-### How it is built
-
-1. The navmesh is rendered as a top-down grid of the storey, one cell per `--mpp`, and eroded by
-   `--robot-radius` so a waypoint is somewhere the robot fits.
-2. The **generalized Voronoi diagram** of that free space is drawn — the set of points equidistant
-   from two or more obstacles, which runs down the middle of every corridor and doorway — and
-   thinned to one pixel wide.
-3. Waypoints are placed along it every `--spacing`, merged when closer than `--merge-radius`, and
-   every junction gets one.
-4. The visiting order is a tour over roadmap distances (`--route-order`), starting from the
-   busiest junction. The path between two stops is simplified and straightened.
-5. Each stop turns a full circle. One lap is the file; the run repeats it `--laps` times.
-
-### The procedure
-
-```bash
-PY=$HOME/miniconda3/envs/habitat_env/bin/python      # the environment with habitat-sim
-
-# One scene. --ensure reuses a cached schedule whose settings match, and prints SCHEDULE_FILE=.
-$PY lost3dsg/test/schedule_batch.py \
-    --navmesh /path/to/scene/NAME.basis.navmesh \
-    --scene-id hm3d_00861 --ensure --out-dir "$WORKSPACE_ROOT/schedules"
-
-# Every scene under a root, plus an index.json summarising them.
-$PY lost3dsg/test/schedule_batch.py \
-    --scene-root /path/to/hm3d-val-habitat-v0.2 --out-dir "$WORKSPACE_ROOT/schedules"
-
-# The covering variant: adds stops until every navigable cell is seen. Separate file.
-$PY lost3dsg/test/schedule_batch.py --navmesh ... --covering --ensure --out-dir ...
+  Choose where to save run files:
+    ./graphapi init --workspace /data/graphapi
 ```
 
-**Measured: 1.3 to 2.0 s a scene, 5 to 15 s with `--covering`** — so all 100 val scenes take about
-four minutes plain, and half an hour covering. The output is
-`<scene-id>.schedule.json`, or `<scene-id>_covering.schedule.json` for the variant, holding **every
-storey of the scene** — a storey is found from a height histogram of navigable samples, and stair
-landings and galleries are skipped rather than toured.
+</details>
 
-**The generator is deterministic.** The same navmesh and the same settings give byte-identical
-trajectories; only `scene_id` and `navmesh` change with the path you pass.
+<details>
+<summary><code>./graphapi setup --help</code></summary>
 
-**`--ensure` decides on the settings digest, not the file name.** A schedule built at a different
-`--merge-radius` is rebuilt rather than reused. **The digest does NOT cover the generator's own
-source**, so after changing `voronoi_roadmap.py` or `schedule_batch.py` you must pass
-`--regenerate`. `habitat.regenerate_schedule: true` in the config makes `run_sim.sh` do it.
+```text
+usage: graphapi setup [-h] [--dataset DATASET] [--models MODELS]
+                      [--cache CACHE] [--workspace WORKSPACE]
+                      [--pal-bundle PAL_BUNDLE] [--container CONTAINER]
+                      [--baseline-repos BASELINE_REPOS] [--rebuild]
+                      [{sim,gazebo,tiago,baselines,cloud,all}]
 
-### Parameters
+Prepare Docker, dependencies and data paths for a run.
+Missing public dependencies and model files may be installed or downloaded.
+TIAGO needs your private PAL container or private build files.
 
-**Geometry — what the roadmap looks like.**
+positional arguments:
+  {sim,gazebo,tiago,baselines,cloud,all}
+                        what to prepare (default: sim); all prepares every
+                        listed mode
 
-| | default | what it decides |
-|---|---|---|
-| `--mpp` | 0.05 m | grid cell size. Smaller sees narrower gaps and costs time as its square |
-| `--robot-radius` | 0.25 m | free space is eroded by this, so waypoints fit a robot and not a point |
-| `--spacing` | 2.0 m | distance between waypoints. Larger means fewer stops and less coverage |
-| `--merge-radius` | 0.75 m | two waypoints closer than this become one |
-| `--simplify` | 0.20 m | path simplification tolerance. A shortcut leaving free space is rejected |
-| `--step` | 0.15 m | the agent's `move_forward`. Turns metres into frames, so it must match the config |
-| `--min-area` | 5.0 m² | a storey smaller than this is not toured |
-| `--max-bridge` | 2.0 m | the longest gap between two ridge pieces that may be joined |
-| `--max-room-path` | 12.0 m | the longest path used to join a seeded room back to the roadmap |
+options:
+  -h, --help            show this help message and exit
+  --dataset DATASET     HM3D folder containing scene folders and the scene
+                        dataset config JSON
+  --models MODELS       folder for the VitSAM encoder and decoder model files
+  --cache CACHE         folder for downloaded Hugging Face models
+  --workspace WORKSPACE
+                        folder for results, maps, schedules and build files
+  --pal-bundle PAL_BUNDLE
+                        private PAL build folder; see the TIAGO section in
+                        README.md
+  --container CONTAINER
+                        name of your private PAL container (for example:
+                        tiago-127-dev)
+  --baseline-repos BASELINE_REPOS
+                        folder containing the comparison-method repositories
+  --rebuild             rebuild public Docker images even if they already
+                        exist
 
-**The route — how long a lap takes.**
+Examples:
+  Prepare Habitat:
+    ./graphapi setup sim --dataset /path/to/hm3d
 
-| | default | what it decides |
-|---|---|---|
-| `--laps` | 3 | complete passes. The laps are IDENTICAL: a difference between two is a difference in the world, not the route |
-| `--route-order` | `2opt` | nearest neighbour then 2-opt over roadmap distances. `dfs` is the pre-2026-09-11 order, which drives every backtrack |
-| `--smooth-path` / `--no-smooth-path` | on | drop any path point its neighbours can see past. Corner turning cost as much as driving before this |
-| `--seed` | 7 | chooses the root among equally-connected candidates. Same seed, same schedule |
+  Choose model storage and the workspace:
+    ./graphapi setup sim --dataset /path/to/hm3d --models /data/models --workspace /data/graphapi
 
-**Coverage — what "100%" means.** Three models, and a number is meaningless without the model
-beside it. Never compare across them.
+  Register private PAL build files:
+    ./graphapi setup tiago --pal-bundle /private/TIAGO_ISO
 
-| `--coverage-model` | what counts as covered |
-|---|---|
-| `los` *(default)* | what a stop can SEE: the ray to the point is unobstructed, no distance limit. The simulator's depth sensor has none |
-| `los_range` | the same ray test, stopped at `--coverage-range` (8.0 m, CHOSEN, not measured) |
-| `radius` | free space within `--coverage-radius` (3.0 m), straight-line **through walls**. What every schedule before 2026-09-11 used. Kept so old numbers reproduce, not because it is right |
-
-| | default | what it decides |
-|---|---|---|
-| `--covering` | off | keep adding stops until `--coverage-target` is met, by greedy set cover. Writes the `_covering` variant: a promise rather than a measurement |
-| `--coverage-target` | 1.0 | the share `--covering` tops up to |
-| `--max-extra-stops` | 60 | a ceiling on what `--covering` may add, so one bad storey cannot make a schedule nobody can run |
-
-**The scan — and it decides whether a merge can commit at all.** A merge needs
-`merge_min_consecutive` (2) consecutive detection cycles on the same pair, and a cycle takes about
-4.3 s. A full 360° scan costs `360 / --turn-step-deg` frames at 3 f/s:
-
-| turn step | frames | seconds | cycles |
-|---|---|---|---|
-| 10° *(default)* | 36 | 12.0 | **2.79** |
-| 20° | 18 | 6.0 | **1.40 — no stop can ever merge** |
-
-20° was tried on 2026-09-11 for the 36% of run time scans cost, and reverted the same day. A run
-confirmed it: **43 merges before the end of lap zero at 10°, against 5 in a whole tour at 20°.**
-
-| | default | what it decides |
-|---|---|---|
-| `--turn-step-deg` | 10.0 | degrees per turn action. `habitat.turn_step_deg` must match it, or the budget describes a run that did not happen |
-| `--cycle-seconds` | 4.3 | a detection cycle. MEASURED on bundles `20260911_133641` and `_140421`. The scan floor derives from it, so re-measure and pass the new number rather than editing anything else |
-| `--min-scan-cycles` | 2.0 | no stop turns through fewer frames than this many cycles. Matches `merge_min_consecutive` |
-| `--adaptive-scan` / `--full-scan` | full | adaptive turns only through the arc holding unseen ground. Faster, and it left 649 of 1900 stops below the merge threshold — the MEAN was a comfortable 3.5 cycles and the tail was not |
-| `--stepped-scan` | off | hold each heading still for a whole cycle instead of turning every frame. A continuous turn holds a heading for ONE frame, so a scan is a drive-through; stepped makes it a scan |
-| `--scan-hold-frames` | 0 | frames per heading under `--stepped-scan`. 0 derives one whole cycle |
-| `--scan-tilts` | `0` | one full rotation per tilt. `30,0` is the two-rotation ask and doubles the bill |
-
-**Two frame-rate knobs, and neither changes what the agent does.** `--fps` (3.0) turns the frame
-budget into the minutes printed per storey. `--fps-for-budget` (3.0) turns the scan floor into
-frames. Both should equal `habitat.fps`, or the schedule's arithmetic describes a different run.
-
-**`--stepped-scan` costs 13x and is off for that reason**: over 71 storeys, three laps, 22.0 h as
-built against 150.0 h stepped and 287.5 h with two tilts. The tilt rotates the sensor node and **no
-run has confirmed it** — check the published frames actually tilt before quoting a two-rotation run.
-
-**Ground-truth rooms.** `--gt-manifest` takes an HM3D room manifest and adds a stop in any room that
-has none. Only **36 of the 100** HM3D val scenes are annotated (`hm3d_annotated_val_basis.
-scene_dataset_config.json` lists them); 221 scenes are annotated across all splits. Without the
-manifest, `room_seeds` is 0 and only geometric coverage is checked.
-
-## What you get
-
-**One directory per run, in the repository:** `results/<stamp>_<scene>/`. The live output and the
-bundle are the same directory — there is no second copy and nothing is moved at the end.
-
-It holds `run_metadata.json` (the resolved settings), `preflight.json`, `detections.jsonl`,
-`hook_decisions.jsonl`, `actual_perceptions.json`, `frames/`, `depth/`, `cropped_images/`,
-`knowledge_graph.ttl`, `rtabmap.db`, `ros/` (the mapper's own directory) and one log per node under
-`logs/`. `results/latest` points at the newest run that passed its gate.
-
-Everything a run reads or writes is a **host directory mounted into the container**, so it is all
-reachable from outside: the bundle at `/ws/output`, the mapper's directory at `/root/.ros`, the map
-library at `maps/`, the model cache and the build tree. No run data lives in docker-managed storage.
-
-**Watch a run:** the viewer at `http://localhost:8081`.
-
-## Scoring a run
-
-```bash
-./eval.sh                    # the newest run
-./eval.sh results/<stamp>_<scene>     # a particular one
+  Use a prepared private PAL container:
+    ./graphapi setup tiago --container tiago-127-dev
 ```
 
-Four steps, into `<bundle>/eval/`: the scene's ground truth, the join to what the run recorded, the
-metrics, and an HTML view of the boxes. **The scene comes from the bundle, not from this file** — a
-hardcoded scene path is how an evaluation comes to describe a different house.
+</details>
 
-## Stopping a run
+<details>
+<summary><code>./graphapi run --help</code></summary>
 
-A completed tour is what ends a launch normally. There is no time limit, so nothing else stops it.
+```text
+usage: graphapi run [-h] {sim,tiago,bag} ...
 
-**To end one early, create `feed_ended.json` in that storey's bundle directory.** The container
-watches for it and closes through the normal archive path, so rtabmap closes its database and the
-bundle is complete. `run_metadata.json` then records `terminating_node.ended: operator_abort`, so a
-run ended by hand can never be read as a finished house tour.
+Start a Habitat scene, a physical TIAGO robot or a recorded TIAGO bag.
+Perception and recording are on by default. Use --detach to run in the background.
+Export REGOLO_API_KEY='your-key' before starting. A missing VLM key stops startup.
 
-`docker stop -t 150 graphapi_live` is the last resort, for a stack that has stopped responding. It
-kills the nodes where they stand; the grace period lets rtabmap try to close its database, and a
-shorter one tears the write.
+positional arguments:
+  {sim,tiago,bag}
+    sim            Run a Habitat scene. By default, use the simulator position
+                   and run without windows.
+    tiago          Choose how to run TIAGO. Both choices require your private
+                   PAL Docker.
+    bag            Older spelling of run tiago bag. Prefer run tiago bag.
 
-**How a launch ended is a field, not a log line.** `terminating_node.ended` is one of
-`tour_complete`, `operator_abort`, `mapping_time`, `node_death`, `unrecorded`. `unrecorded` does not
-mean unknown — it means the container never reached its own end. A watched node exiting with status
-0 is `node_death`, not a clean finish: which node stopped decides, not its exit status.
+options:
+  -h, --help       show this help message and exit
 
-## The layers under `run_sim.sh`
+Examples:
+  Habitat:
+    ./graphapi run sim --scene hm3d_00861 --detach
 
-There is one layer fewer than there used to be. `run_sim.sh` now holds the whole launch: it works out
-which storeys the house has, then performs one run per storey. It does that by calling itself once
-per storey, so each storey still gets a clean process of its own.
+  Physical TIAGO:
+    ./graphapi run tiago physical
 
-| | |
-|---|---|
-| `install.sh`, `run_sim.sh`, `run_sim_headless.sh`, `run_tiago.sh`, `eval.sh` | what a person runs |
-| `lost3dsg/test/live_stack_container.sh` | inside the container. Nobody calls it by hand |
-
-`lost3dsg/test/live_run.sh` and `lost3dsg/test/run_house.sh` were deleted on 2026-09-11. If a step
-anywhere names either of them, that step is out of date.
-
-## Other things you can run
-
-```bash
-./lost3dsg/test/smoke_test.sh      # build, import and startup only; no cloud calls
-cd lost3dsg/test && UPDATE_BASELINE=1 ./nonregression.sh && ./nonregression.sh
+  Recorded TIAGO bag:
+    ./graphapi run tiago bag /data/bags/example --no-record --detach
 ```
 
-## What install.sh does, if you would rather do it by hand
+</details>
 
-1. `docker build -t graphapi-run:humble .` — about 16 GB: ROS 2 Humble, rtabmap, navigation2, torch.
-2. A conda environment named `habitat_env` with habitat-sim in it. The launcher calls
-   `$HOME/miniconda3/envs/habitat_env/bin/python` by absolute path, so another prefix is not a
-   substitute. The renderer needs a GPU and an X display.
-3. Cache all five models, then **load each one with the hub switched off** to prove none will be
-   fetched during a run. Warming alone is not proof: a cache in the old flat layout is found by a
-   file search and not by the loader, which reads `$HF_HOME/hub` and nothing else.
-4. Create the local settings file and name every value to fill in.
-5. Verify each of the above — including that an X display exists — and refuse with a cause.
+<details>
+<summary><code>./graphapi run sim --help</code></summary>
 
-**One thing to know about a fresh clone:** the historical simulation entry points may still need
-`chmod +x` when checked out from older revisions, or they can be called with `bash`. The new
-`run_tiago.sh` is stored executable and can be invoked directly.
+```text
+usage: graphapi run sim [-h] [--profile NAME] [--config FILE] [--gpu INDEX]
+                        [--gui] [--no-record] [--no-perception] [--detach]
+                        [--scene NAME] [--one-storey]
+                        [--floor HEIGHT | --floors HEIGHTS | --visits HEIGHTS]
+                        [--transforms FILE] [--tour-schedule FILE]
+                        [--pose {simulator,rtabmap}] [--map FILE]
+                        [--mapping-only]
 
-## Extension seam (`hooks.py`)
+Run a Habitat scene. By default, use the simulator position and run without windows.
+You do not need --profile sim-gt: that is the default.
+Run setup sim first. Full perception needs REGOLO_API_KEY in your terminal.
 
-`lost3dsg/src/perception_module/hooks.py` ships pass-through blueprints (`Filter`,
-`Refiner`, `Reevaluation`, `Store`, `DecisionLog`) that an external package subclasses. They
-are loaded by dotted path from config; this tree never imports the package.
+options:
+  -h, --help            show this help message and exit
+  --profile NAME        use a named settings file from config/; sim-gt is
+                        already the default
+  --config FILE         use this YAML settings file for the run
+  --gpu INDEX           GPU number to use, for example 0
+  --gui                 open visualization windows on this computer
+  --no-record           do not save another ROS topic recording; keep normal
+                        results and logs
+  --no-perception       run mapping without object detection; no annotations
+                        will be produced
+  --detach              run in the background and print an ID for status, logs
+                        and stop
+  --scene NAME          scene to load, for example hm3d_00861
+  --one-storey          run one floor instead of separate runs for each saved
+                        floor
+  --floor HEIGHT        run one floor at this height in metres; for negative
+                        values use --floor=-1.59
+  --floors HEIGHTS      run these floor heights, for example --floors="-1.59
+                        1.21"
+  --visits HEIGHTS      visit floors in this order, including repeats; for
+                        example --visits="0 2.8 0"; needs --transforms
+  --transforms FILE     JSON file describing how each floor map fits into the
+                        building
+  --tour-schedule FILE  JSON movement schedule for the scene or floor visits
+  --pose {simulator,rtabmap}
+                        where the camera position comes from (default:
+                        simulator)
+  --map FILE            use an existing RTAB-Map database; work on a copy,
+                        keeping the original
+  --mapping-only        build a map without object detection
 
-```yaml
-hooks:
-  search_paths: ["/path/to/extension"]
-  filter:  "<pkg>.filter:<Class>"            # per-proposal admission: ADMIT / REJECT / ABSTAIN
-  refiner: "pkg.module:ClassName"            # second look at a node + neighbours (default: none)
-  store:   "pkg.module:ClassName"            # persistence adapter (default: SQLite temporal map)
+Examples:
+  Run one scene in the background:
+    ./graphapi run sim --scene hm3d_00861 --one-storey --detach
+
+  Open visualization windows without saving another recording:
+    ./graphapi run sim --scene hm3d_00861 --gui --no-record
+
+  Choose one floor by height in metres:
+    ./graphapi run sim --scene hm3d_00861 --floor=-1.59
+
+  Build a map without object detection:
+    ./graphapi run sim --scene hm3d_00861 --mapping-only
 ```
 
-A proposal carries labels, the 3D box (AABB and PCA-oriented), `room_id`, a tagged room
-frame and `crop_path`. Unconfigured, behaviour is unchanged. Every decision is logged to
-`output/hook_decisions.jsonl` with a `decision_id` that the object manager writes back on
-the object, so a verdict can be joined to the object it judged. Self-checks: `python3
-hooks.py`, `python3 box_view.py`.
+</details>
 
-## Layout
+<details>
+<summary><code>./graphapi run tiago --help</code></summary>
 
-| path | holds |
-|---|---|
-| `lost3dsg/src/perception_module/` | the nodes (`perception_2.py`, `object_manager_6.py`, `object_services.py`, `room_manager.py`, `graph_api_bridge.py`), `config.py` / `config.yaml`, `hooks.py`, `cloud/` (Modal client + service), `viewer/` |
-| `run_sim.sh` | the whole launch: the storeys, the gate, the host feed, the container, the archive |
-| `run_tiago.sh` | physical TIAGo or RGB-D bag launch, DDS setup, container bootstrap, RViz and SLAM |
-| `lost3dsg/test/` | `live_stack_container.sh`, `habitat_feed_host.py`, `preflight_gate.py`, `smoke_test.sh`, `nonregression.sh`, the configs, `resource_monitor.py` |
-| `lost3dsg/msg`, `lost3dsg/srv` | the ROS 2 interfaces; `ObjectDescription.msg` carries `crop_path` |
-| `Dockerfile` | the `graphapi-run:humble` image |
+```text
+usage: graphapi run tiago [-h] {physical,bag} ...
 
-## Known ways a run ends early
+Choose how to run TIAGO. Both choices require your private PAL Docker.
+physical connects to a robot. bag replays a recording without a robot.
 
-| log line | cause | action |
-|---|---|---|
-| `rtabmap.log`: `[FATAL] Rtabmap.cpp:4090::process() Condition (_optimizedPoses.find(...)) not met`, exit -6 | an rtabmap assertion in localization mode; recurred twice; unreported upstream, no parameter workaround found | the bundle is intact up to that point; re-run, or rebuild the map |
-| `perception.log`: `VLM label call failed ... strike N/3` | the VLM endpoint was unreachable; the cycle is skipped and counted | transient: next cycle retries; `vlm_strikes_max` in a row end the run on purpose |
-| `om6.log`: `INPUT SILENCE` | no proposals reached the object manager for the configured window | read `feed_host.log` for a disconnected client and `perception.log` for the first frame |
-| the pre-flight gate refuses | a probe found the running identity is not the intended one | `preflight.json` names the probe and the numbers |
+positional arguments:
+  {physical,bag}
+    physical      Connect to a physical TIAGO robot using private PAL Docker.
+    bag           Replay a recorded TIAGO bag using private PAL Docker. No
+                  robot connection is needed.
+
+options:
+  -h, --help      show this help message and exit
+
+Examples:
+  Physical robot:
+    ./graphapi run tiago physical --detach
+
+  Recorded bag:
+    ./graphapi run tiago bag /data/bags/example --no-record --detach
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi run tiago physical --help</code></summary>
+
+```text
+usage: graphapi run tiago physical [-h] [--profile NAME] [--config FILE]
+                                   [--gpu INDEX] [--gui] [--no-record]
+                                   [--no-perception] [--detach]
+                                   [--container NAME] [--resume]
+                                   [--map-source {slam,robot}]
+
+Connect to a physical TIAGO robot using private PAL Docker.
+RTAB-Map builds the application map by default.
+Perception and recording are on. Full perception needs REGOLO_API_KEY.
+
+options:
+  -h, --help            show this help message and exit
+  --profile NAME        use a named settings file from config/
+  --config FILE         use this YAML settings file for the run
+  --gpu INDEX           GPU number to use, for example 0
+  --gui                 open visualization windows on this computer
+  --no-record           do not save another ROS topic recording; keep normal
+                        results and logs
+  --no-perception       disable object detection and the object manager; no
+                        annotations will be produced
+  --detach              run in the background and print an ID for status, logs
+                        and stop
+  --container NAME      private PAL container name; otherwise use local
+                        settings
+  --resume              reuse the current TIAGO session and output; does not
+                        restart an old run ID
+  --map-source {slam,robot}
+                        slam: build a map with RTAB-Map (default); robot: use
+                        the robot's map and position
+
+Examples:
+  Start the robot pipeline in the background:
+    ./graphapi run tiago physical --detach
+
+  Show RViz:
+    ./graphapi run tiago physical --gui
+
+  Check cameras and mapping without object detection:
+    ./graphapi run tiago physical --no-perception --no-record
+
+  Reuse the current TIAGO session and output:
+    ./graphapi run tiago physical --container tiago-127-dev --resume
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi run tiago bag --help</code></summary>
+
+```text
+usage: graphapi run tiago bag [-h] [--profile NAME] [--config FILE]
+                              [--gpu INDEX] [--gui] [--no-record]
+                              [--no-perception] [--detach] [--container NAME]
+                              [--resume] [--map-source {slam,recorded}]
+                              [--rate RATE] [--loop]
+                              BAG_DIRECTORY
+
+Replay a recorded TIAGO bag using private PAL Docker. No robot connection is needed.
+Use the map and transforms saved in the bag by default.
+Perception and recording are on. Full perception needs REGOLO_API_KEY.
+In the dashboard, click ANNOTATIONS to keep the last completed detection visible.
+
+positional arguments:
+  BAG_DIRECTORY         TIAGO bag folder containing metadata.yaml
+
+options:
+  -h, --help            show this help message and exit
+  --profile NAME        use a named settings file from config/
+  --config FILE         use this YAML settings file for the run
+  --gpu INDEX           GPU number to use, for example 0
+  --gui                 open visualization windows on this computer
+  --no-record           do not save another ROS topic recording; keep normal
+                        results and logs
+  --no-perception       disable object detection and the object manager; no
+                        annotations will be produced
+  --detach              run in the background and print an ID for status, logs
+                        and stop
+  --container NAME      private PAL container name; otherwise use local
+                        settings
+  --resume              reuse the current TIAGO session and output; does not
+                        restart an old run ID
+  --map-source {slam,recorded}
+                        recorded: use the bag's map and transforms (default);
+                        slam: build a new map with RTAB-Map
+  --rate RATE           playback speed: 1 is normal, 0.5 is half speed
+                        (default: 1)
+  --loop                restart the bag when it ends; keep playing until you
+                        stop the run
+
+Examples:
+  Test perception without saving another recording:
+    ./graphapi run tiago bag /data/bags/example --no-record --detach
+
+  Replay repeatedly until you stop the run:
+    ./graphapi run tiago bag /data/bags/example --loop --no-record --detach
+
+  Check cameras and the map without object detection:
+    ./graphapi run tiago bag /data/bags/example --no-perception --no-record
+
+  Build a new map with RTAB-Map:
+    ./graphapi run tiago bag /data/bags/example --map-source slam
+
+  Play at half speed:
+    ./graphapi run tiago bag /data/bags/example --rate 0.5
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi run bag --help</code></summary>
+
+```text
+usage: graphapi run bag [-h] [--profile NAME] [--config FILE] [--gpu INDEX]
+                        [--gui] [--no-record] [--no-perception] [--detach]
+                        [--container NAME] [--resume]
+                        [--map-source {slam,recorded}] [--rate RATE] [--loop]
+                        BAG_DIRECTORY
+
+Older spelling of run tiago bag. Prefer run tiago bag.
+Replay a recorded TIAGO bag using private PAL Docker. No robot connection is needed.
+Use the map and transforms saved in the bag by default.
+Perception and recording are on. Full perception needs REGOLO_API_KEY.
+In the dashboard, click ANNOTATIONS to keep the last completed detection visible.
+
+positional arguments:
+  BAG_DIRECTORY         TIAGO bag folder containing metadata.yaml
+
+options:
+  -h, --help            show this help message and exit
+  --profile NAME        use a named settings file from config/
+  --config FILE         use this YAML settings file for the run
+  --gpu INDEX           GPU number to use, for example 0
+  --gui                 open visualization windows on this computer
+  --no-record           do not save another ROS topic recording; keep normal
+                        results and logs
+  --no-perception       disable object detection and the object manager; no
+                        annotations will be produced
+  --detach              run in the background and print an ID for status, logs
+                        and stop
+  --container NAME      private PAL container name; otherwise use local
+                        settings
+  --resume              reuse the current TIAGO session and output; does not
+                        restart an old run ID
+  --map-source {slam,recorded}
+                        recorded: use the bag's map and transforms (default);
+                        slam: build a new map with RTAB-Map
+  --rate RATE           playback speed: 1 is normal, 0.5 is half speed
+                        (default: 1)
+  --loop                restart the bag when it ends; keep playing until you
+                        stop the run
+
+Examples:
+  Test perception without saving another recording:
+    ./graphapi run tiago bag /data/bags/example --no-record --detach
+
+  Replay repeatedly until you stop the run:
+    ./graphapi run tiago bag /data/bags/example --loop --no-record --detach
+
+  Check cameras and the map without object detection:
+    ./graphapi run tiago bag /data/bags/example --no-perception --no-record
+
+  Build a new map with RTAB-Map:
+    ./graphapi run tiago bag /data/bags/example --map-source slam
+
+  Play at half speed:
+    ./graphapi run tiago bag /data/bags/example --rate 0.5
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi doctor --help</code></summary>
+
+```text
+usage: graphapi doctor [-h] [--mode {sim,tiago-physical,tiago-bag,tiago,bag}]
+                       [--live]
+
+Check Docker, settings and the files needed for your chosen run.
+Use --live for extra checks inside the private TIAGO container.
+
+options:
+  -h, --help            show this help message and exit
+  --mode {sim,tiago-physical,tiago-bag,tiago,bag}
+                        what to check (default: sim); use tiago-physical for a
+                        robot or tiago-bag for a recording
+  --live                also check Python and model loading in the private
+                        TIAGO container
+
+Examples:
+  Check Habitat:
+    ./graphapi doctor --mode sim
+
+  Check TIAGO bag replay:
+    ./graphapi doctor --mode tiago-bag --live
+
+  Check physical TIAGO:
+    ./graphapi doctor --mode tiago-physical --live
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi batch --help</code></summary>
+
+```text
+usage: graphapi batch [-h] [--continue-on-failure] [--force] [--dry-run]
+                      [--gpus GPUS]
+                      FILE
+
+Run the experiments listed in a YAML schedule, one after another.
+Skip experiments that already completed unless you use --force.
+
+positional arguments:
+  FILE                  YAML file listing the experiments to run
+
+options:
+  -h, --help            show this help message and exit
+  --continue-on-failure
+                        run the next experiment even if one fails
+  --force               run completed experiments again instead of skipping
+                        them
+  --dry-run             show the planned experiments without starting them
+  --gpus GPUS           GPU numbers to assign in turn, for example 0,1
+                        (default: 0)
+
+Examples:
+  See the planned experiments without running them:
+    ./graphapi batch config/example.runs.yaml --dry-run
+
+  Run the schedule:
+    ./graphapi batch config/full.runs.yaml
+
+  Continue after a failed experiment:
+    ./graphapi batch config/full.runs.yaml --continue-on-failure
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi status --help</code></summary>
+
+```text
+usage: graphapi status [-h] [--all] [--json] [RUN_ID]
+
+Show running or starting runs and dashboards. Use --all to include stopped runs.
+Copy an ID from this list to use with logs, stop or view.
+
+positional arguments:
+  RUN_ID      ID from status; omit to list active runs
+
+options:
+  -h, --help  show this help message and exit
+  --all       include completed, failed and interrupted operations
+  --json      print results as JSON
+
+Examples:
+  Show active runs and dashboards:
+    ./graphapi status
+
+  Show one run:
+    ./graphapi status RUN_ID
+
+  Show past runs too:
+    ./graphapi status --all
+
+  Get JSON output:
+    ./graphapi status --json
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi logs --help</code></summary>
+
+```text
+usage: graphapi logs [-h] [--follow] [RUN_ID]
+
+Read the startup log for a run. Use --follow to see new lines as they arrive.
+If more than one run or dashboard is active, give its ID.
+
+positional arguments:
+  RUN_ID      ID from status, or active if exactly one run or dashboard is
+              active (default: active)
+
+options:
+  -h, --help  show this help message and exit
+  --follow    keep watching new log lines; attach already does this
+
+Examples:
+  Read a run log:
+    ./graphapi logs RUN_ID
+
+  Watch new log lines:
+    ./graphapi logs RUN_ID --follow
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi stop --help</code></summary>
+
+```text
+usage: graphapi stop [-h] [--json] [RUN_ID]
+
+Stop a run or dashboard and let it finish saving its files.
+Use its ID when several are active. Stopping a run leaves its dashboard open.
+DRAINING means shutdown is in progress; check status until it finishes.
+
+positional arguments:
+  RUN_ID      ID from status, or active if exactly one run or dashboard is
+              active (default: active)
+
+options:
+  -h, --help  show this help message and exit
+  --json      print results as JSON
+
+Examples:
+  Find the ID, then stop that run:
+    ./graphapi status
+    ./graphapi stop RUN_ID
+
+  Check that shutdown finished:
+    ./graphapi status RUN_ID
+
+  Stop the only active run or dashboard:
+    ./graphapi stop active
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi attach --help</code></summary>
+
+```text
+usage: graphapi attach [-h] [--follow] [RUN_ID]
+
+Watch a run log until the run stops. Press Ctrl+C to stop watching.
+This does not open a shell or stop the run.
+
+positional arguments:
+  RUN_ID      ID from status, or active if exactly one run or dashboard is
+              active (default: active)
+
+options:
+  -h, --help  show this help message and exit
+  --follow    keep watching new log lines; attach already does this
+
+Examples:
+  Watch a run:
+    ./graphapi attach RUN_ID
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi dashboard --help</code></summary>
+
+```text
+usage: graphapi dashboard [-h] [--port PORT] [--host HOST]
+                          [--mode {auto,live,replay}]
+                          [RUN_ID_OR_FOLDER]
+
+Open the web dashboard. The default address is http://127.0.0.1:8082.
+live shows the running pipeline; replay shows saved results.
+Click ANNOTATIONS to see the last completed annotated image in live mode.
+
+positional arguments:
+  RUN_ID_OR_FOLDER      saved run ID or results folder (default: latest
+                        completed run)
+
+options:
+  -h, --help            show this help message and exit
+  --port PORT           web address port (default: 8082)
+  --host HOST           address to listen on (default: 127.0.0.1, this
+                        computer only)
+  --mode {auto,live,replay}
+                        live: running pipeline; replay: saved results; auto:
+                        choose at startup (default: auto)
+
+Examples:
+  Show a running pipeline:
+    ./graphapi dashboard --mode live
+
+  Show the last completed run:
+    ./graphapi dashboard latest --mode replay
+
+  Show a specific saved run:
+    ./graphapi dashboard RUN_ID --mode replay
+
+  Use another port:
+    ./graphapi dashboard --mode live --port 8083
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi view --help</code></summary>
+
+```text
+usage: graphapi view [-h] [RUN_ID]
+
+Open RViz on this computer for a running pipeline.
+If several pipelines are running, give the ID from status.
+
+positional arguments:
+  RUN_ID      run ID; omit when only one pipeline is running
+
+options:
+  -h, --help  show this help message and exit
+
+Examples:
+  Open RViz for the only running pipeline:
+    ./graphapi view
+
+  Open RViz for a specific run:
+    ./graphapi view RUN_ID
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi eval --help</code></summary>
+
+```text
+usage: graphapi eval [-h] [--force] [RUN_ID_OR_FOLDER]
+
+Evaluate saved run results inside Docker. Write reports into the run folder.
+latest means the last completed run, not a run still in progress.
+
+positional arguments:
+  RUN_ID_OR_FOLDER  run ID or results folder (default: latest completed run)
+
+options:
+  -h, --help        show this help message and exit
+  --force           rebuild ground-truth data even if it already exists
+
+Examples:
+  Evaluate the last completed run:
+    ./graphapi eval latest
+
+  Evaluate a specific run:
+    ./graphapi eval RUN_ID
+
+  Rebuild the ground-truth data used for evaluation:
+    ./graphapi eval RUN_ID --force
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi tools --help</code></summary>
+
+```text
+usage: graphapi tools [-h] {list,run} ...
+
+Find and run the other tools included in this repository.
+
+positional arguments:
+  {list,run}
+
+options:
+  -h, --help  show this help message and exit
+
+Examples:
+  List available tools:
+    ./graphapi tools list
+
+  Show tests and internal tools too:
+    ./graphapi tools list --all
+
+  Preview a tool command:
+    ./graphapi tools run --dry-run launch-simulation
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi tools list --help</code></summary>
+
+```text
+usage: graphapi tools list [-h] [--all]
+
+List tool names and where they run.
+
+options:
+  -h, --help  show this help message and exit
+  --all       include tests and tools used internally by the pipeline
+
+Examples:
+  List user-facing tools:
+    ./graphapi tools list
+
+  Include tests and internal tools:
+    ./graphapi tools list --all
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi tools run --help</code></summary>
+
+```text
+usage: graphapi tools run [-h] [--dry-run] NAME ...
+
+Run a tool by its name from tools list.
+Put tool options after -- to pass them to the tool.
+
+positional arguments:
+  NAME          tool name from ./graphapi tools list
+  TOOL_OPTIONS  options for the tool; put -- before them
+
+options:
+  -h, --help    show this help message and exit
+  --dry-run     print the command without starting the tool
+
+Examples:
+  Preview a launch command:
+    ./graphapi tools run --dry-run launch-simulation -- map_yaml:=/data/maps/office.yaml
+
+  Ask a tool for its own help:
+    ./graphapi tools run schedule-runs -- --help
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi launch --help</code></summary>
+
+```text
+usage: graphapi launch [-h] name ...
+
+Start a TIAGO ROS launch file. Gazebo uses the public image; bag launches need private PAL Docker.
+Use run tiago bag for the main recorded-bag pipeline.
+
+positional arguments:
+  name            tiago-gazebo, tiago-navigation or tiago-bag-slam; older
+                  launch names also work
+  LAUNCH_OPTIONS  ROS arguments after --, written as NAME:=VALUE
+
+options:
+  -h, --help      show this help message and exit
+
+Examples:
+  Start TIAGO in Gazebo:
+    ./graphapi launch tiago-gazebo -- map_yaml:=/data/maps/office.yaml
+
+  Show arguments for a bag launch:
+    ./graphapi launch tiago-bag-slam --help
+
+  Replay a bag with the existing SLAM launch:
+    ./graphapi launch tiago-bag-slam -- bag_path:=/bags/example
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi baseline --help</code></summary>
+
+```text
+usage: graphapi baseline [-h] {run,acquire,pair,remote} ...
+
+Run or prepare comparison methods using their existing tools.
+
+positional arguments:
+  {run,acquire,pair,remote}
+
+options:
+  -h, --help            show this help message and exit
+
+Examples:
+  Run a comparison method on a recording:
+    ./graphapi baseline run clio /data/recording /data/clio-results
+
+  See baseline run options:
+    ./graphapi baseline run --help
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi baseline run --help</code></summary>
+
+```text
+usage: graphapi baseline run [-h] {clio,hovsg,dynamicgsg} RECORDING OUTPUT ...
+
+Run a comparison method on a recording. Save its results in OUTPUT.
+
+positional arguments:
+  {clio,hovsg,dynamicgsg}
+                        comparison method to run
+  RECORDING             input recording folder
+  OUTPUT                folder for the comparison results
+  METHOD_OPTIONS        extra options after --
+
+options:
+  -h, --help            show this help message and exit
+
+Examples:
+  Run CLIO:
+    ./graphapi baseline run clio /data/recording /data/clio-results
+
+  Run HOV-SG:
+    ./graphapi baseline run hovsg /data/recording /data/hovsg-results
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi baseline acquire --help</code></summary>
+
+```text
+usage: graphapi baseline acquire [-h] ...
+
+Collect input data using the existing baseline acquisition tool.
+
+positional arguments:
+  TOOL_OPTIONS  options for the existing tool; put -- before them
+
+options:
+  -h, --help    show this help message and exit
+
+Examples:
+  Show the acquisition tool options:
+    ./graphapi baseline acquire -- --help
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi baseline pair --help</code></summary>
+
+```text
+usage: graphapi baseline pair [-h] ...
+
+Compare two runs using the existing baseline pairing tool.
+
+positional arguments:
+  TOOL_OPTIONS  options for the existing tool; put -- before them
+
+options:
+  -h, --help    show this help message and exit
+
+Examples:
+  Show the pairing tool options:
+    ./graphapi baseline pair -- --help
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi baseline remote --help</code></summary>
+
+```text
+usage: graphapi baseline remote [-h] ...
+
+Run the existing baseline tool on a remote machine.
+
+positional arguments:
+  TOOL_OPTIONS  options for the existing tool; put -- before them
+
+options:
+  -h, --help    show this help message and exit
+
+Examples:
+  Show the remote tool options:
+    ./graphapi baseline remote -- --help
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi cloud --help</code></summary>
+
+```text
+usage: graphapi cloud [-h] {deploy,run,serve} ...
+
+Deploy or run the existing perception service on Modal.
+
+positional arguments:
+  {deploy,run,serve}  Modal action to perform
+  OPTIONS             extra Modal options after --
+
+options:
+  -h, --help          show this help message and exit
+
+Examples:
+  Deploy the service:
+    ./graphapi cloud deploy
+
+  Run the service:
+    ./graphapi cloud run
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi tiago --help</code></summary>
+
+```text
+usage: graphapi tiago [-h]
+                      {network,check,build,shell,start,new,stop,attach} ...
+
+Manage private PAL Docker and the physical robot network.
+For new pipeline runs, use run tiago physical or run tiago bag.
+
+positional arguments:
+  {network,check,build,shell,start,new,stop,attach}
+                        container action, or network to check/apply robot
+                        network settings
+  OPTIONS               container name or action options; use network status
+                        to inspect the network
+
+options:
+  -h, --help            show this help message and exit
+
+Examples:
+  Check the private container:
+    ./graphapi tiago check tiago-127-dev
+
+  Open a container shell:
+    ./graphapi tiago shell tiago-127-dev
+
+  Check the physical robot network settings:
+    ./graphapi tiago network status
+```
+
+</details>
+
+<details>
+<summary><code>./graphapi maps --help</code></summary>
+
+```text
+usage: graphapi maps [-h] {list}
+
+List the saved RTAB-Map databases in the workspace.
+
+positional arguments:
+  {list}      list saved map databases
+
+options:
+  -h, --help  show this help message and exit
+
+Examples:
+  List saved maps:
+    ./graphapi maps list
+```
+
+</details>

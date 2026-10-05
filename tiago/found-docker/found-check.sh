@@ -15,6 +15,8 @@ fi
 python3 - <<'PY'
 import importlib
 import os
+from graphapi_cli.torch_startup import import_torch
+torch = import_torch()
 mods = [
     "numpy", "scipy", "cv2", "PIL", "yaml",
     "torch", "torchvision", "transformers", "sentence_transformers",
@@ -31,7 +33,6 @@ if failed:
     print("MISSING PYTHON MODULES:")
     print("\n".join(failed))
     raise SystemExit(1)
-import torch
 print("python runtime ok")
 print("  torch", torch.__version__, "cuda", torch.cuda.is_available())
 import onnxruntime as ort

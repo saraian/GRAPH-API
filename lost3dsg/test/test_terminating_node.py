@@ -25,7 +25,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LAUNCHER = os.path.join(HERE, "..", "..", "run_sim.sh")
+LAUNCHER = os.path.join(HERE, "..", "..", "graphapi_cli", "runtime", "run_sim.sh")
 BEGIN = "# >>> TEST-EXTRACT stamp_block"
 END = "# <<< TEST-EXTRACT stamp_block"
 
@@ -41,6 +41,17 @@ def stamp_block():
     assert re.search(r"^import json", body, re.M), f"extracted no code:\n{body[:200]}"
     assert "terminating_node" in body, "the extracted block does not stamp terminating_node"
     return body
+
+
+def test_early_startup_failure_skips_missing_metadata_without_creating_a_bundle_claim():
+    with tempfile.TemporaryDirectory() as directory:
+        meta = os.path.join(directory, "run_metadata.json")
+        result = subprocess.run([sys.executable, "-c", stamp_block(), meta, "", "1", "false", "null", "no cap", "0"],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert "startup stopped before run_metadata.json was created" in result.stdout
+        assert "Traceback" not in result.stderr
+        assert not os.path.exists(meta)
 
 
 def run_stamp(bundle, term=None):

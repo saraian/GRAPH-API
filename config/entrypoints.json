@@ -1,0 +1,1511 @@
+{
+  "association": {
+    "path": "lost3dsg/src/perception_module/association.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "baseline-acquisition-watch": {
+    "path": "tools/baselines/acquisition_watch.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.acquisition_watch"
+  },
+  "baseline-aggregate-pack": {
+    "path": "tools/baselines/aggregate_pack.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.aggregate_pack"
+  },
+  "baseline-audit-pair": {
+    "path": "tools/baselines/audit_pair.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.audit_pair"
+  },
+  "baseline-clio-bag": {
+    "path": "tools/baselines/clio_bag.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.clio_bag"
+  },
+  "baseline-clio-run": {
+    "path": "tools/baselines/clio_run.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.clio_run"
+  },
+  "baseline-cohort-plot": {
+    "path": "tools/baselines/cohort_plot.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.cohort_plot"
+  },
+  "baseline-dynamicgsg-checkpoint-result": {
+    "path": "tools/baselines/dynamicgsg_checkpoint_result.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.dynamicgsg_checkpoint_result"
+  },
+  "baseline-dynamicgsg-color-book": {
+    "path": "tools/baselines/dynamicgsg_color_book.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.dynamicgsg_color_book"
+  },
+  "baseline-dynamicgsg-export": {
+    "path": "tools/baselines/dynamicgsg_export.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.dynamicgsg_export"
+  },
+  "baseline-dynamicgsg-observer": {
+    "path": "tools/baselines/dynamicgsg_observer.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.dynamicgsg_observer"
+  },
+  "baseline-dynamicgsg-run": {
+    "path": "tools/baselines/dynamicgsg_run.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.dynamicgsg_run"
+  },
+  "baseline-entrypoint": {
+    "path": "tools/baselines/entrypoint.py",
+    "module": "tools.baselines.entrypoint",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "baseline-freeze-pack": {
+    "path": "tools/baselines/freeze_pack.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.freeze_pack"
+  },
+  "baseline-graphapi-eval": {
+    "path": "tools/baselines/graphapi_eval.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.graphapi_eval"
+  },
+  "baseline-hovsg-run": {
+    "path": "tools/baselines/hovsg_run.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.hovsg_run"
+  },
+  "baseline-install-entrypoints": {
+    "path": "tools/baselines/install_entrypoints.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.install_entrypoints"
+  },
+  "baseline-native": {
+    "path": "graphapi_cli/runtime/baseline_native.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": true,
+    "visibility": "public",
+    "use": "Internal managed implementation; use graphapi --help"
+  },
+  "baseline-night-remote": {
+    "path": "tools/baselines/night_remote.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.night_remote"
+  },
+  "baseline-optimize-cohort-batch": {
+    "path": "tools/baselines/optimize_cohort_batch.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.optimize_cohort_batch"
+  },
+  "baseline-optimize-tours": {
+    "path": "tools/baselines/optimize_tours.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.optimize_tours"
+  },
+  "baseline-overnight": {
+    "path": "tools/baselines/overnight.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.overnight"
+  },
+  "baseline-pack-a-driver": {
+    "path": "tools/baselines/pack_a_driver.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.pack_a_driver"
+  },
+  "baseline-pack-a-monitor": {
+    "path": "tools/baselines/pack_a_monitor.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.pack_a_monitor"
+  },
+  "baseline-preflight-action-visibility": {
+    "path": "tools/baselines/preflight_action_visibility.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.preflight_action_visibility"
+  },
+  "baseline-preflight-scene": {
+    "path": "tools/baselines/preflight_scene.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.preflight_scene"
+  },
+  "baseline-prepare-cohort": {
+    "path": "tools/baselines/prepare_cohort.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.prepare_cohort"
+  },
+  "baseline-replan-dynamic": {
+    "path": "tools/baselines/replan_dynamic.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.replan_dynamic"
+  },
+  "baseline-replay-metrics": {
+    "path": "tools/baselines/replay_metrics.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.replay_metrics"
+  },
+  "baseline-replay-model": {
+    "path": "tools/baselines/replay_model.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.replay_model"
+  },
+  "baseline-replay-render": {
+    "path": "tools/baselines/replay_render.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.replay_render"
+  },
+  "baseline-replay-scene": {
+    "path": "tools/baselines/replay_scene.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.replay_scene"
+  },
+  "baseline-replay-server": {
+    "path": "tools/baselines/replay_server.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.replay_server"
+  },
+  "baseline-run-pair": {
+    "path": "tools/baselines/run_pair.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.run_pair"
+  },
+  "baseline-runtime": {
+    "path": "tools/baselines/runtime.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.runtime"
+  },
+  "baseline-select-scenes": {
+    "path": "tools/baselines/select_scenes.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.select_scenes"
+  },
+  "baseline-stage-dgx-pack": {
+    "path": "tools/baselines/stage_dgx_pack.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.stage_dgx_pack"
+  },
+  "baseline-test-aggregate-pack": {
+    "path": "tools/baselines/test_aggregate_pack.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_aggregate_pack"
+  },
+  "baseline-test-clio-configuration": {
+    "path": "tools/baselines/test_clio_configuration.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_clio_configuration"
+  },
+  "baseline-test-coverage": {
+    "path": "tools/baselines/test_coverage.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_coverage"
+  },
+  "baseline-test-depth-codec": {
+    "path": "tools/baselines/test_depth_codec.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_depth_codec"
+  },
+  "baseline-test-dynamicgsg": {
+    "path": "tools/baselines/test_dynamicgsg.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_dynamicgsg"
+  },
+  "baseline-test-graphapi-eval": {
+    "path": "tools/baselines/test_graphapi_eval.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_graphapi_eval"
+  },
+  "baseline-test-metrics": {
+    "path": "tools/baselines/test_metrics.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_metrics"
+  },
+  "baseline-test-observation-protocol": {
+    "path": "tools/baselines/test_observation_protocol.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_observation_protocol"
+  },
+  "baseline-test-optimize-tours": {
+    "path": "tools/baselines/test_optimize_tours.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_optimize_tours"
+  },
+  "baseline-test-overnight": {
+    "path": "tools/baselines/test_overnight.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_overnight"
+  },
+  "baseline-test-prepare-cohort": {
+    "path": "tools/baselines/test_prepare_cohort.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_prepare_cohort"
+  },
+  "baseline-test-replay": {
+    "path": "tools/baselines/test_replay.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_replay"
+  },
+  "baseline-test-run-pair": {
+    "path": "tools/baselines/test_run_pair.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_run_pair"
+  },
+  "baseline-test-runtime": {
+    "path": "tools/baselines/test_runtime.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_runtime"
+  },
+  "baseline-test-select-scenes": {
+    "path": "tools/baselines/test_select_scenes.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_select_scenes"
+  },
+  "baseline-test-stage-dgx-pack": {
+    "path": "tools/baselines/test_stage_dgx_pack.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "diagnostic",
+    "module": "tools.baselines.test_stage_dgx_pack"
+  },
+  "baseline-tour-coverage": {
+    "path": "tools/baselines/tour_coverage.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.tour_coverage"
+  },
+  "baseline-tour-plot": {
+    "path": "tools/baselines/tour_plot.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.tour_plot"
+  },
+  "baseline-validate-cohort": {
+    "path": "tools/baselines/validate_cohort.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.validate_cohort"
+  },
+  "baseline-verify-optimized-tours": {
+    "path": "tools/baselines/verify_optimized_tours.py",
+    "kind": "script",
+    "environment": "orchestrator",
+    "gpu": false,
+    "visibility": "public",
+    "module": "tools.baselines.verify_optimized_tours"
+  },
+  "bootstrap": {
+    "path": "graphapi_cli/bootstrap.py",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Internal managed implementation; use graphapi --help"
+  },
+  "box-rebuild": {
+    "path": "tools/box_rebuild.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "box-report": {
+    "path": "tools/box_report.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "box-view": {
+    "path": "lost3dsg/src/perception_module/box_view.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "build-hm3d-eval-manifest": {
+    "path": "lost3dsg/src/perception_module/build_hm3d_eval_manifest.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "bundle-index": {
+    "path": "lost3dsg/dashboard/bundle_index.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "check-env-passthrough": {
+    "path": "lost3dsg/test/check_env_passthrough.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "check-install-list": {
+    "path": "lost3dsg/src/perception_module/check_install_list.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "check-mapping-tf": {
+    "path": "lost3dsg/src/perception_module/check_mapping_tf.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "check-no-extension-refs": {
+    "path": "lost3dsg/test/check_no_extension_refs.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "check-undeclared": {
+    "path": "lost3dsg/src/perception_module/viewer/check_undeclared.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "cli": {
+    "path": "graphapi_cli/cli.py",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Internal managed implementation; use graphapi --help"
+  },
+  "config": {
+    "path": "lost3dsg/src/perception_module/config.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "connect-gin": {
+    "path": "graphapi_cli/runtime/connect_gin.sh",
+    "kind": "script",
+    "environment": "host",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "crop-context": {
+    "path": "lost3dsg/src/perception_module/crop_context.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "crop-grid": {
+    "path": "lost3dsg/src/perception_module/crop_grid.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "dash-env": {
+    "path": "lost3dsg/dashboard/dash_env.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "dash-ext": {
+    "path": "lost3dsg/dashboard/dash_ext.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "detection-archive": {
+    "path": "lost3dsg/src/perception_module/detection_archive.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "detection-pipeline": {
+    "path": "lost3dsg/src/perception_module/detection_pipeline.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "docker": {
+    "path": "graphapi_cli/docker.py",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Internal managed implementation; use graphapi --help"
+  },
+  "envelope-size": {
+    "path": "lost3dsg/src/perception_module/envelope_size.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "eval": {
+    "path": "eval.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi eval"
+  },
+  "eval-report": {
+    "path": "lost3dsg/test/eval_report.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "eval-scene-of-bundle": {
+    "path": "lost3dsg/test/eval_scene_of_bundle.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "export-encoder": {
+    "path": "lost3dsg/src/perception_module/efficientvit/export_encoder.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "extract-gt": {
+    "path": "tools/extract_gt.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "extract-hovsg-object-embeddings": {
+    "path": "lost3dsg/src/perception_module/extract_hovsg_object_embeddings.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "follow-remote-run": {
+    "path": "lost3dsg/test/follow_remote_run.sh",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "found-build-ws": {
+    "path": "tiago/found-docker/found-build-ws.sh",
+    "kind": "script",
+    "environment": "pal",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "found-check": {
+    "path": "tiago/found-docker/found-check.sh",
+    "kind": "script",
+    "environment": "pal",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "found-cyclone-connect": {
+    "path": "tiago/found-docker/found-cyclone-connect.sh",
+    "kind": "script",
+    "environment": "pal",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "found-profile": {
+    "path": "tiago/found-docker/found-profile.sh",
+    "kind": "script",
+    "environment": "pal",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "found-robot-stack": {
+    "path": "tiago/found-docker/found-robot-stack.sh",
+    "kind": "internal",
+    "environment": "pal",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi run tiago physical / run tiago bag for managed private sessions"
+  },
+  "ga493-debug-run": {
+    "path": "lost3dsg/test/ga493_debug_run.sh",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "generate-scene-batch": {
+    "path": "lost3dsg/src/perception_module/generate_scene_batch.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "graph-api-bridge": {
+    "path": "lost3dsg/src/perception_module/graph_api_bridge.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "gt-codec": {
+    "path": "lost3dsg/src/perception_module/gt_codec.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "habitat-camera-node": {
+    "path": "lost3dsg/src/perception_module/habitat_camera_node.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "habitat-camera-objects-node": {
+    "path": "lost3dsg/src/perception_module/habitat_camera_objects_node.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "habitat-feed-host": {
+    "path": "lost3dsg/test/habitat_feed_host.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "habitat-feed-node": {
+    "path": "lost3dsg/src/perception_module/habitat_feed_node.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "habitat-metrics-collector": {
+    "path": "lost3dsg/src/perception_module/habitat_metrics_collector.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "habitat-nav": {
+    "path": "lost3dsg/src/perception_module/habitat_nav.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "habitat-run-metrics": {
+    "path": "lost3dsg/src/perception_module/habitat_run_metrics.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "hm3d-ground-truth-manifest": {
+    "path": "lost3dsg/src/perception_module/hm3d_ground_truth_manifest.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "hooks": {
+    "path": "lost3dsg/src/perception_module/hooks.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "inference": {
+    "path": "lost3dsg/src/perception_module/efficientvit/inference.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "install": {
+    "path": "install.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi setup sim"
+  },
+  "label-norm": {
+    "path": "lost3dsg/src/perception_module/label_norm.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "last-frame-age-rejected": {
+    "path": "lost3dsg/test/last_frame_age_rejected.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "launch-bag-slam": {
+    "path": "lost3dsg/launch/bag_slam.launch.py",
+    "kind": "launch",
+    "environment": "pal",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "launch-bag-slam-1": {
+    "path": "lost3dsg/launch/bag_slam_1.launch.py",
+    "kind": "launch",
+    "environment": "pal",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "launch-bag-slam-2": {
+    "path": "lost3dsg/launch/bag_slam_2.launch.py",
+    "kind": "launch",
+    "environment": "pal",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "launch-generate-catalogue": {
+    "path": "tools/startup/generate_catalogue.py",
+    "kind": "launch",
+    "environment": "ros",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "launch-habitat": {
+    "path": "lost3dsg/launch/habitat_launch.py",
+    "kind": "launch",
+    "environment": "ros",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "launch-ros": {
+    "path": "graphapi_cli/ros_launch.py",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": true,
+    "visibility": "public",
+    "use": "Internal managed implementation; use graphapi --help"
+  },
+  "launch-simulation": {
+    "path": "simulation.launch.py",
+    "kind": "launch",
+    "environment": "ros",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "launch-simulation2": {
+    "path": "simulation2.launch.py",
+    "kind": "launch",
+    "environment": "ros",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "live-overlay": {
+    "path": "lost3dsg/src/perception_module/live_overlay.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "live-stack-container": {
+    "path": "lost3dsg/test/live_stack_container.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Internal ROS supervisor; use graphapi run sim"
+  },
+  "metrics-eval": {
+    "path": "lost3dsg/src/perception_module/metrics_eval.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "metrics-eval-visualize": {
+    "path": "lost3dsg/src/perception_module/metrics_eval_visualize.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "monitor": {
+    "path": "monitor.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi tools run run-monitor"
+  },
+  "multi-floor-session": {
+    "path": "lost3dsg/test/multi_floor_session.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "multi-floor-verify-actions": {
+    "path": "lost3dsg/test/multi_floor_verify_actions.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "nonregression": {
+    "path": "lost3dsg/test/nonregression.sh",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "object-manager-3-save": {
+    "path": "lost3dsg/object_manager_3_save.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "object-manager-6": {
+    "path": "lost3dsg/src/perception_module/object_manager_6.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "object-services": {
+    "path": "lost3dsg/src/perception_module/object_services.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "openai-habitat-assistant": {
+    "path": "lost3dsg/src/perception_module/openai_habitat_assistant.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "pal-mounts": {
+    "path": "graphapi_cli/pal_mounts.py",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Internal managed implementation; use graphapi --help"
+  },
+  "perception-2": {
+    "path": "lost3dsg/src/perception_module/perception_2.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "perception-save": {
+    "path": "lost3dsg/perception_save.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "persistent-habitat-feed": {
+    "path": "lost3dsg/test/persistent_habitat_feed.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "preflight-gate": {
+    "path": "lost3dsg/test/preflight_gate.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "prepare-models": {
+    "path": "graphapi_cli/prepare_models.py",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Internal managed implementation; use graphapi --help"
+  },
+  "profile-feed-node": {
+    "path": "lost3dsg/test/profile_feed_node.sh",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "query-map": {
+    "path": "lost3dsg/src/perception_module/query_map.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "regen-arm-configs": {
+    "path": "lost3dsg/test/regen_arm_configs.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "regression-check": {
+    "path": "lost3dsg/test/regression_check.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "replay-server": {
+    "path": "lost3dsg/dashboard/replay_server.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "replay-view": {
+    "path": "lost3dsg/dashboard/replay_view.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "resource-monitor": {
+    "path": "lost3dsg/test/resource_monitor.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "run-habitat-script": {
+    "path": "lost3dsg/src/perception_module/run_habitat_script.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "run-hm3d-metrics": {
+    "path": "lost3dsg/src/perception_module/run_hm3d_metrics.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "run-metrics": {
+    "path": "lost3dsg/src/perception_module/run_metrics.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "run-monitor": {
+    "path": "lost3dsg/test/run_monitor.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "run-pipelines": {
+    "path": "run_pipelines.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi legacy run_pipelines"
+  },
+  "run-sensor-config": {
+    "path": "lost3dsg/test/run_sensor_config.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "run-sim": {
+    "path": "run_sim.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi run sim"
+  },
+  "run-sim-headless": {
+    "path": "run_sim_headless.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi run sim"
+  },
+  "run-tiago": {
+    "path": "run_tiago.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi run tiago physical / run tiago bag"
+  },
+  "scene-script": {
+    "path": "lost3dsg/src/perception_module/scene_script.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "scene3d": {
+    "path": "lost3dsg/dashboard/scene3d.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "schedule-batch": {
+    "path": "lost3dsg/test/schedule_batch.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "schedule-runs": {
+    "path": "lost3dsg/test/schedule_runs.py",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi batch SCHEDULE"
+  },
+  "script-ledger": {
+    "path": "lost3dsg/src/perception_module/script_ledger.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "server": {
+    "path": "lost3dsg/dashboard/server.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "smoke-test": {
+    "path": "lost3dsg/test/smoke_test.sh",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "stamp-floor": {
+    "path": "lost3dsg/test/stamp_floor.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "stamp-map-provenance": {
+    "path": "lost3dsg/test/stamp_map_provenance.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "start-tiago-no-gpu": {
+    "path": "start_tiago_no_gpu.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi legacy start_tiago_no_gpu to preserve this optional launcher"
+  },
+  "test-backend-selection": {
+    "path": "lost3dsg/src/perception_module/cloud/test_backend_selection.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-bbox-fusion": {
+    "path": "lost3dsg/src/perception_module/test_bbox_fusion.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-bbox-fusion-parallel": {
+    "path": "lost3dsg/src/perception_module/test_bbox_fusion_parallel.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-best-frame": {
+    "path": "lost3dsg/src/perception_module/viewer/test_best_frame.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-bootstrap": {
+    "path": "tools/startup/test_bootstrap.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-bounding-box-path": {
+    "path": "lost3dsg/test/test_bounding_box_path.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-cli": {
+    "path": "tools/startup/test_cli.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-cloud-backend": {
+    "path": "lost3dsg/src/perception_module/cloud/test_cloud_backend.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-config": {
+    "path": "lost3dsg/src/perception_module/test_config.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-ctrl-server": {
+    "path": "lost3dsg/test/test_ctrl_server.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-delegates": {
+    "path": "lost3dsg/src/perception_module/cloud/test_delegates.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-detection-index": {
+    "path": "lost3dsg/test/test_detection_index.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-env-stamp": {
+    "path": "lost3dsg/test/test_env_stamp.sh",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-ga441-scheduled-tour": {
+    "path": "lost3dsg/test/test_ga441_scheduled_tour.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-ga473-feed-payload-names": {
+    "path": "lost3dsg/test/test_ga473_feed_payload_names.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-ga479-schedule-markers": {
+    "path": "lost3dsg/test/test_ga479_schedule_markers.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-ga480-sampling-policy-removed": {
+    "path": "lost3dsg/test/test_ga480_sampling_policy_removed.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-ga481-coverage-and-time": {
+    "path": "lost3dsg/test/test_ga481_coverage_and_time.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-ga493-capture-inputs": {
+    "path": "lost3dsg/test/test_ga493_capture_inputs.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-gemini-vlm": {
+    "path": "lost3dsg/test/test_gemini_vlm.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-gt-bbox-layers": {
+    "path": "lost3dsg/test/test_gt_bbox_layers.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-latency-accounting": {
+    "path": "lost3dsg/src/perception_module/test_latency_accounting.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-metadata-heredoc-comments": {
+    "path": "lost3dsg/test/test_metadata_heredoc_comments.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-metadata-spawn-floor-json": {
+    "path": "lost3dsg/test/test_metadata_spawn_floor_json.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-multi-floor-launcher-contract": {
+    "path": "lost3dsg/test/test_multi_floor_launcher_contract.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-multi-floor-session": {
+    "path": "lost3dsg/test/test_multi_floor_session.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-multi-floor-verify-actions": {
+    "path": "lost3dsg/test/test_multi_floor_verify_actions.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-nms-degenerate": {
+    "path": "lost3dsg/src/perception_module/test_nms_degenerate.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-observation-provenance": {
+    "path": "lost3dsg/test/test_observation_provenance.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-persistent-habitat-feed": {
+    "path": "lost3dsg/test/test_persistent_habitat_feed.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "diagnostic"
+  },
+  "test-preflight-gate": {
+    "path": "lost3dsg/test/test_preflight_gate.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-room-frames": {
+    "path": "lost3dsg/src/perception_module/test_room_frames.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-routes": {
+    "path": "lost3dsg/dashboard/test_routes.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-scene-script-evaluation": {
+    "path": "lost3dsg/test/test_scene_script_evaluation.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-terminating-node": {
+    "path": "lost3dsg/test/test_terminating_node.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "test-tiago-mapping": {
+    "path": "lost3dsg/test/test_tiago_mapping.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "diagnostic"
+  },
+  "tf-filter-relay": {
+    "path": "tiago/found-docker/tf_filter_relay.py",
+    "kind": "script",
+    "environment": "pal",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "tiago-host-dds": {
+    "path": "tiago/tiago-host-dds.sh",
+    "kind": "script",
+    "environment": "host",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "time-metrics": {
+    "path": "lost3dsg/test/time_metrics.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "tools-baselines-gin": {
+    "path": "tools/baselines/gin.sh",
+    "kind": "script",
+    "environment": "host",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "view-rviz": {
+    "path": "lost3dsg/test/view_rviz.sh",
+    "kind": "internal",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public",
+    "use": "Use graphapi view"
+  },
+  "visual-reid": {
+    "path": "lost3dsg/src/perception_module/visual_reid.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "visualizzazione-mappa": {
+    "path": "lost3dsg/src/perception_module/visualizzazione_mappa.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  },
+  "voronoi-roadmap": {
+    "path": "lost3dsg/test/voronoi_roadmap.py",
+    "kind": "script",
+    "environment": "habitat",
+    "gpu": true,
+    "visibility": "public"
+  },
+  "wall-detector": {
+    "path": "lost3dsg/src/perception_module/wall_detector.py",
+    "kind": "script",
+    "environment": "ros",
+    "gpu": false,
+    "visibility": "public"
+  }
+}

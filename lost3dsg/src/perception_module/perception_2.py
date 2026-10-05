@@ -36,7 +36,8 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 import rclpy  # noqa: E402
 import tf2_ros  # noqa: E402
-import torch  # noqa: E402
+from graphapi_cli.torch_startup import import_torch  # noqa: E402
+torch = import_torch()
 from config import CFG, motion_gate, world_frame  # noqa: E402
 from detection_archive import (  # noqa: E402
     DetectionArchive, frame_id_from_stamp, resolve_archive_dir)
@@ -858,7 +859,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
         if self.manual_trigger_requested:
             self.log_both("info", "timer: manual trigger requested")
-            if self.camera_data.get_synced_data() is not None:
+            if self.camera_data.get_synced_data(consume=False) is not None:
                 self._run_perception_cycle("=== MANUAL PERCEPTION TRIGGERED ===")
                 self.manual_trigger_requested = False
             else:
@@ -867,7 +868,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
         if not self.first_detection_done:
             self.log_both("info", "timer: first detection not done yet")
-            if self.camera_data.get_synced_data() is not None:
+            if self.camera_data.get_synced_data(consume=False) is not None:
                 self._run_perception_cycle("First detection: data available — starting perception.")
             else:
                 self.log_both("info", "timer: synced camera data not ready yet")

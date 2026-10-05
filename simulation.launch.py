@@ -1,3 +1,5 @@
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import LaunchConfiguration
@@ -10,7 +12,7 @@ def generate_launch_description():
 
     declare_map_yaml = DeclareLaunchArgument(
         'map_yaml',
-        default_value='/root/tiago_public_ws/src/pal_maps/maps/tiago_world/my_map_1.yaml',
+        default_value=str(Path(get_package_share_directory('pal_maps')) / 'maps/tiago_world/my_map_1.yaml'),
         description='La tua mappa salvata'
     )
 
@@ -84,7 +86,7 @@ def generate_launch_description():
                 package='rviz2',
                 executable='rviz2',
                 name='rviz2',
-                arguments=['-d', '/root/exchange/lost3dsg/rviz/default.rviz'],
+                arguments=['-d', str(Path(get_package_share_directory('lost3dsg')) / 'rviz/live.rviz')],
                 parameters=[{'use_sim_time': True}],
                 output='screen',
             )

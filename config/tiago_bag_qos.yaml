@@ -1,0 +1,12 @@
+# Retain every recorded static TF batch for nodes that finish loading after
+# playback begins. A bag can contain more batches than the player's default
+# history of ten; losing a batch disconnects the robot and camera TF trees.
+/tf_static:
+  history: keep_all
+  reliability: reliable
+  durability: transient_local
+/robot_description:
+  history: keep_last
+  depth: 1
+  reliability: reliable
+  durability: transient_local

@@ -253,7 +253,7 @@ def test_no_health_component_reports_itself_active_unconditionally():
 
 # GRAPH-API is the CONSOLIDATED checkout since 2026-09-10; the vendored submodule is retired.
 # Resolved the same way found/hooks.py and found/probes.py do, so the three agree.
-VENDOR = Path(os.environ.get("GRAPH_API_ROOT", "/DATA/GRAPH-API")) / "lost3dsg"
+VENDOR = Path(os.environ.get("GRAPH_API_ROOT", str(HERE.parents[1]))) / "lost3dsg"
 
 
 _STUB_ROOTS = {"rclpy", "cv2", "cv_bridge", "sensor_msgs", "std_msgs", "geometry_msgs", "lost3dsg",
@@ -265,9 +265,12 @@ def _purge_modules(before):
     sys.modules (rclpy, cv2, config...) breaks unrelated tests in the same session. Only
     these names: dropping numpy re-imports its C extension, which refuses ("cannot load
     module more than once per process")."""
-    for name in set(sys.modules) - before:
+    for name in list(sys.modules):
         if name.split(".")[0] in _STUB_ROOTS or name.endswith("_under_test"):
-            del sys.modules[name]
+            if name in before:
+                sys.modules[name] = before[name]
+            else:
+                del sys.modules[name]
 
 
 def _load_module(path, name):
@@ -293,7 +296,7 @@ def test_bridge_objects_carry_the_admission_grade_and_the_log_is_read_incrementa
         return json.dumps({"kind": "link", "object": oid, "decision_id": did, "label": label})
 
     noise = json.dumps({"kind": "merge_refused", "outcome": "decline"})
-    before, prev = set(sys.modules), os.environ.get("GRAPH_API_OUTPUT_DIR")
+    before, prev = dict(sys.modules), os.environ.get("GRAPH_API_OUTPUT_DIR")
     with tempfile.TemporaryDirectory() as d:
         out = Path(d)
         (out / "persistent_perception.json").write_text(json.dumps([
@@ -341,7 +344,7 @@ def test_feed_host_grade_toggles_filter_and_count():
     the HUD count beside each is per grade -- or None (rendered "n/a") when the bridge sent
     no grade at all, which is a different statement from 0."""
     import types
-    before = set(sys.modules)
+    before = dict(sys.modules)
     try:
         hab = types.ModuleType("habitat_sim")
         hab.agent = types.SimpleNamespace(ActionSpec=object, ActuationSpec=object,
@@ -389,7 +392,7 @@ def test_replay_reads_no_live_service():
         b = Path(td) / "20260101_000000_test"
         b.mkdir()
         (b / "persistent_perception.json").write_text("[]")
-        before = set(sys.modules)
+        before = dict(sys.modules)
         real = urllib.request.urlopen
         def refuse(*a, **k):
             raise AssertionError(f"network call in replay: {a[0]}")
@@ -441,6 +444,151 @@ def test_live_app_serves_what_the_tools_menu_links():
     assert {"/bundles", "/start_rviz", "/replay"} <= paths
 
 
+def test_live_proxy_follows_a_run_started_after_the_dashboard(monkeypatch, tmp_path):
+    import io
+    import urllib.request
+    from fastapi.testclient import TestClient
+
+    rs = _replay_server()
+    rs.BRIDGE_URL = "http://127.0.0.1:8081"
+    monkeypatch.setattr(rs, "discovered_bridge_port", lambda: 18042)
+    urls = []
+
+    def open_response(request, **_kwargs):
+        urls.append(request.full_url)
+        response = io.BytesIO(b'{"objects": [1]}')
+        response.status = 200
+        response.headers = {"Content-Type": "application/json"}
+        return response
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_response)
+    with TestClient(rs.build_live_app(tmp_path)) as client:
+        response = client.get("/graph_data")
+    assert response.status_code == 200
+    assert response.json() == {"objects": [1]}
+    assert urls == ["http://127.0.0.1:18042/graph_data"]
+
+
+def test_live_camera_stream_closes_when_bridge_truncates_chunked_response(monkeypatch, tmp_path):
+    import http.client
+    import urllib.request
+    from fastapi.testclient import TestClient
+
+    class Upstream:
+        status = 200
+        headers = {"Content-Type": "multipart/x-mixed-replace; boundary=frame"}
+        closed = False
+        reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.closed = True
+
+        def read1(self, _size):
+            self.reads += 1
+            if self.reads == 1:
+                return b"--frame\r\nContent-Type: image/jpeg\r\n\r\nframe\r\n"
+            raise http.client.IncompleteRead(b"")
+
+    upstream = Upstream()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_args, **_kwargs: upstream)
+    rs = _replay_server()
+    monkeypatch.setattr(rs, "discovered_bridge_port", lambda: None)
+    app = rs.build_live_app(tmp_path)
+    with TestClient(app) as client:
+        response = client.get("/feed")
+    assert response.status_code == 200
+    assert response.content.endswith(b"frame\r\n")
+    assert upstream.closed
+
+
+def test_live_nonstream_truncation_returns_an_explicit_bridge_error(monkeypatch, tmp_path):
+    import http.client
+    import urllib.request
+    from fastapi.testclient import TestClient
+
+    class Upstream:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+        closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.closed = True
+
+        def read(self):
+            raise http.client.IncompleteRead(b'{"objects":')
+
+    upstream = Upstream()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_args, **_kwargs: upstream)
+    rs = _replay_server()
+    monkeypatch.setattr(rs, "discovered_bridge_port", lambda: None)
+    with TestClient(rs.build_live_app(tmp_path)) as client:
+        response = client.get("/graph_data")
+    assert response.status_code == 503
+    assert "IncompleteRead" in response.json()["error"]
+    assert upstream.closed
+
+
+def test_rviz_button_targets_acquisition_through_shared_service(monkeypatch):
+    from types import SimpleNamespace
+    from graphapi_cli import viewer
+    rs = _replay_server()
+    row = {"operation_id": "acquisition-id"}
+    seen = {}
+    monkeypatch.setattr(viewer, "acquisition", lambda workspace: row)
+
+    def launch(root, env, selected, *, detach):
+        seen.update(row=selected, detach=detach)
+        return {"started": True, "operation_id": selected["operation_id"]}
+
+    monkeypatch.setattr(viewer, "start", launch)
+    with tempfile.TemporaryDirectory() as td:
+        app = rs.build_live_app(Path(td))
+        endpoint = next(route.endpoint for route in app.routes if route.path == "/start_rviz")
+        result = endpoint(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")))
+    assert result["operation_id"] == "acquisition-id"
+    assert seen == {"row": row, "detach": True}
+
+
+def test_rviz_button_reports_startup_failure(monkeypatch):
+    from types import SimpleNamespace
+    from graphapi_cli import viewer
+    rs = _replay_server()
+
+    def missing(workspace):
+        raise ValueError("RViz requires exactly one active acquisition; found 0")
+
+    monkeypatch.setattr(viewer, "acquisition", missing)
+    with tempfile.TemporaryDirectory() as td:
+        app = rs.build_live_app(Path(td))
+        endpoint = next(route.endpoint for route in app.routes if route.path == "/start_rviz")
+        result = endpoint(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")))
+    assert result.status_code == 409
+    assert json.loads(result.body)["started"] is False
+    assert "found 0" in json.loads(result.body)["reason"]
+
+
+def test_rviz_button_only_accepts_local_requests(monkeypatch):
+    from types import SimpleNamespace
+    from graphapi_cli import viewer
+    rs = _replay_server()
+
+    def unexpected(workspace):
+        raise AssertionError("remote request must not launch Docker")
+
+    monkeypatch.setattr(viewer, "acquisition", unexpected)
+    with tempfile.TemporaryDirectory() as td:
+        app = rs.build_live_app(Path(td))
+        endpoint = next(route.endpoint for route in app.routes if route.path == "/start_rviz")
+        result = endpoint(SimpleNamespace(client=SimpleNamespace(host="192.0.2.1")))
+    assert result.status_code == 403
+
+
 def test_replay_verdicts_are_keyed_the_way_the_page_reads_them():
     """GA-239 changed object_verdicts' shape; /replay/verdicts passed it through and the page
     counted its four keys as four objects (0/0/0/0 on every bundle). One grade per label where
@@ -458,7 +606,7 @@ def test_replay_verdicts_are_keyed_the_way_the_page_reads_them():
         (b / "hook_decisions.jsonl").write_text("\n".join([
             adm("d1", "admit", "chair#1"), adm("d2", "decline", "chair#1"), adm("d3", "hold", "lamp#1"),
             json.dumps({"kind": "link", "decision_id": "d3", "object": "obj_x"})]) + "\n")
-        before = set(sys.modules)
+        before = dict(sys.modules)
         prev_runs = os.environ.get("GRAPH_API_RUNS_DIR")
         os.environ["GRAPH_API_RUNS_DIR"] = str(root)          # replay_view reads it at import
         sys.modules.pop("replay_view", None)
@@ -488,7 +636,7 @@ def test_runs_root_follows_the_environment_like_its_siblings():
     prev = os.environ.get("GRAPH_API_RUNS_DIR")
     with tempfile.TemporaryDirectory() as td:
         os.environ["GRAPH_API_RUNS_DIR"] = td
-        before = set(sys.modules)
+        before = dict(sys.modules)
         try:
             spec = _il.spec_from_file_location("rs_env_probe", HERE / "replay_server.py")
             mod = _il.module_from_spec(spec)
@@ -504,15 +652,16 @@ def test_runs_root_follows_the_environment_like_its_siblings():
     # deployment's path any more: the dashboard now ships upstream, so an unset checkout must get a
     # directory beside ITS OWN tree and an empty bundle picker, rather than silently reading runs
     # that belong to whoever happens to have a directory at a hardcoded location.
-    before = set(sys.modules)
+    before = dict(sys.modules)
     prev_root = os.environ.get("GRAPH_API_ROOT")
     try:
         os.environ["GRAPH_API_ROOT"] = "/tmp/some-graph-api-checkout"
         spec = _il.spec_from_file_location("rs_env_probe2", HERE / "replay_server.py")
         mod = _il.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        assert str(mod.RUNS_ROOT) == "/tmp/some-graph-api-checkout/runs", str(mod.RUNS_ROOT)
-        assert str(mod.RUNS_ROOT).startswith("/tmp/some-graph-api-checkout"), \
+        expected = Path(os.environ.get("WORKSPACE_ROOT", "/tmp/some-graph-api-checkout")) / "results"
+        assert mod.RUNS_ROOT == expected, str(mod.RUNS_ROOT)
+        assert str(mod.RUNS_ROOT).startswith(str(expected.parent)), \
             "the default must follow this tree, not a deployment; that is what lets it ship"
     finally:
         if prev_root is None:
@@ -578,7 +727,7 @@ def test_transport_bar_is_served_in_both_modes_and_pollers_blocked_only_in_repla
         # both spellings: loose module and package module, whichever an extension imported first
         _rv = ("replay_view", f"{__package__}.replay_view" if __package__ else "replay_view")
         parked = {k: sys.modules.pop(k) for k in _rv if k in sys.modules}
-        before = set(sys.modules)
+        before = dict(sys.modules)
         try:
             rs.RUNS_ROOT = Path(td)
             rs.MODE.update(mode="replay", why="test")
@@ -1031,7 +1180,7 @@ def test_the_bundle_tag_says_which_machine_recorded_it():
     prev = os.environ.get("GRAPH_API_RUNS_DIR")
     with tempfile.TemporaryDirectory() as td:
         os.environ["GRAPH_API_RUNS_DIR"] = td
-        before = set(sys.modules)
+        before = dict(sys.modules)
         try:
             rs.RUNS_ROOT = Path(td)
             here = _sock.gethostname()
@@ -1150,7 +1299,7 @@ def test_the_log_panel_shows_every_source_not_just_the_loudest():
         os.environ["GRAPH_API_RUNS_DIR"] = td
         _rv = ("replay_view", f"{__package__}.replay_view" if __package__ else "replay_view")
         parked = {k: sys.modules.pop(k) for k in _rv if k in sys.modules}
-        before = set(sys.modules)
+        before = dict(sys.modules)
         try:
             rs.RUNS_ROOT = Path(td)
             rs.MODE.update(mode="replay", why="test")

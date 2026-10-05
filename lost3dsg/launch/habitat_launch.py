@@ -40,6 +40,9 @@ Poi ricompila:
 """
 
 import os
+import json
+from pathlib import Path
+import time
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -49,12 +52,32 @@ from launch.actions import (
     TimerAction,
     DeclareLaunchArgument,
     SetEnvironmentVariable,
+    RegisterEventHandler,
+    EmitEvent,
 )
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (EnvironmentVariable, LaunchConfiguration,
                                   PathJoinSubstitution, PythonExpression)
 from launch_ros.actions import Node
+
+
+def _record_process_exit(event, context):
+    details = event.action.process_details
+    name = details.get('name', 'unknown')
+    optional = 'rviz' in name.lower()
+    during_shutdown = bool(context.is_shutdown)
+    output = Path(os.environ.get('GRAPH_API_OUTPUT_DIR', '/ws/output'))
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / 'component_events.jsonl').open('a') as stream:
+        stream.write(json.dumps({'event': 'exit', 'component': name, 'pid': event.pid,
+                                 'returncode': event.returncode, 'required': not optional,
+                                 'during_shutdown': during_shutdown, 'time': time.time()}) + '\n')
+    if not optional and not during_shutdown:
+        return [EmitEvent(event=Shutdown(reason=f'required component {name} exited: {event.returncode}'))]
+    return []
 
 
 def generate_launch_description():
@@ -347,6 +370,8 @@ def generate_launch_description():
         bridge_delay_arg,
         rtabmap_output_arg,
         SetEnvironmentVariable('GRAPH_API_OUTPUT_DIR', metrics_output_dir),
+        SetEnvironmentVariable('GRAPH_API_AUTOSTART', '0'),
+        RegisterEventHandler(OnProcessExit(on_exit=_record_process_exit)),
         metrics_collector,
         rtabmap_launch,
         delayed_perception,
