@@ -11,11 +11,6 @@ ROOT = Path(__file__).resolve().parents[2]
 def generate(root):
     result = {}
     paths = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.py", "*.sh"], cwd=root, text=True).splitlines()
-    public_shell = {"run_sim.sh": "graphapi run sim", "run_sim_headless.sh": "graphapi run sim",
-                    "install.sh": "graphapi setup sim", "run_tiago.sh": "graphapi run tiago physical / run tiago bag",
-                    "run_pipelines.sh": "graphapi legacy run_pipelines", "eval.sh": "graphapi eval",
-                    "monitor.sh": "graphapi tools run run-monitor",
-                    "lost3dsg/test/view_rviz.sh": "graphapi view"}
     for relative in paths:
         p = root / relative
         if p.suffix == ".py":
@@ -39,22 +34,12 @@ def generate(root):
                 env = "pal"
             if "habitat" in slug or slug in {"schedule-batch", "voronoi-roadmap", "hm3d-ground-truth-manifest", "sample-tour"}:
                 env, gpu = "habitat", True
-            if p.suffix == ".sh" and relative in public_shell:
-                kind = "internal"
-            elif relative in ("connect_gin.sh", "tiago/tiago-host-dds.sh"):
+            if relative == "tiago/tiago-host-dds.sh":
                 env = "host"
-            if relative in ("start_tiago_no_gpu.sh",):
-                kind = "internal"
-            if relative == "tools/baselines/gin.sh":
-                slug, env = "baseline-native", "host"
         if slug in result:
             slug = relative.replace("/", "-").rsplit(".", 1)[0].replace("_", "-")
         visibility = "diagnostic" if ("test" in p.stem or "/old/" in relative or "/efficientvit/" in relative) else "public"
         entry = {"path": relative, "kind": kind, "environment": env, "gpu": gpu, "visibility": visibility}
-        if relative in public_shell:
-            entry["use"] = "Use " + public_shell[relative]
-        if relative == "start_tiago_no_gpu.sh":
-            entry["use"] = "Use graphapi legacy start_tiago_no_gpu to preserve this optional launcher"
         if relative == "lost3dsg/test/live_stack_container.sh":
             entry.update(kind="internal", use="Internal ROS supervisor; use graphapi run sim")
         if relative == "tiago/found-docker/found-robot-stack.sh":
@@ -65,8 +50,15 @@ def generate(root):
             entry["module"] = relative[:-3].replace("/", ".")
         if relative.startswith("graphapi_cli/"):
             entry.update(kind="internal", use="Internal managed implementation; use graphapi --help")
+        public_runtime = {
+            "graphapi_cli/runtime/connect_gin.sh": "host",
+            "graphapi_cli/runtime/baseline_native.sh": "host",
+            "graphapi_cli/runtime/run_pipelines.sh": "orchestrator",
+        }
+        if relative in public_runtime:
+            entry.update(kind="script", environment=public_runtime[relative])
+            entry.pop("use", None)
         result[slug] = entry
-    result["connect-gin"]["path"] = "graphapi_cli/runtime/connect_gin.sh"
     # Library-style baseline entrypoint deliberately has no main guard.
     result["baseline-entrypoint"] = {"path": "tools/baselines/entrypoint.py", "module": "tools.baselines.entrypoint",
                                       "kind": "script", "environment": "orchestrator", "gpu": False, "visibility": "public"}

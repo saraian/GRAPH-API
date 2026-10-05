@@ -26,7 +26,7 @@ def run_tool(root, env, name, arguments, dry_run=False, _managed=False):
     entry = entries[name]
     if entry["kind"] == "internal":
         raise ValueError(entry["use"])
-    if not dry_run:
+    if not dry_run and not (entry["path"] == "graphapi_cli/runtime/run_pipelines.sh" and arguments[:1] in (["--help"], ["-h"])):
         from .credentials import prepare_tool_credentials
         cfg = prepare_tool_credentials(root, entry, env)
         if _managed and cfg is not None:

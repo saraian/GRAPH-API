@@ -76,13 +76,13 @@ Physical mode defaults:
   --rviz/--no-rviz and --no-perception/--perception control optional windows.
 
 Bag mode:
-  ./run_tiago.sh physical
-  ./run_tiago.sh physical --resume --rviz
-  ./run_tiago.sh bag BAG_NAME
-  ./run_tiago.sh bag BAG_NAME --rtabmap
-  ./run_tiago.sh bag bags/BAG_NAME --rtabmap --rviz --resume
-  TIAGO_BAG_PATH=/path/to/bag ./run_tiago.sh new
-  TIAGO_BAG_PATH=/path/to/bag ./run_tiago.sh start  # compatibility resume form
+  ./graphapi run tiago physical
+  ./graphapi run tiago physical --resume --gui
+  ./graphapi run tiago bag /data/bags/BAG_NAME
+  ./graphapi run tiago bag /data/bags/BAG_NAME --map-source slam
+  ./graphapi run tiago bag /data/bags/BAG_NAME --map-source slam --gui --resume
+  ./graphapi run tiago bag /path/to/bag
+  ./graphapi run tiago bag /path/to/bag --resume
   TIAGO_BAG_PATH may be a host path under TIAGO_BAG_DIR or a container path
   under /bags.  TIAGO_BAG_DIR defaults to $REPO_DIR/bags.
   TIAGO_BAG_RATE=1.0 and TIAGO_BAG_LOOP=1 control playback.
@@ -400,7 +400,7 @@ fi
 if [ "$BAG_MODE" = 1 ]; then
   if [ -z "$TIAGO_BAG_PATH" ]; then
     echo "bag mode requires BAG_NAME or TIAGO_BAG_PATH=/path/to/rosbag-directory" >&2
-    echo "example: ./run_tiago.sh bag rosbag2_..." >&2
+    echo "example: ./graphapi run tiago bag /path/to/rosbag2_..." >&2
     exit 2
   fi
   case "$TIAGO_BAG_PATH" in
@@ -780,7 +780,7 @@ ensure_container() {
         ;;
       *)
         echo "container '$CONTAINER' does not exist" >&2
-        echo "run ./run_tiago.sh physical to bootstrap the default container" >&2
+        echo "run ./graphapi run tiago physical to bootstrap the default container" >&2
         exit 1
         ;;
     esac

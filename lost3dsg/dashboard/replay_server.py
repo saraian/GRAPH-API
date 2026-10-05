@@ -2175,7 +2175,6 @@ def with_tools_menu(html: str) -> str:
 # The checkout the runs directory sits in, used only to DISPLAY default paths in the
 # launcher form. Derived, never a literal, so it names no deployment.
 RUNS_PARENT = RUNS_ROOT.parent
-LIVE_RUN = GRAPH_API_ROOT / "run_sim.sh"   # was run_sim.sh; inlined into run_sim.sh 2026-09-11
 LAUNCH_LOG_DIR = Path(tempfile.gettempdir()) / "found-launcher"
 
 # The four the script's own `case` statement accepts. Anything else exits 1 before it starts,

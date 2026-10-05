@@ -223,13 +223,15 @@ def test_tool_passes_key_to_docker_and_saves_only_redacted_config(project, monke
     assert "tool-test-key" not in Path(env["GRAPH_API_CONFIG"]).read_text()
 
 
-def test_legacy_parallel_launcher_rejects_missing_key_before_spawning(project, monkeypatch):
+def test_parallel_tool_rejects_missing_key_before_spawning(project, monkeypatch):
     root, env, _, _ = project
     spawn = Mock(side_effect=AssertionError("must not spawn pipelines"))
     monkeypatch.setattr("graphapi_cli.cli.subprocess.run", spawn)
-    args = SimpleNamespace(launcher="run_pipelines", arguments=["0", "hm3d_00861"], local=None)
+    monkeypatch.setattr("graphapi_cli.catalogue.catalogue", lambda _root: {
+        "run-pipelines": {"kind": "script", "path": "graphapi_cli/runtime/run_pipelines.sh",
+                          "environment": "orchestrator", "gpu": False}})
     with pytest.raises(ConfigurationError, match="REGOLO_API_KEY"):
-        cli._legacy(root, env, args)
+        run_tool(root, env, "run-pipelines", ["0", "hm3d_00861"])
     spawn.assert_not_called()
 
 

@@ -1,26 +1,7 @@
 #!/usr/bin/env bash
-# THE ONLY SCRIPT A PERSON RUNS. There is nothing behind it.
-#
-# Owner, 2026-09-10: "ONE config file, ONE install script and ONE launch script."
-# Owner, 2026-09-11: "We're not using live_run.sh anymore. The storey schedule should come before
-# as a multi-storey run is actually multiple runs. live_run will have to be discarded and use the
-# official config of run and run_sim_headless.sh". So this file holds BOTH halves:
-#   the storeys are resolved FIRST, then one run is performed per storey.
-# lost3dsg/test/live_run.sh and lost3dsg/test/run_house.sh are DELETED. If a step anywhere names
-# either of them, the step is wrong.
-#
-# WHAT A BASE RUN IS (rule 73, owner 2026-09-10): the whole house, every storey, NO CAP, one
-# mapping session per storey. It produces ONE BUNDLE PER STOREY, not one per run. Nothing spans
-# the house: each storey's map has its own SLAM origin, so coverage, an object seen on two
-# storeys and the duplicate rate are all post-hoc joins across the bundles the manifest names.
-#
-#   ./run_sim.sh                       every storey of the scene in the config
-#   ./run_sim.sh hm3d_00861            that scene, this run only
-#   ./run_sim.sh --one-storey          a single storey
-#   ./run_sim.sh --multi-floor         ordered visits with one persistent Habitat world
-#   ./run_sim.sh --config <file>       a specific run configuration
-#   ./run_sim.sh --schedule <file>     a list of runs, each with its own configuration
-#   ./run_sim_headless.sh ...          the same, with no rviz and no preview window
+# Internal Habitat runtime, started by graphapi run sim.
+# The CLI owns setup, configuration, operation IDs and shutdown.
+# This script resolves storeys and runs one mapping session per storey.
 #
 # SETTINGS LIVE IN THE CONFIG FILE, not in flags here. A setting you cannot find in the config is
 # a bug in the config, not a missing flag. The environment still overrides for one run:
@@ -605,7 +586,7 @@ fi
 # variable that is only inherited is one some other caller can leave unset, and the stamp then
 # records "" while the run loads a config nobody named. The :? form is both the assignment and
 # the refusal, so there is one place to read rather than two.
-CFG_NAME="${CFG_NAME:?is not set. This section is not an entry point: run ./run_sim.sh or ./run_sim_headless.sh, which read the config and set it. Pass --config <file> to choose one.}"
+CFG_NAME="${CFG_NAME:?is not set. This section is not an entry point: run ./graphapi run sim, which reads the config and sets it. Pass --config <file> to choose one.}"
 # EXPORTED, because `docker run -e CFG_NAME` copies the parent process environment and a
 # shell variable that was only assigned is not in it. Without this the echo below prints
 # regolo while the container falls back to smoke_config.yaml — the operator reads one
@@ -1202,7 +1183,7 @@ IMAGE_TAG=${IMAGE_TAG:-hrai/sim:saved}
 if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
   echo "!! the container image '$IMAGE_TAG' is not on this machine, and no run can start without it."
   echo "   Build or load it, or name one that is present:"
-  echo "     IMAGE_TAG=<image> ./run_sim_headless.sh ..."
+  echo "     IMAGE_TAG=<image> ./graphapi run sim ..."
   echo "   Present now:"
   docker images --format '     {{.Repository}}:{{.Tag}}' | grep -iE 'graphapi|sim' || echo "     (no image here looks like a run image)"
   exit 1
@@ -1854,11 +1835,11 @@ done
 # --schedule` with the filename forgotten left SCHEDULE empty and STARTED A FULL HOUSE RUN.
 # An option that silently becomes a different command is worse than an unknown option.
 if [ "$_next_is_schedule" = "1" ]; then
-  echo "!! --schedule needs a file: ./run_sim.sh --schedule schedules/<name>.runs.yaml" >&2
+  echo "!! --schedule needs a file: ./graphapi batch config/<name>.runs.yaml" >&2
   exit 2
 fi
 if [ "$_next_is_config" = "1" ]; then
-  echo "!! --config needs a file: ./run_sim.sh --config schedules/configs/<name>.yaml" >&2
+  echo "!! --config needs a file: ./graphapi run sim --config config/<name>.yaml" >&2
   exit 2
 fi
 
@@ -1967,7 +1948,7 @@ fi
 # no endpoint, and the failure would otherwise arrive as a container error.
 if [ "${GRAPHAPI_MANAGED:-0}" != "1" ] && [ ! -f "$HERE/lost3dsg/test/env.local.sh" ] && [ ! -f "$HERE/config.local.yaml" ]; then
   echo "!! Not installed yet: no config.local.yaml (or lost3dsg/test/env.local.sh)." >&2
-  echo "   Run ./install.sh once, then fill in the values it names." >&2
+  echo "   Run ./graphapi setup sim once, then fill in the values it names." >&2
   exit 2
 fi
 

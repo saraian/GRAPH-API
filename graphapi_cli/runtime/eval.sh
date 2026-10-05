@@ -8,9 +8,9 @@
 #   5. time_metrics.py                  latency per stage, run/exploration/movement/online time
 #   6. eval_report.py                  Comparison_<stamp>.pdf with every statistic
 #
-#   ./eval.sh                    the newest run in the workspace
-#   ./eval.sh <bundle-dir>       that bundle
-#   ./eval.sh --force            rebuild the ground-truth manifest even if it exists
+#   ./graphapi eval                    the newest run in the workspace
+#   ./graphapi eval <bundle-dir>       that bundle
+#   ./graphapi eval --force            rebuild the ground-truth manifest even if it exists
 #
 # EVERYTHING IS WRITTEN INTO THE BUNDLE, under <bundle>/eval/, which is a host directory. Owner
 # instruction 2026-09-10: input and output data live outside the container, mounted as volumes.
@@ -38,7 +38,7 @@ if [ "${GRAPHAPI_MANAGED:-0}" != "1" ]; then
   [ -f "$HERE/lost3dsg/test/env.local.sh" ] && . "$HERE/lost3dsg/test/env.local.sh" 2>/dev/null || true
 fi
 if [ -z "$BUNDLE" ]; then
-  [ -n "${WORKSPACE_ROOT:-}" ] || { echo "!! no bundle given and WORKSPACE_ROOT is not set. Run ./install.sh, or pass a bundle directory." >&2; exit 2; }
+  [ -n "${WORKSPACE_ROOT:-}" ] || { echo "!! no bundle given and WORKSPACE_ROOT is not set. Run ./graphapi setup sim, or pass a bundle directory." >&2; exit 2; }
   BUNDLE="$WORKSPACE_ROOT/results/latest"
 fi
 BUNDLE="$(cd "$BUNDLE" 2>/dev/null && pwd)" || { echo "!! no such bundle: $BUNDLE" >&2; exit 2; }

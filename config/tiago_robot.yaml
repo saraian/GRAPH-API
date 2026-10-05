@@ -45,7 +45,7 @@ vlm:
   base_url: "https://api.regolo.ai/v1"
   model: "gemma4-31b"
   # Keep the credential out of this external config. Export REGOLO_API_KEY on the host;
-  # run_tiago.sh forwards it into the container for the runtime.
+  # graphapi forwards it into the container for the runtime.
   api_key: ""
   enable_thinking: false
   timeout: 120.0

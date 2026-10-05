@@ -136,11 +136,10 @@
   },
   "baseline-native": {
     "path": "graphapi_cli/runtime/baseline_native.sh",
-    "kind": "internal",
-    "environment": "ros",
+    "kind": "script",
+    "environment": "host",
     "gpu": true,
-    "visibility": "public",
-    "use": "Internal managed implementation; use graphapi --help"
+    "visibility": "public"
   },
   "baseline-night-remote": {
     "path": "tools/baselines/night_remote.py",
@@ -612,12 +611,12 @@
     "visibility": "public"
   },
   "eval": {
-    "path": "eval.sh",
+    "path": "graphapi_cli/runtime/eval.sh",
     "kind": "internal",
     "environment": "ros",
     "gpu": false,
     "visibility": "public",
-    "use": "Use graphapi eval"
+    "use": "Internal managed implementation; use graphapi --help"
   },
   "eval-report": {
     "path": "lost3dsg/test/eval_report.py",
@@ -795,14 +794,6 @@
     "gpu": false,
     "visibility": "diagnostic"
   },
-  "install": {
-    "path": "install.sh",
-    "kind": "internal",
-    "environment": "ros",
-    "gpu": false,
-    "visibility": "public",
-    "use": "Use graphapi setup sim"
-  },
   "label-norm": {
     "path": "lost3dsg/src/perception_module/label_norm.py",
     "kind": "script",
@@ -902,14 +893,6 @@
     "environment": "ros",
     "gpu": false,
     "visibility": "public"
-  },
-  "monitor": {
-    "path": "monitor.sh",
-    "kind": "internal",
-    "environment": "ros",
-    "gpu": false,
-    "visibility": "public",
-    "use": "Use graphapi tools run run-monitor"
   },
   "multi-floor-session": {
     "path": "lost3dsg/test/multi_floor_session.py",
@@ -1082,12 +1065,11 @@
     "visibility": "public"
   },
   "run-pipelines": {
-    "path": "run_pipelines.sh",
-    "kind": "internal",
-    "environment": "ros",
+    "path": "graphapi_cli/runtime/run_pipelines.sh",
+    "kind": "script",
+    "environment": "orchestrator",
     "gpu": false,
-    "visibility": "public",
-    "use": "Use graphapi legacy run_pipelines"
+    "visibility": "public"
   },
   "run-sensor-config": {
     "path": "lost3dsg/test/run_sensor_config.py",
@@ -1097,28 +1079,20 @@
     "visibility": "public"
   },
   "run-sim": {
-    "path": "run_sim.sh",
+    "path": "graphapi_cli/runtime/run_sim.sh",
     "kind": "internal",
     "environment": "ros",
     "gpu": false,
     "visibility": "public",
-    "use": "Use graphapi run sim"
-  },
-  "run-sim-headless": {
-    "path": "run_sim_headless.sh",
-    "kind": "internal",
-    "environment": "ros",
-    "gpu": false,
-    "visibility": "public",
-    "use": "Use graphapi run sim"
+    "use": "Internal managed implementation; use graphapi --help"
   },
   "run-tiago": {
-    "path": "run_tiago.sh",
+    "path": "graphapi_cli/runtime/run_tiago.sh",
     "kind": "internal",
     "environment": "ros",
     "gpu": false,
     "visibility": "public",
-    "use": "Use graphapi run tiago physical / run tiago bag"
+    "use": "Internal managed implementation; use graphapi --help"
   },
   "scene-script": {
     "path": "lost3dsg/src/perception_module/scene_script.py",
@@ -1183,14 +1157,6 @@
     "environment": "ros",
     "gpu": false,
     "visibility": "public"
-  },
-  "start-tiago-no-gpu": {
-    "path": "start_tiago_no_gpu.sh",
-    "kind": "internal",
-    "environment": "ros",
-    "gpu": false,
-    "visibility": "public",
-    "use": "Use graphapi legacy start_tiago_no_gpu to preserve this optional launcher"
   },
   "test-backend-selection": {
     "path": "lost3dsg/src/perception_module/cloud/test_backend_selection.py",
@@ -1464,21 +1430,6 @@
     "environment": "ros",
     "gpu": false,
     "visibility": "public"
-  },
-  "tools-baselines-gin": {
-    "path": "tools/baselines/gin.sh",
-    "kind": "script",
-    "environment": "host",
-    "gpu": false,
-    "visibility": "public"
-  },
-  "view-rviz": {
-    "path": "lost3dsg/test/view_rviz.sh",
-    "kind": "internal",
-    "environment": "ros",
-    "gpu": false,
-    "visibility": "public",
-    "use": "Use graphapi view"
   },
   "visual-reid": {
     "path": "lost3dsg/src/perception_module/visual_reid.py",

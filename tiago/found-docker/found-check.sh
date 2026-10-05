@@ -80,7 +80,7 @@ print("  VitSAM sessions ok (device", vitsam.device + ")")
 # The normal host wrapper prompts for this credential before it enters Docker,
 # but direct calls to found-robot-stack used to launch three failing VLM cycles
 # and only then kill perception. Make the stricter startup check opt-in so the
-# lightweight `run_tiago.sh check` remains useful without credentials.
+# lightweight `graphapi tiago check` remains useful without credentials.
 require_vlm = os.environ.get("FOUND_CHECK_REQUIRE_VLM", "0").strip().lower() in {
     "1", "true", "yes", "on"
 }

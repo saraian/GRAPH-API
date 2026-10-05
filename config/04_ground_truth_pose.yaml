@@ -1,5 +1,5 @@
 # 04_ground_truth_pose.yaml — a complete run configuration. Use it directly:
-#     ./run_sim_headless.sh --config schedules/configs/04_ground_truth_pose.yaml
+#     ./graphapi run sim --config config/04_ground_truth_pose.yaml
 # or name it from a schedule arm with `config_file:`.
 #
 # GROUND-TRUTH POSE WITHOUT AN ADMISSION FILTER. Separates localisation error from

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # WATCH THE RUN THAT IS HAPPENING ON THE LAB MACHINE, from here.
 #
-#   ./connect_gin.sh              open the viewer on http://localhost:8081
-#   ./connect_gin.sh --status     say what is running over there, then exit
-#   ./connect_gin.sh --port 9000  use a different local port
-#   ./connect_gin.sh --host Gin   a different ssh host (default: $GIN_HOST, else Gin)
+#   ./graphapi tools run connect-gin --              open the viewer on http://localhost:8081
+#   ./graphapi tools run connect-gin -- --status     say what is running over there, then exit
+#   ./graphapi tools run connect-gin -- --port 9000  use a different local port
+#   ./graphapi tools run connect-gin -- --host Gin   a different ssh host (default: $GIN_HOST, else Gin)
 #
 # WHY A TUNNEL AND NOT A URL. The run's viewer binds to 127.0.0.1 on the lab machine, on purpose:
 # the machine is shared with eight people's work and the bridge has no authentication. So it is

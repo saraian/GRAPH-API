@@ -154,7 +154,7 @@ start_stack() {
   if [ "$BAG_MODE" = 1 ]; then
     if [ -z "$BAG_PATH" ] || [ ! -d "$BAG_PATH" ] || [ ! -f "$BAG_PATH/metadata.yaml" ]; then
       echo "bag mode requires a mounted rosbag directory with metadata.yaml: $BAG_PATH" >&2
-      echo "run ./run_tiago.sh bag BAG_NAME with TIAGO_BAG_DIR set to the host bag directory" >&2
+      echo "run ./graphapi run tiago bag /path/to/BAG_DIRECTORY" >&2
       exit 1
     fi
     case "$BAG_FILTER_CONFLICTING" in

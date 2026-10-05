@@ -79,7 +79,7 @@ declare its scheduler-derived effective-frame boundary:
 
 ```bash
 DYNAMICGSG_DYNAMIC_START_FRAME=50 \
-tools/baselines/gin.sh dynamicgsg INPUT_EXPORT OUTPUT
+./graphapi baseline run dynamicgsg INPUT_EXPORT OUTPUT
 ```
 
 The default patch is

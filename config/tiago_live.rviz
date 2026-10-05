@@ -1,4 +1,4 @@
-# GA-369 (owner 2026-09-07: "a properly configured Rviz file"). Loaded by view_rviz.sh
+# GA-369 (owner 2026-09-07: "a properly configured Rviz file"). Loaded by graphapi view
 # (rviz2 -d /graph_api/lost3dsg/test/live.rviz) against the live stack. Fixed frame map.
 # Topics named here were measured on the mapping stack of run 20260907_172205 (ros2 topic list -t);
 # the object-manager MarkerArrays are published by object_manager_6.py / object_services.py.

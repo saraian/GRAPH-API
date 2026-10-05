@@ -176,8 +176,8 @@ def run(args):
                 options += ['--semantic-mapping-only']
             else:
                 options += ['--task-conditioned', '--tasks', *args.clio_tasks]
-        command = ['bash', str(root / 'native-integration/tools/baselines/gin.sh'), name,
-            str(native_recording), str(output)] + options
+        command = [str(root / 'native-integration/graphapi'), 'baseline', 'run', name,
+            str(native_recording), str(output), '--'] + options
         with (results / (tag + '.log')).open('w') as stream:
             process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT, env=env)
         entry = {'tag': tag, 'pid': process.pid, 'output': str(output),

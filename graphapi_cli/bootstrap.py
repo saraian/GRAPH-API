@@ -179,9 +179,7 @@ def host_action(root, arguments, env):
         instead = True
     elif remaining[:3] == ["run", "tiago", "physical"] or remaining[:2] in (["tiago", "start"], ["tiago", "new"]):
         action = ["apply"]
-    elif remaining[:2] == ["legacy", "run_tiago"] and remaining[2:3] in (["physical"], ["firewall"], ["start"], ["new"]):
-        action = ["apply"]
-    explicit_physical = remaining[:3] == ["run", "tiago", "physical"] or remaining[:3] == ["legacy", "run_tiago", "physical"]
+    explicit_physical = remaining[:3] == ["run", "tiago", "physical"]
     if action is None or not instead and (env.get("SKIP_TIAGO_HOST_DDS") == "1" or
                                           env.get("TIAGO_BAG_PATH") and not explicit_physical):
         return "none", [], []

@@ -78,7 +78,10 @@ VLM_TOOLS = {
 def prepare_tool_credentials(root, entry, env):
     from .configuration import resolve_config
     path = entry["path"]
-    if path in VLM_TOOLS:
+    parallel = path == "graphapi_cli/runtime/run_pipelines.sh"
+    if parallel and not uses_vlm({"mode": "sim"}, env):
+        return None
+    if path in VLM_TOOLS or parallel:
         _, cfg = resolve_config(root, env.get("GRAPH_API_CONFIG"), env.get("GRAPHAPI_LOCAL_CONFIG"))
         prepare_vlm_credentials(root, cfg, env)
         return cfg

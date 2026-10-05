@@ -5,7 +5,7 @@ Use `./graphapi run tiago physical` for the physical robot and
 Both run in the runner’s private PAL Docker container. Bag replay is an offline
 input to the pipeline; it does not simulate a robot in Gazebo or connect to one.
 `run tiago` requires a workflow. The historical `run bag` spelling is an alias
-for `run tiago bag`; `run_tiago.sh` is a compatibility adapter.
+for `run tiago bag`.
 
 | Workflow | Default map source | Default node configuration |
 | --- | --- | --- |
@@ -77,4 +77,5 @@ historical bag ROS launch files in private PAL Docker. Use `run tiago bag` for
 the managed pipeline above. Historical launch names remain compatibility aliases.
 
 See the [CLI help examples](../README.md#cli-help) for all commands and the existing
-compatibility environment variables in `./run_tiago.sh --help`.
+options in `./graphapi run tiago physical --help` and
+`./graphapi run tiago bag --help`.

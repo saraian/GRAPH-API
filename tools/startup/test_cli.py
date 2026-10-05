@@ -279,6 +279,43 @@ class StartupTest(unittest.TestCase):
         self.assertTrue(run.call_args.args[-1])
         self.assertEqual(run.call_args.args[-2],['map_yaml:=/data/map.yaml'])
 
+    def test_parallel_helper_uses_cli_gpu_and_config_and_returns_child_failure(self):
+        hostbin = self.work / 'bin'
+        hostbin.mkdir()
+        children = self.work / 'children.jsonl'
+        python = hostbin / 'python3'
+        python.write_text('#!/usr/bin/python3\n'
+                          'import json, os, sys\n'
+                          'with open(os.environ["GRAPHAPI_TEST_CHILDREN"], "a") as f:\n'
+                          '    f.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+                          'raise SystemExit(1 if "hm3d_fail" in sys.argv else 0)\n')
+        python.chmod(0o755)
+        sleep = hostbin / 'sleep'
+        sleep.write_text('#!/bin/bash\nexit 0\n')
+        sleep.chmod(0o755)
+        config = str(self.work / 'config with spaces.yaml')
+        env = dict(self.env, PATH=str(hostbin) + ':' + os.defpath,
+                   GRAPHAPI_ROOT=str(ROOT), GRAPH_API_CONFIG=config,
+                   GRAPHAPI_TEST_CHILDREN=str(children), LOG_DIR=str(self.work))
+        result = subprocess.run(['bash', str(ROOT / 'graphapi_cli/runtime/run_pipelines.sh'),
+                                 '0,1', 'hm3d_first', 'hm3d_fail'], env=env,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        launched = [json.loads(line) for line in children.read_text().splitlines()]
+        expected = [['-m', 'graphapi_cli.cli', 'run', 'sim', '--scene', scene,
+                     '--gpu', gpu, '--config', config]
+                    for scene, gpu in [('hm3d_first', '0'), ('hm3d_fail', '1')]]
+        self.assertCountEqual(launched, expected)
+
+    def test_baseline_options_separator_is_removed_before_calling_native_tool(self):
+        from graphapi_cli.cli import main
+        with patch('graphapi_cli.catalogue.run_tool', return_value=0) as run:
+            result = main(['baseline', 'run', 'clio', '/data/recording', '/data/output',
+                           '--', '--rate', '0.5'])
+        self.assertEqual(result, 0)
+        self.assertEqual(run.call_args.args[3],
+                         ['clio', '/data/recording', '/data/output', '--rate', '0.5'])
+
     def test_help_never_imports_ros_habitat_or_cuda(self):
         result = subprocess.run([sys.executable,'-m','graphapi_cli.cli','--help'],cwd=ROOT,capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)

@@ -1,7 +1,7 @@
 # Private TIAGo setup
 
 `graphapi run tiago physical` and `graphapi run tiago bag BAG_DIRECTORY` are the
-public TIAGO workflows; `run_tiago.sh` remains a compatibility adapter. The PAL development image and its
+public TIAGO workflows. The PAL development image and its
 credentials are intentionally not part of this repository.
 
 Put the private TIAGo bundle in this directory (or set `TIAGO_ISO_DIR` to

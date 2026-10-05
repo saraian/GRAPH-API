@@ -38,9 +38,10 @@ class PairSchedulingTests(unittest.TestCase):
             gt.write_text(json.dumps({key: [1] for key in
                 ('ground_truth_floors_m', 'ground_truth_regions',
                  'ground_truth_objects', 'rooms', 'categories')}))
-            launcher = root / 'native-integration/tools/baselines/gin.sh'
+            launcher = root / 'native-integration/graphapi'
             launcher.parent.mkdir(parents=True)
             launcher.write_text('''#!/bin/bash
+shift 2
 name=$1
 output=$3
 mkdir -p "$output"
@@ -52,6 +53,7 @@ fi
 sleep 0.1
 printf '%s\n' "$payload" > "$output/baseline_result.json"
 ''')
+            launcher.chmod(0o755)
             args = SimpleNamespace(run_root=root, acquisition_pid=os.getpid(),
                 baseline_roots=root / 'native', gpu=1, clio_gpu=1, hov_gpu=0,
                 parallel_distinct_gpus=True, laps=1, hov_skip_frames=50,
@@ -77,16 +79,16 @@ printf '%s\n' "$payload" > "$output/baseline_result.json"
             self.assertEqual(status['jobs']['hovsg']['gpu'], 0)
             self.assertTrue(status['jobs']['clio']['verified_complete'])
             self.assertTrue(status['jobs']['hovsg']['verified_complete'])
-            # Each baseline ingests the same recording at its own native rate: Clio the full
-            # stream, HOV-SG the shared manifest. On the stride-50 manifest Clio produced 4
-            # primitives where the contiguous stream produced 1,524 on the same scene.
-            launched = {name: status['jobs'][name]['attempts'][0]['command'][3]
+            # Changing the launcher preserves the shared input used by both baselines.
+            for name in ('clio', 'hovsg'):
+                self.assertEqual(status['jobs'][name]['attempts'][0]['command'][:3],
+                                 [str(root / 'native-integration/graphapi'), 'baseline', 'run'])
+            launched = {name: status['jobs'][name]['attempts'][0]['command'][4]
                         for name in ('clio', 'hovsg')}
-            self.assertEqual(launched['clio'], str(root / 'recording'))
+            self.assertEqual(launched['clio'], str(root / 'shared-input'))
             self.assertEqual(launched['hovsg'], str(root / 'shared-input'))
-            self.assertEqual(status['input_by_baseline']['clio']['path'], launched['clio'])
-            self.assertEqual(status['input_by_baseline']['hovsg']['path'], launched['hovsg'])
-            self.assertEqual(status['shared_observation_input']['used_by'], ['hovsg'])
+            self.assertEqual(status['shared_observation_input']['path'], launched['clio'])
+            self.assertEqual(status['shared_observation_input']['used_by'], ['clio', 'hovsg'])
 
 
 if __name__ == '__main__':

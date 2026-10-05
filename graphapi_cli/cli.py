@@ -146,12 +146,9 @@ def parser():
     tiago.add_argument("arguments", metavar="OPTIONS", nargs=argparse.REMAINDER, help="container name or action options; use network status to inspect the network")
     maps = commands.add_parser("maps", help="inspect the existing per-scene/per-floor map library")
     maps.add_argument("action", choices=("list",), help="list saved map databases")
-    legacy = commands.add_parser("legacy", help=argparse.SUPPRESS)
-    legacy.add_argument("launcher")
-    legacy.add_argument("arguments", nargs=argparse.REMAINDER)
     job = commands.add_parser("_job", help=argparse.SUPPRESS)
     job.add_argument("payload")
-    commands._choices_actions[:] = [a for a in commands._choices_actions if a.dest not in ("legacy", "_job")]
+    commands._choices_actions[:] = [a for a in commands._choices_actions if a.dest != "_job"]
     commands.metavar = "{" + ",".join(a.dest for a in commands._choices_actions) + "}"
     configure_help(ap)
     return ap
@@ -210,72 +207,6 @@ def _show_status(value, *, history=False):
             print(f"Bundle: {bundle}")
 
 
-def _legacy(root, env, args):
-    from .launch import start, runtime
-    name, argv = args.launcher, args.arguments
-    if name in ("run_sim", "run_sim_headless"):
-        # Translate the original argument grammar, including negative floor values in environment.
-        if "--schedule" in argv:
-            return subprocess.run([sys.executable, "-m", "graphapi_cli.cli", "batch", *argv[argv.index("--schedule") + 1:]], env=env).returncode
-        config, scene, flags = None, None, []
-        iterator = iter(argv)
-        for token in iterator:
-            if token == "--config":
-                config = next(iterator, None)
-                if config is None:
-                    raise ConfigurationError("--config requires a file")
-            elif token in ("--one-storey", "--multi-floor"):
-                flags.append(token)
-            elif token in ("--help", "-h"):
-                print(parser().format_help())
-                return 0
-            elif token.startswith("-"):
-                raise ConfigurationError(f"unknown simulation option: {token}")
-            else:
-                scene = token
-        if name == "run_sim_headless":
-            env["RVIZ"] = env["FEED_SHOW"] = "0"
-        row = start(root, {"mode": "sim", "config": config or args.config,
-                           "local": args.local, "scene": scene, "legacy_args": flags}, inherited=env)
-        return row["returncode"]
-    if name == "run_tiago" and argv and argv[0] in ("physical", "bag"):
-        mode = "tiago" if argv[0] == "physical" else "bag"
-        bag = None
-        tail = argv[1:]
-        if mode == "bag":
-            if not tail:
-                raise ConfigurationError("bag requires a bag directory")
-            candidate = Path(tail[0])
-            bag = str(path_from(candidate, root if candidate.parts[0] == "bags" else Path(env["TIAGO_BAG_DIR"])))
-            tail = tail[1:]
-        selected = args.config
-        if "--config" in tail:
-            index = tail.index("--config")
-            if index + 1 == len(tail):
-                raise ConfigurationError("--config requires a file")
-            selected = tail[index + 1]
-            tail = tail[:index] + tail[index + 2:]
-        map_source = "slam" if "--rtabmap" in tail else ("recorded" if mode == "bag" and "--no-rtabmap" in tail else None)
-        row = start(root, {"mode": mode, "bag": bag, "local": args.local,
-                           "config": selected, "map_source": map_source, "legacy_args": tail}, inherited=env)
-        return row["returncode"]
-    if name == "run_tiago" and argv and argv[0] in ("start", "new"):
-        return main(["--project", str(root), "tiago", *argv])
-    if name == "eval":
-        return main(["--project", str(root), "eval", *argv])
-    if name == "monitor":
-        from .catalogue import run_tool
-        return run_tool(root, env, "run-monitor", argv)
-    if name in ("run_tiago", "run_pipelines", "start_tiago_no_gpu", "connect_gin"):
-        if name == "run_pipelines" and not any(flag in argv for flag in ("--help", "-h")):
-            from .credentials import prepare_vlm_credentials, uses_vlm
-            if uses_vlm({"mode": "sim"}, env):
-                _, cfg = resolve_config(root, None, args.local)
-                prepare_vlm_credentials(root, cfg, env)
-        return subprocess.run(["bash", str(runtime(root, name)), *argv], cwd=root, env=env).returncode
-    raise ConfigurationError(f"unknown compatibility launcher: {name}")
-
-
 def _bundles(root, env, selector):
     from .registry import Registry
     candidate = path_from(selector, root)
@@ -303,7 +234,7 @@ def main(argv=None):
         command = args.command
         remainder = getattr(args, "arguments", [])
         boundary = remainder.index("--") if "--" in remainder else len(remainder)
-        if any(flag in remainder[:boundary] for flag in ("--help", "-h")) and command != "legacy":
+        if any(flag in remainder[:boundary] for flag in ("--help", "-h")):
             # Help without an explicit payload separator never launches a workflow.
             if command == "launch":
                 from .catalogue import catalogue, launch_name
@@ -346,8 +277,6 @@ def main(argv=None):
             payload = json.loads(Path(args.payload).read_text())
             row = execute(root, payload["request"], dict(os.environ), payload["state"])
             return row["returncode"]
-        if command == "legacy":
-            return _legacy(root, env, args)
         if command == "init":
             target = initialize(root, args.local)
             if args.workspace:
@@ -451,7 +380,8 @@ def main(argv=None):
                 env["GRAPH_API_CONFIG"] = str(path_from(args.config, root))
             if command == "tools" and args.action == "list":
                 entries = catalogue(root)
-                entries = {k: v for k, v in entries.items() if args.all or v.get("visibility") == "public"}
+                entries = {k: v for k, v in entries.items() if args.all or
+                           (v.get("visibility") == "public" and v.get("kind") != "internal")}
                 _emit(entries if args.json else "\n".join(f"{k:45s} {v['environment']:13s} {v['path']}" for k, v in entries.items()), args.json)
                 return 0
             if command == "launch":
@@ -460,7 +390,7 @@ def main(argv=None):
                 values = args.arguments
             elif command == "baseline":
                 name = {"run": "baseline-native", "acquire": "baseline-entrypoint", "pair": "baseline-run-pair", "remote": "baseline-night-remote"}[args.action]
-                values = [args.name, str(path_from(args.recording, root)), str(path_from(args.output, root)), *args.arguments] if args.action == "run" else args.arguments
+                values = [args.name, str(path_from(args.recording, root)), str(path_from(args.output, root)), *_without_separator(args.arguments)] if args.action == "run" else args.arguments
             else:
                 name, values = args.tool, args.arguments
             if command == "tools":
