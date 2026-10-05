@@ -40,15 +40,7 @@ Supply **your private PAL Docker**. Reuse a prepared container:
 ```
 
 To create one, supply these files (not included in this repository) and run
-`./graphapi setup tiago --pal-bundle /private/TIAGO_ISO`:
-
-```text
-TIAGO_ISO/
-├── ROS2_Alum.iso
-├── uni-sap-rome-build-docker.sh
-└── keys/
-    └── pal-apt-keys.deb
-```
+`./graphapi setup tiago --pal-bundle /private/TIAGO_ISO`.
 
 Keep any other files required by your private builder in the same bundle.
 Once setup is complete:
