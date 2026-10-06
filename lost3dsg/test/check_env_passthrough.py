@@ -60,7 +60,7 @@ def check(pkg: pathlib.Path):
     # was read as pkg/"test"/"run_sim.sh", so the answer depended on the caller passing the
     # right directory. It is now the repository root's run_sim.sh (owner 2026-09-11), located
     # from __file__ so a wrong pkg argument can no longer point this at nothing.
-    launcher = (pathlib.Path(__file__).resolve().parents[2] / "run_sim.sh").read_text()
+    launcher = (pathlib.Path(__file__).resolve().parents[2] / "graphapi_cli/runtime/run_sim.sh").read_text()
     # Only the docker run -e list counts. A variable exported host-side but not listed here does
     # not cross into the container, which is the entire defect this checks for.
     passed = set(re.findall(r"-e ([A-Z_][A-Z0-9_]*)", launcher))

@@ -32,7 +32,7 @@ source /opt/ros/humble/setup.bash
 echo ">>> build"
 mkdir -p /ws/src
 rm -rf /ws/src/lost3dsg
-cp -r /graph_api/lost3dsg /ws/src/lost3dsg
+cp -rL /graph_api/lost3dsg /ws/src/lost3dsg
 cd /ws
 
 # THE CACHE KEY covers only what genuinely compiles: the 13 interface files, CMakeLists and
@@ -86,6 +86,33 @@ printf '{"build_key": "%s", "mode": "%s", "seconds": %d}\n' \
        "$BUILD_KEY" "$BUILD_MODE" "$((_build_t1 - _build_t0))" > /ws/output/build_cache.json
 echo "    build $BUILD_MODE in $((_build_t1 - _build_t0))s (key $BUILD_KEY)"
 source /ws/install/setup.bash
+export PYTHONPATH="/graph_api${PYTHONPATH:+:$PYTHONPATH}"
+
+# Optional full topic recording; normal outputs/logs remain available when disabled.
+RECORD_PID=""
+if [ "${GRAPHAPI_RECORD:-1}" = "1" ]; then
+  ros2 bag record -a --include-hidden-topics -o /ws/output/recording >"$LOG_DIR/recording.log" 2>&1 &
+  RECORD_PID=$!
+fi
+_finish_recording() {
+  [ -z "${RECORD_PID:-}" ] || kill -INT "$RECORD_PID" 2>/dev/null || true
+  if [ -n "${RECORD_PID:-}" ]; then
+    for _record_attempt in {1..30}; do
+      kill -0 "$RECORD_PID" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$RECORD_PID" 2>/dev/null; then
+      printf '{"closed": false, "reason": "recorder shutdown timed out"}\n' > /ws/output/recording_status.json
+      kill -TERM "$RECORD_PID" 2>/dev/null || true
+    else
+      printf '{"closed": true}\n' > /ws/output/recording_status.json
+    fi
+    wait "$RECORD_PID" 2>/dev/null || true
+    RECORD_PID=""
+  fi
+}
+trap _finish_recording EXIT
+
 
 python3 - <<'PY'
 import numpy as np
@@ -158,6 +185,8 @@ fi
 # recorded regolo. Guessing here is what made that invisible.
 : "${CFG_NAME:?CFG_NAME not set — run_sim.sh must export it; refusing to guess a config}"
 export GRAPH_API_CONFIG=/graph_api/lost3dsg/test/${CFG_NAME}
+export GRAPHAPI_RESOLVED_CONFIG=1
+export GRAPH_API_AUTOSTART=0
 # The config must EXIST. config.py::_load returns the defaults when it does not, silently —
 # so a mistyped or unported config name yields a run with hooks.filter empty, the extension out of
 # the loop, and a bundle that looks complete. Fail here instead.
@@ -328,6 +357,7 @@ _finalize_ga493_capture() {
 }
 
 container_exit_cleanup() {
+  _finish_recording
   # GA-373. a7 ONCE MORE AT TEARDOWN, before anything else in the close: the extension is a live mount, so
   # a live tree that moved during the run is what the stack executed, and only a second sample can
   # say so. Verdict lands in the bundle as a7_teardown.json; the launcher's latest-pointer refuses a
@@ -418,9 +448,9 @@ echo ">>> starting stack (feed -> rtabmap -> perception_2 -> object_manager_6 ->
 # to call it "web viewer", which is what sent a reader there: four separate bug reports in one
 # session ("no 3D tab", "no layers nor timeline", "minimap is distorted") were all one fact,
 # that the page being looked at was :8081 and not the dashboard.
-echo "    the DASHBOARD is a separate process -- :8081 is the bridge's own page and has no"
+echo "    the DASHBOARD is a separate process -- :${BRIDGE_PORT:-8081} is the bridge's own page and has no"
 echo "    3D tab, layers or replay timeline. Start the dashboard with:"
-echo "      python3 lost3dsg/dashboard/replay_server.py --mode live --port 8086"
+echo "      ./graphapi dashboard --mode live"
 ros2 run lost3dsg habitat_feed_node.py > /tmp/feed_node.log 2>&1 &
 
 # ---- Class A pre-flight gate -------------------------------------------------------------
@@ -560,6 +590,24 @@ LAUNCH_PID=$!
 # The close path signals rtabmap by PATTERN as well as by pid, so a launcher pid here is safe.
 RTABMAP_PID=$LAUNCH_PID; OM6_PID=""; PERCEPTION_PID=""; WALLS_PID=""
 
+# Startup gates must stop when a required child dies, including while the ROS
+# launcher is still draining or has become a zombie awaiting wait().
+_check_ros_stack() {
+  python3 - "$LAUNCH_PID" /ws/output/component_events.jsonl /ws/output/terminating_node.json <<'PY' || exit 1
+import json, sys
+from graphapi_cli.stack_health import stack_failure
+failure = stack_failure(sys.argv[2], int(sys.argv[1]))
+if failure:
+    component = failure['component']
+    rc = failure.get('returncode', 1)
+    with open(sys.argv[3], 'w') as stream:
+        json.dump({'node': component, 'exit_status': rc,
+                   'reason': 'required ROS component exited'}, stream)
+    print(f"!! required component {component} exited ({rc}); see logs/launch.log", flush=True)
+    sys.exit(1)
+PY
+}
+
 # periodic snapshots of the annotated detection image for the host
 ros2 run image_view image_saver --ros-args -r image:=/image_with_bb \
   -p filename_format:="/out/detection_%04d.png" -p sec_per_frame:=5.0 \
@@ -594,6 +642,7 @@ ros2 run image_view image_saver --ros-args -r image:=/image_with_bb \
 _a6_gate_file="${VITSAM_READY_FILE:-/ws/output/vitsam_ready}"
 _a6_deadline=$(( $(date +%s) + 300 ))
 until grep -qi "ready" "$_a6_gate_file" 2>/dev/null; do
+  _check_ros_stack
   [ "$(date +%s)" -ge "$_a6_deadline" ] && { echo "!! a6: the VitSAM warmup gate did not open in 300 s; sampling anyway"; break; }
   sleep 3
 done
@@ -620,6 +669,7 @@ fi
 # No readiness line by the deadline is itself a finding, and a13 then reports the TF tree.
 _a13_deadline=$(( $(date +%s) + 300 ))
 until grep -q "Localization mode\|Mapping mode\|rtabmap: subscribe_odom" "$LOG_DIR/launch.log" 2>/dev/null; do
+  _check_ros_stack
   [ "$(date +%s)" -ge "$_a13_deadline" ] && { echo "!! a13: rtabmap printed no readiness line in 300 s; sampling anyway"; break; }
   sleep 3
 done
@@ -714,7 +764,10 @@ except Exception:
   # With the detector off, PERCEPTION and OM6 are not in the list -- waiting on a node that was
   # never started ends the run instantly. A mapping run watches the map and the feed, and ends on
   # TIME rather than on a death.
-  for _n in $_WATCH_NODES; do
+  _watch_record=""
+  _check_ros_stack
+  [ -z "${RECORD_PID:-}" ] || _watch_record="RECORD"
+  for _n in $_WATCH_NODES $_watch_record; do
     _pid_var="${_n}_PID"; _pid="${!_pid_var:-}"
     [ -n "$_pid" ] || continue
     if ! kill -0 "$_pid" 2>/dev/null; then
@@ -722,19 +775,22 @@ except Exception:
       _dead_node="$_n"; break
     fi
   done
-  # UNDER THE LAUNCH FILE THE PID WATCH SEES ONE PROCESS, NOT SIX. `ros2 launch` keeps running when
-  # a node under it dies — measured 2026-09-09: perception_2 died at startup and rtabmap carried on
-  # for minutes — so without this the run would continue with the detector gone. The launch output
-  # names the node and its exit code, so that line ends the run and supplies GA-430's field. It is
-  # prose rather than an interface, which is exactly what GA-430 was written to stop depending on;
-  # under this route it is the only source there is, and the field is parsed from it ONCE here
-  # rather than grepped by every reader afterwards.
-  if [ -z "$_dead_node" ] && [ -n "${LAUNCH_PID:-}" ] && [ -f "$LOG_DIR/launch.log" ]; then
-    _died=$(grep -m1 -oE "\[[a-zA-Z0-9_.-]+\]: process has died \[pid [0-9]+, exit code -?[0-9]+" $LOG_DIR/launch.log || true)
+  # Required child exits are structured ROS launch events, never log-prose matches.
+  if [ -z "$_dead_node" ] && [ -n "${LAUNCH_PID:-}" ]; then
+    _died=$(python3 - <<'EVENT'
+import json
+from pathlib import Path
+p=Path('/ws/output/component_events.jsonl')
+if p.exists():
+    for line in p.read_text().splitlines():
+        try: e=json.loads(line)
+        except ValueError: continue
+        if e.get('required') and not e.get('during_shutdown'):
+            print(str(e['component'])+'|'+str(e['returncode'])); break
+EVENT
+)
     if [ -n "$_died" ]; then
-      _dead_node=$(printf '%s' "$_died" | sed -E 's/^\[([a-zA-Z0-9_.-]+)\].*/\1/')
-      _dead_rc=$(printf '%s' "$_died" | sed -E 's/.*exit code (-?[0-9]+)/\1/')
-      break
+      _dead_node="${_died%|*}"; _dead_rc="${_died##*|}"; break
     fi
     if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
       _dead_rc=0; wait "$LAUNCH_PID" || _dead_rc=$?
@@ -747,7 +803,7 @@ except Exception:
   # so `kill -0 $RTABMAP_PID` stayed true for the 38 minutes that followed. A watch on the wrong
   # process is not a watch. ros2 launch reports the death in its own log and that is the only
   # place it is visible, so read it there.
-  if [ -z "$_dead_node" ] && grep -q "process has died" /tmp/rtabmap.log 2>/dev/null; then
+  if [ -z "$_dead_node" ] && [ -z "${LAUNCH_PID:-}" ] && grep -q "process has died" /tmp/rtabmap.log 2>/dev/null; then
     _dead_node="RTABMAP(node)"
     _dead_rc=$(sed -n 's/.*process has died.*exit code \(-\?[0-9]*\).*/\1/p' /tmp/rtabmap.log | head -1)
     _dead_rc=${_dead_rc:-1}
@@ -814,3 +870,8 @@ _rc="${_perception_rc:-}"
 case "$_rc" in ''|*[!0-9-]*) _rc=1 ;; esac
 [ "$_rc" -lt 0 ] 2>/dev/null && _rc=$(( 128 - _rc ))   # a signal, as a shell exit status
 exit "$_rc"
+
+if [ -n "$RECORD_PID" ]; then
+  kill -INT "$RECORD_PID" 2>/dev/null || true
+  wait "$RECORD_PID" 2>/dev/null || true
+fi

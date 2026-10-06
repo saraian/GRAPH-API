@@ -687,7 +687,7 @@ def test_run_output_lives_outside_every_hashed_root():
               f"run output at {out} is inside hashed root {r} — the frozen root cannot hold still")
 
     # and the launcher must actually default there
-    body = open(os.path.join(HERE, "..", "..", "run_sim.sh")).read()
+    body = open(os.path.join(HERE, "..", "..", "graphapi_cli", "runtime", "run_sim.sh")).read()
     check("RESULTS_DIR=${RESULTS_DIR:-$REPO/results}" in body,
           "run_sim.sh must default the results directory to $REPO/results, never /tmp")
     check('export OUT_DIR="$RUN_DIR"' in body,
@@ -1560,10 +1560,21 @@ def test_a12_refuses_a_gt_reader_outside_the_allow_list_and_passes_the_clean_tre
         os.makedirs(root)
         for d in ("src", "test"):
             shutil.copytree(os.path.join(lost, d), os.path.join(root, d), ignore=ignore)
-        shutil.copyfile(os.path.join(os.path.dirname(lost), "run_sim.sh"),
+        shutil.copyfile(os.path.join(os.path.dirname(lost), "graphapi_cli", "runtime", "run_sim.sh"),
                         os.path.join(td, "run_sim.sh"))
         ok, detail = a12_gt_isolation(root=root)
         assert ok is True, detail
+
+        # The root adapter has no GT tokens after migration. Audit the actual
+        # implementation as well, so relocation cannot silently narrow the gate.
+        managed = os.path.join(td, "graphapi_cli", "runtime", "run_sim.sh")
+        os.makedirs(os.path.dirname(managed))
+        shutil.copyfile(os.path.join(td, "run_sim.sh"), managed)
+        with open(os.path.join(td, "run_sim.sh"), "w") as adapter:
+            adapter.write("#!/bin/bash\nexit 0\n")
+        ok, detail = a12_gt_isolation(root=root)
+        assert ok is True, detail
+        assert "../graphapi_cli/runtime/run_sim.sh" in detail["files_with_gt_tokens"], detail
 
         # Generated output is not source. A notebook helper or rendered benchmark under
         # test/output must not change the gate verdict for the frozen runtime tree.

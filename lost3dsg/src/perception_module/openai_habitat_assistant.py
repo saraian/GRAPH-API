@@ -8,7 +8,7 @@ Avvio:
 Prerequisiti:
     pip install openai pillow
 
-Il programma legge la chiave da api.txt, riceve l'ultima immagine da
+Il programma legge la chiave da OPENAI_API_KEY (o api.txt), riceve l'ultima immagine da
 /camera/rgb e traduce le function call del modello nei topic JSON del nodo
 Habitat.
 """
@@ -185,9 +185,9 @@ class HabitatAssistant(Node):
         )
 
         key_path = Path(__file__).with_name("api.txt")
-        if not key_path.is_file():
-            raise FileNotFoundError(f"API key non trovata: {key_path}")
-        api_key = key_path.read_text(encoding="utf-8").strip()
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key and key_path.is_file():
+            api_key = key_path.read_text(encoding="utf-8").strip()
         if not api_key:
             raise RuntimeError(f"API key vuota: {key_path}")
 

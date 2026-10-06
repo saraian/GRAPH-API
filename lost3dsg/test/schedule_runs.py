@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Run a SCHEDULE of runs, each with its own configuration.
 
-    ./run_sim.sh --schedule schedules/example.runs.yaml
-    ./run_sim_headless.sh --schedule schedules/example.runs.yaml     # same, without the viewers
+    ./graphapi batch config/example.runs.yaml
 
 A schedule is a list of ARMS. Each arm names itself and gives the configuration keys that differ
 from the base. Nothing else about an arm may vary: same launcher, same gate, same bundle layout.
@@ -123,87 +122,16 @@ def write_arm_config(base_cfg: dict, arm: dict, out_dir: pathlib.Path) -> pathli
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("schedule", type=pathlib.Path)
-    ap.add_argument("--runner", default=str(REPO / "run_sim.sh"),
-                    help="run_sim.sh or run_sim_headless.sh; the schedule does not choose this")
     ap.add_argument("--force", action="store_true", help="re-run arms that already have a bundle")
     ap.add_argument("--dry-run", action="store_true", help="write the arm configs and print the plan")
     args = ap.parse_args()
 
-    doc, arms = load_schedule(args.schedule)
-    import yaml
-    base_path = pathlib.Path(doc.get("base") or (REPO / "lost3dsg/src/perception_module/config.yaml"))
-    if not base_path.is_absolute():
-        base_path = REPO / base_path
-    if not base_path.exists():
-        raise SystemExit(f"!! base config {base_path} does not exist")
-    base_cfg = yaml.safe_load(base_path.read_text()) or {}
-
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    sweep = REPO / "results" / f"sweep_{stamp}"
-    sweep.mkdir(parents=True, exist_ok=True)
-    manifest = sweep / "manifest.json"
-    rows = []
-
-    # `repeat: N` RUNS ONE ARM N TIMES. The noise floor has never been measured and cannot be
-    # recovered from the archive, so repeating ONE configuration is the only way to get it. Each
-    # repetition is its own run with its own bundle; only the reported name gains a suffix.
-    expanded = []
-    for a in arms:
-        n = int(a.get("repeat", 1) or 1)
-        if n == 1:
-            expanded.append(a)
-        else:
-            for k in range(1, n + 1):
-                b = dict(a)
-                b["name"] = f"{a['name']}_r{k}"
-                b.pop("repeat", None)
-                expanded.append(b)
-    arms = expanded
-    print(f"schedule: {args.schedule}\nbase:     {base_path}\nruns:     {len(arms)}\nsweep:    {sweep}\n")
-
-    for i, arm in enumerate(arms, 1):
-        cfg = arm_config_path(base_cfg, arm, sweep, REPO)
-        scene = arm.get("scene") or doc.get("scene") or ""
-        env = dict(os.environ)
-        env["GRAPH_API_CONFIG"] = str(cfg)
-        # CFG_NAME is what the launcher echoes and stamps; keep the two agreeing so the bundle
-        # does not name one file while loading another.
-        env["CFG_NAME"] = cfg.name
-        for k, v in (arm.get("env") or {}).items():
-            env[k] = str(v)
-        cmd = [args.runner, "--one-storey"] + ([scene] if scene else [])
-        print(f"== arm {i}/{len(arms)}: {arm['name']}")
-        print(f"   config: {cfg}")
-        print(f"   cmd:    {' '.join(cmd)}")
-        if args.dry_run:
-            rows.append({"arm": arm["name"], "config": str(cfg), "status": "dry-run"})
-            continue
-        rc = subprocess.call(cmd, cwd=str(REPO), env=env)
-        # WHICH BUNDLE DID THIS ARM PRODUCE? The newest results directory that is not the sweep
-        # directory itself. Read after the run rather than predicted, because the launcher owns
-        # the timestamp and a predicted name is a name that can be wrong.
-        bundles = sorted((REPO / "results").glob("2026*"), key=lambda p: p.stat().st_mtime)
-        bundle = str(bundles[-1]) if bundles else ""
-        ended = ""
-        try:
-            meta = json.loads((pathlib.Path(bundle) / "run_metadata.json").read_text())
-            ended = (meta.get("terminating_node") or {}).get("ended") or ""
-        except Exception:
-            pass
-        rows.append({"arm": arm["name"], "config": str(cfg), "returncode": rc,
-                     "bundle": bundle, "ended": ended,
-                     "status": "ok" if rc == 0 else "failed"})
-        # A FAILED ARM DOES NOT STOP THE SCHEDULE, and the manifest is rewritten after EVERY arm
-        # so a sweep killed halfway still says what it did.
-        manifest.write_text(json.dumps({"schedule": str(args.schedule), "base": str(base_path),
-                                        "arms": rows}, indent=2))
-        print(f"   -> rc={rc} bundle={bundle or '(none)'} ended={ended or '(unrecorded)'}\n")
-
-    manifest.write_text(json.dumps({"schedule": str(args.schedule), "base": str(base_path),
-                                    "arms": rows}, indent=2))
-    ok = sum(1 for r in rows if r.get("status") == "ok")
-    print(f"DONE. {ok} of {len(rows)} arms returned 0. Manifest: {manifest}")
-    return 0 if ok == len(rows) else 1
+    command = [str(REPO / "graphapi"), "batch", str(args.schedule)]
+    if args.force:
+        command.append("--force")
+    if args.dry_run:
+        command.append("--dry-run")
+    return subprocess.run(command, cwd=REPO).returncode
 
 
 def _selfcheck():

@@ -710,7 +710,11 @@ def _load():
     """
     path = os.environ.get(
         "GRAPH_API_CONFIG",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml"),
+        next((str(p) for p in [
+            __import__("pathlib").Path(__file__).resolve().parents[3] / "config/graphapi.yaml",
+            __import__("pathlib").Path("/graph_api/config/graphapi.yaml"),
+            __import__("pathlib").Path(__file__).parent / "config.yaml",
+        ] if p.is_file()), os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")),
     )
     if not os.path.exists(path):
         return dict(_DEFAULTS), None, None
@@ -728,7 +732,7 @@ def _load():
     # about: the returned path is the tracked file, so a bundle recording only that path would say
     # nothing about the override. The keys it touched are printed and returned.
     local = os.path.join(os.path.dirname(os.path.abspath(path)), "config.local.yaml")
-    if os.path.exists(local):
+    if os.environ.get("GRAPHAPI_RESOLVED_CONFIG") != "1" and os.path.exists(local):
         with open(local) as f:
             over = yaml.safe_load(f) or {}
         if over:

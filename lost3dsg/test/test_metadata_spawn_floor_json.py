@@ -33,7 +33,7 @@ import re
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPT = os.path.join(HERE, "..", "..", "run_sim.sh")
+SCRIPT = os.path.join(HERE, "..", "..", "graphapi_cli", "runtime", "run_sim.sh")
 
 # The published floors on this machine, plus the unsigned and empty cases. A sign is what the
 # formatter writes, so the positive ones are the whole point of the test.

@@ -77,7 +77,7 @@ _BRIDGE_REL = Path("lost3dsg/src/perception_module/graph_api_bridge.py")
 
 
 def _graph_api_root() -> Path:
-    env = os.environ.get("GRAPH_API_ROOT")
+    env = os.environ.get("GRAPHAPI_ROOT") or os.environ.get("GRAPH_API_ROOT")
     if env:
         return Path(env)
     # Owner ruling 2026-09-10: an extension depends on the CONSOLIDATED checkout, and this
@@ -103,9 +103,6 @@ BRIDGE = GRAPH_API_ROOT / _BRIDGE_REL
 RUNS_ROOT = dash_env.runs_dir()
 DEFAULT_BUNDLE = "latest"
 DEFAULT_PORT = 8082
-VIEW_RVIZ = GRAPH_API_ROOT / "lost3dsg/test/view_rviz.sh"
-RVIZ_LOG = Path("/tmp/graphapi_live/rviz.log")
-RVIZ_CONTAINER = "graphapi_rviz"   # the name view_rviz.sh gives its container
 
 
 # A RUN BUNDLE IS NAMED LIKE ONE. `resolve_bundle` orders runs lexicographically and says so:
@@ -132,29 +129,18 @@ def is_run_dir(d) -> bool:
 
 
 def resolve_bundle(spec):
-    """Turn a --bundle value into a directory. "latest" means the NEWEST RUN.
-
-    Deliberately not the runs/latest symlink: that symlink is updated when a run ends,
-    not when one starts, so during a live run it points at the PREVIOUS run. Following
-    it would serve last night's archive during tonight's run and label it green -- the
-    exact misattribution the banner exists to prevent. Sort the run directories by name
-    instead; the names are timestamps, so lexicographic order is chronological and does
-    not depend on anyone maintaining a link.
-    """
+    """Use the shared selector contract; explicit legacy bundle directories still work."""
     if str(spec) != "latest":
         return Path(spec).resolve()
-    if not RUNS_ROOT.is_dir():
-        # A FRESH CHECKOUT HAS NO RUNS, and that is not an error: it is the normal state of the
-        # repository this dashboard now ships in. Refusing to start meant a reader could not open
-        # the dashboard at all until somebody had recorded a run, so the start page -- which exists
-        # to say "no runs in <dir>" and let one be launched -- could never be reached.
-        return None
-    runs = sorted((d for d in RUNS_ROOT.iterdir() if is_run_dir(d)), key=lambda d: d.name)
-    if not runs:
-        return None
-    ready = [d for d in runs if _has_graph(d)]
-    SKIPPED["newer"] = (runs[-1].name if ready and runs[-1] != ready[-1] else None)
-    return (ready[-1] if ready else runs[-1]).resolve()
+    try:
+        from graphapi_cli.registry import Registry
+        workspace = os.environ.get("WORKSPACE_ROOT", str(RUNS_ROOT.parent))
+        row = Registry(workspace).select("latest")
+        return Path(row["bundles"][-1]) if row.get("bundles") else None
+    except ValueError:
+        # Older bundles predate operation records. Respect their established latest link.
+        latest = RUNS_ROOT / "latest"
+        return latest.resolve() if latest.is_dir() else None
 
 
 # The newest run directory, when it exists but is NOT the one being served because it has no
@@ -242,35 +228,23 @@ def _probe_bridge(url: str = None, timeout: float = 2.0):
 _UVICORN_BIND = re.compile(r"Uvicorn running on https?://[\w.]+:(\d+)")
 
 
-def discovered_bridge_port():
-    """The port the ACTIVE run's bridge actually bound, read from the bridge's own first log
-    lines -- or None.
+def _managed_active_run():
+    from graphapi_cli.registry import Registry
+    rows = Registry(os.environ.get("WORKSPACE_ROOT", str(RUNS_ROOT.parent))).rows()
+    active = [r for r in rows if r.get("mode") in ("sim", "tiago", "bag") and r["state"] in ("PREPARING", "RUNNING", "DRAINING")]
+    return active[0] if len(active) == 1 else None
 
-    2026-09-06, run 20260906_223701: the bridge came up on :8085 (BRIDGE_PORT set to dodge an
-    unrelated dashboard squatting :8081) and served the whole run. This dashboard probed
-    :8081 only, was refused, and reported replay mode over a live stack. The run records
-    where its bridge listens in logs/bridge.log ("Uvicorn running on http://0.0.0.0:8085");
-    that line is evidence, not a guess, so it is read here. run_metadata.json does not carry
-    the port (asked of the simulator lane); when it does, prefer it.
-    """
-    try:
-        run = resolve_bundle("latest")
-    except OSError:
-        return None
-    if run is None:
-        # No runs dir, or an empty one. Either way there is no bridge.log to read. (It used to
-        # RAISE SystemExit here, which `except Exception` never caught, so it went through
-        # _follow_mode's handler and killed the follower thread.)
-        return None
-    for log in (run / "logs" / "bridge.log", run / "bridge.log"):
-        try:
-            with open(log, "r", encoding="utf-8", errors="replace") as f:
-                head = f.read(4096)
-        except OSError:
-            continue
-        hit = _UVICORN_BIND.search(head)
-        if hit:
-            return int(hit.group(1))
+
+def discovered_bridge_port():
+    """Read the allocated bridge endpoint from the active operation record."""
+    row = _managed_active_run()
+    if row:
+        port = row["ports"].get("BRIDGE_PORT", row["ports"].get("TIAGO_BRIDGE_PORT"))
+        ctrl = row["ports"].get("FEED_CTRL_PORT")
+        if ctrl:
+            _INPROC["feed_host"] = f"http://127.0.0.1:{ctrl}"
+            _sync_inproc_feed_host()
+        return port
     return None
 
 
@@ -279,7 +253,10 @@ def bridge_identified(url: str = None, timeout: float = 2.0):
     active run's bridge says it bound. On success the discovered URL becomes BRIDGE_URL for
     every proxy in this process, and `why` names the evidence."""
     global BRIDGE_URL
-    url = url or BRIDGE_URL
+    port = discovered_bridge_port()
+    url = url or (f"http://127.0.0.1:{port}" if port else BRIDGE_URL)
+    if port:
+        BRIDGE_URL = url
     ok, why = _probe_bridge(url, timeout)
     if ok:
         return ok, why
@@ -2198,7 +2175,6 @@ def with_tools_menu(html: str) -> str:
 # The checkout the runs directory sits in, used only to DISPLAY default paths in the
 # launcher form. Derived, never a literal, so it names no deployment.
 RUNS_PARENT = RUNS_ROOT.parent
-LIVE_RUN = GRAPH_API_ROOT / "run_sim.sh"   # was run_sim.sh; inlined into run_sim.sh 2026-09-11
 LAUNCH_LOG_DIR = Path(tempfile.gettempdir()) / "found-launcher"
 
 # The four the script's own `case` statement accepts. Anything else exits 1 before it starts,
@@ -2890,52 +2866,16 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
         return HTMLResponse(with_tools_menu(_load_bundle_index().page()))
 
     @app.post("/start_rviz")
-    def _start_rviz():
-        """Launch RViz via the existing helper. Reports what actually happened.
-
-        One fixed command, no arguments from the request: nothing a caller sends
-        reaches a shell. `view_rviz.sh` blocks (it runs docker in the foreground and
-        tees to a log), so it is started detached and its output goes to the log.
-        """
-        if not VIEW_RVIZ.exists():
-            return JSONResponse(status_code=500, content={
-                "started": False, "reason": f"helper not found at {VIEW_RVIZ}"})
-        if shutil.which("docker") is None:
-            return JSONResponse(status_code=500, content={
-                "started": False, "reason": "docker is not on PATH for this server"})
+    def _start_rviz(request: Request = None):
+        """Open RViz for the acquisition, with confirmed Docker startup."""
+        if not _local(request):
+            return JSONResponse(status_code=403, content={"started": False, "reason": "loopback only"})
         try:
-            running = subprocess.run(
-                ["docker", "ps", "--filter", f"name={RVIZ_CONTAINER}", "--format", "{{.Names}}"],
-                capture_output=True, text=True, timeout=10)
-            if RVIZ_CONTAINER in running.stdout:
-                return {"started": False, "already_running": True,
-                        "reason": f"container {RVIZ_CONTAINER} is already up",
-                        "log": str(RVIZ_LOG)}
-        except (subprocess.SubprocessError, OSError) as exc:
-            # Could not tell -- say so rather than starting a second one blindly.
-            return JSONResponse(status_code=503, content={
-                "started": False,
-                "reason": f"could not check for a running RViz: {type(exc).__name__}: {exc}"})
-        try:
-            RVIZ_LOG.parent.mkdir(parents=True, exist_ok=True)
-            handle = open(RVIZ_LOG, "ab")
-            proc = subprocess.Popen(
-                ["bash", str(VIEW_RVIZ)],
-                stdout=handle, stderr=subprocess.STDOUT,
-                start_new_session=True, cwd=str(VIEW_RVIZ.parent))
-            handle.close()          # the child holds its own copy of the fd
-            # Reap it. Without this the wrapper sits as <defunct> for the life of the
-            # server -- verified: a real press left `Zs [bash] <defunct>` behind, one
-            # per press. A long-lived server that leaks a process per button click is
-            # the same shape of defect as a handler that swallows its error: nothing
-            # visibly breaks, and the cost only shows up much later.
-            threading.Thread(target=proc.wait, daemon=True).start()
-        except (OSError, subprocess.SubprocessError) as exc:
-            return JSONResponse(status_code=500, content={
-                "started": False, "reason": f"{type(exc).__name__}: {exc}"})
-        return {"started": True, "pid": proc.pid, "log": str(RVIZ_LOG),
-                "note": "RViz opens on the SERVER's display, not the viewer's",
-                "display": os.environ.get("DISPLAY", ":1 (helper default)")}
+            from graphapi_cli.viewer import acquisition, start
+            row = acquisition(os.environ.get("WORKSPACE_ROOT", str(RUNS_ROOT.parent)))
+            return start(GRAPH_API_ROOT, dict(os.environ), row, detach=True)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return JSONResponse(status_code=409, content={"started": False, "reason": str(exc)})
 
     @app.get("/scene3d", response_class=HTMLResponse)
     def _scene3d(bundle: str = None):
@@ -3021,128 +2961,70 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
                 "why": "/arch lays itself out in the browser with ELK and loads it from this "
                        "server, because the machine it runs on has no network"})
 
+    def launch_record():
+        from graphapi_cli.registry import Registry
+        rows = Registry(os.environ.get("WORKSPACE_ROOT", str(RUNS_ROOT.parent))).rows()
+        rows = [row for row in rows if row.get("mode") in ("sim", "tiago", "bag")]
+        active = [row for row in rows if row["state"] in ("PREPARING", "RUNNING", "DRAINING")]
+        return active[-1] if active else (rows[-1] if rows else {})
+
     @app.get("/run_status")
     def _run_status():
-        """What this process knows about the launched run. NEVER the settings it was given:
-        the KEYS group holds API keys, and a status endpoint that echoes them back would put
-        them in every poll of a page anyone can open."""
-        feed = _feed_pid()
-        return JSONResponse({
-            "pid": RUN_PROC["pid"], "alive": _pid_alive(RUN_PROC["pid"]),
-            "scene": RUN_PROC["scene"], "log": RUN_PROC["log"],
-            "started": RUN_PROC["started"], "feed_pid": feed,
-            "container_up": _container_up(),
-            "script": str(LIVE_RUN), "script_present": LIVE_RUN.is_file()})
+        row = launch_record()
+        active = row.get("state") in ("PREPARING", "RUNNING", "DRAINING")
+        return JSONResponse({"operation_id": row.get("operation_id"), "state": row.get("state"),
+                             "pid": row.get("pid"), "alive": active, "scene": row.get("scene"),
+                             "log": row.get("log"), "started": row.get("created"), "feed_pid": None,
+                             "container_up": active, "script": str(GRAPH_API_ROOT / "graphapi"),
+                             "script_present": (GRAPH_API_ROOT / "graphapi").is_file()})
 
     @app.get("/run_log")
     def _run_log(lines: int = 400):
-        if not RUN_PROC["log"]:
-            return JSONResponse({"lines": [], "why": "no run has been launched from here"})
-        return JSONResponse({"lines": _launch_log_tail(RUN_PROC["log"], max(1, min(lines, 5000))),
-                             "log": RUN_PROC["log"]})
+        row = launch_record()
+        return JSONResponse({"lines": _launch_log_tail(row["log"], max(1, min(lines, 5000))) if row.get("log") else [],
+                             "log": row.get("log")})
 
     @app.post("/start_run")
     async def _start_run(request: Request):
-        """Launch run_sim.sh with the submitted settings.
-
-        LOOPBACK ONLY. The run opens a habitat window on the SERVER's display and takes the
-        server's GPU, ROS graph and control ports; from another machine the person pressing
-        the button could not see it, could not stop it and would not know it was theirs.
-
-        A NEW SESSION, deliberately (`start_new_session=True`). Two things follow, both
-        wanted: the run survives a restart of this dashboard, and it gets its own process
-        group, which is the only way `/stop_run` can deliver SIGINT to the whole stack.
-        run_sim.sh publishes the map from an EXIT trap, so the documented way to stop it is
-        the interrupt -- kill the pid alone and the trap runs while its children keep the
-        ports.
-        """
         if not _local(request):
-            return JSONResponse(status_code=403, content={
-                "started": False,
-                "why": "runs can only be launched from the machine that would render them"})
-        if not LIVE_RUN.is_file():
-            return JSONResponse(status_code=503, content={
-                "started": False, "why": f"{LIVE_RUN} does not exist"})
-        if _pid_alive(RUN_PROC["pid"]):
-            return JSONResponse(status_code=409, content={
-                "started": False,
-                "why": f"a run launched from here is still going (pid {RUN_PROC['pid']})"})
-        feed = _feed_pid()
-        if feed:
-            return JSONResponse(status_code=409, content={
-                "started": False,
-                "why": (f"a habitat feed is already running (pid {feed}); two feeds fight over "
-                        "the ROS graph, the control port and the display")})
-        if _container_up():
-            return JSONResponse(status_code=409, content={
-                "started": False,
-                "why": (f"container {CONTAINER} is still up; run_sim.sh refuses to start over "
-                        f"it. Press STOP, or: docker stop {CONTAINER}")})
+            return JSONResponse(status_code=403, content={"started": False, "why": "loopback only"})
         try:
             body = await request.json()
         except ValueError as exc:
-            return JSONResponse(status_code=400,
-                                content={"started": False, "why": f"bad request body: {exc}"})
+            return JSONResponse(status_code=400, content={"started": False, "why": str(exc)})
         scene = str(body.get("scene") or SCENES[0])
         if scene not in SCENES:
-            return JSONResponse(status_code=400, content={
-                "started": False, "why": f"unknown scene {scene!r}", "known": SCENES})
+            return JSONResponse(status_code=400, content={"started": False, "why": f"unknown scene {scene!r}", "known": SCENES})
         env_in, rejected = _clean_env(body.get("env"))
         if rejected:
-            return JSONResponse(status_code=400, content={
-                "started": False, "why": "some settings were refused", "rejected": rejected})
-
+            return JSONResponse(status_code=400, content={"started": False, "why": "some settings were refused", "rejected": rejected})
         env = dict(os.environ)
         env.update(env_in)
-        env.setdefault("DISPLAY", ":1")
-        LAUNCH_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        log = LAUNCH_LOG_DIR / f"{stamp}_{scene}.log"
-        # The settings are recorded at the head of the log, MINUS the secrets: the run needs
-        # to be reproducible from what is on disk, and a launcher whose only record of its
-        # own arguments is the browser tab that sent them is not.
-        shown = {k: ("<set>" if k in _SECRET_NAMES else v) for k, v in sorted(env_in.items())}
-        header = (f"[launcher] {stamp} scene={scene}\n"
-                  f"[launcher] settings: {json.dumps(shown)}\n"
-                  f"[launcher] {LIVE_RUN} {scene}\n")
         try:
-            handle = open(log, "wb")
-            handle.write(header.encode())
-            handle.flush()
-            proc = subprocess.Popen(
-                ["bash", str(LIVE_RUN), scene], cwd=str(LIVE_RUN.parent), env=env,
-                stdout=handle, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=True)
-        except OSError as exc:
-            return JSONResponse(status_code=500,
-                                content={"started": False, "why": f"could not launch: {exc}"})
-        # Reaped, or every launch leaves a zombie for as long as this dashboard lives.
-        threading.Thread(target=proc.wait, daemon=True).start()
-        RUN_PROC.update(pid=proc.pid, scene=scene, log=str(log), started=time.time())
-        return JSONResponse({"started": True, "pid": proc.pid, "scene": scene, "log": str(log),
-                             "settings": shown})
+            from graphapi_cli.launch import start
+            row = start(GRAPH_API_ROOT, {"mode": "sim", "scene": scene,
+                                        "local": env.get("GRAPHAPI_LOCAL_CONFIG"),
+                                        "gui": env.get("RVIZ") == "1" or env.get("FEED_SHOW") == "1"},
+                        detach=True, inherited=env)
+        except (OSError, ValueError) as exc:
+            return JSONResponse(status_code=409, content={"started": False, "why": str(exc)})
+        shown = {k: ("<set>" if k in _SECRET_NAMES else v) for k, v in sorted(env_in.items())}
+        return JSONResponse({"started": True, "operation_id": row["operation_id"], "pid": row["pid"],
+                             "scene": scene, "log": row["log"], "settings": shown})
 
     @app.post("/stop_run")
     def _stop_run(request: Request = None):
         if not _local(request):
-            return JSONResponse(status_code=403,
-                                content={"stopped": False, "why": "loopback only"})
-        pid = RUN_PROC["pid"]
-        if not _pid_alive(pid):
-            return JSONResponse(status_code=409, content={
-                "stopped": False, "why": "no run launched from here is running"})
-        # SIGINT, not SIGTERM, and to the GROUP. run_sim.sh publishes the map from its EXIT
-        # trap and documents Ctrl-C as the way to stop it; SIGTERM to the leader alone leaves
-        # the container and the feed holding their ports.
+            return JSONResponse(status_code=403, content={"stopped": False, "why": "loopback only"})
+        row = launch_record()
+        if not row:
+            return JSONResponse(status_code=409, content={"stopped": False, "why": "no operation"})
         try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGINT)
-        except OSError as exc:
-            return JSONResponse(status_code=500,
-                                content={"stopped": False, "why": f"could not signal: {exc}"})
-        threading.Thread(target=_stop_container_after, args=(pid,), daemon=True).start()
-        return JSONResponse({"stopped": True, "pgid": pgid, "signal": "SIGINT",
-                             "then": f"docker stop {CONTAINER} if still up after 20 s"})
+            from graphapi_cli.launch import stop_operation
+            stop_operation(os.environ.get("WORKSPACE_ROOT", str(RUNS_ROOT.parent)), row["operation_id"])
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return JSONResponse(status_code=409, content={"stopped": False, "why": str(exc)})
+        return JSONResponse({"stopped": True, "operation_id": row["operation_id"], "signal": "SIGINT"})
 
 
 _LINE_STAMP = re.compile(r"\[(\d{10})\.(\d+)\]")
@@ -3688,7 +3570,7 @@ def build_app(bundle: Path):
         """
         import json as _j
         import urllib.request as _u
-        host = os.environ.get("FEED_HOST", "http://127.0.0.1:7790")
+        host = _INPROC.get("feed_host") or os.environ.get("FEED_HOST", "http://127.0.0.1:7790")
         # Only in LIVE mode. Measured 2026-09-07 on a replay instance pinned to run H while run
         # 152446 walked: this reached the LIVE feed host, rendered "HABITAT WINDOW" with enabled
         # buttons on run H's replay page, and a click would have toggled the live run's window.
@@ -4012,6 +3894,7 @@ def build_live_app(bundle: Path):
     404. That is the same shape as the /crop/{target} decorator incident: the route that
     answered was not the route anyone meant.
     """
+    import http.client
     import urllib.error
     import urllib.parse
     import urllib.request
@@ -4082,6 +3965,10 @@ def build_live_app(bundle: Path):
     @app.api_route("/{path:path}",
                    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
     def _proxy(path: str, request: Request):
+        global BRIDGE_URL
+        port = discovered_bridge_port()
+        if port:
+            BRIDGE_URL = f"http://127.0.0.1:{port}"
         url = f"{BRIDGE_URL}/{urllib.parse.quote(path, safe='/')}"   # decoded path -> re-quoted (GA-346)
         if request.url.query:
             url += "?" + request.url.query
@@ -4096,14 +3983,8 @@ def build_live_app(bundle: Path):
                 # 152446: /feed 0 bytes after 6 s, /frame.jpg fine beside it). Relay it
                 # chunk by chunk instead. ponytail: one thread per open stream; fine for a
                 # handful of viewers, revisit if the dashboard ever has many.
-                def _relay(src=r):
-                    with src:
-                        while True:
-                            chunk = src.read1(65536)   # whatever is buffered now; read() would hold a frame's tail until the next frame
-                            if not chunk:
-                                break
-                            yield chunk
-                return StreamingResponse(_relay(), status_code=r.status, media_type=ctype,
+                from graphapi_cli.http_stream import relay_response
+                return StreamingResponse(relay_response(r), status_code=r.status, media_type=ctype,
                                          headers={"Cache-Control": "no-store"})
             with r:
                 return Response(content=r.read(), status_code=r.status, media_type=ctype)
@@ -4111,7 +3992,7 @@ def build_live_app(bundle: Path):
             # Pass the bridge's own status through rather than turning it into a 200.
             return Response(content=exc.read(), status_code=exc.code,
                             media_type=exc.headers.get("Content-Type", "application/json"))
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException) as exc:
             # Never an empty success: a viewer that draws zero nodes from a failed fetch
             # is indistinguishable from a scene with no objects.
             return JSONResponse(status_code=503, content={

@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Host bootstrap: application and CLI Python dependencies live in Docker.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Compatibility adapters may call this script from an existing managed container.
+if [[ ${GRAPHAPI_CLI_CONTAINER:-0} == 1 ]]; then
+  export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  exec python3 -m graphapi_cli.cli "$@"
+fi
+
+command -v docker >/dev/null || { echo 'graphapi: install Docker and start its daemon first' >&2; exit 2; }
+IMAGE=${GRAPHAPI_CLI_IMAGE:-graphapi-cli:latest}
+REVISION=$(cksum < "$ROOT/docker/cli/Dockerfile")
+REVISION=${REVISION// /-}
+INSTALLED=$(docker image inspect -f '{{index .Config.Labels "graphapi.cli.build"}}' "$IMAGE" 2>/dev/null || true)
+if [[ "$INSTALLED" != "$REVISION" ]]; then
+  echo "graphapi: preparing CLI image $IMAGE" >&2
+  docker build --build-arg "BUILD_REVISION=$REVISION" -f "$ROOT/docker/cli/Dockerfile" -t "$IMAGE" "$ROOT" >&2
+fi
+
+ENDPOINT=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
+case "$ENDPOINT" in
+  unix://*) SOCKET=${ENDPOINT#unix://} ;;
+  *) echo 'graphapi: use a local Docker daemon with shared filesystem paths' >&2; exit 2 ;;
+esac
+[[ -S "$SOCKET" ]] || { echo "graphapi: Docker socket unavailable: $SOCKET" >&2; exit 2; }
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}
+mkdir -p "$CACHE/graphapi"
+PLAN=$(mktemp -d "${TMPDIR:-/tmp}/graphapi-bootstrap.XXXXXX")
+trap 'rm -rf "$PLAN"' EXIT
+
+# Planning receives exports so inherited values can override local settings.
+# The container-side planner filters the runtime environment in one place.
+ENV_ARGS=()
+while IFS= read -r key; do
+  case "$key" in
+    PATH|PYTHONPATH|PYTHONHOME|VIRTUAL_ENV|CONDA_*|LD_LIBRARY_PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS) continue ;;
+  esac
+  if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then ENV_ARGS+=(-e "$key"); fi
+done < <(compgen -e)
+
+# Planning reads external configuration through a read-only host view. The
+# actual CLI receives only the identity mounts that its command needs.
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$ROOT:$ROOT:ro" -v '/:/host:ro' -v "$PLAN:/plan" -w "$ROOT" \
+  "${ENV_ARGS[@]}" -e "PYTHONPATH=$ROOT" -e "GRAPHAPI_CLI_IMAGE=$IMAGE" \
+  -e "GRAPHAPI_DOCKER_SOCKET=$SOCKET" -e "XDG_CACHE_HOME=$CACHE" -e "GRAPHAPI_HOST_CWD=$PWD" \
+  --entrypoint python3 "$IMAGE" -m graphapi_cli.bootstrap --root "$ROOT" --output /plan -- "$@"
+
+read_args() {
+  local file=$1 value
+  while IFS= read -r -d '' value; do
+    VALUES+=("$value")
+  done < "$file"
+}
+VALUES=(); read_args "$PLAN/docker.args"; DOCKER_ARGS=("${VALUES[@]}")
+VALUES=(); read_args "$PLAN/host.env"; HOST_ENV=("${VALUES[@]}")
+VALUES=(); read_args "$PLAN/host.args"; HOST_ARGS=("${VALUES[@]}")
+MODE=$(cat "$PLAN/host.mode")
+if [[ "$MODE" != none ]]; then
+  # These existing actions affect host firewall/routing and retain host sudo.
+  env "${HOST_ENV[@]}" bash "${HOST_ARGS[@]}"
+  if [[ "$MODE" == instead ]]; then exit 0; fi
+fi
+rm -rf "$PLAN"
+trap - EXIT
+TTY_ARGS=(-i)
+if [[ -t 0 && -t 1 ]]; then TTY_ARGS+=(-t); fi
+ACTOR="graphapi-cli-$(id -u)-$$"
+exec docker run --rm --init "${TTY_ARGS[@]}" --name "$ACTOR" \
+  --user "$(id -u):$(id -g)" --group-add "$(stat -c '%g' "$SOCKET")" \
+  -e "GRAPHAPI_RESOURCE_ACTOR=$ACTOR" "${DOCKER_ARGS[@]}" "$IMAGE" "$@"

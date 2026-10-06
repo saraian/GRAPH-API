@@ -137,7 +137,7 @@ def read_bundle(p: pathlib.Path):
         except Exception as e:
             out["problems"].append(f"metrics.json is unreadable: {e}")
     else:
-        out["problems"].append("no eval/metrics.json — run ./eval.sh on this bundle first")
+        out["problems"].append("no eval/metrics.json — run ./graphapi eval on this bundle first")
     tm = p / "eval" / "time_metrics.json"
     if tm.exists():
         try:
@@ -326,7 +326,7 @@ def main() -> int:
 
     runs = [read_bundle(b.resolve()) for b in args.bundles]
     if not any(r["metrics"] for r in runs):
-        print("!! none of these bundles has eval/metrics.json — run ./eval.sh first", file=sys.stderr)
+        print("!! none of these bundles has eval/metrics.json — run ./graphapi eval first", file=sys.stderr)
         for r in runs:
             for p in r["problems"]:
                 print(f"   {r['name']}: {p}", file=sys.stderr)

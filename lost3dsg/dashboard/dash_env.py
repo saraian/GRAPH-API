@@ -61,7 +61,7 @@ def runs_dir() -> Path:
     v = env("GRAPH_API_RUNS_DIR")
     if v:
         return Path(v)
-    return Path(os.environ.get("GRAPH_API_ROOT", "/DATA/GRAPH-API")) / "runs"
+    return Path(os.environ.get("WORKSPACE_ROOT", os.environ.get("GRAPHAPI_ROOT", os.environ.get("GRAPH_API_ROOT", str(Path(__file__).resolve().parents[2]))))) / "results"
 
 
 def gt_dir() -> Path:
@@ -99,7 +99,7 @@ def _selfcheck():
             os.environ.pop(k, None)
         with tempfile.TemporaryDirectory() as td:
             os.environ["GRAPH_API_ROOT"] = td
-            assert runs_dir() == Path(td) / "runs", runs_dir()
+            assert runs_dir() == Path(td) / "results", runs_dir()
             assert gt_dir() == Path(td) / "data/gt", gt_dir()
         os.environ.pop("GRAPH_API_ROOT", None)
         # 4. this file must name NO extension. The token is built, not typed, for the same reason
