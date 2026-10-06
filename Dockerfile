@@ -7,8 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-vcstool python3-rosdep python3-colcon-common-extensions \
     ros-humble-gazebo-ros-pkgs \
     ros-humble-navigation2 ros-humble-nav2-bringup ros-humble-slam-toolbox \
+    ros-humble-rtabmap-ros \
     ros-humble-xacro ros-humble-robot-state-publisher ros-humble-joint-state-publisher-gui \
     ros-humble-rmw-cyclonedds-cpp ros-humble-rmw-fastrtps-cpp \
+    ros-humble-tf-transformations \
     ros-humble-image-view ros-humble-teleop-twist-keyboard \
     ros-humble-moveit \
     ros-humble-ros2-control \
@@ -50,10 +52,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ONNX Runtime 1.18.1 is built against the CUDA 11 ABI.  PyTorch in this image
 # remains on CUDA 12.1, so keep the CUDA 11 math/runtime libraries side by side;
 # the image's existing CUDA 12 cuDNN 8 library satisfies both consumers.
+RUN apt-get remove -y python3-sympy
+
+RUN python3 -m pip install --no-cache-dir --upgrade pip
+
 RUN python3 -m pip install --no-cache-dir \
+    "setuptools<80" \
+    "packaging>=22" \
+    "numpy>=1.24.0,<2.0" \
+    "scipy>=1.15.0,<1.16" \
+    "Pillow>=10.0.0" \
+    "PyYAML>=6.0" \
     "sentence-transformers==3.0.1" \
+    "gensim>=4.3.0" \
+    "webcolors" \
+    "torchvision==0.29.1" \
+    "timm>=0.9.0" \
+    "onnx>=1.14.0" \
+    "onnxsim>=0.4.0" \
+    "segment-anything>=1.0" \
+    "matplotlib" \
+    "uvicorn" \
+    "fastapi" \
+    "openai>=1.40.0" \
     "onnxruntime-gpu==1.18.1" \
     "nvidia-cublas-cu11" \
+    "nvidia-cudnn-cu11==8.9.6.50" \
     "nvidia-cuda-runtime-cu11" \
     "nvidia-curand-cu11" \
     "nvidia-cufft-cu11"
@@ -75,31 +99,6 @@ RUN vcs import --input https://raw.githubusercontent.com/pal-robotics/tiago_tuto
 
 RUN rosdep install --from-paths src -y --ignore-src --skip-keys="moveit" || true
 RUN . /opt/ros/humble/setup.sh && colcon build --symlink-install
-
-# ── Franka Emika Panda workspace ───────────────────────────────────────────────
-ENV FRANKA_WS=/root/franka_ws
-RUN mkdir -p ${FRANKA_WS}/src
-WORKDIR ${FRANKA_WS}/src
-
-RUN git clone -b humble https://github.com/frankarobotics/franka_ros2.git
-
-WORKDIR ${FRANKA_WS}
-RUN vcs import src < src/franka_ros2/dependency.repos --recursive --skip-existing
-RUN rosdep install --from-paths src --ignore-src --rosdistro humble -y \
-    --skip-keys="gz_ros2_control realsense2_camera realsense2_description joy" || true
-RUN . /opt/ros/humble/setup.sh && \
-    . ${WS}/install/setup.sh && \
-    colcon build --symlink-install \
-        --packages-select libfranka \
-        --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF && \
-    colcon build --symlink-install \
-        --packages-skip libfranka franka_gazebo_hardware franka_gazebo_bringup franka_bringup franka_fr3_moveit_config franka_ros2 \
-        --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-
-# Source everything in bashrc
-RUN echo ". /opt/ros/humble/setup.bash" >> ~/.bashrc && \
-    echo ". ${WS}/install/setup.bash" >> ~/.bashrc && \
-    echo ". ${FRANKA_WS}/install/setup.bash" >> ~/.bashrc
 
 WORKDIR /root/exchange
 CMD ["/bin/bash"]

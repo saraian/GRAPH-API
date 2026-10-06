@@ -43,7 +43,7 @@ STUB_BACKENDS = frozenset({"LocalPerceptionBackend"})
 #
 # The names were `("owlv2", "sam")` here and in the vendored pipeline. The server actually
 # emits `['detector', 'sam2', 'total']` — measured from a live refusal, not inferred — and
-# /DATA/GRAPH-API's pipeline reads detector/sam2 with the reason at the site: "Modal reports
+# /DATA/Tiago 2.0's pipeline reads detector/sam2 with the reason at the site: "Modal reports
 # detector/sam2 (NMS runs inside the detector there)". So this was never a backend-contract
 # fault. It is a port that was never made, in one checkout.
 _PIPELINE_TIMING_FALLBACK = ("detector", "sam2")
@@ -59,7 +59,7 @@ def pipeline_timing_keys():
     a predictor.
 
     The vendored tree asks for ("owlv2", "sam"); the server emits ['detector', 'sam2', 'total']
-    — measured from a live refusal — and /DATA/GRAPH-API's pipeline reads detector/sam2 with
+    — measured from a live refusal — and /DATA/Tiago 2.0's pipeline reads detector/sam2 with
     the reason at the site. So a4 reading the vendored list will FAIL, correctly: that run does
     die. The remedy is to port the two names, not to teach a4 different ones.
     """
@@ -318,10 +318,10 @@ def a3_policy_reached_container(expect_policy):
         # that did not run must not read as green), so a3 skipping made the gate UNPASSABLE for any
         # stack with no policy layer: the launcher builds the expectation by looping over
         # EXT_ENV_PASS, which is empty without an extension, so a3 skipped for graphapi_only_config,
-        # for smoke_config, and for every GRAPH-API-only deployment.
+        # for smoke_config, and for every Tiago 2.0-only deployment.
         #
         # This is the same finding GA-435 fixed for a7 four hours earlier -- "on a deployment with
-        # NO extension ... a GRAPH-API-only stack could not pass the gate at all" -- which survived
+        # NO extension ... a Tiago 2.0-only stack could not pass the gate at all" -- which survived
         # one probe over because the fix was made where it was found rather than where it applied.
         #
         # SO THE DISCRIMINATOR IS WHETHER A POLICY LAYER EXISTS, not whether an expectation arrived.
@@ -786,7 +786,7 @@ def _found_exercised(flag):
     GA-435 (2026-09-10). The caller used to answer this with "is this a detection run", passing 1
     for everything that was not MAPPING_ONLY. Those are different questions, and on a deployment
     with NO extension the wrong answer is not harmless: a7 fails with live_roots_undeclared, so a
-    GRAPH-API-only stack could not pass the gate at all. Found on Gin, where no hooks are
+    Tiago 2.0-only stack could not pass the gate at all. found on Gin, where no hooks are
     configured, hooks.filter is empty and no EXT_* variable is set.
 
     hooks.filter IS the question. It is the single name that routes a run into extension code, and
@@ -955,7 +955,7 @@ def a7_source_frozen(expect, executed_tree=None, copy_source=None, live_roots=No
 # GA-423. a7 polices drift DURING a run: launcher stamp -> container copy -> teardown. It has
 # no opinion about whether this tree matches THE RUN THIS ONE IS BEING COMPARED AGAINST, and
 # that comparison was mechanised NOWHERE. On 2026-09-09 it existed because one lane read two
-# digests by hand and caught /DATA/FOUND dirty before run 2 -- 8 modified files, 511 insertions,
+# digests by hand and caught /DATA/found dirty before run 2 -- 8 modified files, 511 insertions,
 # of which found/admission.py and found/store.py are reached by the hook the container runs.
 # Launching blind would have given run 2 three behavioural differences from run 1 and made all
 # four pre-registered readings unattributable. A person caught it. Nothing would have.
@@ -1170,13 +1170,13 @@ def a8_stack_imports(modules=None, install=None):
 
 class Probe:
     """Blueprint for a probe supplied by an extension, mirroring `hooks.py`'s Filter/Refiner/
-    Store. GRAPH-API ships the harness and the generic probes; anything that asserts about a
+    Store. Tiago 2.0 ships the harness and the generic probes; anything that asserts about a
     specific belief layer belongs to the package that implements it.
 
     An ontology-identity probe is the case that forced this. It imports an extension's modules and
     hardcodes an ontology-specific golden pair, so **outside that deployment it cannot pass** — and a
     probe that cannot pass makes the gate's verdict permanently `fail` for a reason the operator
-    cannot fix. Ontology knowledge lives in the extension; GRAPH-API ships the seam.
+    cannot fix. Ontology knowledge lives in the extension; Tiago 2.0 ships the seam.
 
     Subclasses set `id` and `name` and implement `run()`, returning `(ok, detail)` with the same
     contract as the built-ins: True, False, or SKIPPED — and SKIPPED is not a pass.
@@ -1423,6 +1423,7 @@ A12_ALLOWED_FILES = {
     "src/perception_module/run_metrics.py": "offline metrics driver; imported by nothing, installed nowhere",
 
     "test/test_preflight_gate.py": "the negative test names the tokens",
+    "test/test_gt_bbox_layers.py": "GT bounding-box layer contract test",
     "src/perception_module/habitat_feed_node.py": "relays the blob to /gt/semantic_instance (transport)",
     "src/perception_module/gt_codec.py": "the run-length codec",
     "src/perception_module/detection_archive.py": "the archive join: habitat_gt_* row keys, validation only",
@@ -1670,7 +1671,7 @@ def _kv_roots(pairs):
     and nothing ever read it. `LIVE_ROOTS` was {} and no caller passed the flag, so a7's
     live-root half could not run in either direction: no root was ever sampled, and the fix
     the message told you to apply was inert.
-    That is why the /DATA/FOUND drift of 2026-09-09 was caught by a person reading two digests
+    That is why the /DATA/found drift of 2026-09-09 was caught by a person reading two digests
     by hand. The tree a run mounts live is exactly the one that can change underneath it, and
     the instrument for it was switched off while reporting its own absence as the problem
     (working rule 26: a disabled instrument is worse than a missing one, because nobody looks
