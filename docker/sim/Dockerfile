@@ -1,5 +1,6 @@
 # Complete public simulation runtime. Both Habitat and ROS execute inside Docker.
 # Gazebo/Franka retain their existing separate public image (root Dockerfile).
+FROM docker:28-cli AS docker-cli
 FROM ros:humble
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -9,12 +10,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip python3-colcon-common-extensions git curl ca-certificates \
     libopencv-dev libpcl-dev libeigen3-dev ros-humble-libg2o ros-humble-gtsam \
     build-essential cmake ros-humble-rviz2 \
-    libegl1 libgl1 libglib2.0-0 wget bzip2 patch docker.io openssh-client rsync \
+    libegl1 libgl1 libglib2.0-0 wget bzip2 patch openssh-client rsync \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+RUN docker --version && docker buildx version
 COPY lost3dsg/test/patches/rtabmap-0.23.7-ga290-guard.patch /tmp/rtabmap-guard.patch
 RUN source /opt/ros/humble/setup.bash && \
     version=$(dpkg-query -W -f='${Version}' ros-humble-rtabmap | cut -d- -f1) && \
-    curl -fsSL "https://codeload.github.com/introlab/rtabmap/tar.gz/refs/tags/$version" -o /tmp/rtabmap.tar.gz && \
+    curl -fsSL "https://codeload.github.com/introlab/rtabmap/tar.gz/refs/tags/$version-humble" -o /tmp/rtabmap.tar.gz && \
     mkdir /tmp/rtabmap && tar -xf /tmp/rtabmap.tar.gz -C /tmp/rtabmap --strip-components=1 && \
     cd /tmp/rtabmap && patch -p1 < /tmp/rtabmap-guard.patch && \
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_APP=OFF -DBUILD_EXAMPLES=OFF && \
@@ -57,6 +61,11 @@ RUN cp -r /opt/graphapi_ws/config /opt/graphapi_ws/src/config && \
 # the expensive Habitat/RTAB-Map source builds when updating ROS dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-tf-transformations && rm -rf /var/lib/apt/lists/*
+# Some NVIDIA container runtimes inject libEGL_nvidia but omit its GLVND manifest.
+# Without the manifest Habitat picks Mesa and cannot match CUDA device 0 to EGL.
+RUN printf '%s\n' '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}' \
+    > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 ARG RUNTIME_BUILD_REVISION=manual
 LABEL graphapi.runtime="2" graphapi.runtime.build="${RUNTIME_BUILD_REVISION}"
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,display
