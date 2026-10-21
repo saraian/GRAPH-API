@@ -11,7 +11,8 @@ fi
 
 command -v docker >/dev/null || { echo 'graphapi: install Docker and start its daemon first' >&2; exit 2; }
 IMAGE=${GRAPHAPI_CLI_IMAGE:-graphapi-cli:latest}
-REVISION=$(cksum < "$ROOT/docker/cli/Dockerfile")
+# The CLI image copies this package, so source edits must invalidate its image.
+REVISION=$(cat "$ROOT/docker/cli/Dockerfile" "$ROOT"/graphapi_cli/*.py "$ROOT"/graphapi_cli/runtime/* | cksum)
 REVISION=${REVISION// /-}
 INSTALLED=$(docker image inspect -f '{{index .Config.Labels "graphapi.cli.build"}}' "$IMAGE" 2>/dev/null || true)
 if [[ "$INSTALLED" != "$REVISION" ]]; then
