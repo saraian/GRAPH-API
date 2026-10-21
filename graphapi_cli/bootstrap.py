@@ -117,6 +117,15 @@ def mount_plan(root, arguments, inherited, *, host_view=False, host_root=Path("/
             for name in ("results", "maps", "schedules", "ws"):
                 add(path / name, True)
     add(Path(env["XDG_CACHE_HOME"]) / "graphapi", True)
+    docker_config = Path(env.get("DOCKER_CONFIG", home + "/.docker"))
+    if visible(docker_config).is_dir():
+        add(docker_config, True)
+        env["DOCKER_CONFIG"] = str(docker_config)
+    elif "DOCKER_CONFIG" in env:
+        raise ConfigurationError(f"Docker config directory does not exist: {docker_config}")
+    else:
+        # Buildx needs a writable config even when the host has no ~/.docker.
+        env["DOCKER_CONFIG"] = str(Path(env["XDG_CACHE_HOME"]) / "graphapi/docker")
     for key in ("config", "transforms", "tour-schedule", "map"):
         if key in selected:
             add(selected[key], False, required=True)
@@ -124,6 +133,11 @@ def mount_plan(root, arguments, inherited, *, host_view=False, host_root=Path("/
                 "EVAL_SCENE", "EVAL_DATASET_CONFIG", "RUN_DIR", "TIAGO_BAG_PATH", "MP3D_ROOT", "XAUTHORITY"):
         if env.get(key):
             add(env[key], False, required=True)
+    # Detached supervisors create the launcher later, without the original --config argument.
+    # Preserve live extension trees across that second controller boundary.
+    for pair in env.get("EXT_TREES", "").split():
+        if "=" in pair:
+            add(pair.split("=", 1)[1], False, required=True)
     # Positional paths and forwarded ROS arguments can name external inputs.
     for value in arguments:
         candidate = value.split(":=", 1)[-1].split("=", 1)[-1]
@@ -136,8 +150,7 @@ def mount_plan(root, arguments, inherited, *, host_view=False, host_root=Path("/
     for i, value in enumerate(arguments[:-1]):
         if value in ("--output", "--out-dir", "--results-root", "--output-root"):
             add(arguments[i + 1], True)
-    for path in (Path(home) / ".ssh", Path(env.get("DOCKER_CONFIG", home + "/.docker"))):
-        add(path)
+    add(Path(home) / ".ssh")
     for path in (Path("/etc/passwd"), Path("/etc/group"), Path(home) / ".modal.toml"):
         add(path, exact=True)
     if env.get("SSH_AUTH_SOCK"):
