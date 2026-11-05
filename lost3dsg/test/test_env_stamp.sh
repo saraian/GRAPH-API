@@ -7,7 +7,7 @@
 # from the live file at run time.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-SRC="$HERE/../../run_sim.sh"
+SRC="$HERE/../../graphapi_cli/runtime/run_sim.sh"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -78,7 +78,7 @@ SRC_SHA=aaaa1111 SRC_N=122 EXT_SRC_SHAS=ext=bbbb2222 \
 IMAGE_TAG=img IMAGE_DIGEST=sha256:dead ENC_E5=e5 ENC_MINILM=mini \
 GT_PATH=/gt/hm3d_00861.json GT_SHA=beef1234 GT_N=870 \
 EXT_POLICY_JSON='"enforce": 1, "hold_band": 0.05,' \
-FEED_FPS=3 FEED_OVERLAY=1 FEED_SHOW=1 \
+FEED_FPS=3 FEED_WIDTH=640 FEED_HEIGHT=480 FEED_HFOV=90 FEED_OVERLAY=1 FEED_SHOW=1 \
 FEED_SCHEDULE=/sched/hm3d_00861.schedule.json FEED_EXPLORATION_LAPS=3 FEED_MOVE_FN=navigate \
 ROOM_FRAME_MAX=5 ROOM_FRAME_STRIDE_M=1.5 FEED_POSE_SOURCE=simulator \
 FEED_CAMERA_PITCH_DEG=-30 SEED_SOURCE=pinned SCENE_SOURCE=pinned \

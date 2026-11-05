@@ -1,0 +1,69 @@
+# Overlay for an offline TIAGo RGB-D rosbag replay.
+# The recording owns the map -> odom transform, so this profile consumes the
+# recorded /map rather than starting RTAB-Map.  It is deliberately separate
+# from tiago_robot.yaml: the physical robot uses found_map and /rtabmap/map.
+
+simulation: false
+
+merge:
+  periodic_interval_s: 5.0
+
+frames:
+  camera: "head_front_camera_color_optical_frame"
+  motion_watch: ["base_footprint", "head_1_link", "head_2_link"]
+  motion_watch_base: []
+
+paths:
+  output_dir: "/ws/output"
+  operations_log: "/ws/output/operations.txt"
+  vitsam_encoder: "/models/vitsam/l2_encoder.onnx"
+  vitsam_decoder: "/models/vitsam/l2_decoder.onnx"
+
+embedding:
+  word2vec_path: "/ws/smoke_w2v.bin"
+  word2vec_limit: 200000
+
+tf:
+  # The bag contains PAL's recorded map -> odom transform.
+  world_frame: map
+  lookup_timeout: 0.2
+
+bev:
+  source: ros
+  map_topic: /map
+  base_frame: base_footprint
+  # The recording has camera point clouds, but no RTAB-Map cloud_map topic.
+  cloud_map_topic: ""
+
+services:
+  feed_enabled: false
+
+rooms:
+  default_room_id: "room_0"
+
+vlm:
+  base_url: "https://api.regolo.ai/v1"
+  model: "gemma4-31b"
+  api_key: ""
+  enable_thinking: false
+  timeout: 120.0
+  retries: 1
+  crop_timeout: 60.0
+  crop_concurrency: 2
+
+perception:
+  backend: "local"
+  score_threshold: 0.15
+  nms_threshold: 0.50
+  fov_max_depth_m: 6.0
+
+association:
+  max_misses_before_delete: 1
+
+# Keep the physical TIAGo pass-through hook policy in bag replay as well.
+hooks:
+  search_paths: []
+  filter: ""
+  refiner: ""
+  store: ""
+  decisions_log: ""

@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, TimerAction
 from launch.substitutions import LaunchConfiguration
@@ -12,19 +15,19 @@ def generate_launch_description():
 
     declare_bag_path = DeclareLaunchArgument(
         'bag_path',
-        default_value='/root/exchange/lost3dsg/porte',
+        default_value=str(Path(os.environ.get('TIAGO_BAG_PATH', '/bags/porte'))),
         description='Path to the ROS2 bag'
     )
 
     declare_rviz_config = DeclareLaunchArgument(
         'rviz_config',
-        default_value='/root/exchange/lost3dsg/rviz/default.rviz',
+        default_value='/graph_api/config/live.rviz',
         description='Path to RViz config'
     )
 
     declare_slam_params = DeclareLaunchArgument(
         'slam_params',
-        default_value='/root/tiago_public_ws/src/pmb2_navigation/pmb2_2dnav/config/nav_public_sim.yaml',
+        default_value=str(Path(get_package_share_directory('pmb2_2dnav')) / 'config/nav_public_sim.yaml'),
         description='Path to SLAM params'
     )
 

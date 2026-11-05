@@ -18,3 +18,7 @@ def main(baseline):
         return export()
     from .runtime import main as acquire
     return acquire()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main("graphapi"))

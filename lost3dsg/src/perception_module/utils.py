@@ -181,7 +181,7 @@ class SyncedCameraData:
                 self.node.get_logger().info("OK - All data ready!")
                 self.all_ready = True
 
-    def get_synced_data(self, max_age=None):
+    def get_synced_data(self, max_age=None, *, consume=True):
         # GA-164: reachable, not hardcoded. 1.0 s was a literal default that no config could
         # reach -- the same class as the three unreachable settings found tonight -- and it
         # is the exact threshold that rejected every frame of run 035141. Raising it is a
@@ -299,11 +299,12 @@ class SyncedCameraData:
                 'camera_frame': rgb_frame
             }
 
-            # Invalida dopo il consumo, per forzare l'attesa di un nuovo frame
-            self.cached_rgb = None
-            self.cached_depth = None
-            self.cached_camera_info = None
-            self.cached_transform = None
+            # Readiness checks must leave the frame for the actual detection.
+            if consume:
+                self.cached_rgb = None
+                self.cached_depth = None
+                self.cached_camera_info = None
+                self.cached_transform = None
 
             return result
 

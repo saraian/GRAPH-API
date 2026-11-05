@@ -1,106 +1,81 @@
-# TIAGo launcher
+# TIAGO workflows
 
-[`../run_tiago.sh`](../run_tiago.sh) is the public entry point for the physical
-TIAGo stack and offline TIAGo RGB-D recordings. It supports a concise
-`physical`/`bag` interface while retaining the compatibility actions. The files
-in this directory are the non-secret runtime layer: ROS helpers, configuration
-overlays, the TF conflict relay and the shared RViz layout.
+Use `./graphapi run tiago physical` for the physical robot and
+`./graphapi run tiago bag BAG_DIRECTORY` for offline TIAGO RGB-D replay.
+Both run in the runner’s private PAL Docker container. Bag replay is an offline
+input to the pipeline; it does not simulate a robot in Gazebo or connect to one.
+`run tiago` requires a workflow. The historical `run bag` spelling is an alias
+for `run tiago bag`.
 
-The concise `physical` and `bag` commands start a fresh run by default. If a
-previous tmux session or `/ws/output` exists, the launcher stops the session,
-archives the output under `/ws/runs/tiago_<timestamp>`, and starts clean. Add
-`--resume` when the intention is to reuse the current session and output. The
-low-level `start` action remains a compatibility spelling for resume, while
-`new` remains the explicit low-level spelling for a fresh run.
+| Workflow | Default map source | Default node configuration |
+| --- | --- | --- |
+| Physical robot | Application RTAB-Map (`found_map`, `/rtabmap/map`) | `config/tiago_robot.yaml` |
+| Offline bag | Recorded map and TF (`map`, `/map`) | `config/tiago_bag.yaml` |
+| Offline bag with `--map-source slam` | Fresh RTAB-Map (`map`, `/rtabmap/map`) | `config/tiago_bag_rtabmap.yaml` |
 
-The PAL development image is private. Put the private bundle under
-`../TIAGO_ISO/`, or set `TIAGO_ISO_DIR`, before the first run. The launcher
-expects the private `uni-sap-rome-build-docker.sh`; the ISO and PAL keys remain
-private and are never copied into Git. A PAL APT key package is needed when the
-private builder has to build a new image.
-
-## Physical TIAGo
-
-```bash
-./run_tiago.sh physical
-./run_tiago.sh physical --resume
-```
-
-The default is `tiago-127-dev`, ROS domain `1`, robot address `10.68.0.1`, and
-automatic host DDS preparation. Use `SKIP_TIAGO_HOST_DDS=1` after the host
-firewall and route have already been configured. `FOUND_START_RVIZ=1` opens the
-shared Habitat-style RViz layout in a separate tmux window. Set
-`FOUND_START_PERCEPTION=0` for a dashboard/RTAB-Map-only run.
-
-The private builder is called automatically when the default container does not
-exist. Set `TIAGO_AUTO_CREATE=0` to require an already-created container. A
-checkout nested at `<FOUND>/vendor/graph-api` uses that outer FOUND root; a
-standalone clone gets an ignored mount shim so the private builder still mounts
-the current checkout at `/graph_api`.
-
-## Offline RGB-D bag
-
-The default bag root is `<repo>/bags`. A relative bag argument is resolved
-there, and the host directory is mounted by the container builder at `/bags`.
-The `bags` directory may be a symlink to another storage volume; set
-`TIAGO_BAG_DIR` to override it on a different machine. An absolute bag path is
-also accepted; its parent directory is used for the mount unless
-`TIAGO_BAG_DIR` is explicitly set.
+Perception and topic recording default on; GUI defaults off. Use
+`--no-perception`, `--no-record` and `--gui` to select these explicitly.
+The physical target defaults to `tiago-127-dev`, ROS domain `1`, robot address
+`10.68.0.1`, and automatic host DDS preparation. Set the existing robot/topic
+variables in `config/local.yaml` when the target differs. `--map-source robot`
+disables application RTAB-Map and requires a node configuration matching the
+robot’s actual map topic and frame.
 
 ```bash
-./run_tiago.sh bag BAG_NAME
-./run_tiago.sh bag BAG_NAME --resume
+./graphapi doctor --mode tiago-physical
+./graphapi run tiago physical --detach
+./graphapi doctor --mode tiago-bag
+./graphapi run tiago bag /data/bags/example --map-source recorded --detach
+./graphapi run tiago bag /data/bags/example --map-source slam --no-record --detach
+./graphapi status OPERATION_ID
+./graphapi logs OPERATION_ID --follow
+./graphapi stop OPERATION_ID
 ```
 
-The normal bag profile replays the recorded `/map`. To run fresh RTAB-Map SLAM,
-use the recording without the recorded map as a competing global transform:
+The bag argument is a directory containing `metadata.yaml`; relative CLI paths
+resolve from the checkout root. Its parent is mounted as the bag root. An
+existing private container must already have a mount covering that recording.
+Bag replay skips physical DDS/firewall setup and uses an allocated replay ROS
+domain. Fresh SLAM omits recorded `/map` and filters transforms touching `map`
+from `/tf` and `/tf_static` before RTAB-Map receives them. Existing TF relay and
+mapping parameters are preserved.
+
+Fresh runs are default: the launcher closes the existing private tmux session
+and archives `/ws/output` before starting clean. `--resume` explicitly reuses
+that session/output; it must match the bag and profile already running. It does
+not resume a stopped historical operation. The CLI reserves the private
+container for one managed acquisition at a time.
+
+The runner must provide the private PAL container or private build inputs.
+See the [TIAGO setup instructions](../README.md#tiago).
+An already prepared container can be reused without supplying the ISO, builder
+or keys again. Source resolution selects this checkout through the existing
+container mounts, including when `/graph_api` points to an older checkout.
+The non-secret helpers under `tiago/found-docker/` are copied on each preparation;
+canonical node configuration and RViz files are in `config/`.
 
 ```bash
-./run_tiago.sh bag BAG_NAME --rtabmap --no-perception --rviz
-./run_tiago.sh bag BAG_NAME --rtabmap --resume
+./graphapi setup tiago --pal-bundle /private/TIAGO_ISO --container tiago-127-dev
+./graphapi tiago check
+./graphapi tiago build
+./graphapi tiago shell
+./graphapi tiago network status
 ```
 
-All mode options can be combined with either lifecycle choice. For example,
-`--rtabmap`, `--rviz`, `--no-perception`, `--rate` and `--loop` configure the
-run; `--resume` only controls whether the existing run is reused. A resumed bag
-must match the bag and profile already running in the container; use the default
-fresh form when switching recordings or changing the run's map ownership.
+`REGOLO_API_KEY` supplies the current VLM credential; otherwise the private
+launcher prompts without writing it into YAML. Recordings are written to the
+private container’s `/ws/output/recording` before final output is copied to the
+configured results directory. Put the private `/ws` mount on a drive with enough
+space; moving `results` alone does not move that live recording.
 
-The equivalent explicit path is `./run_tiago.sh bag bags/BAG_NAME`.
+The separate existing ROS launch variants have explicit names:
+`launch tiago-gazebo` starts the Gazebo/AMCL/navigation stack;
+`launch tiago-navigation` starts map/AMCL/navigation without spawning Gazebo.
+They use the public Gazebo image from `setup gazebo`.
+`launch tiago-bag-slam`, `tiago-bag-slam-1` and `tiago-bag-slam-2` expose
+historical bag ROS launch files in private PAL Docker. Use `run tiago bag` for
+the managed pipeline above. Historical launch names remain compatibility aliases.
 
-In fresh-SLAM mode the launcher automatically omits `/map` from playback and
-relays `/tf` and `/tf_static` after dropping transforms touching `map`. This
-prevents the recorded `map -> odom` transform from competing with RTAB-Map.
-The launcher selects `TIAGO_BAG_FILTER_CONFLICTING=1` for `--rtabmap` and `0`
-for recorded-map mode; the variable can be set explicitly when using the
-environment form, but it must agree with the selected map profile. Customize
-the dropped frame names with `TIAGO_BAG_TF_DROP_FRAMES=map,...`.
-
-## Actions and useful overrides
-
-```text
-./run_tiago.sh physical
-./run_tiago.sh physical --resume [--rviz]
-./run_tiago.sh bag BAG [--resume] [--rtabmap] [--rviz]
-./run_tiago.sh check                 # runtime/VitSAM check
-./run_tiago.sh build                 # build lost3dsg into /ws
-./run_tiago.sh firewall              # physical host DDS setup
-./run_tiago.sh start                 # compatibility: resume current run
-./run_tiago.sh new                   # explicit: archive /ws/output and restart
-./run_tiago.sh stop
-./run_tiago.sh attach
-./run_tiago.sh shell
-```
-
-The environment-driven compatibility forms are also lifecycle-explicit:
-
-```bash
-TIAGO_BAG_PATH=/path/to/bag ./run_tiago.sh start  # resume
-TIAGO_BAG_PATH=/path/to/bag ./run_tiago.sh new    # fresh
-```
-
-`TIAGO_RVIZ_CONFIG` selects a custom RViz file inside the container. The
-default layout shows RTAB-Map output, camera/depth data, current and persistent
-object bounding boxes, object text labels, room polygons, wall boundaries and
-door/window markers. `REGOLO_API_KEY` can be exported ahead of a perception run;
-otherwise the launcher prompts for it without writing it to a YAML file.
+See the [CLI help examples](../README.md#cli-help) for all commands and the existing
+options in `./graphapi run tiago physical --help` and
+`./graphapi run tiago bag --help`.

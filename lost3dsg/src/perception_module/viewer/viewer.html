@@ -1034,7 +1034,7 @@
           <!-- Left: Feed Watchdog & Perception Status Badges -->
           <div style="display: flex; align-items: center; gap: 6px;">
             <button id="btnTwoFeed" class="viz-btn" type="button" onclick="toggleTwoFeed()"
-                    title="Show the newest annotated perception cycle beside the live camera">2 FEEDS</button>
+                    title="Show the latest completed annotation and bounding boxes beside the live camera">ANNOTATIONS</button>
             <span id="feedStatusBadge" class="feed-heartbeat-badge"><span class="pulse-dot"></span> <span id="feedStatusText">FEED · CHECKING</span></span>
             <!-- Ships phase-neutral: the stats poll sets both the class and the text. -->
             <span id="perceptionStatusBadge" class="perception-state-badge"><i data-lucide="activity" style="width:11px;height:11px;"></i> <span id="perceptionStatusText">&mdash;</span></span>
@@ -2153,9 +2153,14 @@
           value.textContent = 'UNREACHABLE';
           value.style.color = '#ef4444';
         } else if (state === 'live-connected' && comp) {
-          value.textContent = comp.active ? 'ACTIVE' : 'OFFLINE';
-          value.style.color = comp.active ? '#10b981' : '#ef4444';
-          if (!comp.active) offline.push(`${comp.name || key}: ${comp.details || 'offline'}`);
+          if (comp.enabled === false) {
+            value.textContent = 'DISABLED';
+            value.style.color = '#94a3b8';
+          } else {
+            value.textContent = comp.active ? 'ACTIVE' : 'OFFLINE';
+            value.style.color = comp.active ? '#10b981' : '#ef4444';
+            if (!comp.active) offline.push(`${comp.name || key}: ${comp.details || 'offline'}`);
+          }
         } else {
           value.textContent = 'CHECKING';
           value.style.color = '#eab308';
@@ -2611,7 +2616,7 @@
         btn.classList.toggle('active', on);
         btn.disabled = !twoFeedAvailable();
         btn.title = twoFeedAvailable()
-          ? 'Show the newest annotated perception cycle beside the live camera'
+          ? 'Show the latest completed annotation and bounding boxes beside the live camera'
           : 'No second feed in a replay: the annotated frame comes from the running perception node and a bundle does not record it';
       }
       if (on) refreshLastPerception(true);
@@ -2648,9 +2653,12 @@
         // While this cycle is fresh the live feed serves the SAME image, so both panes show one
         // picture. Said on the badge rather than left as a puzzle.
         ageEl.textContent = Number(meta.age_s || 0).toFixed(0) + 's AGO' + (fresh ? ' \u00b7 same frame as the live feed' : '');
-        if (force || meta.revision !== lastPerceptionRevision) {
+        if (force || meta.revision !== lastPerceptionRevision || (img.complete && !img.naturalWidth)) {
           lastPerceptionRevision = meta.revision;
           img.src = PFX + meta.url + '?v=' + encodeURIComponent(meta.revision);
+        } else if (img.complete && img.naturalWidth) {
+          // A failed metadata poll may have covered an already loaded image.
+          empty.style.display = 'none';
         }
       } catch (err) {
         // SAID, not swallowed: an unreachable second feed must not look like a scene with
@@ -2665,6 +2673,7 @@
       document.getElementById('lastPerceptionEmpty').style.display = 'none';
     });
     document.getElementById('lastPerceptionImg').addEventListener('error', () => {
+      lastPerceptionRevision = null;
       const empty = document.getElementById('lastPerceptionEmpty');
       empty.textContent = 'Annotated frame could not be loaded';
       empty.style.display = 'flex';

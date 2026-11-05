@@ -48,10 +48,17 @@ lost3dsg/src/perception_module/config.local.yaml
 # workspace directory. These MUST stay ignored: a run bundle is over a gigabyte, and untracked
 # data of that size would be walked by `git status`, scanned by the boundary checker (which
 # enumerates with `git ls-files -o --exclude-standard`), and DELETED by `git clean -xdf`.
-/results/
+/results
 /runs/
 /maps/
 /output/
 /ws/
 # Local RGB-D bags; this can be a symlink to a larger per-machine volume.
 /bags
+
+# Centralized local configuration, resolved per-operation inputs and model caches.
+/config/local.yaml
+/config/.runtime/
+/models/
+/.venv/
+*.egg-info/

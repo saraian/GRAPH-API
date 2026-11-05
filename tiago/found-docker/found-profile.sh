@@ -50,4 +50,4 @@ _found_onnxruntime_cuda_libs="/opt/onnxruntime-cuda12-libs/nvidia/cudnn/lib:/usr
 export LD_LIBRARY_PATH="${_found_onnxruntime_cuda_libs}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 unset _found_onnxruntime_cuda_libs
 # PAL robots use CycloneDDS. Do not override RMW_IMPLEMENTATION here.
-export PYTHONPATH="${FOUND_ROOT}:${GRAPH_API_SRC}/src/perception_module${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${GRAPH_API_SRC%/lost3dsg}:${FOUND_ROOT}:${GRAPH_API_SRC}/src/perception_module${PYTHONPATH:+:$PYTHONPATH}"

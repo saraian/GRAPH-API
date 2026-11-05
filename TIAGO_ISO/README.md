@@ -1,6 +1,7 @@
 # Private TIAGo setup
 
-`run_tiago.sh` is the public launcher. The PAL development image and its
+`graphapi run tiago physical` and `graphapi run tiago bag BAG_DIRECTORY` are the
+public TIAGO workflows. The PAL development image and its
 credentials are intentionally not part of this repository.
 
 Put the private TIAGo bundle in this directory (or set `TIAGO_ISO_DIR` to
@@ -29,17 +30,19 @@ copied into the container on every `check`, `build`, `start` and `new`. The
 concise `physical` and `bag` forms select `new` by default; `--resume` selects
 the existing-run `start` behavior.
 
+See [the TIAGO setup instructions](../README.md#tiago).
+
 Typical first run:
 
 ```bash
-./run_tiago.sh physical
+./graphapi run tiago physical
 ```
 
 To reuse the current physical tmux session and `/ws/output` instead of starting
 fresh:
 
 ```bash
-./run_tiago.sh physical --resume
+./graphapi run tiago physical --resume
 ```
 
 The default container is `tiago-127-dev`. If it does not exist, the launcher
@@ -48,36 +51,24 @@ calls the private builder with `--create --robot` and mounts this checkout at
 hand. A clone that is not nested at `<FOUND>/vendor/graph-api` is supported;
 the launcher creates an ignored mount shim automatically.
 
-For a bag, put it below the repository-local `bags/` directory (or make that
-directory a symlink to local storage) and use its name:
+For offline TIAGO bag replay, pass the directory containing `metadata.yaml`.
+Relative CLI paths resolve from the checkout root; an absolute path makes the
+input explicit. The parent directory is used as the bag mount root when creating
+a container. An existing container must have a mount covering the selected bag.
 
 ```bash
-./run_tiago.sh bag BAG_NAME
+./graphapi run tiago bag /data/bags/BAG_NAME
+./graphapi run tiago bag /data/bags/BAG_NAME --resume
+./graphapi run tiago bag /data/bags/BAG_NAME --map-source slam
 ```
 
-The bag form is fresh by default as well. Add `--resume` only when continuing
-the same bag/profile:
+The default is recorded map/TF. Fresh SLAM excludes the recorded map topic and
+filters conflicting global-map transforms. Neither bag mode connects to the
+physical robot. Perception and recording default on in both physical and bag
+workflows; add `--no-perception` or `--no-record` for an explicit opt-out.
 
-```bash
-./run_tiago.sh bag BAG_NAME --resume
-```
-
-Use `FOUND_START_RTABMAP=1` for fresh RGB-D SLAM. That mode removes the
-recorded global-map topic and filters conflicting map transforms before
-RTAB-Map receives the robot/camera TF. The concise equivalent is:
-
-```bash
-./run_tiago.sh bag BAG_NAME --rtabmap
-```
-
-The default bag root is `<repo>/bags`; `TIAGO_BAG_DIR` can override it for a
-different machine. The low-level environment form remains supported, for
-example:
-
-```bash
-TIAGO_BAG_PATH=/absolute/path/to/bag ./run_tiago.sh new    # fresh
-TIAGO_BAG_PATH=/absolute/path/to/bag ./run_tiago.sh start  # resume
-```
-
-See `./run_tiago.sh --help` for the complete physical, bag, RViz, VLM and
-container environment variables.
+An already prepared private PAL container can be reused without this ISO/builder
+bundle. The bundle is needed when creating a missing container or image; this
+repository does not supply it. See `./graphapi run tiago physical --help`,
+`./graphapi run tiago bag --help` and the
+[TIAGO workflow guide](../tiago/README.md).

@@ -1,0 +1,16 @@
+# Copy to local.yaml, or let graphapi setup create it. Relative paths use this directory.
+# No credentials here: export REGOLO_API_KEY / MODAL_TOKEN_ID / MODAL_TOKEN_SECRET as needed.
+paths:
+  workspace: ..
+  dataset: null                 # HM3D scene folders and scene_dataset_config.json
+  models: ../models/efficientvit_sam
+  cache: ../models/huggingface
+  bags: ../bags
+  pal_bundle: ../TIAGO_ISO
+  baseline_repos: null          # parent of external Clio/HOV/DynamicGSG repositories
+docker:
+  sim_image: graphapi-sim:latest
+  pal_container: tiago-127-dev
+  pal_target: tiago-127
+environment: {}                 # documented adapter variables; caller environment takes precedence
+overrides: {}                   # optional explicit deployment overrides to the selected node config

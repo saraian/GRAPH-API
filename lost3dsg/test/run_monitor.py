@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Watch a run while it happens, and say what it is doing.
 
-    ./monitor.sh                 the newest run in results/
-    ./monitor.sh <bundle>        that one
-    ./monitor.sh --once          one snapshot, then exit
-    ./monitor.sh --interval 30   seconds between lines (default 20)
+    ./graphapi tools run run-monitor --                 the newest run in results/
+    ./graphapi tools run run-monitor -- <bundle>        that one
+    ./graphapi tools run run-monitor -- --once          one snapshot, then exit
+    ./graphapi tools run run-monitor -- --interval 30   seconds between lines (default 20)
 
 WHY THIS EXISTS. A run takes hours and its only visible sign is a growing directory. Three times
 today a run was declared healthy while the thing being watched was not the thing that mattered:

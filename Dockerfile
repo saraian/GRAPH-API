@@ -1,4 +1,5 @@
-FROM ros:humble
+ARG BASE_IMAGE=graphapi-sim:latest
+FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Base dependencies
@@ -52,21 +53,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ONNX Runtime 1.18.1 is built against the CUDA 11 ABI.  PyTorch in this image
 # remains on CUDA 12.1, so keep the CUDA 11 math/runtime libraries side by side;
 # the image's existing CUDA 12 cuDNN 8 library satisfies both consumers.
+# The apt python3-sympy cannot be uninstalled by pip, which breaks the torch install (main, 2026-10-06).
 RUN apt-get remove -y python3-sympy
 
-RUN python3 -m pip install --no-cache-dir --upgrade pip
-
-RUN python3 -m pip install --no-cache-dir \
+# torch/torchvision/transformers/numpy pinned as on the docker-startup branch (2026-10-21);
+# the other packages are the runtime set added on main (2026-10-06).
+RUN python3 -m pip install --upgrade "pip>=24,<26" && python3 -m pip install --no-cache-dir \
+    "torch==2.2.2" "torchvision==0.17.2" "transformers==4.44.2" "numpy==1.26.4" \
     "setuptools<80" \
     "packaging>=22" \
-    "numpy>=1.24.0,<2.0" \
     "scipy>=1.15.0,<1.16" \
     "Pillow>=10.0.0" \
     "PyYAML>=6.0" \
     "sentence-transformers==3.0.1" \
     "gensim>=4.3.0" \
     "webcolors" \
-    "torchvision==0.29.1" \
     "timm>=0.9.0" \
     "onnx>=1.14.0" \
     "onnxsim>=0.4.0" \

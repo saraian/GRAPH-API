@@ -2135,6 +2135,7 @@ def _stamp():
     out["overlay"] = {"on": OVERLAY_ON, "pose_source": _overlay_pose_source,
                       "objects": len(_OVERLAY_OBJ["objects"]),
                       "failures": _OVERLAY_FAILURES["n"], "last_error": _OVERLAY_FAILURES["last"]}
+    out["operation_id"] = os.environ.get("GRAPH_API_RUN_ID", "")
     return out
 
 
@@ -2443,7 +2444,8 @@ def get_pipeline_health():
         components["object_manager"] = {"name": "3D Object Manager", "active": False,
                               "details": f"Unknown: could not read /tmp/om6.log ({type(exc).__name__})"}
 
-    all_active = all(c["active"] for c in components.values())
+    from graphapi_cli.stack_health import apply_component_settings
+    all_active = apply_component_settings(components, os.environ)
     return {
         "status": "ok" if all_active else "degraded",
         "all_active": all_active,

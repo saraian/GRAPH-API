@@ -5,7 +5,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LAUNCH = (ROOT / "lost3dsg/launch/habitat_launch.py").read_text()
 STACK = (ROOT / "lost3dsg/test/live_stack_container.sh").read_text()
-RUNNER = (ROOT / "run_sim.sh").read_text()
+RUNNER = (ROOT / "graphapi_cli/runtime/run_sim.sh").read_text()
 FEED = (ROOT / "lost3dsg/test/habitat_feed_host.py").read_text()
 FEED_NODE = (ROOT / "lost3dsg/src/perception_module/habitat_feed_node.py").read_text()
 
@@ -40,7 +40,7 @@ class MultiFloorLauncherContractTest(unittest.TestCase):
         self.assertNotIn('rm -f "$LOCALIZE_DB_COPY"', RUNNER)
 
     def test_container_receives_complete_database_contract(self):
-        docker = RUNNER[RUNNER.index("docker run --name graphapi_live"):]
+        docker = RUNNER[RUNNER.index("docker run --name"):]
         self.assertIn("-e RTABMAP_LOCALIZE_DB", docker)
         self.assertIn("-e RTABMAP_SESSION_MODE", docker)
         self.assertIn("-e RTABMAP_DATABASE_PATH", docker)
@@ -58,7 +58,7 @@ class MultiFloorLauncherContractTest(unittest.TestCase):
         self.assertIn("--multi-floor", RUNNER)
         self.assertIn("MULTI_FLOOR_SEQUENCE", RUNNER)
         self.assertIn("MULTI_FLOOR_TRANSFORMS", RUNNER)
-        self.assertIn("persistent_habitat_feed.py", RUNNER)
+        self.assertIn("docker.py\" persistent", RUNNER)
         self.assertIn('"$MULTI_FLOOR_COORD_DIR/closed.json"', RUNNER)
         self.assertIn('"multi_floor_visits": visits', RUNNER)
         self.assertIn('"multi_floor_schedule":', RUNNER)
@@ -78,7 +78,7 @@ class MultiFloorLauncherContractTest(unittest.TestCase):
             FEED_NODE.index('stamp = self.get_clock().now().to_msg()',
                             FEED_NODE.index('expected = self._expected_floor_session')),
         )
-        docker = RUNNER[RUNNER.index("docker run --name graphapi_live"):]
+        docker = RUNNER[RUNNER.index("docker run --name"):]
         self.assertIn("-e MULTI_FLOOR_SESSION_ID", docker)
         self.assertIn("-e MULTI_FLOOR_FLOOR_ID", docker)
         self.assertIn("-e MULTI_FLOOR_VISIT_INDEX", docker)

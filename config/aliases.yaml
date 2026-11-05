@@ -1,0 +1,23 @@
+# Compatibility paths; canonical configuration lives in this directory.
+cyclonedds.xml: config/cyclonedds.xml
+lost3dsg/src/perception_module/config.yaml: config/graphapi.yaml
+lost3dsg/test/live.rviz: config/live.rviz
+lost3dsg/test/size_gate_config.yaml: config/size_gate_config.yaml
+lost3dsg/test/smoke_config.yaml: config/smoke_config.yaml
+lost3dsg/test/tiago.yaml: config/tiago.yaml
+schedules/configs/01_reference.yaml: config/01_reference.yaml
+schedules/configs/02_no_mapping_phase.yaml: config/02_no_mapping_phase.yaml
+schedules/configs/03_size_gate.yaml: config/03_size_gate.yaml
+schedules/configs/04_ground_truth_pose.yaml: config/04_ground_truth_pose.yaml
+schedules/configs/05_noise_floor.yaml: config/05_noise_floor.yaml
+schedules/configs/06_vlm_online.yaml: config/06_vlm_online.yaml
+schedules/configs/07_vlm_offline.yaml: config/07_vlm_offline.yaml
+schedules/configs/08_no_filter.yaml: config/08_no_filter.yaml
+schedules/example.runs.yaml: config/example.runs.yaml
+schedules/full.runs.yaml: config/full.runs.yaml
+schedules/vlm.runs.yaml: config/vlm.runs.yaml
+slam_params.yaml: config/slam_params.yaml
+tiago/found-docker/tiago_bag.yaml: config/tiago_bag.yaml
+tiago/found-docker/tiago_bag_rtabmap.yaml: config/tiago_bag_rtabmap.yaml
+tiago/found-docker/tiago_live.rviz: config/tiago_live.rviz
+tiago/found-docker/tiago_robot.yaml: config/tiago_robot.yaml

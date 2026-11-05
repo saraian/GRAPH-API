@@ -44,7 +44,7 @@ export RESULTS_DIR
 CAP_FIRED_MARKER="$RESULTS_DIR/.ga493_cap_fired_$$"
 export CAP_FIRED_MARKER
 
-bash "$ROOT/run_sim.sh" "$@" &
+"$ROOT/graphapi" run sim --config "$CONFIG" "$@" &
 RUN_PID=$!
 (
   waited=0
