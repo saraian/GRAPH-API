@@ -161,6 +161,10 @@ _DEFAULTS = {
         # request that carries a lower floor.
         "merge_min_similarity": 0.925,
         "merge_knn_k": None,               # None = the covariance-derived reach decides
+        # Multi-view confirmation (confirmation.py): an object is published only after
+        # observations from this many distinct perception cycles. None = off (unchanged
+        # behaviour); 1 = record sightings, hide nothing. Stated design choice, not fitted.
+        "confirm_min_views": None,
         # --- what may absorb, move or delete an object ------------------------------------
         "update_in_place_distance_m": 0.5,   # a new box this close updates in place, not a move
         "transition_move_distance_m": 0.35,  # movement that promotes exploration to tracking
@@ -596,6 +600,10 @@ _DEFAULTS = {
         "refiner": "",
         "store": "",           # subclass of hooks.Store; empty -> SQLite temporal map
         "decisions_log": "",   # empty -> <package>/output/hook_decisions.jsonl
+        # Optional pair judge for the legacy merge loop: "pkg.module:factory", a zero-argument
+        # factory whose result has score(left, right) -> {"decision": same|different|defer, ...}
+        # and optionally tick(). Null/empty -> no scorer, the merge loop runs as before.
+        "merge_scorer": None,
     },
     "visualization": {
         "strict_visibility": False,   # true -> min_visible_points defaults to 5
@@ -604,6 +612,11 @@ _DEFAULTS = {
         "depth_tol_rel": 0.05,
     },
     "perception": {
+        # The describer (scene call, crop call, crop grid) asks the VLM for colour, material,
+        # shape and description. False asks for the label and box only, and every one of those
+        # four fields is published as NOT_REQUESTED, never "unknown", so a reader can tell "not
+        # asked" from "the model did not know". The similarity drops NOT_REQUESTED terms.
+        "describer": {"emit_attributes": True},
         # THE FRAME QUEUE, declared 2026-09-11. OFF at 0, which is what every run before this
         # did: perception waits for the motion gate and processes the live frame. Above 0,
         # frames are captured into a queue regardless of motion and each is processed on its
@@ -671,7 +684,6 @@ _DEFAULTS = {
             "ceiling", "shower ceiling", "ceiling dome",
             "door", "doorway", "door frame", "doorframe", "shower door frame",
             "window", "window frame", "window shutter",
-            "bar", "air conditioner", "lamp",
             "stairs", "staircase", "railing", "stairs railing", "handrail",
         ],
     },
@@ -813,6 +825,18 @@ def vlm_completion_kwargs():
         template["enable_thinking"] = False
         extra["chat_template_kwargs"] = template
     return {"extra_body": extra} if extra else {}
+
+
+# The value of a describer field that was never asked for (perception.describer.emit_attributes).
+NOT_REQUESTED = "not_requested"
+
+
+def describer_emits_attributes():
+    """perception.describer.emit_attributes, read at call time. A non-boolean raises."""
+    value = ((CFG.get("perception") or {}).get("describer") or {}).get("emit_attributes", True)
+    if not isinstance(value, bool):
+        raise ValueError(f"perception.describer.emit_attributes must be true or false, got {value!r}")
+    return value
 
 
 def world_frame():

@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 import torch
-from config import CFG
+from config import CFG, describer_emits_attributes
 from box_view import pca_oriented_box as _fit_pca_oriented_box
 from cv_utils import _apply_transform, _filter_object_points
 from detection_types import Detection
@@ -75,6 +75,21 @@ def _backend_health_no_roundtrip(backend, backend_type):
         return {"reachable": None, "type": backend_type,
                 "source": "not probed on the detect path (LAT-4)"}
     return backend.health()
+
+
+def scene_prompt_path():
+    """The whole-frame prompt file. With perception.describer.emit_attributes false it is the
+    label-and-box variant; a configured paths.scene_analysis_prompt cannot be swapped for it
+    silently, so that combination raises."""
+    configured = CFG["paths"].get("scene_analysis_prompt")
+    if describer_emits_attributes():
+        name = "scene_analysis_prompt.txt"
+    elif configured:
+        raise ValueError(f"perception.describer.emit_attributes is false but paths.scene_analysis_prompt "
+                         f"is set ({configured}); clear it to use prompts/scene_analysis_prompt_no_attributes.txt")
+    else:
+        name = "scene_analysis_prompt_no_attributes.txt"
+    return configured or os.path.join(os.path.dirname(__file__), "prompts", name)
 
 
 class DetectionPipelineMixin:
@@ -286,8 +301,7 @@ class DetectionPipelineMixin:
     def _extract_scene_objects(self, rgb_image):
         """Return boxes and attributes from exactly one whole-frame VLM call."""
         t0 = time.time()
-        prompt_path = CFG["paths"].get("scene_analysis_prompt") or os.path.join(
-            os.path.dirname(__file__), "prompts", "scene_analysis_prompt.txt")
+        prompt_path = scene_prompt_path()
         try:
             scene_objects = self.vlm.call_scene(prompt_path, rgb_image)
             scene_latency_ms = round((time.time() - t0) * 1000.0, 1)

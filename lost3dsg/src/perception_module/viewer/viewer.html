@@ -724,7 +724,8 @@
     }
     .tab-btn:hover { color: #fff; background: #1e293b; }
     .tab-btn.active { color: #38bdf8; background: #1e293b; border-bottom: 2px solid #0284c7; }
-    .tab-content { display: none; flex: 1; flex-direction: column; overflow: hidden; height: calc(100% - 38px); }
+    .tab-nav { position: sticky; top: 0; z-index: 2; background: #090d16; }
+    .tab-content { display: none; flex: 1; flex-direction: column; overflow: hidden; height: calc(100% - 38px); min-height: 0; }
     .tab-content.active { display: flex; }
     .lifecycle-content { padding: 10px; overflow: hidden; gap: 8px; }
     .lifecycle-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
@@ -1156,6 +1157,9 @@
               <button id="btnPhysics" class="graph-layout-pill active" onclick="toggleGraphPhysics()"
                       aria-pressed="true"
                       title="Physics runs outside the UI thread. The worker uses the local WASM solver and falls back to JavaScript inside the worker if WebAssembly is unavailable.">⚡ PHYSICS: ON</button>
+              <button id="btnAnimate" class="graph-layout-pill" onclick="toggleGraphAnimation()"
+                      aria-pressed="false"
+                      title="Show the solver settling step by step (24 short worker passes) instead of jumping to the settled layout. Needs PHYSICS on.">▶ ANIMATION: OFF</button>
               <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
               <!-- GA-251. Six layout pills in a row is most of the toolbar's width, and only
                    one of them is ever active. The labeled selector keeps the current choice
@@ -1281,43 +1285,7 @@
             <!-- Visual Pipeline Stage Stepper Flow -->
             <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
               <div class="pipeline-step-card active" id="stepVlm">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span style="font-size:0.74rem; font-weight:bold; color:#f8fafc;">1. VLM Scene Labeling</span>
-                  <span id="latVlmPill" style="font-size:0.68rem; font-family:monospace; color:#38bdf8; font-weight:bold;">— ms</span>
-                </div>
-                <div style="font-size:0.65rem; color:var(--muted); margin-top:2px;">Open-vocabulary semantic discovery from visual frame</div>
-              </div>
-
-              <div class="pipeline-step-card" id="stepOwlv2">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span style="font-size:0.74rem; font-weight:bold; color:#f8fafc;">2. OWLv2 2D Detection & NMS</span>
-                  <span id="latOwlPill" style="font-size:0.68rem; font-family:monospace; color:#38bdf8; font-weight:bold;">— ms</span>
-                </div>
-                <div style="font-size:0.65rem; color:var(--muted); margin-top:2px;">CLIP-aligned 2D bounding boxes & Non-Max Suppression</div>
-              </div>
-
-              <div class="pipeline-step-card" id="stepSam">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span style="font-size:0.74rem; font-weight:bold; color:#f8fafc;">3. EfficientViT SAM Segmentation</span>
-                  <span id="latSamPill" style="font-size:0.68rem; font-family:monospace; color:#38bdf8; font-weight:bold;">— ms</span>
-                </div>
-                <div style="font-size:0.65rem; color:var(--muted); margin-top:2px;">Instance binary masks & pointcloud extraction</div>
-              </div>
-
-              <div class="pipeline-step-card" id="stepProj">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span style="font-size:0.74rem; font-weight:bold; color:#f8fafc;">4. 3D Bounding Box & PCA Extents</span>
-                  <span id="latProjPill" style="font-size:0.68rem; font-family:monospace; color:#38bdf8; font-weight:bold;">— ms</span>
-                </div>
-                <div style="font-size:0.65rem; color:var(--muted); margin-top:2px;">Depth back-projection & oriented spatial envelopes</div>
-              </div>
-
-              <div class="pipeline-step-card" id="stepAdmission">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span style="font-size:0.74rem; font-weight:bold; color:#f8fafc;">5. Ontological Admission Gate</span>
-                  <span id="admissionGateState" style="font-size:0.68rem; font-family:monospace; color:#eab308; font-weight:bold;">CHECKING</span>
-                </div>
-                <div style="font-size:0.65rem; color:var(--muted); margin-top:2px;">Prior verification, room co-occurrence & PROV-O audit</div>
+                <div id="stageRows" style="display:flex;flex-direction:column"></div>
               </div>
             </div>
 
@@ -2606,6 +2574,46 @@
     // indefinitely. The pane's own poll already asks the server every 2 s, so let its answer carry
     // the mode: `null` means nobody has told us yet, and the serve-time value stands until then.
     let twoFeedMode = null;
+    // The pipeline's OWN stage names, as perception_2 marks them per cycle (`stages_ms`), plus the
+    // detector-side timings the backend reports. Rendered in cycle order; a stage the cycle did not
+    // record is not shown, so the list is what ran, not a template.
+    const STAGE_LABELS = {
+      owlv2_ms: ['OWLv2 open-vocabulary detector', 'boxes from the RGB frame'],
+      nms_ms: ['NMS', 'overlapping detector boxes dropped'],
+      sam_ms: ['EfficientViT-SAM', 'one mask per box'],
+      clip_ms: ['CLIP embedding', 'per-crop embedding on the backend'],
+      wire_ms: ['backend wire', 'request + response transfer'],
+      labels: ['labels', 'the label set for this frame'],
+      geometry: ['3D geometry', 'mask + depth -> 3D box'],
+      pca: ['PCA orientation', 'oriented box (yaw, extents)'],
+      image_with_bb: ['annotated frame', '/image_with_bb published'],
+      crops: ['crops', 'crop images cut and saved'],
+      vlm_ms: ['VLM description', 'label/attributes from the crop'],
+      archive: ['archive', 'detections.jsonl + latencies written'],
+      embeddings: ['embeddings', 'crop embeddings attached'],
+      describer_queue: ['describer queue', 'late descriptions queued'],
+      publish: ['publish', '/bbox_3d, /object_descriptions, /agent_camera_pose']
+    };
+    const STAGE_ORDER = ['owlv2_ms', 'nms_ms', 'sam_ms', 'clip_ms', 'wire_ms', 'labels', 'geometry', 'pca',
+                         'image_with_bb', 'crops', 'vlm_ms', 'archive', 'embeddings', 'describer_queue', 'publish'];
+    function renderStageRows(l) {
+      const host = document.getElementById('stageRows');
+      if (!host || !l) return;
+      const st = l.stages_ms || {};
+      const rows = [];
+      for (const k of STAGE_ORDER) {
+        const v = (k in st) ? st[k] : ((k.endsWith('_ms') && l[k] != null) ? l[k] : null);
+        if (v == null) continue;
+        const [name, what] = STAGE_LABELS[k] || [k, ''];
+        rows.push(`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,0.05)">` +
+          `<span><b style="color:#f8fafc">${rows.length + 1}. ${name}</b><span style="color:var(--muted);font-size:.68rem"> ${what}</span></span>` +
+          `<span style="font-family:monospace;font-weight:bold;color:#38bdf8;white-space:nowrap">${Number(v).toFixed(1)} ms</span></div>`);
+      }
+      const total = (l.cycle_ms != null) ? l.cycle_ms : l.total_ms;
+      if (total != null) rows.push(`<div style="display:flex;justify-content:space-between;padding:5px 8px"><b style="color:#38bdf8">cycle (measured)</b><span style="font-family:monospace;font-weight:bold;color:#10b981">${Number(total).toFixed(1)} ms</span></div>`);
+      host.innerHTML = rows.join('') || '<div style="padding:6px 8px;color:var(--muted)">no per-stage timings recorded for this cycle</div>';
+    }
+
     function twoFeedAvailable() { return (twoFeedMode || window.DASH_MODE) !== 'replay'; }
     function applyTwoFeed() {
       const wrap = document.getElementById('feedWrapper');
@@ -2717,6 +2725,7 @@
             setL('latSam', l.sam_ms);
             setL('latProj', l.projection_ms);
             setL('latTotal', l.total_ms);
+            renderStageRows(l);
             setL('latCycle', l.cycle_ms);
             {
               const el = document.getElementById('latPeriod');
@@ -3344,11 +3353,30 @@
 
           // Draw Bounding Box Footprint Rectangle if bbox coordinates available
           const bbox = obj.bbox;
-          if (bbox && bbox.x_min !== undefined && bbox.y_min !== undefined) {
+          // Owner 2026-09-22: the footprints were oversized. `bbox.x/y_min..max` is the
+          // AXIS-ALIGNED envelope of an oriented box: for a box turned 45 degrees it is up to
+          // 1.41x the true footprint on each side. The store also records the oriented box
+          // (oriented_center, oriented_extents = [ex, ey, ez] in the box frame, yaw about the
+          // vertical axis), so draw that, rotated the same way the agent glyph is (-yaw).
+          // The envelope stays as the fallback for records without an orientation.
+          if (bbox && bbox.has_orientation && Array.isArray(bbox.oriented_center) &&
+              Array.isArray(bbox.oriented_extents) && Number.isFinite(bbox.yaw)) {
+            const ocx = cx + (bbox.oriented_center[0] - ax) * scale;
+            const ocy = cy + (bbox.oriented_center[1] - az) * scale;
+            const ew = Math.max(4, bbox.oriented_extents[0] * scale);
+            const eh = Math.max(4, bbox.oriented_extents[1] * scale);
+            ctx.save();
+            ctx.translate(ocx, ocy);
+            ctx.rotate(-bbox.yaw);
+            ctx.strokeStyle = statusColor;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(-ew / 2, -eh / 2, ew, eh);
+            ctx.restore();
+          } else if (bbox && bbox.x_min !== undefined && bbox.y_min !== undefined) {
             const bxMin = cx + (bbox.x_min - ax) * scale;
             const byMin = cy + (bbox.y_min - az) * scale;
-            const bw = Math.max(6, (bbox.x_max - bbox.x_min) * scale);
-            const bh = Math.max(6, (bbox.y_max - bbox.y_min) * scale);
+            const bw = Math.max(4, (bbox.x_max - bbox.x_min) * scale);
+            const bh = Math.max(4, (bbox.y_max - bbox.y_min) * scale);
             ctx.strokeStyle = statusColor;
             ctx.lineWidth = 1;
             ctx.strokeRect(bxMin, byMin, bw, bh);
@@ -3935,6 +3963,22 @@
     // change is where they are put, not how many there are.
     let currentGraphLayout = 'map';
     let physicsOn = true;
+    // Owner 2026-09-22: "Physics: ON" solved in one worker pass and the nodes jumped to the
+    // end state. ANIMATION splits the same iteration budget into short passes and applies
+    // each one, so the settling is visible. Off by default: one pass is cheaper and the
+    // settled layout is identical in kind. ponytail: each pass restarts the solver's cooling,
+    // so the animated path takes a few more iterations to settle than the single pass.
+    let animateOn = false;
+    function toggleGraphAnimation() {
+      animateOn = !animateOn;
+      const b = document.getElementById('btnAnimate');
+      if (b) {
+        b.textContent = '▶ ANIMATION: ' + (animateOn ? 'ON' : 'OFF');
+        b.classList.toggle('active', animateOn);
+        b.setAttribute('aria-pressed', String(animateOn));
+      }
+      if (physicsOn) runSelectedLayout();
+    }
     let physicsRequestId = 0;
     let physicsWorker = null;
     // The active worker is terminated before a new layout starts. This keeps stale results
@@ -4652,7 +4696,7 @@
 
     function semanticGroups() {
       const groups = new Map();
-      cy.nodes('[type="object"]').filter(node => !semanticIsVirtual(node) &&
+      cy.nodes('[type="object"]').filter(node => !node.hasClass('future')).filter(node => !semanticIsVirtual(node) &&
           semanticSourceNodeEligible(node)).forEach(node => {
         const room = semanticRoomKey(node);
         const cls = baseClassOf(node);
@@ -4816,16 +4860,23 @@
     function updateSemanticBar(visibleNodes, visibleEdges, labelCount) {
       const level = document.getElementById('semanticLevel');
       const summary = document.getElementById('semanticGraphSummary');
+      const replayFilterEmpty = visibleNodes === 0 && cy &&
+        resolveViewerMode() === 'replay' &&
+        typeof window.REPLAY_TIME_FILTER === 'function' &&
+        cy.nodes('[type="object"]').length > 0;
       if (level) level.textContent = semanticLevel.toUpperCase();
       if (summary) {
         const query = semanticQuery ? ` · ${semanticSearchIds.size} matches` : '';
-        summary.textContent = `${visibleNodes} nodes · ${visibleEdges} edges · ${labelCount} labels${query}`;
+        summary.textContent = replayFilterEmpty
+          ? 'No objects at this replay frame · turn off FOLLOW TIME to show the end state'
+          : `${visibleNodes} nodes · ${visibleEdges} edges · ${labelCount} labels${query}`;
       }
       window.__semanticGraph = {
         enabled: semanticViewOn, level: semanticLevel, visibleNodes, visibleEdges, labelCount,
         summaries: cy ? cy.nodes('.semantic-summary').length : 0,
         expandedRooms: [...semanticExpandedRooms], focusNodeId: semanticFocusNodeId,
-        searchMatches: semanticSearchIds.size, physics: window.__graphPhysics || null
+        searchMatches: semanticSearchIds.size, replayFilterEmpty,
+        physics: window.__graphPhysics || null
       };
     }
 
@@ -4877,6 +4928,12 @@
       });
       const labelCount = visibleNodes.filter(node => !node.hasClass('semantic-no-label')).length;
       updateSemanticBar(visibleNodes.length, visibleEdgeCount, labelCount);
+    }
+
+    function refreshSemanticViewForTimeFilter() {
+      if (!cy || !semanticViewOn) return false;
+      runSemanticLayout(true, true);
+      return true;
     }
 
     function runSemanticLayout(allowPhysics = true, fitView = true) {
@@ -5281,6 +5338,13 @@
             y: solved[index * 2 + 1]
           });
         }));
+        if (step < steps - 1) {           // ANIMATION: more passes to come
+          if (step === 0) cy.fit(cy.collection(nodes), 36);
+          step++;
+          setStatusLine(`Physics settling: pass ${step + 1} of ${steps}`);
+          post(solved);
+          return;
+        }
         cy.fit(cy.collection(nodes), 36);
         if (semanticViewOn && semanticLevel === 'overview' && cy.width() < 520) {
           cy.panBy({ x: 0, y: 28 });
@@ -5312,15 +5376,26 @@
         }
         setStatusLine(`Physics settled with ${result.engine === 'wasm-worker' ? 'WASM worker' : 'worker fallback'} in ${result.solveMs.toFixed(0)} ms`);
       };
-      worker.postMessage({
-        type: 'solve',
-        requestId,
-        iterations: nodes.length > 150 ? 72 : 120,
-        positions: positions.buffer,
-        radii: radii.buffer,
-        edgeNodes: edgeNodes.buffer,
-        edgeParams: edgeParams.buffer
-      }, [positions.buffer, radii.buffer, edgeNodes.buffer, edgeParams.buffer]);
+      const totalIterations = nodes.length > 150 ? 72 : 120;
+      const steps = animateOn ? 24 : 1;
+      let step = 0;
+      // The buffers are TRANSFERRED to the worker, so each pass sends fresh copies.
+      const radiiSrc = Array.from(radii), edgeNodesSrc = Array.from(edgeNodes),
+            edgeParamsSrc = Array.from(edgeParams);
+      const post = (pos) => {
+        const p = Float32Array.from(pos), r = Float32Array.from(radiiSrc),
+              en = Uint32Array.from(edgeNodesSrc), ep = Float32Array.from(edgeParamsSrc);
+        worker.postMessage({
+          type: 'solve',
+          requestId,
+          iterations: Math.max(2, Math.round(totalIterations / steps)),
+          positions: p.buffer,
+          radii: r.buffer,
+          edgeNodes: en.buffer,
+          edgeParams: ep.buffer
+        }, [p.buffer, r.buffer, en.buffer, ep.buffer]);
+      };
+      post(positions);
     }
 
     // Dense graphs need bounded layouts. Cytoscape's concentric and breadth-first layouts use
@@ -5834,6 +5909,9 @@
     // every ${...} is escaped unless it is wrapped in raw(), which marks a value as markup
     // deliberately and is greppable. A bundle can be uploaded, so every string it carries is
     // untrusted text arriving in a page the owner is authenticated on.
+    const escHtml = (s) => String(s === undefined || s === null ? '' : s)
+      .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
     function raw(s) { return { __html: s == null ? '' : String(s) }; }
     function h(strings, ...vals) {
       let out = strings[0];
@@ -6110,18 +6188,18 @@
       const clock = new Date(at * 1000).toLocaleTimeString([], {
         hour: '2-digit', minute: '2-digit', second: '2-digit'
       });
-      return `<time class="event-time" datetime="${escHtml(new Date(at * 1000).toISOString())}" title="${escHtml(stamp)}">${escHtml(clock)}</time>`;
+      return h`<time class="event-time" datetime="${new Date(at * 1000).toISOString()}" title="${stamp}">${clock}</time>`;
     }
 
     function lifecycleObjectHtml(event) {
       const label = event && event.label ? event.label : 'Unlabelled object';
       const objectId = event && event.object ? event.object : 'id not recorded';
-      return `<span class="event-object-label">${escHtml(label)}</span><span class="event-object-id">${escHtml(objectId)}</span>`;
+      return h`<span class="event-object-label">${label}</span><span class="event-object-id">${objectId}</span>`;
     }
 
     function lifecycleValue(value, suffix = '') {
       if (value === null || value === undefined || value === '') return '<span style="color:var(--muted);">&mdash;</span>';
-      return escHtml(String(value) + suffix);
+      return h`${String(value) + suffix}`;
     }
 
     function renderLifecyclePanel(kind, state) {
@@ -6143,7 +6221,7 @@
         if (state.status !== 'loading') stateEl.classList.add('warn');
         countEl.textContent = '—';
         summaryEl.textContent = state.message;
-        rowsEl.innerHTML = `<div class="lifecycle-empty">${escHtml(state.message)}</div>`;
+        rowsEl.innerHTML = h`<div class="lifecycle-empty">${state.message}</div>`;
         if (tabEl) tabEl.title = state.message;
         return;
       }
@@ -6167,7 +6245,7 @@
         const emptyText = allRows.length
           ? `No ${singular} event had occurred by this replay frame.`
           : `No ${singular} events were recorded in this decision log.`;
-        rowsEl.innerHTML = `<div class="lifecycle-empty">${escHtml(emptyText)}</div>`;
+        rowsEl.innerHTML = h`<div class="lifecycle-empty">${emptyText}</div>`;
         return;
       }
 
@@ -6179,18 +6257,18 @@
                 ? event.distance_m.toFixed(3) : event.distance_m,
               event.distance_m === null || event.distance_m === undefined ? '' : ' m')
           : lifecycleValue(event.reason);
-        return `<div class="event-row" role="row">
-          <div class="event-cell" role="cell" data-label="Time">${lifecycleTimeHtml(event.t)}</div>
-          <div class="event-cell" role="cell" data-label="Object">${lifecycleObjectHtml(event)}</div>
-          <div class="event-cell" role="cell" data-label="${thirdHeading}">${detail}</div>
-          <div class="event-cell" role="cell" data-label="Step">${lifecycleValue(event.step)}</div>
+        return h`<div class="event-row" role="row">
+          <div class="event-cell" role="cell" data-label="Time">${raw(lifecycleTimeHtml(event.t))}</div>
+          <div class="event-cell" role="cell" data-label="Object">${raw(lifecycleObjectHtml(event))}</div>
+          <div class="event-cell" role="cell" data-label="${thirdHeading}">${raw(detail)}</div>
+          <div class="event-cell" role="cell" data-label="Step">${raw(lifecycleValue(event.step))}</div>
         </div>`;
       }).join('');
-      rowsEl.innerHTML = `<div class="event-grid" role="table" aria-label="${relocation ? 'Object relocation events' : 'Object deletion events'}">
+      rowsEl.innerHTML = h`<div class="event-grid" role="table" aria-label="${relocation ? 'Object relocation events' : 'Object deletion events'}">
         <div class="event-head" role="row">
           <div role="columnheader">Time</div><div role="columnheader">Object</div>
           <div role="columnheader">${thirdHeading}</div><div role="columnheader">Step</div>
-        </div>${body}</div>`;
+        </div>${raw(body)}</div>`;
     }
 
     function renderLifecyclePanels() {
@@ -6351,6 +6429,15 @@
             }
           },
           {
+            selector: 'node[type="root"]',
+            style: {
+              'background-color': '#1e293b', 'border-color': '#fbbf24', 'border-width': 3,
+              'shape': 'hexagon', 'width': 74, 'height': 74, 'font-size': '13px',
+              'font-weight': 700, 'color': '#fbbf24', 'text-valign': 'center',
+              'text-background-opacity': 0
+            }
+          },
+          {
             selector: 'node[type="room"]',
             style: {
               'background-color': '#0369a1',
@@ -6461,6 +6548,51 @@
           { selector: 'edge[label="isNextTo"]', style: { 'line-color': '#10b981', 'target-arrow-color': '#10b981', 'color': '#10b981' } },
           { selector: 'edge[label="isAbove"]', style: { 'line-color': '#a78bfa', 'target-arrow-color': '#a78bfa', 'color': '#a78bfa' } },
           { selector: 'edge[label="isUnder"]', style: { 'line-color': '#94a3b8', 'target-arrow-color': '#94a3b8', 'color': '#94a3b8' } },
+          /* ROOM-TO-ROOM DOORWAY LINKS (owner, 2026-09-14: style them differently and more
+             highlighted). These are the only edges in the graph that join two ROOMS rather
+             than an object to something, and `room_manager` had been recording them into
+             room.json with no reader at all until today.
+             DELIBERATELY UNLIKE EVERY OTHER EDGE, because it is a different KIND of fact:
+               - magenta, the one accent not already spoken for (#334155 default, #38bdf8
+                 isIn, #f59e0b supports/isOn, #10b981 isNextTo, #a78bfa isAbove, #94a3b8
+                 isUnder);
+               - 3x the default width and a dashed line, so it reads as a passage rather than
+                 a relation;
+               - NO ARROWHEAD. A doorway is symmetric, and an arrow would assert a direction
+                 the data does not have;
+               - drawn ABOVE the object mesh via z-index, because a link between two rooms is
+                 structure and gets lost under three thousand object edges;
+               - its own larger, brighter label with a magenta-bordered plate, so it is legible
+                 without hovering at the zoom where a whole storey fits on screen.
+             SELECTED ON `kind`, NOT ON THE LABEL. Styling on `label="connectedTo"` would lose
+             the highlight the moment anyone renamed the predicate, which is exactly how the
+             pre-existing `edge[label="adjacentTo"]` rule above came to style a label that
+             nothing in this system emits. */
+          { selector: 'edge[kind="room_link"]', style: {
+              'width': 6,
+              'line-color': '#f472b6',
+              'line-style': 'dashed',
+              'line-dash-pattern': [10, 5],
+              'curve-style': 'bezier',
+              'target-arrow-shape': 'none',
+              'source-arrow-shape': 'none',
+              'opacity': 1,
+              'z-index': 950,
+              'color': '#fbcfe8',
+              'font-size': '11px',
+              'font-weight': 'bold',
+              'min-zoomed-font-size': 5,
+              'text-background-color': '#3b0a2a',
+              'text-background-opacity': 0.95,
+              'text-background-padding': '3px',
+              'text-border-width': 1,
+              'text-border-color': '#f472b6',
+              'text-border-opacity': 0.9
+            } },
+          /* A doorway link stays visible when its rooms are faded by a neighbourhood
+             highlight: fading structure to emphasise one object hides the thing that explains
+             where the object is. */
+          { selector: 'edge[kind="room_link"].faded', style: { 'opacity': 0.55 } },
           // Dense-graph rendering. The relation remains as a line, while the details that
           // make thousands of edges slow to repaint are removed. Filtering to a small graph
           // restores arrows, labels and Bézier curves.
@@ -7235,6 +7367,18 @@
 
               // Differential synchronization: DO NOT wipe layout or re-run physics across existing nodes
               const wasEmpty = cy.nodes().length === 0;
+              // Owner 2026-09-22: the rooms were islands (room_links emitted 0 on this bundle),
+              // so the graph fell into one component per room. One virtual root holds them:
+              // a viewer-side node, so live and replay get it alike and nothing is stored.
+              const roomIds = filteredNodesList
+                .filter(n => n.data && n.data.type === 'room').map(n => n.data.id);
+              if (roomIds.length && !filteredNodesList.some(n => n.data.id === 'n_root')) {
+                const sceneName = (lastGraphData && (lastGraphData.scene || lastGraphData.scene_id)) || 'HOUSE';
+                filteredNodesList = filteredNodesList.concat([{ data: {
+                  id: 'n_root', label: String(sceneName), type: 'root', room: null, position: [0, 0, 0] } }]);
+                filteredEdgesList = filteredEdgesList.concat(roomIds.map(r => ({ data: {
+                  id: 'e_root_' + r, source: r, target: 'n_root', label: 'isPartOf' } })));
+              }
               const existingNodeIds = new Set(cy.nodes().map(n => n.id()));
               const existingEdgeIds = new Set(cy.edges().map(e => e.id()));
               const incomingNodeIds = new Set(filteredNodesList.map(n => n.data.id));
@@ -7391,9 +7535,6 @@
         });
     }
 
-    const escHtml = (s) => String(s === undefined || s === null ? '' : s)
-      .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
     // The three text boxes above the table were never wired to anything. With ALL now
     // the default filter the table is 269+ rows, so they are wired here rather than left
     // as decoration. ponytail: plain substring match, no fuzzy search.
@@ -7450,6 +7591,7 @@
       if (emptyState) {
         emptyState.textContent = 'No graph objects recorded at this frame';
         emptyState.hidden = visibleRoomNames.size > 0 ||
+          (typeof semanticViewOn !== 'undefined' && semanticViewOn && cy.nodes(':visible').length > 0) ||
           cy.nodes('[type="object"]').some(node => !node.hasClass('future'));
       }
     }
@@ -7582,6 +7724,7 @@
     window.renderObjectsTable = renderObjectsTable;
     window.renderLifecyclePanels = renderLifecyclePanels;
     window.setViewerReplayTime = setViewerReplayTime;
+    window.refreshSemanticViewForTimeFilter = refreshSemanticViewForTimeFilter;
     // Cross-panel selection hook for the injected replay script: it may pass either a
     // node id or an object label. Rows carry data-node-id AND data-label.
     window.selectObject = selectObject;

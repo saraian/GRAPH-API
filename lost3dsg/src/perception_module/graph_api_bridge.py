@@ -964,6 +964,62 @@ def graph_data(request: Request = None):
                         "label": "supports",
                     })
 
+    # ROOM-TO-ROOM EDGES FROM THE DOORWAYS (owner, 2026-09-14).
+    #
+    # `room_manager` has written `doorway_room_edges` into `room.json` all along -- each entry a
+    # doorway with the two rooms it joins -- and NOTHING outside `room_manager.py` read it.
+    # Measured over the archive: 69 `room.json` files, 10 carry the key, 4 non-empty, 15 edges
+    # in total. So the graph knew which rooms connect and never said so.
+    #
+    # READ FROM THE TOP-LEVEL DOCUMENT, because `_load` above returns only the ROOMS LIST and
+    # drops every sibling key -- which is why this data was invisible to this function.
+    #
+    # RESOLVED ONLY. An unresolved entry is a doorway whose two rooms were not both determined,
+    # so `room_a`/`room_b` may be absent; drawing it would be asserting a connection the
+    # segmenter did not make. The count of what was skipped is published rather than dropped,
+    # so an empty topology can be told from an absent one.
+    door_edges, door_skipped = 0, {"unresolved": 0, "missing_room_node": 0}
+    for _rpath in (out / "room.json", out.parent / "room.json"):
+        if not _rpath.exists():
+            continue
+        try:
+            _doc = json.loads(_rpath.read_text())
+        except (OSError, json.JSONDecodeError):
+            break
+        if not isinstance(_doc, dict):
+            break
+        for _key, _d in (_doc.get("doorway_room_edges") or {}).items():
+            if not isinstance(_d, dict):
+                continue
+            if not _d.get("resolved"):
+                door_skipped["unresolved"] += 1
+                continue
+            _a, _b = _d.get("room_a"), _d.get("room_b")
+            if not _a or not _b or _a == _b:
+                door_skipped["unresolved"] += 1
+                continue
+            _an, _bn = _nid(_a), _nid(_b)
+            # A doorway can name a room that has since retired out of the rooms list. An edge
+            # to a node that does not exist is dropped by cytoscape without a word, so it is
+            # counted here instead.
+            if _an not in known_room_ids or _bn not in known_room_ids:
+                door_skipped["missing_room_node"] += 1
+                continue
+            edges.append({
+                # The doorway key is the position, so the id is stable across polls and two
+                # doorways between the same pair of rooms stay two edges.
+                "id": f"e_door_{_nid(_key)}",
+                "source": _an,
+                "target": _bn,
+                "label": "connectedTo",
+                # The viewer styles on this, not on the label, so a relabelling cannot
+                # silently drop the highlight.
+                "kind": "room_link",
+                "doorway_key": str(_key),
+            })
+            door_edges += 1
+        break
+
     # Parse on-hold and rejected objects for audit summary
     on_hold, rejected, abstained = [], [], []
     on_hold_error = None
@@ -1015,6 +1071,9 @@ def graph_data(request: Request = None):
             "edges": [{"data": e} for e in edges],
         },
         "nodes": nodes,
+        # Named so an empty topology is distinguishable from an unread one (rule 61: a
+        # placeholder is not an absence).
+        "room_links": {"emitted": door_edges, "skipped": door_skipped},
         "objects": [n for n in nodes if n.get("type") == "object"],
         "edges": edges,
         "admission_summary": {

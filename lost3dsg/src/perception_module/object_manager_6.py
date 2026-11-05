@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import threading
+import traceback
 import time
 import urllib.parse
 import uuid
@@ -28,8 +29,9 @@ import rclpy
 import requests
 from association import AssocObject, Observation, search_radius
 from bbox_fusion import add_fusion_view, fusion_http_fields
+import confirmation
 from builtin_interfaces.msg import Time as TimeMsg
-from config import CFG, world_frame
+from config import CFG, NOT_REQUESTED, world_frame
 from cv_bridge import CvBridge
 from cv_utils import (
     set_marker_from_bbox,
@@ -40,18 +42,21 @@ from detection_index import bounds as spatial_bounds
 from detection_types import observation_dict_from_msg
 from ga493_replay_capture import ReplayCapture
 from geometry_msgs.msg import PoseStamped
-from hooks import DecisionLog, load_hooks
+from hooks import DecisionLog, load_hooks, load_merge_scorer, node_dict
 from nav_msgs.msg import Path
 from nlp_utils import get_embedding, lost_similarity, lost_similarity_detailed, world2vec
 from object_services import (
+    MERGE_ENGINE,
     MERGE_MAX_DISTANCE,
     MERGE_MIN_SIMILARITY,
     ObjectServices,
+    checkpoint_pending,
     ensure_relations,
     fuse_orientation,
     infer_spatial_relations,
     save_persistent_perceptions,
     save_uncertain_objects,
+    spatial_relation_candidates,
     synchronized_world_model,
 )
 from perception_utils import room_frame_due
@@ -254,6 +259,11 @@ AGENT_PATH_PUBLISH_PERIOD = 1.0     # /agent_path nav_msgs/Path for RViz
 # number of frames an object was visible for -- and run 20260901_055513 had objects present
 # across 202 cycles. The covariance and the view spread both converge long before 64.
 MAX_OBSERVATIONS_PER_OBJECT = int(CFG["association"].get("max_observations_per_object", 64))
+BBOX_TICK_PERIOD_S = 2.0   # periodic_bbox_publisher; see _bbox_tick for why it re-arms from the end
+# The refiner drain: its own group, at most this many seconds of refine() per 2 s tick. MEASURED
+# 20261027_031427: the drain held wm.lock and the default group for >= 924 s of one storey.
+REFINER_TICK_BUDGET_S = 0.5
+PAIR_TICK_PERIOD_S = 0.1   # _pair_tick: one buffered pair per tick, re-armed from the end
 # GA-83: how long /bbox_3d may be silent before the node says so. Long enough not to fire
 # between ordinary detection cycles, short enough that a dead producer is in the log within
 # a minute rather than in a process table an hour later.
@@ -698,6 +708,8 @@ def _embedding_model_identity():
 # ============= MAIN SERVICE NODE =============
 
 class ObjectManagerService(Node):
+    merge_scorer = None   # hooks.merge_scorer; set in __init__, None = no scorer
+
     def __init__(self):
         super().__init__('object_tracking_service_node')
         self.kb_instance_counters = {}
@@ -807,6 +819,10 @@ class ObjectManagerService(Node):
         self._last_path_publish = 0.0
         self._pending_descriptions = {}
         self._pending_bboxes = {}
+        # Intake and processing are decoupled: the two input callbacks only buffer, under this
+        # lock, and _pair_tick processes the buffered pairs. See _pair_tick.
+        self._sync_lock = threading.Lock()
+        self._received_cycles = set()
         # The old /merge criterion is evaluated only when navigation announces
         # that the waypoint's full turn is complete.
         self._scan_state_lock = threading.RLock()
@@ -842,13 +858,16 @@ class ObjectManagerService(Node):
         self.decision_log = DecisionLog(CFG["hooks"]["decisions_log"] or os.path.join(log_dir, "hook_decisions.jsonl"))
         self.get_logger().info(f"hooks: filter={self.filter_hook.name} refiner={self.refiner_hook.name} "
                                f"log={self.decision_log.path}")
+        # Optional merge-pair judge (config hooks.merge_scorer), resolved ONCE, after the filter
+        # and the refiner. It sits inside the legacy merge loop's gate chain, so the evidence
+        # engine, which has no such chain, refuses it rather than ignoring it.
+        self.merge_scorer = load_merge_scorer(CFG)
+        if self.merge_scorer is not None and MERGE_ENGINE != "legacy":
+            raise ValueError(f"hooks.merge_scorer is set but association.merge_engine is "
+                             f"{MERGE_ENGINE!r}; the scorer is called by the legacy engine only")
+        self.object_services.merge_scorer = self.merge_scorer
+        self.get_logger().info(f"hooks: merge_scorer={type(self.merge_scorer).__name__ if self.merge_scorer else None}")
 
-        self.wall_sub = self.create_subscription(
-            String,
-            '/detected_wall_segments',
-            self.walls_callback,
-            10
-        )
         from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
         qos_poly = QoSProfile(
@@ -875,8 +894,6 @@ class ObjectManagerService(Node):
         self.uncertain_centroids_pub = self.object_services.uncertain_centroids_pub
         self.uncertain_objects = self.object_services.uncertain_objects
         self.tracking_activated_pub = self.create_publisher(Bool, '/tracking_mode_activated', qos_standard)
-        # GA-350: the room-frame source. The raw camera topic, not the annotated one.
-        self.create_subscription(Image, '/camera/rgb', self._room_rgb_callback, qos_camera)
         
         self.agent_path_pub = self.create_publisher(Path, '/agent_path', qos_latch)
         
@@ -923,7 +940,15 @@ class ObjectManagerService(Node):
         self.create_subscription(Bool, "/robot_movement_detected", self.movement_callback, qos_poly,
                                  callback_group=self.movement_cb_group)
 
-        self.create_subscription(ObjectDescriptionArray, '/object_descriptions', self._descriptions_callback, qos_standard)
+        # THE INTAKE GROUP. MEASURED 20261027_031427: the whole pair pipeline ran inside the
+        # /bbox_3d callback (22-32 s per pair, one frame every 7 s), so the depth-10 queue
+        # overwrote 192 of 480 published frames and wrote no row. These two callbacks now only
+        # buffer (milliseconds); _pair_tick in the default group does the work, and the sync
+        # buffer is the one drop point, which logs every eviction.
+        intake_group = MutuallyExclusiveCallbackGroup()
+        qos_intake = QoSProfile(depth=50)
+        self.create_subscription(ObjectDescriptionArray, '/object_descriptions', self._descriptions_callback,
+                                 qos_intake, callback_group=intake_group)
         # GA-108: describer answers that arrived after their cycle, addressed by the crop's
         # origin frame and 2D box. They go to the object whose SIGHTING matches, not to the
         # next cycle's namesake (run 20260906_223701: 204 of 212 objects ended "unknown").
@@ -931,11 +956,36 @@ class ObjectManagerService(Node):
                                  self._late_descriptions_callback, qos_standard)
         self._n_late_applied = 0
         self._n_late_unmatched = 0
-        self.create_subscription(Bbox3dArray, '/bbox_3d', self._bboxes_callback, qos_standard)
-        self.create_subscription(PoseStamped, '/agent_camera_pose', self._agent_pose_callback, qos_standard)
+        self.create_subscription(Bbox3dArray, '/bbox_3d', self._bboxes_callback, qos_intake,
+                                 callback_group=intake_group)
+        # OWN GROUPS for pose, scan hook and camera. MEASURED 20261022_022722: with the inputs
+        # first in the default group, the ones after /bbox_3d still starved. Scan events arrived
+        # 77 of 108 and 79 of 99, up to 263 s late; in the same minutes pose fell to 36 %, the
+        # camera to 6 %. Shared state: _room_frames_for takes a lock, _closest_agent_pose copies
+        # the history, the scan state has its own lock and its merge timer stays in the default group.
+        self.create_subscription(PoseStamped, '/agent_camera_pose', self._agent_pose_callback, qos_standard,
+                                 callback_group=MutuallyExclusiveCallbackGroup())
         self.get_logger().info("Subscribing to /object_descriptions, /bbox_3d and /agent_camera_pose")
-        self.create_subscription(String, SCAN_COMPLETE_TOPIC, self._scan_complete_callback, qos_standard)
+        self.create_subscription(String, SCAN_COMPLETE_TOPIC, self._scan_complete_callback, qos_standard,
+                                 callback_group=MutuallyExclusiveCallbackGroup())
         self.get_logger().info(f"Scan-complete merge hook: {SCAN_COMPLETE_TOPIC}")
+        # CREATED AFTER THE INPUTS ON PURPOSE. rclpy's executor offers the ready entities of a
+        # group in creation order (timers first), and the default group is mutually exclusive:
+        # while an earlier subscription is ready on every pass, a later one never wins.
+        # MEASURED 20261022_013309: /bbox_3d and the scan hook went silent for 576 s while the
+        # node ran, and the watchdog ended the run. A harness with this order delivered 0 of 24
+        # boxes; with the inputs first, 24 of 24 and the same wall count.
+        self.wall_sub = self.create_subscription(
+            String,
+            '/detected_wall_segments',
+            self.walls_callback,
+            10
+        )
+        # GA-350: the room-frame source. The raw camera topic, not the annotated one.
+        self.create_subscription(Image, '/camera/rgb', self._room_rgb_callback, qos_camera,
+                                 callback_group=MutuallyExclusiveCallbackGroup())
+        self.get_logger().info("Default-group subscription order: " + ", ".join(
+            s.topic_name for s in self.subscriptions if s.callback_group is self.default_callback_group))
         if TIAGO_MERGE_INTERVAL_S > 0.0:
             self._periodic_merge_timer = self.create_timer(
                 TIAGO_MERGE_INTERVAL_S, self._periodic_merge_callback)
@@ -945,8 +995,19 @@ class ObjectManagerService(Node):
             self.get_logger().info("Periodic merge disabled")
         self.get_logger().info(f"Node name={self.get_name()} ns={self.get_namespace()}")
 
-        self._bbox_timer = self.create_timer(2.0, self.periodic_bbox_publisher)
+        self._bbox_timer = self.create_timer(BBOX_TICK_PERIOD_S, self._bbox_tick)
+        self._pair_timer = self.create_timer(PAIR_TICK_PERIOD_S, self._pair_tick)
+        self._refiner_timer = self.create_timer(BBOX_TICK_PERIOD_S, self._refiner_tick,
+                                                callback_group=MutuallyExclusiveCallbackGroup())
+        self._n_bbox_tick_overruns = 0
+        self._max_bbox_tick_s = 0.0
+        self._last_bbox_overrun_log = 0.0
         self._input_watchdog = self.create_timer(INPUT_SILENCE_TIMEOUT, self._check_input_silence)
+        # Load per callback, all groups: count, total and max seconds, logged by _bbox_tick.
+        self._cb_load = {}
+        self._last_load_log = time.monotonic()
+        for ent in list(self.subscriptions) + list(self.timers):
+            ent.callback = self._timed(getattr(ent, "topic_name", None) or ent.callback.__name__, ent.callback)
         #self._uncertain_cleanup_timer = self.create_timer(5.0, self._cleanup_uncertain_by_time)
 
     @synchronized_world_model
@@ -969,7 +1030,7 @@ class ObjectManagerService(Node):
         publish_persistent_bboxes(self, wm, self.persistent_bbox_pub)
         publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
         save_persistent_perceptions(self.object_services)
-        self.room_manager.update_all_rooms_semantics(wm.persistent_perceptions)
+        self.room_manager.update_all_rooms_semantics(confirmation.shown(wm.persistent_perceptions))
 
     def movement_callback(self, msg):
         # Sincronizza lo stato reale: True se si muove, False se è fermo
@@ -1000,8 +1061,8 @@ class ObjectManagerService(Node):
         else:
             self._moving_since = None
             self.object_services.log_both('info', "[MOVEMENT] Robot has stopped -> room creation allowed")
-            # Motion has ended: anything buffered from before it began is still valid.
-            self._try_process()
+            # Motion has ended: anything buffered from before it began is still valid, and
+            # _pair_tick takes it on its next pass.
         if getattr(self, "ga493_replay_capture", None) is not None:
             self.ga493_replay_capture.event(
                 "movement_state_changed",
@@ -1070,7 +1131,7 @@ class ObjectManagerService(Node):
             return self.latest_agent_pose
 
         return min(
-            self.agent_pose_history,
+            list(self.agent_pose_history),   # a copy: the pose callback appends from its own group
             key=lambda entry: abs(float(entry.get("timestamp", timestamp_sec)) - float(timestamp_sec))
         )
 
@@ -1388,12 +1449,10 @@ class ObjectManagerService(Node):
             # unused — room_id was fetched but never consumed in this loop
             # room_id = getattr(obj, "room_id", None)
 
-        for i, obj_a in enumerate(wm.persistent_perceptions):
-            for j, obj_b in enumerate(wm.persistent_perceptions):
-                if i == j:
-                    continue
-                for _, pred, target in infer_spatial_relations(obj_a, obj_b):
-                    obj_a.relations[pred].add(target)
+        objects = wm.persistent_perceptions
+        for i, j in spatial_relation_candidates(objects):
+            for _, pred, target in infer_spatial_relations(objects[i], objects[j]):
+                objects[i].relations[pred].add(target)
 
     @synchronized_world_model
     def publish_kb_relation_facts(self):
@@ -1570,10 +1629,10 @@ class ObjectManagerService(Node):
 
             facts.append(f"{inst} rdf:type {cls}")
 
-            if getattr(obj, "color", "unknown") != "unknown":
+            if getattr(obj, "color", "unknown") not in ("unknown", NOT_REQUESTED):
                 facts.append(f"{inst} hasColor {obj.color}")
 
-            if getattr(obj, "material", "unknown") != "unknown":
+            if getattr(obj, "material", "unknown") not in ("unknown", NOT_REQUESTED):
                 facts.append(f"{inst} hasMaterial {obj.material}")
 
         return facts
@@ -2027,7 +2086,8 @@ class ObjectManagerService(Node):
                     "observation": bbox_observation,
                     "description_observation": description_observation,
                 }
-                decision = self.filter_hook.judge(proposal)
+                with self.__dict__.setdefault("_hook_lock", threading.Lock()):
+                    decision = self.filter_hook.judge(proposal)
                 # EVERY ADMISSION CARRIES A decision_id, WHOEVER THE FILTER IS.
                 #
                 # The `link` row below joins an admission to the object it produced, and it is
@@ -2204,7 +2264,7 @@ class ObjectManagerService(Node):
             publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
             publish_uncertain_bboxes(self, self.uncertain_objects, self.uncertain_bboxes_pub)
             publish_uncertain_centroids(self, self.uncertain_objects, self.uncertain_centroids_pub)
-            self.room_manager.update_all_rooms_semantics(wm.persistent_perceptions)
+            self.room_manager.update_all_rooms_semantics(confirmation.shown(wm.persistent_perceptions))
             save_uncertain_objects(self)
             self.update_spatial_relations()
             save_persistent_perceptions(self.object_services)
@@ -2338,6 +2398,12 @@ class ObjectManagerService(Node):
         self._latest_rgb = msg
 
     def _room_frames_for(self, room_id):
+        """Serialised: the pose callback and the admission loop call this from different groups,
+        and two concurrent calls could both find a frame due and write it twice."""
+        with self.__dict__.setdefault("_room_frames_lock", threading.Lock()):
+            return self._room_frames_for_locked(room_id)
+
+    def _room_frames_for_locked(self, room_id):
         """Tagged frames of this room: one on entry, then every ROOM_FRAME_STRIDE_M of
         in-room travel, capped at ROOM_FRAME_MAX. Returns the full list, newest last.
         (GA-350, ported from GRAPH-API 3a5a818.)
@@ -2646,10 +2712,13 @@ class ObjectManagerService(Node):
                 self._desc_lag_s.append(age)
         except Exception:
             pass
-        self._pending_descriptions[_join_key(msg, stamp)] = msg
-        while len(self._pending_descriptions) > SYNC_BUFFER_LIMIT:
-            evicted_key = next(iter(self._pending_descriptions))
-            evicted = self._pending_descriptions.pop(evicted_key)
+        with self._sync_lock:
+            self._pending_descriptions[_join_key(msg, stamp)] = msg
+            evicted_all = []
+            while len(self._pending_descriptions) > SYNC_BUFFER_LIMIT:
+                evicted_key = next(iter(self._pending_descriptions))
+                evicted_all.append((evicted_key, self._pending_descriptions.pop(evicted_key)))
+        for evicted_key, evicted in evicted_all:
             self.decision_log.write(
                 "sync_buffer_evicted", "<description_array>",
                 side="description", join_key=str(evicted_key),
@@ -2657,7 +2726,6 @@ class ObjectManagerService(Node):
                     (observation_dict_from_msg(getattr(item, "observation", None)) or {})
                     .get("observation_id")
                     for item in evicted.descriptions])
-        self._try_process()
 
     def _scan_settle_s(self):
         """How long to wait after a scan before merging: the MEASURED description lag.
@@ -2753,7 +2821,60 @@ class ObjectManagerService(Node):
                 self.object_services.log_both('error', f"[INPUT] room finalize failed on exit: {exc}")
             self._flush_and_exit()
 
+    def _reconcile_received(self):
+        """One `om_never_received` row per published cycle this node never received.
+
+        The published cycles are read from detections.jsonl in this run's bundle: a cycle with
+        detections appears through each detection's observation.cycle_id, an empty cycle through
+        its `cycle_completed` row (MEASURED 20261027_031427: 429 + 51 = 480 published). Written
+        once, at teardown. A missing file writes nothing."""
+        if self.__dict__.get("_reconciled"):
+            return
+        self._reconciled = True
+        path = os.path.join(resolve_output_root(), "detections.jsonl")
+        if not os.path.isfile(path):
+            return
+        with self._sync_lock:
+            received = set(self._received_cycles)
+        published = {}
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if '"cycle_id"' not in line:
+                    continue
+                row = json.loads(line)
+                if row.get("event") == "cycle_completed":
+                    cid, n = str(row.get("cycle_id") or ""), row.get("detection_count")
+                elif row.get("event") is None:
+                    cid, n = str((row.get("observation") or {}).get("cycle_id") or ""), None
+                else:
+                    continue
+                if cid:
+                    entry = published.setdefault(cid, {"frame_id": row.get("frame_id"), "detections": 0})
+                    entry["detections"] = n if n is not None else entry["detections"] + 1
+        missing = [(cid, e) for cid, e in published.items() if cid not in received]
+        for cid, e in missing:
+            self.decision_log.write("om_never_received", cid, frame_id=e["frame_id"],
+                                    detection_count=e["detections"])
+        self.get_logger().info(f"[SYNC] teardown: {len(published)} cycles published, {len(received)} "
+                               f"received, {len(missing)} published and never received")
+
     def _flush_and_exit(self):
+        # The map is saved once per pair now: write the last one before the hard exit. A bounded
+        # wait for wm.lock, so a stuck holder cannot stop the exit this function exists for.
+        if wm.lock.acquire(timeout=5.0):
+            try:
+                if checkpoint_pending(self.object_services):
+                    save_persistent_perceptions(self.object_services)
+            except Exception as exc:
+                self.get_logger().error(f"[EXIT] last map save failed: {exc}")
+            finally:
+                wm.lock.release()
+        else:
+            self.get_logger().error("[EXIT] wm.lock not free after 5 s; exiting without the last map save")
+        try:
+            self._reconcile_received()
+        except Exception as exc:
+            self.get_logger().error(f"[EXIT] reconciliation failed: {exc}")
         for h in list(logging.getLogger().handlers):
             try:
                 h.flush()
@@ -2796,10 +2917,14 @@ class ObjectManagerService(Node):
                 'warn', f"[SYNC] /bbox_3d message with no usable stamp "
                         f"({self._n_bbox_no_stamp} of {self._n_bbox_msgs})")
             return
-        self._pending_bboxes[_join_key(msg, stamp)] = msg
-        while len(self._pending_bboxes) > SYNC_BUFFER_LIMIT:
-            evicted_key = next(iter(self._pending_bboxes))
-            evicted = self._pending_bboxes.pop(evicted_key)
+        with self._sync_lock:
+            self._pending_bboxes[_join_key(msg, stamp)] = msg
+            self._received_cycles.add(str(getattr(msg, "cycle_id", "") or ""))
+            evicted_all = []
+            while len(self._pending_bboxes) > SYNC_BUFFER_LIMIT:
+                evicted_key = next(iter(self._pending_bboxes))
+                evicted_all.append((evicted_key, self._pending_bboxes.pop(evicted_key)))
+        for evicted_key, evicted in evicted_all:
             self.decision_log.write(
                 "sync_buffer_evicted", "<bbox_array>",
                 side="bbox", join_key=str(evicted_key),
@@ -2807,7 +2932,30 @@ class ObjectManagerService(Node):
                     (observation_dict_from_msg(getattr(item, "observation", None)) or {})
                     .get("observation_id")
                     for item in evicted.boxes])
-        self._try_process()
+
+    def _pair_tick(self):
+        """Process the oldest buffered pair, in the default group, then re-arm from the end.
+
+        One pair per tick, so the other default-group callbacks (walls, late descriptions, the
+        scan merge) get a turn between pairs; re-armed from the end for the reason _bbox_tick
+        gives. Pairs are taken in capture order (header stamp): the cycle-id keys sort randomly.
+        """
+        try:
+            self._try_process()
+        except Exception as exc:
+            # MEASURED 20261027_031427: an exception in the pair path stopped this node's executor
+            # with no "process has died" line, the tour went on, and 99 cycles were never received
+            # while the bundle looked complete. A failed pair ends the run, and says so.
+            self.object_services.log_both(
+                'error', f"[SYNC] ENDING THE RUN: pair processing raised {type(exc).__name__}: {exc}\n"
+                         + traceback.format_exc())
+            self._flush_and_exit()
+        finally:
+            self._pair_timer.reset()
+
+    def _pair_stamp(self, key):
+        st = self._pending_bboxes[key].header.stamp
+        return (st.sec, st.nanosec)
 
     def _try_process(self):
         # A pair is judged by WHEN IT WAS OBSERVED, not by what the robot is doing when it
@@ -2817,7 +2965,12 @@ class ObjectManagerService(Node):
         #
         # The guard's real intent is preserved: an observation whose own stamp falls inside
         # the current motion was taken while moving and is still refused.
-        common_keys = sorted(set(self._pending_descriptions) & set(self._pending_bboxes))
+        with self._sync_lock:
+            common_keys = sorted(set(self._pending_descriptions) & set(self._pending_bboxes),
+                                 key=self._pair_stamp)
+            nopair_view = (len(self._pending_descriptions), len(self._pending_bboxes),
+                           sorted(map(str, self._pending_descriptions))[-3:],
+                           sorted(map(str, self._pending_bboxes))[-3:])
         if not common_keys:
             # Say WHY there is no pair: one side empty, or two non-empty sides that do not
             # intersect. Those are different faults and silence conflates them.
@@ -2825,20 +2978,23 @@ class ObjectManagerService(Node):
             # Once per change of state, not once per callback. Logging every arrival is
             # what produced a 1.7 GB om6.log -- a diagnostic nobody can open is not a
             # diagnostic, and the counters below carry the same information in one line.
-            state = (len(self._pending_descriptions), len(self._pending_bboxes))
+            state = nopair_view[:2]
             if state != self._last_nopair_state:
                 self._last_nopair_state = state
                 self.object_services.log_both(
                     'warn',
-                    f"[SYNC] no pair: desc={sorted(self._pending_descriptions)[-3:]} "
+                    f"[SYNC] no pair: desc={nopair_view[2]} "
                     f"({state[0]} buffered, {self._n_desc_msgs} received) "
-                    f"bbox={sorted(self._pending_bboxes)[-3:]} "
+                    f"bbox={nopair_view[3]} "
                     f"({state[1]} buffered, {self._n_bbox_msgs} received)")
             return
         self._last_nopair_state = None
 
         for stamp_key in common_keys:
-            bboxes_msg = self._pending_bboxes[stamp_key]
+            with self._sync_lock:
+                bboxes_msg = self._pending_bboxes.get(stamp_key)
+            if bboxes_msg is None:
+                continue
             # THE MOTION LATCH IS OFF WHEN THE FRAME QUEUE IS ON. Owner 2026-09-11.
             #
             # This gate predates the frame queue. It drops any pair whose frame was captured
@@ -2868,8 +3024,9 @@ class ObjectManagerService(Node):
                     # Taken during this motion, so it can never become valid -- the stamp
                     # does not change when the robot stops. Drop it once, here, rather than
                     # leaving it to be re-examined and re-logged on every later call.
-                    self._pending_descriptions.pop(stamp_key, None)
-                    self._pending_bboxes.pop(stamp_key, None)
+                    with self._sync_lock:
+                        self._pending_descriptions.pop(stamp_key, None)
+                        self._pending_bboxes.pop(stamp_key, None)
                     self._dropped_moving_pairs += 1
                     for box in bboxes_msg.boxes:
                         observation = observation_dict_from_msg(
@@ -2908,8 +3065,9 @@ class ObjectManagerService(Node):
                             f"can reach the object store for the rest of this run.")
                     continue
 
-            descriptions = self._pending_descriptions.pop(stamp_key, None)
-            bboxes = self._pending_bboxes.pop(stamp_key, None)
+            with self._sync_lock:
+                descriptions = self._pending_descriptions.pop(stamp_key, None)
+                bboxes = self._pending_bboxes.pop(stamp_key, None)
             if descriptions is None or bboxes is None:
                 continue
 
@@ -2942,6 +3100,7 @@ class ObjectManagerService(Node):
                 self.ga493_replay_capture.event(
                     "consumer_result", {"response": response},
                     cycle_id=str(getattr(bboxes, "cycle_id", "") or ""))
+            return   # one pair per tick: _pair_tick comes back after PAIR_TICK_PERIOD_S
 
     def walls_callback(self, msg):
         # The `except Exception` that stood here printed to stdout and continued, so a
@@ -2968,11 +3127,7 @@ class ObjectManagerService(Node):
             )
 
     # --- re-evaluation seam (hooks.Reevaluation / hooks.Refiner) ---
-    @staticmethod
-    def _node_dict(obj):
-        return {"object_id": getattr(obj, "object_id", None) or obj.label, "label": obj.label,
-                "color": obj.color, "material": obj.material, "description": obj.description,
-                "bbox": obj.bbox, "room_id": getattr(obj, "room_id", None)}
+    _node_dict = staticmethod(node_dict)
 
     def _find_node(self, object_id):
         return next((o for o in wm.snapshot()
@@ -3038,24 +3193,63 @@ class ObjectManagerService(Node):
         for n in neighbours:
             self.reeval.mark(n, f"neighbour {oid} deleted")
 
-    def _drain_reevaluations(self):
-        """Periodic: hand every queued node, with its neighbours, to the Refiner and log
-        what it proposes. Proposals are recorded, not applied — applying one is an
-        UpdateObject with the revised fields, wired once the policy is settled."""
-        for object_id, reason in self.reeval.drain():
-            node = self._find_node(object_id)
-            if node is None:
-                continue
-            neighbours = [self._node_dict(o) for o in self._neighbours(node, REEVALUATION_RADIUS)]
+    def _refiner_tick(self):
+        try:
+            self._drain_reevaluations(time.monotonic() + REFINER_TICK_BUDGET_S)
+        finally:
+            self._refiner_timer.reset()
+
+    def _drain_reevaluations(self, deadline=None):
+        """Hand every queued node, with its neighbours, to the Refiner and log what it proposes.
+        Proposals are recorded, not applied -- applying one is an UpdateObject with the revised
+        fields, wired once the policy is settled.
+
+        Runs in its own group. wm.lock is held only to copy each node and its neighbours; the
+        hook lock keeps refine() and the pair path's judge() from running the extension at the
+        same time. Past `deadline` the rest waits in this node's own backlog, which is finished
+        before the queue is drained again: an extension's drain() has side effects per item
+        (FOUND's notes each one to its sidecar, and a 'merged' note invalidates work in flight),
+        so an item is drained once, not once per tick."""
+        hook_lock = self.__dict__.setdefault("_hook_lock", threading.Lock())
+        backlog = self.__dict__.setdefault("_refine_backlog", [])
+        if not backlog:
+            backlog.extend(self.reeval.drain())
+        while backlog:
+            if deadline is not None and time.monotonic() > deadline:
+                return
+            object_id, reason = backlog.pop(0)
+            with wm.lock:
+                node = self._find_node(object_id)
+                if node is None:
+                    continue
+                snapshot = self._node_dict(node)
+                neighbours = [self._node_dict(o) for o in self._neighbours(node, REEVALUATION_RADIUS)]
             try:
-                revision = self.refiner_hook.refine(self._node_dict(node), neighbours)
+                with hook_lock:
+                    revision = self.refiner_hook.refine(snapshot, neighbours)
             except Exception as exc:
                 self.get_logger().warn(f"[{self.refiner_hook.name}] refine failed for {object_id}: {exc}")
                 continue
             if revision:
                 self.decision_log.write("revision", object_id, refiner=self.refiner_hook.name, reason=reason, revision=revision)
 
+    def _tick_merge_scorer(self):
+        """The merge scorer's optional periodic call, on the same timer as the refiner drain."""
+        tick = getattr(self.merge_scorer, "tick", None)
+        if not callable(tick):
+            return
+        try:
+            tick()
+        except Exception as exc:
+            self.get_logger().error(f"[merge_scorer] tick failed: {type(exc).__name__}: {exc}")
+
     def destroy_node(self):
+        try:
+            if checkpoint_pending(self.object_services):
+                save_persistent_perceptions(self.object_services)
+            self._reconcile_received()
+        except Exception as exc:
+            self.get_logger().error(f"[EXIT] last map save or reconciliation failed: {exc}")
         if self.ga493_replay_capture is not None:
             ledger = FilePath(self.object_services._mutation_ledger_path)
             ledger_ref = {"path": ledger.name, "exists": ledger.is_file()}
@@ -3065,6 +3259,49 @@ class ObjectManagerService(Node):
             self.ga493_replay_capture.event("mutation_ledger", ledger_ref)
             self.ga493_replay_capture.finalize()
         super().destroy_node()
+
+    def _timed(self, name, fn):
+        def run(*args):
+            t0 = time.monotonic()
+            try:
+                return fn(*args)
+            finally:
+                n, tot, mx = self._cb_load.get(name, (0, 0.0, 0.0))
+                dt = time.monotonic() - t0
+                self._cb_load[name] = (n + 1, tot + dt, max(mx, dt))
+        return run
+
+    def _bbox_tick(self):
+        """The 2 s tick, re-armed from its END rather than its start.
+
+        MEASURED 2026-10-21 (20261021_175516_hm3d_00861): after ~10 min this node ran no subscription
+        callback of its default group -- /bbox_3d stopped at 4 messages, /object_descriptions at 5, and
+        0 of the 23 /habitat/scan_complete the feed published afterwards arrived -- while the timers of
+        the same group kept firing (the input watchdog ended the run). rclpy serves ready timers before
+        ready subscriptions, and the default group is mutually exclusive, so a tick that overruns its
+        period is ready again the moment it returns and re-takes the group every time. Restarting the
+        countdown at the end leaves the subscriptions a full period after every tick, and changes no
+        concurrency: every callback keeps its group. The duration includes the wait for wm.lock.
+        """
+        t0 = time.monotonic()
+        try:
+            self.periodic_bbox_publisher()
+        finally:
+            self._bbox_timer.reset()
+            dt = time.monotonic() - t0
+            if time.monotonic() - self._last_load_log > 60.0:
+                self._last_load_log = time.monotonic()
+                self.get_logger().info("[LOAD] callbacks since start: " + "; ".join(
+                    f"{k} n={n} total={tot:.0f}s max={mx:.2f}s"
+                    for k, (n, tot, mx) in sorted(self._cb_load.items(), key=lambda kv: -kv[1][1])))
+            if dt > BBOX_TICK_PERIOD_S:
+                self._n_bbox_tick_overruns += 1
+                self._max_bbox_tick_s = max(self._max_bbox_tick_s, dt)
+                if time.monotonic() - self._last_bbox_overrun_log > 30.0:
+                    self._last_bbox_overrun_log = time.monotonic()
+                    self.get_logger().warn(
+                        f"[TIMER] periodic_bbox_publisher took {dt:.2f}s (period {BBOX_TICK_PERIOD_S:.0f}s); "
+                        f"{self._n_bbox_tick_overruns} overrun(s), max {self._max_bbox_tick_s:.2f}s")
 
     @synchronized_world_model
     def periodic_bbox_publisher(self):
@@ -3076,7 +3313,11 @@ class ObjectManagerService(Node):
                                            for obj in wm.persistent_perceptions],
                  "current_room_id": getattr(self.room_manager, "current_room_id", None),
                  "latest_fov_volume": self.latest_fov_volume})
-        self._drain_reevaluations()
+        # A mutation that did not come through a processed pair (an HTTP client, a sweep that
+        # returned early) still reaches the file within one tick.
+        if checkpoint_pending(self.object_services):
+            save_persistent_perceptions(self.object_services)
+        self._tick_merge_scorer()
         # Room polygons evolve independently from object detections. Re-file objects after
         # each resegmentation; the method is a no-op when geometry did not change.
         self.reassign_objects_to_rooms()
@@ -3124,7 +3365,10 @@ def main(args=None):
             bridge_process = _launch_graph_api_bridge()
     service_node = ObjectManagerService()
 
-    executor = MultiThreadedExecutor(num_threads=4)
+    # 8, not 4: the pair tick holds a thread while it waits on its own HTTP round trip, which an
+    # ObjectServices callback answers on another thread, and the refiner now has its own group.
+    # A thread that waits costs no processor time.
+    executor = MultiThreadedExecutor(num_threads=8)
     executor.add_node(service_node)
     executor.add_node(service_node.object_services)
 

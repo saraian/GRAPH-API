@@ -25,6 +25,8 @@ another package — that package never has to be part of this repository:
       filter:  "pkg.module:ClassName"            # subclass of Filter, no-arg constructor
       refiner: "pkg.module:ClassName"            # subclass of Refiner
       store:   "pkg.module:ClassName"            # subclass of Store (empty = SQLite map)
+      merge_scorer: "pkg.module:factory"         # zero-arg factory -> object with score(left, right)
+                                                 # and optional tick(); null = no scorer
       decisions_log: ""                          # JSONL of decisions/revisions (default: output/)
 
 ROS-free on purpose: the subclasses can be unit-tested without a ROS install.
@@ -33,6 +35,7 @@ import importlib
 import json
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -91,21 +94,25 @@ class Refiner:
 
 
 class Reevaluation:
-    """Nodes waiting for a second look, deduplicated by object id."""
+    """Nodes waiting for a second look, deduplicated by object id. Thread-safe: the pair path
+    marks nodes while the refiner's own group drains them."""
 
     def __init__(self):
         self._pending = {}            # object_id -> reason
+        self._lock = threading.Lock()
 
     def on_update(self, object_id, neighbour_ids):
-        for n in neighbour_ids:
-            self._pending.setdefault(n, f"neighbour {object_id} updated")
+        with self._lock:
+            for n in neighbour_ids:
+                self._pending.setdefault(n, f"neighbour {object_id} updated")
 
     def mark(self, object_id, reason):
-        self._pending.setdefault(object_id, reason)
+        with self._lock:
+            self._pending.setdefault(object_id, reason)
 
     def drain(self):
-        items = list(self._pending.items())
-        self._pending.clear()
+        with self._lock:
+            items, self._pending = list(self._pending.items()), {}
         return items
 
     def __len__(self):
@@ -191,6 +198,32 @@ def load_store(cfg, default):
     return load_hook(spec, Store, h.get("search_paths", []) or []) if spec else default()
 
 
+MERGE_SAME, MERGE_DIFFERENT, MERGE_DEFER = "same", "different", "defer"
+
+
+def node_dict(obj):
+    """A belief node as the generic dict every hook receives (Refiner, merge scorer)."""
+    return {"object_id": getattr(obj, "object_id", None) or obj.label, "label": obj.label,
+            "color": obj.color, "material": obj.material, "description": obj.description,
+            "bbox": obj.bbox, "room_id": getattr(obj, "room_id", None)}
+
+
+def load_merge_scorer(cfg):
+    """`hooks.merge_scorer` -> the instance its zero-argument factory returns, or None when the
+    key is null or empty. The scorer judges one merge candidate pair:
+        score(left: dict, right: dict) -> {"decision": "same" | "different" | "defer", ...evidence}
+    with left/right built by `node_dict`; an optional tick() is called from the periodic timer.
+    A spec that cannot be imported, or whose result has no callable score(), raises here."""
+    h = cfg.get("hooks", {}) or {}
+    spec = h.get("merge_scorer") or ""
+    if not spec:
+        return None
+    scorer = load_hook(spec, object, h.get("search_paths", []) or [])
+    if not callable(getattr(scorer, "score", None)):
+        raise TypeError(f"hooks: merge_scorer {spec} returned {type(scorer).__name__}, which has no score()")
+    return scorer
+
+
 def load_hooks(cfg):
     """-> (filter, refiner, reevaluation queue) from the `hooks` config section."""
     h = cfg.get("hooks", {}) or {}
@@ -216,6 +249,12 @@ if __name__ == "__main__":
     try:
         load_hook("json:JSONDecoder", Filter)
         raise AssertionError("a non-Filter class must be refused")
+    except TypeError:
+        pass
+    assert load_merge_scorer({}) is None and load_merge_scorer({"hooks": {"merge_scorer": None}}) is None
+    try:
+        load_merge_scorer({"hooks": {"merge_scorer": "json:JSONDecoder"}})
+        raise AssertionError("a merge scorer without score() must be refused")
     except TypeError:
         pass
     print("hooks OK")

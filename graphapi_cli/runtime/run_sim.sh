@@ -478,6 +478,8 @@ PY
       # (owner ruling 2026-09-09), which is passed through below; what this block still needs from
       # the extension is a mount point that holds vendor/wheels. Checked on the HOST, where the
       # directory is, so the failure names its cause instead of appearing as a pip error.
+      # WORKSPACE_ROOT is mounted at the mount point ONLY WHEN EXT_MOUNTS is empty: with both, docker
+      # refused "Duplicate mount point" and no repair ran (measured 2026-10-22, logs/store_repair.log).
       if [ ! -d "$WORKSPACE_ROOT/vendor/wheels" ] && [ -z "${EXT_MOUNTS:-}" ]; then
         echo "GA-293 store repair: SKIPPED. EXT_STORE_REPAIR=$EXT_STORE_REPAIR is set, but nothing" \
           >> "$RUN_DIR/logs/store_repair.log"
@@ -489,7 +491,8 @@ PY
       else
       docker run --rm --entrypoint bash --user "$(id -u):$(id -g)" -e PYTHONUSERBASE=/tmp/pyuser \
         -e EXT_MOUNT_POINT -e EXT_STORE_REPAIR ${EXT_MOUNTS:-} \
-        -v "$WORKSPACE_ROOT":"$EXT_MOUNT_POINT":ro -v "$RUN_DIR":/ws/output "$IMAGE_TAG" -lc '
+        $( [ -z "${EXT_MOUNTS:-}" ] && printf -- '-v %s:%s:ro' "$WORKSPACE_ROOT" "$EXT_MOUNT_POINT" ) \
+        -v "$RUN_DIR":/ws/output "$IMAGE_TAG" -lc '
           python3 -c "import pyoxigraph" 2>/dev/null ||
             pip install --user --quiet --no-index --find-links="$EXT_MOUNT_POINT"/vendor/wheels pyoxigraph
           cd "$EXT_MOUNT_POINT" && $EXT_STORE_REPAIR /ws/output/knowledge_graph.ttl
@@ -1094,6 +1097,9 @@ for _v in ${EXT_ENV_PASS:-}; do
   eval "_val=\${$_v-}"
   PREFLIGHT_EXPECT_POLICY="${PREFLIGHT_EXPECT_POLICY:+$PREFLIGHT_EXPECT_POLICY,}$_v=$_val"
 done
+# Exported, or `docker run -e PREFLIGHT_EXPECT_POLICY` sends nothing and a3 is skipped, which fails the gate for
+# every run that configures an extension filter (measured 2026-10-21).
+export PREFLIGHT_EXPECT_POLICY
 [ -n "$PREFLIGHT_EXPECT_POLICY" ] && echo "    policy: $PREFLIGHT_EXPECT_POLICY"
 
 # ---- provenance ---------------------------------------------------------------------------
@@ -1562,11 +1568,15 @@ if [ "${GRAPH_API_MULTI_FLOOR:-0}" = "1" ]; then
   FEED_PID="" # the parent owns this persistent PID; a floor child must not kill it
 else
   _feed_log="$RUN_DIR/logs/feed_host.log"
+  # FEED_REMOTE_CMD: a host with no GPU runs the feed elsewhere (lost3dsg/test/remote_feed.sh: on Modal,
+  # joined by an SSH tunnel). Same environment, same log, same "listening" line to wait for.
+  _feed_cmd=(python3 -m graphapi_cli.docker feed)
+  [ -n "${FEED_REMOTE_CMD:-}" ] && _feed_cmd=("$FEED_REMOTE_CMD")
   HABITAT_SCENE=${HABITAT_SCENE:-$DEF_SCENE} \
   HABITAT_DATASET=${HABITAT_DATASET:-$DEF_DATASET} \
   DISPLAY="${DISPLAY:-:1}" PYTHONUNBUFFERED=1 \
   GRAPH_API_CONFIG="${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" \
-    nohup python3 -m graphapi_cli.docker feed \
+    nohup "${_feed_cmd[@]}" \
     > "$_feed_log" 2>&1 &
   FEED_PID=$!
 fi
@@ -1721,9 +1731,9 @@ fi
 # NO COMMENT LINES INSIDE THIS COMMAND. Every line below is joined by a trailing backslash, so
 # a "#" line here is not a comment -- docker receives "#" and each following word as ARGUMENTS.
 # `bash -n` accepts it, because it is valid syntax; only the run fails. Done once, 2026-09-11.
-docker run --name "${GRAPH_API_CONTAINER_NAME:-graphapi_live}" --rm --init --label "graphapi.operation=${GRAPHAPI_OPERATION_ID:-legacy}" --entrypoint bash --gpus "${GRAPH_API_GPUS:-all}" --network=host \
+docker run --name "${GRAPH_API_CONTAINER_NAME:-graphapi_live}" --rm --init --label "graphapi.operation=${GRAPHAPI_OPERATION_ID:-legacy}" --entrypoint bash $([ "${GRAPH_API_GPUS:-all}" != none ] && echo --gpus "${GRAPH_API_GPUS:-all}") --network=host \
   -e OPENAI_API_KEY -e GEMINI_API_KEY -e GOOGLE_API_KEY -e CFG_NAME -e PERCEPTION_EXECUTABLE -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
-  -e GRAPH_API_RUN_ID -e FEED_GT_SEMANTIC -e FEED_GT_BBOX -e FEED_GT_BBOX_ALL_FLOORS -e ROS_DOMAIN_ID \
+  -e GRAPH_API_RUN_ID -e FEED_GT_SEMANTIC -e FEED_GT_BBOX -e FEED_GT_BBOX_ALL_FLOORS -e ROS_DOMAIN_ID -e ROS_LOCALHOST_ONLY \
   -e GA493_REPLAY_CAPTURE_DIR -e GA493_REPLAY_CAPTURE_MAX_CYCLES -e GA493_REPLAY_CAPTURE_MAX_BYTES \
   -e FRAME_QUEUE_MAX -e SCAN_COMPLETE_TOPIC -e SCAN_MERGE_SETTLE_S -e MOTION_POSITION_THRESHOLD \
   -e MERGE_MIN_CONSECUTIVE \

@@ -21,6 +21,7 @@ try:
 except ImportError:
     import dash_env
 
+RUN_ID_RE = re.compile(r"^\d{8}_\d{6}(?:_|$)")   # a bundle is <stamp>_<scene>; nothing else is served
 RUNS_DIR = dash_env.runs_dir()
 CACHE_DIR = Path(dash_env.env("DASH_BUNDLE_CACHE", "/tmp/dash_bundle_cache"))
 # Kinds counted by scanning bytes. Extending this list is cheap; parsing the file is not.
@@ -219,7 +220,13 @@ def describe(name, use_cache=True):
 def index(limit=40):
     if not RUNS_DIR.is_dir():
         return []
-    dirs = [p for p in RUNS_DIR.iterdir() if p.is_dir() and not p.is_symlink()]
+    # ONLY RUN BUNDLES. Since 2026-09-11 run_sim.sh writes a house_<stamp>/ manifest folder per
+    # run beside the per-storey bundles, and sweep_*/snapshots/run_configs live here too. Sorted
+    # by name descending, letters outrank digits, so those folders took every one of the 40
+    # slots and the table showed forty rows of dashes while every real bundle sat below the cut
+    # (owner, 2026-09-22: "no bundle is loadable"). Same name rule as replay_server.is_run_dir.
+    dirs = [p for p in RUNS_DIR.iterdir()
+            if p.is_dir() and not p.is_symlink() and RUN_ID_RE.match(p.name)]
     names = sorted((p.name for p in dirs), reverse=True)[:limit]
     return [i for i in (describe(n) for n in names) if i]
 

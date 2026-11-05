@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -92,6 +93,17 @@ SCENE_ANALYSIS_RESPONSE_FORMAT = {
         },
     },
 }
+
+
+# The same contract with only label and bbox (perception.describer.emit_attributes: false). A
+# strict schema that still listed the four describer fields would force the model to fill them.
+ATTRIBUTE_FIELDS = ("description", "color", "material", "shape")
+SCENE_ANALYSIS_RESPONSE_FORMAT_NO_ATTRIBUTES = copy.deepcopy(SCENE_ANALYSIS_RESPONSE_FORMAT)
+_item = SCENE_ANALYSIS_RESPONSE_FORMAT_NO_ATTRIBUTES["json_schema"]["schema"]["properties"]["objects"]["items"]
+for _f in ATTRIBUTE_FIELDS:
+    del _item["properties"][_f]
+    _item["required"].remove(_f)
+del _item, _f
 
 
 @dataclass(frozen=True)
@@ -189,6 +201,7 @@ def parse_scene_analysis(
     image_width: int,
     image_height: int,
     excluded_labels=None,
+    attribute_value=None,
 ):
     """Validate a scene response and convert its normalized boxes to pixels.
 
@@ -197,7 +210,8 @@ def parse_scene_analysis(
     raises so the caller records a failed VLM cycle instead of publishing false
     empty-scene evidence. Configured excluded labels are removed after validation;
     a frame containing only excluded objects is a valid empty scene, not a failed
-    VLM response.
+    VLM response. `attribute_value`, when given, is written into the four describer
+    fields instead of reading them from the reply (they were not requested).
     """
 
     try:
@@ -226,16 +240,9 @@ def parse_scene_analysis(
         if is_excluded_label(label, excluded):
             continue
 
-        result.append(
-            SceneObject(
-                label=label,
-                description=_text(item.get("description")),
-                color=_text(item.get("color")),
-                material=_text(item.get("material")),
-                shape=_text(item.get("shape")),
-                bbox=bbox,
-            )
-        )
+        attrs = {f: attribute_value if attribute_value is not None else _text(item.get(f))
+                 for f in ATTRIBUTE_FIELDS}
+        result.append(SceneObject(label=label, bbox=bbox, **attrs))
 
     if objects and valid_objects == 0:
         raise ValueError("VLM response contained objects but no valid detections")

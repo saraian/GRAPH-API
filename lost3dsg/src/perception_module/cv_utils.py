@@ -19,6 +19,7 @@ from geometry_msgs.msg import Point
 from utils import statistical_outlier_removal, get_distinct_color
 from box_view import BOX_EDGES, box_corners_map, pca_oriented_box, project_visible
 from config import CFG, vlm_completion_kwargs, world_frame
+from confirmation import shown
 import struct
 from openai import OpenAI
 import base64
@@ -889,7 +890,7 @@ def publish_pov_volume(node, pov_volume, considered_volume_pub=None):
 
 
 def publish_persistent_centroids(node, wm, persistent_centroids_pub=None):
-    _publish_centroid_markers(node, wm.persistent_perceptions, persistent_centroids_pub,
+    _publish_centroid_markers(node, shown(wm.persistent_perceptions), persistent_centroids_pub,
                               "persistent_centroids", (0.0, 1.0, 0.0, 1.0),
                               prefer_fused=True)
 
@@ -946,7 +947,7 @@ def _publish_bbox_markers(node, objects, pub, ns, color, prefer_fused=False, dis
 
 
 def publish_persistent_bboxes(node, wm, persistent_bboxes_pub=None):
-    _publish_bbox_markers(node, wm.persistent_perceptions, persistent_bboxes_pub,
+    _publish_bbox_markers(node, shown(wm.persistent_perceptions), persistent_bboxes_pub,
                           "persistent_bboxes", (0.0, 1.0, 0.0, 0.3),
                           prefer_fused=True, distinct=True)
 

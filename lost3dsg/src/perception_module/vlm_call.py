@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, Tuple
 
 import numpy as np
-from config import CFG
+from config import CFG, NOT_REQUESTED, describer_emits_attributes
 from crop_context import (
     CALL_FAILED,
     MODEL_ABSTAINED,
@@ -83,6 +83,15 @@ class CropVlmCache:
         }
 
 
+def not_requested_record(label, image_id=""):
+    """The describer record when perception.describer.emit_attributes is false."""
+    record = {k: NOT_REQUESTED for k in ("description", "color", "material", "shape")}
+    record.update({"label": label, "json_answer": "{}",
+                   "provenance": {"model": None, "image_id": image_id, "timestamp": datetime.now().isoformat(),
+                                  "cached": False, "status": NOT_REQUESTED}})
+    return record
+
+
 class VlmClient:
     def __init__(self, vlm_call_fn, image_encoder_fn, crop_call_fn=None):
         self._vlm_call = vlm_call_fn
@@ -109,6 +118,7 @@ class VlmClient:
         """
         from scene_analysis import (
             SCENE_ANALYSIS_RESPONSE_FORMAT,
+            SCENE_ANALYSIS_RESPONSE_FORMAT_NO_ATTRIBUTES,
             normalize_excluded_labels,
             parse_scene_analysis,
         )
@@ -117,12 +127,14 @@ class VlmClient:
             excluded = (CFG.get("perception", {}) or {}).get("excluded_labels", [])
         excluded = normalize_excluded_labels(excluded)
 
+        emit = describer_emits_attributes()
         with open(prompt_path, encoding="utf-8") as prompt_file:
             prompt = prompt_file.read()
         raw = self._vlm_call(
             prompt,
             self._encode(rgb),
-            response_format=SCENE_ANALYSIS_RESPONSE_FORMAT,
+            response_format=(SCENE_ANALYSIS_RESPONSE_FORMAT if emit
+                             else SCENE_ANALYSIS_RESPONSE_FORMAT_NO_ATTRIBUTES),
             image_detail="high",
         )
         height, width = rgb.shape[:2]
@@ -131,6 +143,7 @@ class VlmClient:
             image_width=width,
             image_height=height,
             excluded_labels=excluded,
+            attribute_value=None if emit else NOT_REQUESTED,
         )
 
     def _clean_labels(self, raw_labels):
@@ -254,6 +267,10 @@ class VlmClient:
 
     def call_crop_full(self, prompt_path, label, cropped, yaw: float = 0.0, distance: float = 1.0, image_id: str = ""):
         """Single-object VLM description with viewpoint-bucketed crop cache and provenance retention."""
+        if not describer_emits_attributes():
+            # The crop prompt asks for the four describer fields and nothing else, so with
+            # perception.describer.emit_attributes false there is nothing to ask: no call.
+            return not_requested_record(label, image_id)
         crop_hash = compute_crop_hash(cropped)
         pose_bucket, range_bucket = discretize_viewpoint(yaw, distance)
         cache_key = (crop_hash, pose_bucket, range_bucket)

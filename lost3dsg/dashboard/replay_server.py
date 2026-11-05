@@ -236,7 +236,17 @@ def _managed_active_run():
 
 
 def discovered_bridge_port():
-    """Read the allocated bridge endpoint from the active operation record."""
+    """The port the ACTIVE run's bridge bound, from the first source that names one -- or None.
+
+    Sources, in order: the managed run registry; BRIDGE_PORT in this process's environment (the launch form forwards it);
+    `bridge_port` in the run's run_metadata.json (written when the launcher knew it); the
+    "Uvicorn running on ...:PORT" line of logs/bridge.log. 2026-09-22, run 192814: bridge.log
+    was EMPTY for the whole run and run_metadata carried no port, so the log-only version
+    returned None while :8085 answered /health -- the dashboard sat in replay over a live stack
+    for the third time. `bridge_candidate_ports()` adds the two ports every launch on this
+    machine has used, so a probe still finds the bridge when no record names it.
+    """
+    # 1. The managed run registry (graphapi_cli): the operation record names the allocated port.
     row = _managed_active_run()
     if row:
         port = row["ports"].get("BRIDGE_PORT", row["ports"].get("TIAGO_BRIDGE_PORT"))
@@ -244,8 +254,46 @@ def discovered_bridge_port():
         if ctrl:
             _INPROC["feed_host"] = f"http://127.0.0.1:{ctrl}"
             _sync_inproc_feed_host()
-        return port
+        if port:
+            return port
+    env_port = os.environ.get("BRIDGE_PORT", "").strip()
+    if env_port.isdigit():
+        return int(env_port)
+    try:
+        run = resolve_bundle("latest")
+    except OSError:
+        return None
+    if run is None:
+        return None
+    try:
+        meta = json.loads((run / "run_metadata.json").read_text(encoding="utf-8"))
+        port = meta.get("bridge_port")
+        if isinstance(port, int) and 0 < port < 65536:
+            return port
+    except (OSError, ValueError, AttributeError):
+        pass
+    for log in (run / "logs" / "bridge.log", run / "bridge.log"):
+        try:
+            with open(log, "r", encoding="utf-8", errors="replace") as f:
+                head = f.read(4096)
+        except OSError:
+            continue
+        hit = _UVICORN_BIND.search(head)
+        if hit:
+            return int(hit.group(1))
     return None
+
+
+def bridge_candidate_ports():
+    """Ports to probe when nothing records the bridge's port: the discovered one first, then
+    8085 (the standing BRIDGE_PORT since 2026-09-06, because :8081 is held by an unrelated
+    process on this host) and 8081 (the bridge's own default). Probing is cheap (one GET with
+    a 1.5 s timeout) and each answer is identity-checked, so a wrong candidate costs nothing."""
+    out = []
+    for p in (discovered_bridge_port(), 8085, 8081):
+        if p and p not in out:
+            out.append(p)
+    return out
 
 
 def bridge_identified(url: str = None, timeout: float = 2.0):
@@ -260,16 +308,17 @@ def bridge_identified(url: str = None, timeout: float = 2.0):
     ok, why = _probe_bridge(url, timeout)
     if ok:
         return ok, why
-    port = discovered_bridge_port()
-    if port is None or f":{port}" in url:
-        return ok, why
-    alt = f"http://127.0.0.1:{port}"
-    ok2, why2 = _probe_bridge(alt, timeout)
-    if ok2:
-        BRIDGE_URL = alt
-        return True, (f"{url} refused, but the run's bridge.log says the bridge bound :{port} "
-                      f"and {alt} identifies as ours -- using it")
-    return False, f"{why}; bridge.log says the bridge bound :{port} but {alt} also failed: {why2}"
+    tried = []
+    for port in bridge_candidate_ports():
+        if f":{port}" in url:
+            continue
+        alt = f"http://127.0.0.1:{port}"
+        ok2, why2 = _probe_bridge(alt, min(timeout, 1.5))
+        if ok2:
+            BRIDGE_URL = alt
+            return True, f"{url} refused; {alt} identifies as ours -- using it"
+        tried.append(f":{port} ({why2.split(':')[-1].strip()[:40]})")
+    return False, f"{why}; also tried {', '.join(tried) or 'no other port'}"
 
 def _follow_mode(interval: float = 15.0):
     """Re-probe the bridge every `interval` s and move MODE with it.
@@ -1312,6 +1361,16 @@ def _replay_mode_html(bundle: Path) -> str:
   // candidate for a real per-stage overlay and it is not one: MEASURED on this bundle it
   // reads status="ok", construction="contour" on all 1,530 rows, so drawing it would add an
   // identical string to every box. Name the button after what it does.
+  // Owner 2026-09-22: "all feed selection buttons are not working". The four buttons the
+  // viewer ships carry onclick="toggleVizLayer(...)", and the viewer's OWN toggleVizLayer
+  // (a function declaration in its inline script, which runs after this one) replaced the
+  // window.toggleVizLayer set above -- so a click reached the live-only version, which refuses
+  // in replay. Bind the buttons to this page's toggle directly: a property handler wins over
+  // the attribute one, and the reference does not go through the global name.
+  const replayToggle = window.toggleVizLayer;
+  ['perm', 'temp', 'seg', 'det'].forEach(k => {{
+    const b = $(BTN[k]); if (b) b.onclick = () => replayToggle(k);
+  }});
   setBtn('btnVizDet', 'SCORES', 'Draw the label, detector score and verdict on each box');
 
   // The header read "GRAPH API | AUTONOMOUS SYSTEM CONTROL". Name the thing after what it
@@ -2144,6 +2203,49 @@ def _bundle_names(limit: int = 60):
     return [d.name for d in sorted(runs, key=lambda d: d.name, reverse=True)[:limit]]
 
 
+RUN_PANEL_HTML = r"""
+<div id="runPanel" hidden style="position:fixed;left:14px;bottom:14px;z-index:100090;max-width:min(680px,60vw);
+     background:rgba(9,13,22,.96);border:1px solid #334155;border-radius:8px;font:11px/1.4 ui-monospace,monospace;color:#cbd5e1">
+  <div style="display:flex;gap:10px;align-items:center;padding:6px 10px;border-bottom:1px solid #1e293b;cursor:pointer" onclick="window.__runPanelToggle()">
+    <b style="color:#38bdf8;letter-spacing:.06em">RUN</b><span id="runPanelState"></span>
+    <span style="flex:1"></span><span id="runPanelMode"></span>
+    <button id="runPanelUnpin" hidden onclick="event.stopPropagation();window.__runPanelUnpin()" style="font:inherit;background:#0e2537;color:#38bdf8;border:1px solid #38bdf8;border-radius:4px;padding:2px 7px;cursor:pointer">GO LIVE</button>
+    <button id="runPanelStop" hidden onclick="event.stopPropagation();window.__runPanelStop()" style="font:inherit;background:#3a1a1a;color:#fca5a5;border:1px solid #b03a2b;border-radius:4px;padding:2px 7px;cursor:pointer">STOP</button>
+    <span id="runPanelCaret">&#9662;</span>
+  </div>
+  <pre id="runPanelLog" style="margin:0;padding:6px 10px;max-height:34vh;overflow:auto;white-space:pre-wrap;word-break:break-word"></pre>
+</div>
+<script>
+(function () {
+  var box = document.getElementById('runPanel'), log = document.getElementById('runPanelLog');
+  var open = true, seen = false;
+  window.__runPanelToggle = function () { open = !open; log.hidden = !open; document.getElementById('runPanelCaret').innerHTML = open ? '&#9662;' : '&#9656;'; };
+  window.__runPanelStop = async function () { if (!confirm('Stop the running launch (SIGINT to run_sim.sh)?')) return; await fetch('/stop_run', {method: 'POST'}); };
+  window.__runPanelUnpin = async function () { await fetch('/unpin', {method: 'POST'}); document.getElementById('runPanelMode').textContent = 'released - re-probing (<= 15 s)'; };
+  async function tick() {
+    var alive = false;
+    try {
+      var s = await (await fetch('/run_status')).json();
+      var mi = await (await fetch('/mode_info')).json();
+      alive = !!s.alive;
+      var started = !!(s.pid || s.started);
+      if (alive || started) seen = true;
+      box.hidden = !seen && !mi.live_available;
+      document.getElementById('runPanelState').textContent = alive ? ('running ' + (s.scene || '') + (s.container_up ? ' - container up' : ' - starting')) : (started ? 'ended' : '');
+      document.getElementById('runPanelStop').hidden = !alive;
+      var live = mi.mode === 'live';
+      document.getElementById('runPanelMode').textContent = live ? ('LIVE via ' + (mi.bridge || '')) : (mi.live_available ? ('a live bridge answers at ' + mi.live_available + ' - view is PINNED to a chosen bundle') : (alive ? 'waiting for the bridge (replay meanwhile)' : ''));
+      document.getElementById('runPanelUnpin').hidden = !mi.live_available;
+      if (s.log && open) { var t = await (await fetch('/run_log?lines=60')).json(); var txt = (t.lines || []).join('\n'); if (txt !== log.textContent) { log.textContent = txt; log.scrollTop = log.scrollHeight; } }
+    } catch (e) {}
+    setTimeout(tick, alive ? 2000 : 5000);
+  }
+  tick();
+})();
+</script>
+"""
+
+
 def with_tools_menu(html: str) -> str:
     """Append the TOOLS menu to any page this dashboard serves.
 
@@ -2156,7 +2258,7 @@ def with_tools_menu(html: str) -> str:
     """
     if 'id="toolsMenu"' in html:
         return html
-    return html + _tools_menu_html(_bundle_names())
+    return RUN_PANEL_HTML + html + _tools_menu_html(_bundle_names())
 
 
 # ---------------------------------------------------------------------------------------
@@ -2806,7 +2908,12 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
 
     @app.get("/dash", response_class=HTMLResponse)
     def _dash():
-        return index_fn()
+        r = index_fn()
+        # The floating RUN panel (status of a launch, its log, STOP / GO LIVE) rides on the viewer
+        # page in both modes; the other pages get it through with_tools_menu.
+        if isinstance(r, HTMLResponse) and b"</body>" in r.body:
+            r = HTMLResponse(r.body.decode("utf-8").replace("</body>", RUN_PANEL_HTML + "</body>", 1))
+        return r
 
     # ---- THE 3D SCENE, IN BOTH MODES ---------------------------------------------------
     # These three lived in `build_app` until 2026-09-04, which meant /scene3d, /scene_mesh
@@ -3492,11 +3599,78 @@ def build_app(bundle: Path):
     m.app.router.routes = [r for r in m.app.router.routes
                            if getattr(r, "path", None) != "/graph_data"]
 
+    _LIFECYCLE_CACHE = {}
+
+    def _lifecycle_events(bundle, label_by_id):
+        """Relocations and deletions for the viewer's Lifecycle tabs (viewer.html
+        lifecyclePayload). 2026-09-22: no server produced `lifecycle_events`, so both tabs
+        read "does not provide lifecycle events yet" on every bundle. The bundle records
+        neither event directly, so both are DERIVED:
+          deletions   <- hook_decisions.jsonl `disappearance_removal` rows, one event per
+                         label in `deleted_labels` (labels only; the hook records no id)
+          relocations <- mutation_receipts.jsonl rows whose operation re-fused an existing
+                         object (`update` / `direct_exploration_update`, object_revision > 1,
+                         fusion_applied). No receipt carries a position, so `distance_m`,
+                         `from` and `to` are absent and the viewer shows the row without them.
+        """
+        hooks, receipts = bundle / "hook_decisions.jsonl", bundle / "mutation_receipts.jsonl"
+        if not hooks.exists():
+            return {"status": "missing"}
+        key = (str(bundle), hooks.stat().st_mtime_ns,
+               receipts.stat().st_mtime_ns if receipts.exists() else 0, len(label_by_id))
+        hit = _LIFECYCLE_CACHE.get("k")
+        if hit and hit[0] == key:
+            return hit[1]
+        out = {"status": "available", "relocations": [], "deletions": [], "unreadable_records": 0}
+        for path, kind in ((hooks, "hook"), (receipts, "receipt")):
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError as exc:
+                if kind == "hook":
+                    return {"status": "unreadable", "error": f"{path.name}: {exc}"}
+                continue
+            for line in lines:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    out["unreadable_records"] += 1
+                    continue
+                if kind == "hook" and r.get("kind") == "disappearance_removal":
+                    for lbl in r.get("deleted_labels") or []:
+                        out["deletions"].append({"object": lbl, "label": lbl, "t": r.get("t"),
+                                                 "reason": r.get("error") or "disappearance"})
+                elif (kind == "receipt" and r.get("fusion_applied")
+                      and (r.get("object_revision") or 0) > 1
+                      and r.get("operation") in ("update", "direct_exploration_update")):
+                    oid = r.get("object_id")
+                    node = f"n_{oid}" if f"n_{oid}" in label_by_id else oid
+                    out["relocations"].append({"object": node, "label": label_by_id.get(oid, oid),
+                                               "t": r.get("recorded_at"),
+                                               "reason": f"{r.get('operation')} -> revision "
+                                                         f"{r.get('object_revision')}, geometry "
+                                                         f"epoch {r.get('geometry_epoch')}"})
+        _LIFECYCLE_CACHE["k"] = (key, out)
+        return out
+
     @m.app.get("/graph_data")
     def _graph_data_trimmed(request: Request = None):
         g = m.graph_data(request=None)
         if not isinstance(g, dict):
             return g
+        if "lifecycle_events" not in g:
+            nodes = (g.get("elements") or {}).get("nodes") or g.get("nodes") or []
+            labels = {}
+            for n in nodes:
+                d = n.get("data", n) if isinstance(n, dict) else {}
+                if d.get("id") and d.get("label"):
+                    # viewer node ids are "n_" + the store's object id (receipts carry the latter)
+                    labels[d["id"]] = d["label"]
+                    if d["id"].startswith("n_"):
+                        labels[d["id"][2:]] = d["label"]
+            try:
+                g["lifecycle_events"] = _lifecycle_events(current_bundle(), labels)
+            except OSError as exc:
+                g["lifecycle_events"] = {"status": "unreadable", "error": str(exc)}
         # `nodes` and `edges` ONLY. Both have an explicit fallback in the viewer
         # (viewer.html:3982-3983 read data.elements.nodes/edges when the top-level copy is
         # absent), so dropping them is invisible.
@@ -3798,6 +3972,15 @@ def build_app(bundle: Path):
         ok, why = _probe_bridge(timeout=0.6)
         return JSONResponse({"live": bool(ok), "why": why})
 
+    @m.app.post("/unpin")
+    def _unpin():
+        """Release a bundle chosen from the dashboard, so the mode and bundle followers may move
+        the view again. Answers what it did; the next follower tick (<= 15 s) does the rest."""
+        was = BUNDLE_PIN["pinned"]
+        BUNDLE_PIN["pinned"] = False
+        return {"ok": True, "was_pinned": was,
+                "next": "the mode follower re-probes within 15 s; the bundle follower re-resolves latest"}
+
     @m.app.get("/mode_info")
     def _mode_info():
         """What this dashboard is showing, and on what evidence.
@@ -3807,7 +3990,14 @@ def build_app(bundle: Path):
         one answer instead of each panel guessing.
         """
         replay = MODE["mode"] == "replay"
+        live_available = None
+        if replay and BUNDLE_PIN["pinned"]:
+            # The followers stand down while a bundle is pinned (2026-09-22: a Load-page click
+            # left the dashboard in replay over a live run and nothing on the page said why).
+            ok, _w = bridge_identified(timeout=1.0)
+            live_available = BRIDGE_URL if ok else None
         return {"mode": MODE["mode"], "why": MODE["why"], "by": MODE.get("by"),
+                "live_available": live_available,
                 "bundle": str(current_bundle()), "pinned": BUNDLE_PIN["pinned"],
                 "live_camera": not replay, "ros": not replay,
                 "bridge": None if replay else BRIDGE_URL}
