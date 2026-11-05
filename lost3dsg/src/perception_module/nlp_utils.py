@@ -3,7 +3,7 @@ import re
 
 import numpy as np
 import webcolors
-from config import CFG
+from config import CFG, NOT_REQUESTED
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 _EMB_CACHE = {}
@@ -401,4 +401,6 @@ def lost_similarity_detailed(word2vec_model, label1, label2, color1, color2,
 
 
 def _known(value):
-    return bool(value) and str(value).strip().lower() not in ("unknown", "none", "n/a")
+    # NOT_REQUESTED (perception.describer.emit_attributes: false) is absence too: a field the
+    # describer was never asked for is neither a match nor a mismatch, so its term drops out.
+    return bool(value) and str(value).strip().lower() not in ("unknown", "none", "n/a", NOT_REQUESTED)

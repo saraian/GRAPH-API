@@ -335,6 +335,7 @@ container_exit_cleanup() {
   python3 /graph_api/lost3dsg/test/preflight_gate.py --only a7 --teardown --out /ws/output/a7_teardown.json \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
       --found-exercised auto \
+      $(for _r in ${PREFLIGHT_LIVE_ROOTS:-}; do printf -- '--live-root %s ' "$_r"; done) \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg > /tmp/a7_teardown.log 2>&1 \
     && echo ">>> a7 at teardown: PASS — $(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));a=[p for p in d['probes'] if p['id']=='a7'][0]['detail'];m=a.get('live_mismatches') or {};print('live roots unchanged since the launch stamp' if not m else 'live root(s) MOVED during the run, recorded non-blocking: '+', '.join(f'{k} {v[\"launcher\"]}->{v[\"container\"]}' for k,v in m.items()))" /ws/output/a7_teardown.json 2>/dev/null || echo 'a7_teardown.json unreadable')" \
     || echo "!! a7 at teardown FAILED — a source root moved during the run; see a7_teardown.json (latest will not move)"
@@ -447,6 +448,9 @@ else
   # MAPPING_ONLY relaxed a4/a8 to OBSERVE because a map-only run loaded no detector. That shape
   # went with the sampling policy (owner 2026-09-11) and run_sim.sh refuses the name, so every
   # run now loads a detector and every probe blocks as usual.
+  # PREFLIGHT_LIVE_ROOTS: "NAME=PATH ..." for each tree mounted live (an extension sets it through its
+  # EXT_ENV_PASS). a7 fails a run that executes extension code with no live root declared, and nothing
+  # passed --live-root before 2026-10-21, so every run with an extension filter was refused here.
   PREFLIGHT_OBSERVE=""
   echo ">>> pre-flight gate (Class A)"
   python3 /graph_api/lost3dsg/test/preflight_gate.py \
@@ -459,6 +463,7 @@ else
       --expect-merged-sha "${PREFLIGHT_EXPECT_MERGED_SHA:-}" \
       --expect-src-sha "${PREFLIGHT_EXPECT_SRC_SHA:-}" \
       --found-exercised auto \
+      $(for _r in ${PREFLIGHT_LIVE_ROOTS:-}; do printf -- '--live-root %s ' "$_r"; done) \
       --expect-policy "${PREFLIGHT_EXPECT_POLICY:-}" \
       --expect-cycle-s "${PREFLIGHT_EXPECT_CYCLE_S:-}" \
       --install-tree /ws/install/lost3dsg/lib/lost3dsg \

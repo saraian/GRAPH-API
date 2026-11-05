@@ -28,20 +28,36 @@ gpu=${BASELINE_GPU:-0}
 # printed nothing, while `-q -d PIDS` printed "Process ID: 2177348 / Type: G / 627 MiB".
 # `-q -d PIDS` lists every process type and is the one to assert on.
 #
-# memory.used is reported for context, not asserted: an idle card here reads 34 MiB, so a
-# threshold on it would need a magic number. The process count is the assertion.
+# memory.used is reported for context, not asserted by default: an idle card here reads 34 MiB, so
+# a threshold on it would need a magic number. The process count is the default assertion.
 #
-# Set BASELINE_GPU_GUARD=0 to launch onto a busy card deliberately.
+# BASELINE_GPU_MIN_FREE_MIB=N shares a busy card under the owner's ruling of 2026-09-15: "we can use
+# free memory in other GPUs if unused". It does NOT disable the guard — it changes what the guard
+# asserts, from "nobody else is here" to "there is at least N MiB free for us". Give N the run's
+# measured peak plus headroom; an HOV-SG feature-extraction run peaks at ~17 GB, so 20000 leaves
+# room. Only use it where the neighbour's footprint is STATIC: a llama.cpp server preallocates its
+# KV cache, so its memory.used does not move (measured 2026-09-15 on DGX GPUs 5-7, steady at
+# 14,931 MiB across samples). Against a neighbour whose allocation grows, this guard cannot protect
+# either side and you must not share the card.
+#
+# Set BASELINE_GPU_GUARD=0 to launch onto a busy card with NO check at all.
 guard_gpu() {
-    local gpu=$1 busy used
+    local gpu=$1 busy used total free min_free=${BASELINE_GPU_MIN_FREE_MIB:-0}
     if [[ ${BASELINE_GPU_GUARD:-1} != 1 ]]; then
         echo "GPU guard DISABLED by BASELINE_GPU_GUARD for device $gpu" >&2
         return 0
     fi
     busy=$(nvidia-smi -i "$gpu" -q -d PIDS | awk '/^ *Process ID *:/ {n++} END {print n+0}')
     used=$(nvidia-smi -i "$gpu" --query-gpu=memory.used --format=csv,noheader,nounits)
+    total=$(nvidia-smi -i "$gpu" --query-gpu=memory.total --format=csv,noheader,nounits)
+    free=$((total - used))
     if ((busy > 0)); then
-        echo "GPU $gpu is BUSY: $busy process(es), $used MiB used. Refusing to launch." >&2
+        if ((min_free > 0 && free >= min_free)); then
+            echo "GPU $gpu is SHARED: $busy process(es), $used MiB used, $free MiB free >= ${min_free} MiB required. Launching alongside:" >&2
+            nvidia-smi -i "$gpu" -q -d PIDS | sed -n '/Processes/,$p' >&2
+            return 0
+        fi
+        echo "GPU $gpu is BUSY: $busy process(es), $used MiB used, $free MiB free. Refusing to launch." >&2
         nvidia-smi -i "$gpu" -q -d PIDS | sed -n '/Processes/,$p' >&2
         exit 2
     fi

@@ -11,6 +11,7 @@ from functools import wraps
 from types import SimpleNamespace
 
 import association as assoc
+import confirmation
 import numpy as np
 import rclpy
 from bbox_fusion import (
@@ -20,7 +21,7 @@ from bbox_fusion import (
     reset_bbox_fusion,
 )
 from builtin_interfaces.msg import Time as TimeMsg
-from config import CFG, world_frame
+from config import CFG, NOT_REQUESTED, world_frame
 from box_view import BOX_EDGES, box_corners_map, enclosing_box_from_points
 from geometry_msgs.msg import Point
 from cv_utils import (
@@ -32,7 +33,7 @@ from cv_utils import (
 )
 from detection_index import DetectionIndex
 from detection_types import observation_dict_from_msg
-from hooks import DecisionLog, load_store
+from hooks import MERGE_DEFER, MERGE_DIFFERENT, MERGE_SAME, DecisionLog, load_store, node_dict
 from map_database import MapDatabase
 from nlp_utils import _known, get_embedding, lost_similarity_detailed, world2vec
 from object_info import Object
@@ -613,7 +614,7 @@ def merge_rank(o):
     grade = GRADE_RANK.get(getattr(o, "admission_grade", None), GRADE_RANK["no_grounds"])
     filled = getattr(o, "admission_filled", None)
     filled = -int(filled) if filled is not None else 0
-    described = 0 if str(o.description).strip().lower() == 'unknown' else -1
+    described = 0 if str(o.description).strip().lower() in ('unknown', NOT_REQUESTED) else -1
     ct = getattr(o, "creation_time", None)
     return (grade, filled, described, 1 if ct is None else 0, ct if ct is not None else 0.0,
             str(getattr(o, "object_id", "") or o.label))
@@ -811,20 +812,53 @@ def save_uncertain_objects(node):
                     f.write(f"   Center position: X={x_center:.3f}, Y={y_center:.3f}, Z={z_center:.3f}\n")
 
 
+def _checkpoint_state(node):
+    """Per-node checkpoint state. Read from the instance dict: host tests build nodes without __init__."""
+    return node.__dict__.setdefault("_checkpoint", {"path": None, "written": None, "encoded": {},
+                                                    "receipts": []})
+
+
+def defer_checkpoint_receipt(node, event_id, request, operation, obj, fusion_applied=False):
+    """Mark the map changed; the ``applied_and_checkpointed`` row follows the next real save.
+
+    MEASURED 20261027_031427: one full save per add and per update cost 618 s of one storey
+    (p50 2.1 s each, under load). The map is now saved once per processed pair (the end of
+    object_tracking_callback), by the bbox tick when a mutation came another way, and before
+    exit. The row keeps the revision the object had when the mutation was applied.
+    """
+    frozen = SimpleNamespace(object_id=getattr(obj, "object_id", ""),
+                             object_revision=getattr(obj, "object_revision", 0),
+                             geometry_epoch=getattr(obj, "geometry_epoch", 0))
+    _checkpoint_state(node)["receipts"].append((event_id, request, operation, frozen, bool(fusion_applied)))
+
+
+def checkpoint_pending(node):
+    return bool(_checkpoint_state(node)["receipts"])
+
+
+@synchronized_world_model   # one writer at a time: the pair path and the merge sweep both save, from two threads
 def save_persistent_perceptions(node):
     output_dir = resolve_output_root()
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, "persistent_perception.json")
+    state = _checkpoint_state(node)
 
-    # 1. Carica lo stato attuale dal file (unica fonte di verità)
-    existing_by_id = {}
-    if os.path.exists(save_path):
-        try:
-            with open(save_path, "r") as f:
-                existing_data = json.load(f)
-            existing_by_id = {e["object_id"]: e for e in existing_data}
-        except (json.JSONDecodeError, OSError):
-            existing_by_id = {}
+    # The last written state is kept in memory: this process is the file's only writer (the
+    # bridge and the dashboard only read it), so reading it back on every save only cost time.
+    # The file is read once, when this node first saves to this path.
+    if state["path"] != save_path:
+        state["path"], state["written"], state["encoded"] = save_path, None, {}
+    existing_by_id = state["written"]
+    if existing_by_id is None:
+        existing_by_id = {}
+        if os.path.exists(save_path):
+            try:
+                with open(save_path, "r") as f:
+                    existing_data = json.load(f)
+                existing_by_id = {e["object_id"]: e for e in existing_data}
+            except (json.JSONDecodeError, OSError):
+                existing_by_id = {}
+        state["written"] = existing_by_id
 
     current_ids = set()
     changed = False
@@ -835,10 +869,16 @@ def save_persistent_perceptions(node):
     # DELETED from the stored JSON by the `removed_ids` pass below while still being on
     # the map: a live object vanishing from the artifact. The snapshot is one copy of
     # tens of pointers; the dump then describes one consistent world.
-    for obj in wm.snapshot():
+    objects = wm.snapshot()
+    for obj in objects:
         if not getattr(obj, "object_id", None):
             obj.object_id = f"obj_{uuid.uuid4().hex}"
+    # confirmation.py: with the option on, tentative objects go to tentative_perception.json,
+    # and no confirmed object keeps a relation to one. Off: every object is shown.
+    shown_ids = {o.object_id for o in objects if confirmation.is_shown(o)}
+    tentative = []
 
+    for obj in objects:
         ensure_relations(obj)
         obj_id = obj.object_id
         current_ids.add(obj_id)
@@ -925,28 +965,51 @@ def save_persistent_perceptions(node):
             new_entry["clip_embedding"] = clip_values
         if description_embedding is not None:
             new_entry["description_embedding"] = description_embedding
+        if confirmation.enabled():
+            new_entry["relations"] = {k: [t for t in v if t in shown_ids]
+                                      for k, v in new_entry["relations"].items()}
+            new_entry.update(confirmation.summary(obj))
+            if obj_id not in shown_ids:
+                current_ids.discard(obj_id)
+                tentative.append(new_entry)
+                continue
 
         old_entry = existing_by_id.get(obj_id)
         if old_entry != new_entry:
             existing_by_id[obj_id] = new_entry
+            state["encoded"].pop(obj_id, None)
             changed = True
 
     removed_ids = set(existing_by_id.keys()) - current_ids
     for rid in removed_ids:
         del existing_by_id[rid]
+        state["encoded"].pop(rid, None)
         changed = True
 
-    if not changed:
-        return
+    # json.dumps, not json.dump(indent=4): only the one-shot, unindented form uses the C encoder.
+    # Each object's text is kept and re-encoded only when its entry changed: the cost is the
+    # repr of the embedding floats (MEASURED 20261025_120247, 261 objects: 0.36 s per save
+    # before, see test_realtime.py for the figure after). The file holds the same JSON.
+    if confirmation.enabled():
+        tentative_path = os.path.join(output_dir, "tentative_perception.json")
+        tmp_path = tentative_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            f.write(json.dumps(tentative))
+        os.replace(tmp_path, tentative_path)
 
-    data = list(existing_by_id.values())
-    tmp_path = save_path + ".tmp"
-    with open(tmp_path, "w") as f:
-        json.dump(data, f, indent=4)
-    os.replace(tmp_path, save_path)
+    if changed:
+        encoded = state["encoded"]
+        parts = [encoded.get(oid) or encoded.setdefault(oid, json.dumps(e)) for oid, e in existing_by_id.items()]
+        tmp_path = save_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            f.write("[" + ", ".join(parts) + "]")
+        os.replace(tmp_path, save_path)
+        node.log_both('info', f"Saved {len(parts)} objects to persistent_perception.json")
 
-    msg = f"Saved {len(data)} objects to persistent_perception.json"
-    node.log_both('info', msg)
+    receipts, state["receipts"] = state["receipts"], []
+    for event_id, request, operation, frozen, fusion_applied in receipts:
+        node._write_mutation_receipt(event_id, request, "applied_and_checkpointed", operation,
+                                     obj=frozen, fusion_applied=fusion_applied)
 
 
 def _stamp_from_seconds(timestamp_sec):
@@ -970,7 +1033,7 @@ def publish_persistent_bboxes(node, wm, pub):
     clear.action = Marker.DELETEALL
     marker_array.markers.append(clear)
     for i, obj in enumerate(wm.persistent_perceptions):
-        if obj.bbox is None or "door" in obj.label.lower():
+        if obj.bbox is None or "door" in obj.label.lower() or not confirmation.is_shown(obj):
              continue
         display_bbox = getattr(obj, "fused_bbox", None) or obj.bbox
         marker = Marker()
@@ -1138,9 +1201,47 @@ def infer_spatial_relations(obj_a, obj_b):
 
     return rels
 
+
+def spatial_relation_candidates(objects, chunk=256):
+    """Ordered index pairs (i, j), i != j, for which infer_spatial_relations can return a relation.
+
+    Every rule needs the two XY boxes to touch (isOn, isAbove, isUnder, isIn) or the centres to
+    be within 1.2 x the largest XY side of the pair (isNextTo). This is a numpy superset of those
+    conditions; the exact rules still run on each candidate, so the relations are identical to
+    the full loop. MEASURED 20261027_031427: the full loop ran ~1.2 M Python calls per pair.
+    A box with a non-finite coordinate stays a candidate of every pair, as in the full loop.
+    """
+    keep = [k for k, o in enumerate(objects)
+            if getattr(o, "bbox", None) is not None and getattr(o, "object_id", None)]
+    if len(keep) < 2:
+        return []
+    b = np.array([[objects[k].bbox[f] for f in ("x_min", "x_max", "y_min", "y_max")] for k in keep],
+                 dtype=np.float64)
+    bad = ~np.isfinite(b).all(axis=1)
+    cx, cy = (b[:, 0] + b[:, 1]) / 2.0, (b[:, 2] + b[:, 3]) / 2.0
+    side = np.maximum(b[:, 1] - b[:, 0], b[:, 3] - b[:, 2])
+    keep = np.asarray(keep)
+    pairs = []
+    for s in range(0, len(keep), chunk):
+        r = slice(s, s + chunk)
+        touch = ((b[r, None, 0] <= b[None, :, 1]) & (b[None, :, 0] <= b[r, None, 1])
+                 & (b[r, None, 2] <= b[None, :, 3]) & (b[None, :, 2] <= b[r, None, 3]))
+        hd = np.hypot(cx[r, None] - cx[None, :], cy[r, None] - cy[None, :])
+        near = hd <= 1.2 * np.maximum(side[r, None], side[None, :]) + 1e-6
+        cand = touch | near | bad[r, None] | bad[None, :]
+        ii, jj = np.nonzero(cand)
+        ii += s
+        off = ii != jj
+        pairs.extend(zip(keep[ii[off]].tolist(), keep[jj[off]].tolist()))
+    return pairs
+
     
 
 class ObjectServices(Node):
+    # hooks.merge_scorer, handed over by the object manager after it loads the hooks; None = no
+    # scorer. A class default, so an instance built without __init__ (host tests) reads None.
+    merge_scorer = None
+
     def __init__(self, room_manager):
         super().__init__('object_services_node')
         self.room_manager=room_manager
@@ -1264,6 +1365,15 @@ class ObjectServices(Node):
         except OSError:
             self._provenance_incomplete = True
             raise
+        # Every applied observation passes here (add, update, move, exploration), so this is
+        # the one place sightings are counted for confirmation.py. Off: a no-op.
+        if state == "applied_in_memory" and confirmation.enabled() and confirmation.note_sighting(
+                obj, (record["observation"] or {}).get("cycle_id"), record["recorded_at"]):
+            try:
+                self.decision_log.write("object_confirmed", record["object_id"],
+                                        **confirmation.summary(obj))
+            except Exception as e:
+                self.get_logger().error(f"decision_log object_confirmed failed: {e}")
         return record
 
     @staticmethod
@@ -1778,6 +1888,37 @@ class ObjectServices(Node):
         self._publish_merge_pending()
         return pairs, ctx, built
 
+    def _score_merge_pair(self, scorer, a, b, dry_run):
+        """Ask the configured merge scorer (hooks.merge_scorer) about one candidate pair.
+
+        -> "same" | "different" | "defer". Every call is written to the decision log as
+        `merge_score`. An exception, a non-dict result or an unknown decision is DECLARED
+        policy, not a fallback: it is logged as an error each time and counts as "defer", so
+        the pair stays two objects and is offered again at the next merge evaluation.
+        """
+        left, right = node_dict(a), node_dict(b)
+        t0 = time.monotonic()
+        error, result = None, None
+        try:
+            result = scorer.score(left, right)
+            decision = result.get("decision") if isinstance(result, dict) else None
+            if decision not in (MERGE_SAME, MERGE_DIFFERENT, MERGE_DEFER):
+                raise ValueError(f"score() returned {result!r}; expected a dict with decision "
+                                 f"same|different|defer")
+        except Exception as exc:
+            decision, error = MERGE_DEFER, f"{type(exc).__name__}: {exc}"
+            self.get_logger().error(f"[merge_scorer] {left['object_id']} vs {right['object_id']}: "
+                                    f"{error}; counted as defer")
+        elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
+        try:
+            self.decision_log.write(
+                "merge_score", left["object_id"], candidate=right["object_id"],
+                decision=decision, elapsed_ms=elapsed_ms, scorer=type(scorer).__name__,
+                evidence=result if error is None else None, error=error, dry_run=bool(dry_run))
+        except Exception as e:
+            self.get_logger().error(f"decision_log merge_score failed: {e}")
+        return decision
+
     def _cb_merge_objects(self, request, response):
         try:
             import json
@@ -2088,11 +2229,27 @@ class ObjectServices(Node):
                                  room_a=room_a, room_b=room_b)
                         continue
 
-                    if MERGE_ENGINE == "legacy":
+                    # Optional merge scorer (hooks.merge_scorer). AFTER the bbox, room and
+                    # distance gates, BEFORE the geometry override and the text-field
+                    # similarity: "same" merges without the similarity, "different" refuses,
+                    # "defer" keeps both objects -- the legacy engine keeps no pair state, so
+                    # the pair is simply offered again at the next merge evaluation.
+                    scored_same = False
+                    if MERGE_ENGINE == "legacy" and self.merge_scorer is not None:
+                        verdict = self._score_merge_pair(self.merge_scorer, a, b, dry_run)
+                        if verdict != MERGE_SAME:
+                            print(f"   ❌ MERGE SCORER: {verdict}")
+                            _refused(a, b, f"scorer_{verdict}", None, evidence_count=None,
+                                     distance=dist, room_a=room_a, room_b=room_b)
+                            continue
+                        scored_same = True
+                        sim, ev = None, {"optional_count": None}
+
+                    if MERGE_ENGINE == "legacy" and not scored_same:
                         near_geometry_override, near_geometry_iou = _near_geometry_duplicate(
                             a, b, dist)
 
-                    if MERGE_ENGINE == "legacy":
+                    if MERGE_ENGINE == "legacy" and not scored_same:
                         # Embedding lazy; missing description embeddings are absent evidence,
                         # not a reason to skip the pair (lost_similarity renormalises).
                         # GUARDED: in evidence mode `sim` and `ev` are already the fused
@@ -2100,11 +2257,12 @@ class ObjectServices(Node):
                         # silently overwrite the decision that was just made.
                         sim, ev = _pair_similarity(a, b, a_label, b_label)
 
-                    print("   Sim semantiche:")
-                    print(f"     Label: '{a_label}' vs '{b_label}'")
-                    print(f"     Colore: '{a.color}' vs '{b.color}'")
-                    print(f"     Materiale: '{a.material}' vs '{b.material}'")
-                    print(f"     Similarity: {sim:.3f} (threshold: {MIN_SIMILARITY})")
+                    if not scored_same:
+                        print("   Sim semantiche:")
+                        print(f"     Label: '{a_label}' vs '{b_label}'")
+                        print(f"     Colore: '{a.color}' vs '{b.color}'")
+                        print(f"     Materiale: '{a.material}' vs '{b.material}'")
+                        print(f"     Similarity: {sim:.3f} (threshold: {MIN_SIMILARITY})")
 
                     # GA-21: the `forzo merge` bypass that stood here is deleted. It fired
                     # ONLY when the evidence had already said do not merge, and overrode that
@@ -2113,7 +2271,7 @@ class ObjectServices(Node):
                     # were correctly refused, and were then fused anyway. Overlap is locality,
                     # not similarity; the same confusion as GA-05, in the one operation that
                     # destroys an identity.
-                    if (MERGE_ENGINE == "legacy" and sim < MIN_SIMILARITY
+                    if (MERGE_ENGINE == "legacy" and not scored_same and sim < MIN_SIMILARITY
                             and not near_geometry_override):
                         print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {MIN_SIMILARITY})")
                         # Unit-typed key (joint rename with the ontology lane, their
@@ -2132,6 +2290,7 @@ class ObjectServices(Node):
                         continue
 
                     decision_reason = (
+                        "merge_scorer" if scored_same else
                         "near_geometry_label_iou"
                         if near_geometry_override else
                         ("similarity" if MERGE_ENGINE == "legacy" else "evidence"))
@@ -2153,7 +2312,8 @@ class ObjectServices(Node):
                     # a real signal -- a different-label pair with nothing else measured
                     # scored 0.0000 because the labels WERE compared and disagreed. This
                     # only refuses pairs that would otherwise have been merged.
-                    if MERGE_ENGINE == "legacy" and ev["optional_count"] < MERGE_MIN_EVIDENCE:
+                    if (MERGE_ENGINE == "legacy" and not scored_same
+                            and ev["optional_count"] < MERGE_MIN_EVIDENCE):
                         print(f"   ❌ NO EVIDENCE ({ev['optional_count']} optional "
                               f"terms < {MERGE_MIN_EVIDENCE}; sim {sim:.3f} on the label alone)")
                         _refused(a, b, "evidence_absent", sim,
@@ -2213,7 +2373,7 @@ class ObjectServices(Node):
                         "keeper_room":    room_a if keeper is a else room_b,
                         "discarded_room": room_b if keeper is a else room_a,
                         "distance":    round(dist, 3),
-                        "similarity":  round(sim, 3),
+                        "similarity":  round(sim, 3) if sim is not None else None,
                         "decision_reason": decision_reason,
                         "near_geometry_override": near_geometry_override,
                         "near_geometry_iou": (
@@ -2225,8 +2385,10 @@ class ObjectServices(Node):
                         # attribute comparison, or from several genuinely agreeing fields.
                         "evidence_count": ev.get("optional_count"),
                         "engine": MERGE_ENGINE,
-                        "score_type": "log_odds" if MERGE_ENGINE == "evidence" else "similarity",
-                        "threshold_similarity": MIN_SIMILARITY if MERGE_ENGINE == "legacy" else None,
+                        "score_type": ("log_odds" if MERGE_ENGINE == "evidence" else
+                                       "merge_scorer" if scored_same else "similarity"),
+                        "threshold_similarity": (
+                            MIN_SIMILARITY if MERGE_ENGINE == "legacy" and not scored_same else None),
                         "threshold_distance_m": MAX_DISTANCE if MERGE_ENGINE == "legacy" else None,
                         "threshold_near_distance_m": (
                             MERGE_NEAR_DISTANCE if MERGE_ENGINE == "legacy" else None),
@@ -2302,6 +2464,14 @@ class ObjectServices(Node):
                             # operation preserves distinct view IDs, so two
                             # tracks containing the same cycle do not count it twice.
                             merge_bbox_fusion(keeper, discard)
+                            if confirmation.absorb(keeper, discard, time.time()):
+                                try:
+                                    self.decision_log.write(
+                                        "object_confirmed", getattr(keeper, "object_id", None),
+                                        **confirmation.summary(keeper))
+                                except Exception as e:
+                                    self.get_logger().error(
+                                        f"decision_log object_confirmed failed: {e}")
                             # Recompute against the current keeper because several accepted
                             # pairs in one sweep can share the same keeper. This makes a merge
                             # chain enclose every member instead of letting the last pair shrink
@@ -2370,7 +2540,10 @@ class ObjectServices(Node):
             )
 
         except Exception as e:
-            self.get_logger().error(f"_cb_merge_objects failed: {e}")
+            # The traceback, not only the message: 20261103_232841 logged "dictionary changed size
+            # during iteration" with no line, so the race could only be inferred (room_manager._room_at).
+            import traceback
+            self.get_logger().error(f"_cb_merge_objects failed: {e}\n{traceback.format_exc()}")
             response.success        = False
             response.message        = str(e)
             response.merged_count   = 0
@@ -2521,12 +2694,8 @@ class ObjectServices(Node):
             mode_tag = "[EXPLORATION]" if in_exploration else f"[TRACKING STEP {self.tracking_step_counter}]"
             self.log_both('info', f"{mode_tag} New object '{label}' in {assigned_room} (vol: {volume:.3f} m³)")
 
-            save_persistent_perceptions(self)
-            self._write_mutation_receipt(
-                mutation_event_id, request, "applied_and_checkpointed", "add",
-                obj=new_obj,
-                fusion_applied=bool(getattr(request, "has_fusion_voxels", False)),
-            )
+            defer_checkpoint_receipt(self, mutation_event_id, request, "add", new_obj,
+                                     getattr(request, "has_fusion_voxels", False))
 
             if in_exploration:
                 self.exploration_step_counter += 1
@@ -2546,7 +2715,7 @@ class ObjectServices(Node):
             response.message   = f"Object '{label}' added to {assigned_room}"
             response.object_id = new_obj.object_id
             self._set_receipt_response(
-                response, mutation_event_id, "applied_and_checkpointed", new_obj)
+                response, mutation_event_id, "applied_in_memory", new_obj)
 
         except Exception as e:
             self.get_logger().error(f"_cb_add_object failed: {e}")
@@ -2681,11 +2850,8 @@ class ObjectServices(Node):
                         mutation_event_id, request, "applied_in_memory", "update",
                         obj=best_match,
                         fusion_applied=bool(getattr(request, "has_fusion_voxels", False)))
-                    save_persistent_perceptions(self)
-                    self._write_mutation_receipt(
-                        mutation_event_id, request, "applied_and_checkpointed", "update",
-                        obj=best_match,
-                        fusion_applied=bool(getattr(request, "has_fusion_voxels", False)))
+                    defer_checkpoint_receipt(self, mutation_event_id, request, "update", best_match,
+                                             getattr(request, "has_fusion_voxels", False))
                     response.success = True
                     response.message = "bbox initialized"
                     response.object_id = best_match.object_id
@@ -2693,7 +2859,7 @@ class ObjectServices(Node):
                     response.iou = 0.0
                     response.replaced = False
                     self._set_receipt_response(
-                        response, mutation_event_id, "applied_and_checkpointed", best_match)
+                        response, mutation_event_id, "applied_in_memory", best_match)
                     return response
                 iou = compute_iou_3d(bbox, old_bbox)
 
@@ -2816,7 +2982,7 @@ class ObjectServices(Node):
                     for _attr in ("observations", "shape", "provisional", "ontologically_usable",
                                   "onto_aligned", "onto_type", "not_seen_in_pov_frames", "creation_time",
                                   "clip_embedding", "_cycle_bbox_2d", "admission_grade",
-                                  "admission_filled"):
+                                  "admission_filled") + confirmation.CARRY_ATTRS:
                         if hasattr(best_match, _attr):
                             setattr(updated_obj, _attr, getattr(best_match, _attr))
                     # GA-171: normalised, exactly as the add path does. This line used
@@ -2923,11 +3089,8 @@ class ObjectServices(Node):
                 mutation_event_id, request, "applied_in_memory", "update",
                 obj=updated_obj,
                 fusion_applied=bool(getattr(request, "has_fusion_voxels", False)))
-            save_persistent_perceptions(self)
-            self._write_mutation_receipt(
-                mutation_event_id, request, "applied_and_checkpointed", "update",
-                obj=updated_obj,
-                fusion_applied=bool(getattr(request, "has_fusion_voxels", False)))
+            defer_checkpoint_receipt(self, mutation_event_id, request, "update", updated_obj,
+                                     getattr(request, "has_fusion_voxels", False))
 
             replaced = updated_obj is not best_match
 
@@ -2951,7 +3114,7 @@ class ObjectServices(Node):
             response.iou = float(iou)
             response.replaced = replaced
             self._set_receipt_response(
-                response, mutation_event_id, "applied_and_checkpointed", updated_obj)
+                response, mutation_event_id, "applied_in_memory", updated_obj)
             return response
 
         except Exception as e:
@@ -2970,7 +3133,7 @@ class ObjectServices(Node):
     @synchronized_world_model
     def _cb_query_objects(self, request, response):
         try:
-            pool = self.uncertain_objects if request.uncertain_only else wm.persistent_perceptions
+            pool = self.uncertain_objects if request.uncertain_only else confirmation.shown(wm.persistent_perceptions)
 
             results = list(pool)
             if request.room_id:

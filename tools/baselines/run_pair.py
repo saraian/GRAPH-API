@@ -165,7 +165,13 @@ def run(args):
             BASELINE_INTEGRATION_ROOT=str(root / 'native-integration'),
             BASELINE_REPOS_ROOT=str(args.baseline_roots))
         if name == 'hovsg':
-            options = ['--skip-frames', '1',
+            # Stride 10 is hovsg_run.py's own default, and the largest we can afford. At stride 1
+            # create_feature_map accumulates one cloud per frame into full_pcd: measured
+            # 2026-09-15 on scene 00824, 11,639 frames x 307,200 points = ~3.6e9 points, after
+            # which voxel_down_sample returned an EMPTY cloud and the run died in
+            # hovsg/dataloader/generic.py:160 indexing it. The unmodified tree failed the same
+            # way, so this is HOV-SG's own ceiling, not ours.
+            options = ['--skip-frames', str(args.hov_skip_frames),
                        '--record-native-observations']
         else:
             options = ['--rate', str(args.clio_rate)]

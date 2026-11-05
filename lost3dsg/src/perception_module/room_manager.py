@@ -38,7 +38,6 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
-from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
@@ -1340,13 +1339,30 @@ class RoomManager:
     def _cloud_obstacles_callback(self, msg: PointCloud2):
         self._cloud_callback(msg, 'obstacles')
 
+    @staticmethod
+    def cloud_xyz(msg):
+        """(N, 3) float64 x, y, z of a PointCloud2, rows with a NaN dropped (read_points' skip_nans).
+
+        One numpy view of the buffer. MEASURED 20261027_031427: the per-point Python loop this
+        replaces took 2.9-5.4 s per cloud, 1,346 clouds (4,475 s) in an 81-minute storey, on
+        the threads the object manager's own callbacks needed."""
+        kinds = {7: 'f4', 8: 'f8'}   # sensor_msgs/PointField FLOAT32, FLOAT64
+        fields = {f.name: f for f in msg.fields}
+        order = '>' if msg.is_bigendian else '<'
+        dtype = np.dtype({'names': ['x', 'y', 'z'],
+                          'formats': [order + kinds[fields[n].datatype] for n in ('x', 'y', 'z')],
+                          'offsets': [fields[n].offset for n in ('x', 'y', 'z')],
+                          'itemsize': msg.point_step})
+        buf = bytes(msg.data) if isinstance(msg.data, list) else msg.data   # rclpy: array.array('B')
+        rows = [np.frombuffer(buf, dtype=dtype, count=msg.width, offset=r * msg.row_step)
+                for r in range(msg.height)]
+        pts = np.concatenate(rows) if rows else np.empty(0, dtype=dtype)
+        xyz = np.stack([pts['x'], pts['y'], pts['z']], axis=1).astype(np.float64)
+        return xyz[~np.isnan(xyz).any(axis=1)]
+
     def _cloud_callback(self, msg: PointCloud2, kind='map'):
         try:
-            raw_pts = list(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True))
-            if raw_pts:
-                points = np.array([[float(p[0]), float(p[1]), float(p[2])] for p in raw_pts], dtype=np.float64)
-            else:
-                points = np.empty((0, 3), dtype=np.float64)
+            points = self.cloud_xyz(msg)
         except Exception as exc:
             self._log('warn', f'Failed to parse 3D cloud: {exc}')
             return
@@ -4323,13 +4339,19 @@ class RoomManager:
         if xy is None:
             return None
         tolerance = self._params['room_assignment_tolerance_m']
+        # Called without self._lock from the object manager's service threads (the merge sweep's
+        # room gate, room_at_bbox), while init_room_node / _update_regions insert into these dicts
+        # on another thread. list() copies in one C call under the GIL, so the loop never sees the
+        # dict change size. MEASURED 20261103_232841: "_cb_merge_objects failed: dictionary changed
+        # size during iteration". Taking self._lock instead would stall the sweep behind
+        # process_grid, which holds it for the whole segmentation.
         matches = [
-            r for r in self.regions.values()
+            r for r in list(self.regions.values())
             if r.misses == 0 and self._point_in_polygon(r.polygon, xy, tolerance)
         ]
         if matches:
             return min(matches, key=lambda r: r.area_m2).room_id
-        historical = [room for room in self.scene_graph.values()
+        historical = [room for room in list(self.scene_graph.values())
                       if room.get('active', True) and
                       self._point_in_polygon(room.get('polygon', []), xy, tolerance)]
         return (min(historical, key=lambda room: float(room.get('area_m2', float('inf'))))
@@ -4343,7 +4365,7 @@ class RoomManager:
             return None, float('inf')
         best_room = None
         best_distance = float('inf')
-        for region in self.regions.values():
+        for region in list(self.regions.values()):  # same reason as _room_at
             poly = region.polygon
             if not poly:
                 continue

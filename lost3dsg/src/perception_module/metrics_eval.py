@@ -19,9 +19,19 @@ HM3D_TEXT_FEATURES = Path(__file__).with_name("text_feats_HM3DSEM_LABELS.npy")
 # not affect object detection/classification metrics.
 STRUCTURAL_OBJECT_LABELS = {
     "wall", "floor", "ceiling", "panel", "wall panel", "fireplace wall",
-    "shower wall", "shower floor", "shower ceiling", "partition", "column",
-    "door", "doorway", "door frame", "door jamb", "window", "window frame",
+    "shower wall", "shower floor", "shower ceiling",
 }
+
+# Keep this set byte-for-byte aligned with ``bbox_fusion.STRUCTURAL_LABELS``.
+# The fusion policy is the authoritative definition of a row that does not
+# belong to the movable-object layer. This evaluator deliberately uses an
+# exact label comparison: substring rules turn ordinary objects such as a
+# ``doormat`` into a door and silently alter a published denominator.
+FUSION_STRUCTURAL_LABELS = frozenset({
+    "wall", "shower wall", "floor", "ceiling", "door", "doorway",
+    "door frame", "window", "window frame", "stairs", "staircase",
+    "railing", "beam", "column", "pillar", "ledge", "roof",
+})
 
 
 def is_structural_object(row):
@@ -35,10 +45,7 @@ def is_structural_object(row):
         if (label in STRUCTURAL_OBJECT_LABELS or label.startswith("flooring")
                 or label.endswith((" wall", " floor", " ceiling"))):
             return True
-    # Include compositional HM3D labels (door frame, shower door frame,
-    # window frame, open doorway, ...), while _structural_kind keeps hardware
-    # such as door knobs available as ordinary object classes.
-    return _structural_kind(row) is not None
+    return False
 
 
 STRUCTURAL_ELEMENT_LABELS = {
@@ -151,6 +158,63 @@ def filtered_scene(scene, include_regions=False):
                            if row.get("floor_index") is None
                            or row.get("floor_index") == (0 if key == "ground_truth_regions" and local_gt_floor else active)]
     return result
+
+
+def _fusion_structural_object(row):
+    """Return whether a manifest row is excluded by bbox fusion's object policy."""
+    return _row_label(row) in FUSION_STRUCTURAL_LABELS
+
+
+def _partition_object_metrics(scenes, structural, threshold):
+    """Score one object layer with the normal centre-distance matcher."""
+    predicted_total = ground_truth_total = matched_total = exact_labels = 0
+    for scene in scenes:
+        pred_map, gt_map = _floor_index_maps(scene)
+        predicted = [row for row in scene.get("predicted_objects", [])
+                     if not is_structural_object(row)
+                     and _fusion_structural_object(row) == structural
+                     and _on_active_floor(row, scene, True, pred_map)]
+        ground_truth = [row for row in scene.get("ground_truth_objects", [])
+                        if not is_structural_object(row)
+                        and _fusion_structural_object(row) == structural
+                        and _on_active_floor(row, scene, False, gt_map)]
+        matches = object_assignment(predicted, ground_truth, threshold)
+        predicted_total += len(predicted)
+        ground_truth_total += len(ground_truth)
+        matched_total += len(matches)
+        exact_labels += sum(_row_label(predicted[pi]) == _row_label(ground_truth[gi])
+                            for pi, gi, _ in matches)
+    return {
+        "predicted_objects": predicted_total,
+        "ground_truth_objects": ground_truth_total,
+        "matched_objects": matched_total,
+        "precision_pct": round(100 * matched_total / predicted_total, 4)
+        if predicted_total else None,
+        "recall_pct": round(100 * matched_total / ground_truth_total, 4)
+        if ground_truth_total else None,
+        "f1_pct": round(200 * matched_total / (predicted_total + ground_truth_total), 4)
+        if predicted_total + ground_truth_total else None,
+        "semantic_exact_matches": exact_labels,
+    }
+
+
+def object_layer_partitions(scenes, threshold=.5):
+    """Report movable and structural object layers from archived manifests.
+
+    The historical mixed Table IV population filter remains untouched. This
+    companion report re-matches its retained rows inside each partition. It
+    consumes stored object instances only, so it neither needs a newer
+    wall/opening export nor infers an instance from a room polygon.
+    """
+    return {
+        "schema": "graphapi.object_layer_partitions.v1",
+        "mixed_table_population_filter": "metrics_eval.is_structural_object",
+        "partition_source": "bbox_fusion.STRUCTURAL_LABELS exact labels",
+        "matching": "one-to-one minimum 3-D centre distance at threshold_m",
+        "threshold_m": threshold,
+        "movable": _partition_object_metrics(scenes, False, threshold),
+        "structural": _partition_object_metrics(scenes, True, threshold),
+    }
 
 
 def _structural_box_metrics(predicted, ground_truth, kind, threshold):
@@ -1049,6 +1113,7 @@ def evaluate(scenes, base=Path.cwd(), region_iou=.5, object_iou=.5,
     report = {"scenes":[str(s.get("scene","unknown")) for s in scenes],
               "table_ii_floor_regions":floor_regions(scenes,region_iou),
               "table_iii_rooms":rooms(scenes), "table_iv_objects":objects(scenes, object_iou),
+              "object_layer_partitions": object_layer_partitions(scenes, object_iou),
               "table_structural_elements": structural_metrics(scenes, object_iou),
               "table_vi_room_objects":room_objects(scenes, object_iou, region_iou),
               "table_v_retrieval":retrieval(scenes), "table_vii_representation":sizes(scenes,base)}

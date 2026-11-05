@@ -37,7 +37,7 @@ import numpy as np  # noqa: E402
 import rclpy  # noqa: E402
 import tf2_ros  # noqa: E402
 import torch  # noqa: E402
-from config import CFG, motion_gate, world_frame  # noqa: E402
+from config import CFG, NOT_REQUESTED, describer_emits_attributes, motion_gate, world_frame  # noqa: E402
 from detection_archive import (  # noqa: E402
     DetectionArchive, frame_id_from_stamp, resolve_archive_dir)
 from config import visibility as visibility_cfg  # noqa: E402
@@ -77,7 +77,7 @@ from cv_utils import (  # noqa: E402
     publish_individual_pointclouds_by_id,
     vlm_call,
 )
-from detection_pipeline import DetectionPipelineMixin  # noqa: E402
+from detection_pipeline import DetectionPipelineMixin, scene_prompt_path  # noqa: E402
 from detection_types import make_observation_ref, write_observation_msg  # noqa: E402
 from input_output import PerceptionIOMixin  # noqa: E402
 from models import VitSam  # noqa: E402
@@ -86,7 +86,7 @@ from perception_utils import compute_fov_volume_from_depth, get_project_root  # 
 from tf_transformations import euler_from_quaternion, quaternion_inverse, quaternion_multiply  # noqa: E402
 from utils import draw_detections, draw_masks  # noqa: E402
 from sensor_msgs_py import point_cloud2 as _pc2  # noqa: E402
-from vlm_call import VlmClient  # noqa: E402
+from vlm_call import VlmClient, not_requested_record  # noqa: E402
 from world_model import wm  # noqa: E402
 
 from lost3dsg.msg import Bbox3d, Bbox3dArray, ObjectDescription, ObjectDescriptionArray  # noqa: E402
@@ -129,6 +129,12 @@ else:
     file_handler = module_logger.handlers[0]
 
 DESCRIPTION_FIELDS = ("description", "color", "material", "shape")
+
+
+def _absent_field():
+    """What a describer field holds when no answer is in hand: "unknown" (asked, nothing came
+    back), or NOT_REQUESTED when perception.describer.emit_attributes is false (never asked)."""
+    return "unknown" if describer_emits_attributes() else NOT_REQUESTED
 
 # WN1. Where the latency record lives -- the same two paths detection_pipeline writes, kept
 # as one constant so the cycle-time stamp and the detection-span stamp land in one file.
@@ -195,6 +201,8 @@ def _description_status(res):
     provenance, so they fall to the content test, same vocabulary. An empty record is
     `unanswered`, never `model_abstained`: a description that never arrived is not a refusal.
     """
+    if not describer_emits_attributes():
+        return NOT_REQUESTED
     # Reviewed 2026-09-07: a harvested result that carries ONLY the origin stamp is a call
     # that produced nothing (a failed grid cell), not a model abstention.
     if not res or set(res) <= {"origin"}:
@@ -395,6 +403,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # detections never recorded. And rebuilding the object 29 times reset _frames_written,
         # so the frame dedupe was not running at all; three frames for three frame_ids held
         # only because rewriting the same path is idempotent. It LOOKED like it worked.
+        # perception.describer.emit_attributes against paths.scene_analysis_prompt: checked here,
+        # at start-up, rather than at the first cycle.
+        scene_prompt_path()
         self.detection_archive = DetectionArchive(
             resolve_archive_dir(CFG, PROJECT_ROOT),
             enabled=bool(CFG["archive"]["per_detection"]),
@@ -967,6 +978,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         """
         import crop_grid
 
+        if not describer_emits_attributes():
+            # The grid prompt asks for the four describer fields only: nothing to ask, no call.
+            return {"__grid__": {c["label"]: not_requested_record(c["label"], c.get("image_id", ""))
+                                 for c in batch}}
         labels = [c["label"] for c in batch]
         images = [c["cropped"] for c in batch]
         out = {}
@@ -1659,12 +1674,14 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         for det in detections:
             values = {
                 field: str(getattr(det, field, "unknown") or "unknown")
+                if describer_emits_attributes() else NOT_REQUESTED
                 for field in DESCRIPTION_FIELDS
             }
             has_answer = any(value.strip().lower() not in unknown for value in values.values())
             values["provenance"] = {
                 "model": model,
-                "status": "ok" if has_answer else "model_abstained",
+                "status": (NOT_REQUESTED if not describer_emits_attributes() else
+                           "ok" if has_answer else "model_abstained"),
                 "source": "unified_scene_call",
             }
             results[det.instance_label] = values
@@ -1721,7 +1738,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                     f"(< {min_iou} IoU); delivered to its origin object instead (GA-108)")
                 self._late_descriptions.append((det.instance_label, origin, res))
                 res = {}
-            d = {field: res.get(field, "unknown") for field in DESCRIPTION_FIELDS}
+            absent = _absent_field()
+            d = {field: res.get(field, absent) for field in DESCRIPTION_FIELDS}
             # W6. The route this description took, so a run can split the "unknown"
             # population into call_failed / parse_failed / model_abstained / unanswered
             # instead of reporting one conflated rate.
@@ -1756,7 +1774,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             m = ObjectDescription()
             m.label = label
             for field in DESCRIPTION_FIELDS:
-                setattr(m, field, str(res.get(field, "unknown")))
+                setattr(m, field, str(res.get(field, _absent_field())))
             m.status = _description_status(res)
             m.origin_frame = str(origin.get("frame") or "")
             m.origin_bbox_2d = [float(v) for v in origin.get("bbox") or (0.0, 0.0, 0.0, 0.0)]

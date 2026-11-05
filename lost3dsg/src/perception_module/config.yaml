@@ -67,6 +67,7 @@ association:
   merge_min_evidence: 1
   merge_min_similarity: 0.925
   merge_knn_k: null
+  confirm_min_views: null
   update_in_place_distance_m: 0.5
   transition_move_distance_m: 0.35
   uncertain_move_distance_m: 0.8
@@ -245,7 +246,10 @@ hooks:
   refiner: ''
   store: ''
   decisions_log: ''
+  merge_scorer: null
 perception:
+  describer:
+    emit_attributes: true
   frame_queue_max: 8
   frame_queue_min_translation_m: 0.25
   frame_queue_min_rotation_rad: 0.26
@@ -279,9 +283,6 @@ perception:
   - window
   - window frame
   - window shutter
-  - bar
-  - air conditioner
-  - lamp
   - stairs
   - staircase
   - railing

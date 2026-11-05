@@ -1,0 +1,8 @@
+Analyze this habitat-sim scene and return every object as one entry in the requested JSON structure.
+
+Object selection:
+- Create a separate entry for every visible object instance, including multiple instances of the same type.
+
+For every object provide:
+- "label": when in doubt about which label to assign, use facebookresearch/habitat-sim style-label or COCO-style label
+- "bbox": a tight box around the complete visible object. Coordinates use the image coordinate system with top-left as the origin and must be integers normalized to 0 through 1000: x_min=0 is the left edge, y_min=0 is the top edge, x_max=1000 is the right edge, and y_max=1000 is the bottom edge. Ensure x_min < x_max and y_min < y_max.

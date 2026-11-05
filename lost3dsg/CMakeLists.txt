@@ -83,6 +83,7 @@ install(PROGRAMS
   src/perception_module/bbox_fusion.py
   src/perception_module/bbox_fusion_parallel.py
   src/perception_module/box_view.py
+  src/perception_module/confirmation.py
   src/perception_module/hooks.py
   src/perception_module/nlp_utils.py
   src/perception_module/world_model.py
@@ -132,6 +133,7 @@ install(FILES
   src/perception_module/prompts/object_identification_prompt.txt
   src/perception_module/prompts/visual_prompt.txt
   src/perception_module/prompts/scene_analysis_prompt.txt
+  src/perception_module/prompts/scene_analysis_prompt_no_attributes.txt
   DESTINATION lib/${PROJECT_NAME}/prompts
 )
 install(DIRECTORY src/perception_module/data
