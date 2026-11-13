@@ -95,7 +95,7 @@ def prepare_job(root, request, inherited=None):
             env["RVIZ"] = env["FEED_SHOW"] = "1"
     elif request.get("gui"):
         env["FOUND_START_RVIZ"] = "1"
-    env["GRAPHAPI_RECORD"] = "0" if request.get("no_record") else "1"
+    env["GRAPHAPI_RECORD"] = "1" if request.get("record", False) else "0"
     if request.get("no_perception"):
         env["FOUND_START_PERCEPTION"] = "0"
         if mode == "sim":

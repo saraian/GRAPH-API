@@ -9,7 +9,7 @@ COMMAND_HELP = {
         'Replace paths with your own paths and RUN_ID with an ID from ./graphapi status.',
         [('Prepare Habitat', 'setup sim --dataset /path/to/hm3d'),
          ('Run a Habitat scene in the background', 'run sim --scene hm3d_00861 --detach'),
-         ('Run a recorded TIAGO bag (requires private PAL Docker)', 'run tiago bag /data/bags/example --no-record --detach'),
+         ('Run a recorded TIAGO bag (requires private PAL Docker)', 'run tiago bag /data/bags/example --detach'),
          ('Open the live dashboard', 'dashboard --mode live'),
          ('Find a run and stop it', 'status', 'stop RUN_ID')]),
     'init': ('Create local settings. Keep settings that already exist.',
@@ -22,36 +22,37 @@ COMMAND_HELP = {
                ('Register private PAL build files', 'setup tiago --pal-bundle /private/TIAGO_ISO'),
                ('Use a prepared private PAL container', 'setup tiago --container tiago-127-dev')]),
     'run': ('Start a Habitat scene, a physical TIAGO robot or a recorded TIAGO bag.\n'
-            'Perception and recording are on by default. Use --detach to run in the background.\n'
+            'Perception is on by default; recording is off. Use --record to enable it. Use --detach to run in the background.\n'
             "Export REGOLO_API_KEY='your-key' before starting. A missing VLM key stops startup.",
             [('Habitat', 'run sim --scene hm3d_00861 --detach'),
              ('Physical TIAGO', 'run tiago physical'),
-             ('Recorded TIAGO bag', 'run tiago bag /data/bags/example --no-record --detach')]),
+             ('Recorded TIAGO bag', 'run tiago bag /data/bags/example --detach')]),
     'run sim': ('Run a Habitat scene. By default, use the simulator position and run without windows.\n'
                 'You do not need --profile sim-gt: that is the default.\n'
                 'Run setup sim first. Full perception needs REGOLO_API_KEY in your terminal.',
                 [('Run one scene in the background', 'run sim --scene hm3d_00861 --one-storey --detach'),
-                 ('Open visualization windows without saving another recording', 'run sim --scene hm3d_00861 --gui --no-record'),
+                 ('Open visualization windows without saving another recording', 'run sim --scene hm3d_00861 --gui'),
                  ('Choose one floor by height in metres', 'run sim --scene hm3d_00861 --floor=-1.59'),
                  ('Build a map without object detection', 'run sim --scene hm3d_00861 --mapping-only')]),
     'run tiago': ('Choose how to run TIAGO. Both choices require your private PAL Docker.\n'
                   'physical connects to a robot. bag replays a recording without a robot.',
                   [('Physical robot', 'run tiago physical --detach'),
-                   ('Recorded bag', 'run tiago bag /data/bags/example --no-record --detach')]),
+                   ('Recorded bag', 'run tiago bag /data/bags/example --detach')]),
     'run tiago physical': ('Connect to a physical TIAGO robot using private PAL Docker.\n'
                            'RTAB-Map builds the application map by default.\n'
-                           'Perception and recording are on. Full perception needs REGOLO_API_KEY.',
+                           'Perception is on; recording is off unless --record is supplied. Full perception needs REGOLO_API_KEY.',
                            [('Start the robot pipeline in the background', 'run tiago physical --detach'),
                             ('Show RViz', 'run tiago physical --gui'),
-                            ('Check cameras and mapping without object detection', 'run tiago physical --no-perception --no-record'),
+                            ('Save a ROS topic recording', 'run tiago physical --record'),
+                            ('Check cameras and mapping without object detection', 'run tiago physical --no-perception'),
                             ('Reuse the current TIAGO session and output', 'run tiago physical --container tiago-127-dev --resume')]),
     'run tiago bag': ('Replay a recorded TIAGO bag using private PAL Docker. No robot connection is needed.\n'
                       'Use the map and transforms saved in the bag by default.\n'
-                      'Perception and recording are on. Full perception needs REGOLO_API_KEY.\n'
+                      'Perception is on; recording is off unless --record is supplied. Full perception needs REGOLO_API_KEY.\n'
                       'In the dashboard, click ANNOTATIONS to keep the last completed detection visible.',
-                      [('Test perception without saving another recording', 'run tiago bag /data/bags/example --no-record --detach'),
-                       ('Replay repeatedly until you stop the run', 'run tiago bag /data/bags/example --loop --no-record --detach'),
-                       ('Check cameras and the map without object detection', 'run tiago bag /data/bags/example --no-perception --no-record'),
+                      [('Test perception without saving another recording', 'run tiago bag /data/bags/example --detach'),
+                       ('Replay repeatedly until you stop the run', 'run tiago bag /data/bags/example --loop --detach'),
+                       ('Check cameras and the map without object detection', 'run tiago bag /data/bags/example --no-perception'),
                        ('Build a new map with RTAB-Map', 'run tiago bag /data/bags/example --map-source slam'),
                        ('Play at half speed', 'run tiago bag /data/bags/example --rate 0.5')]),
     'doctor': ('Check Docker, settings and the files needed for your chosen run.\n'

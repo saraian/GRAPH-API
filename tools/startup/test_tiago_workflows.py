@@ -79,7 +79,17 @@ class TiagoWorkflowsTest(unittest.TestCase):
         self.assertEqual(Path(state['config_source']).name, 'tiago_robot.yaml')
         self.assertEqual((state['map_frame'], state['map_topic']), ('found_map', '/rtabmap/map'))
         self.assertEqual(state['robot_address'], '10.68.0.1')
-        self.assertTrue(state['perception'] and state['recording'])
+        self.assertTrue(state['perception'])
+        self.assertFalse(state['recording'])
+
+    def test_recording_requires_explicit_opt_in(self):
+        for mode in ('tiago', 'bag'):
+            for options, enabled in (({}, False), ({'record': True}, True), ({'record': False}, False)):
+                with self.subTest(mode=mode, options=options):
+                    _, env, state = self.prepare(mode, **options)
+                    self.assertEqual(env['GRAPHAPI_RECORD'], '1' if enabled else '0')
+                    self.assertEqual(state['recording'], enabled)
+                    Registry(self.work).release(state['operation_id'])
 
     def test_recorded_bag_defaults_are_explicit(self):
         _, env, state = self.prepare('bag')
@@ -106,7 +116,7 @@ class TiagoWorkflowsTest(unittest.TestCase):
         self.assertEqual(state['workflow'], 'tiago-physical')
 
     def test_perception_and_recording_opt_out_match_status(self):
-        request, env, state = self.prepare('bag', no_record=True, inherited={'FOUND_START_PERCEPTION': '0'})
+        request, env, state = self.prepare('bag', record=False, inherited={'FOUND_START_PERCEPTION': '0'})
         self.assertTrue(request['no_perception'])
         self.assertFalse(state['perception'] or state['recording'])
         self.assertEqual(env['GRAPHAPI_RECORD'], '0')

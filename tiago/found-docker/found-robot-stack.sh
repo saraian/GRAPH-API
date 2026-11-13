@@ -238,7 +238,7 @@ start_stack() {
     local cyclone_uri=${CYCLONEDDS_URI:-}
   fi
   local common
-  common="$transport; export ROS_DOMAIN_ID=$(q "$ros_domain_id") RMW_IMPLEMENTATION=$(q "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}") CYCLONEDDS_URI=$(q "$cyclone_uri") PAL_ROBOT_CONNECTED=$(q "${PAL_ROBOT_CONNECTED:-0}") DISPLAY=$(q "${DISPLAY:-}") XAUTHORITY=$(q "${XAUTHORITY:-}") GRAPH_API_CONFIG=$(q "$CONFIG") GRAPH_API_OUTPUT_DIR=$(q "$OUTPUT") GRAPH_API_AUTOSTART=0 GRAPHAPI_RECORD=$(q "${GRAPHAPI_RECORD:-1}") FOUND_START_PERCEPTION=$(q "$START_PERCEPTION") TIAGO_BAG_MODE=$(q "$BAG_MODE") GRAPHAPI_RESOLVED_CONFIG=$(q "${GRAPHAPI_RESOLVED_CONFIG:-0}") GRAPH_API_RUN_ID=$(q "${GRAPH_API_RUN_ID:-}") TIAGO_RTABMAP_DB=$(q "$RTABMAP_DB") BRIDGE_PORT=$(q "$BRIDGE_PORT") GRAPH_API_BASE_URL=$(q "http://127.0.0.1:$BRIDGE_PORT") VITSAM_REQUIRE_CUDA=$(q "$VITSAM_REQUIRE_CUDA") VITSAM_CUDNN_CONV_ALGO_SEARCH=$(q "$VITSAM_CUDNN_CONV_ALGO_SEARCH") TIAGO_BAG_FILTER_CONFLICTING=$(q "$BAG_FILTER_CONFLICTING") TIAGO_BAG_TF_DROP_FRAMES=$(q "$BAG_TF_DROP_FRAMES") TIAGO_RVIZ_CONFIG=$(q "$RVIZ_CONFIG") PYTHONUNBUFFERED=1; mkdir -p $(q "$OUTPUT"); cd $(q "${GRAPH_API_SRC}/src/perception_module")"
+  common="$transport; export ROS_DOMAIN_ID=$(q "$ros_domain_id") RMW_IMPLEMENTATION=$(q "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}") CYCLONEDDS_URI=$(q "$cyclone_uri") PAL_ROBOT_CONNECTED=$(q "${PAL_ROBOT_CONNECTED:-0}") DISPLAY=$(q "${DISPLAY:-}") XAUTHORITY=$(q "${XAUTHORITY:-}") GRAPH_API_CONFIG=$(q "$CONFIG") GRAPH_API_OUTPUT_DIR=$(q "$OUTPUT") GRAPH_API_AUTOSTART=0 GRAPHAPI_RECORD=$(q "${GRAPHAPI_RECORD:-0}") FOUND_START_PERCEPTION=$(q "$START_PERCEPTION") TIAGO_BAG_MODE=$(q "$BAG_MODE") GRAPHAPI_RESOLVED_CONFIG=$(q "${GRAPHAPI_RESOLVED_CONFIG:-0}") GRAPH_API_RUN_ID=$(q "${GRAPH_API_RUN_ID:-}") TIAGO_RTABMAP_DB=$(q "$RTABMAP_DB") BRIDGE_PORT=$(q "$BRIDGE_PORT") GRAPH_API_BASE_URL=$(q "http://127.0.0.1:$BRIDGE_PORT") VITSAM_REQUIRE_CUDA=$(q "$VITSAM_REQUIRE_CUDA") VITSAM_CUDNN_CONV_ALGO_SEARCH=$(q "$VITSAM_CUDNN_CONV_ALGO_SEARCH") TIAGO_BAG_FILTER_CONFLICTING=$(q "$BAG_FILTER_CONFLICTING") TIAGO_BAG_TF_DROP_FRAMES=$(q "$BAG_TF_DROP_FRAMES") TIAGO_RVIZ_CONFIG=$(q "$RVIZ_CONFIG") PYTHONUNBUFFERED=1; mkdir -p $(q "$OUTPUT"); cd $(q "${GRAPH_API_SRC}/src/perception_module")"
 
   # A tmux server can survive earlier runs. Give this session its own current
   # source paths, GPU selection and credentials instead of inheriting the
@@ -255,7 +255,7 @@ start_stack() {
   tmux new-session -d -s "$SESSION" -n bridge "${session_env[@]}"
   tmux set-window-option -t "$SESSION:bridge" remain-on-exit on
   printf '%s\n' "${GRAPH_API_RUN_ID:-legacy}" > "$OUTPUT/operation_id"
-  if [ "${GRAPHAPI_RECORD:-1}" = 1 ]; then
+  if [ "${GRAPHAPI_RECORD:-0}" = 1 ]; then
     new_window recording "$common; exec ros2 bag record -a --include-hidden-topics -o $(q "$OUTPUT/recording")"
   fi
   send bridge "$common; exec python3 graph_api_bridge.py --ros-args -p use_sim_time:=$(q "$USE_SIM_TIME") -r /camera/rgb:=$RGB"

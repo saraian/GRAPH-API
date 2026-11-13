@@ -96,15 +96,16 @@ Once setup is complete:
 ```bash
 export REGOLO_API_KEY='your-key'
 ./graphapi run tiago physical --detach
-./graphapi run tiago bag /data/bags/example --no-record --detach
+./graphapi run tiago bag /data/bags/example --detach
 ```
 
 `physical` connects to a robot and starts RTAB-Map. `bag` uses its recorded map;
 add `--map-source slam` for a new map or `--loop` to repeat playback.
 The bag folder must contain `metadata.yaml`.
 
-Perception and recording are on by default. `--no-perception` skips detection;
-`--no-record` skips recording. TIAGO needs recording space in `/ws/output`.
+Perception is on by default; ROS topic recording is off. `--record` enables
+recording and `--no-perception` skips detection. When enabled, TIAGO recordings
+need space in `/ws/output`. Normal results and logs are saved in either mode.
 Movement during detection can discard that cycle.
 
 ## View results and stop
@@ -249,7 +250,7 @@ Examples:
     ./graphapi run sim --scene hm3d_00861 --detach
 
   Run a recorded TIAGO bag (requires private PAL Docker):
-    ./graphapi run tiago bag /data/bags/example --no-record --detach
+    ./graphapi run tiago bag /data/bags/example --detach
 
   Open the live dashboard:
     ./graphapi dashboard --mode live
@@ -345,7 +346,7 @@ Examples:
 usage: graphapi run [-h] {sim,tiago,bag} ...
 
 Start a Habitat scene, a physical TIAGO robot or a recorded TIAGO bag.
-Perception and recording are on by default. Use --detach to run in the background.
+Perception is on by default; recording is off. Use --record to enable it. Use --detach to run in the background.
 Export REGOLO_API_KEY='your-key' before starting. A missing VLM key stops startup.
 
 positional arguments:
@@ -367,7 +368,7 @@ Examples:
     ./graphapi run tiago physical
 
   Recorded TIAGO bag:
-    ./graphapi run tiago bag /data/bags/example --no-record --detach
+    ./graphapi run tiago bag /data/bags/example --detach
 ```
 
 </details>
@@ -377,8 +378,8 @@ Examples:
 
 ```text
 usage: graphapi run sim [-h] [--profile NAME] [--config FILE] [--gpu INDEX]
-                        [--gui] [--no-record] [--no-perception] [--detach]
-                        [--scene NAME] [--one-storey]
+                        [--gui] [--record | --no-record] [--no-perception]
+                        [--detach] [--scene NAME] [--one-storey]
                         [--floor HEIGHT | --floors HEIGHTS | --visits HEIGHTS]
                         [--transforms FILE] [--tour-schedule FILE]
                         [--pose {simulator,rtabmap}] [--map FILE]
@@ -395,7 +396,8 @@ options:
   --config FILE         use this YAML settings file for the run
   --gpu INDEX           GPU number to use, for example 0
   --gui                 open visualization windows on this computer
-  --no-record           do not save another ROS topic recording; keep normal
+  --record              save a ROS topic recording (off by default)
+  --no-record           disable ROS topic recording (default); keep normal
                         results and logs
   --no-perception       run mapping without object detection; no annotations
                         will be produced
@@ -425,7 +427,7 @@ Examples:
     ./graphapi run sim --scene hm3d_00861 --one-storey --detach
 
   Open visualization windows without saving another recording:
-    ./graphapi run sim --scene hm3d_00861 --gui --no-record
+    ./graphapi run sim --scene hm3d_00861 --gui
 
   Choose one floor by height in metres:
     ./graphapi run sim --scene hm3d_00861 --floor=-1.59
@@ -459,7 +461,7 @@ Examples:
     ./graphapi run tiago physical --detach
 
   Recorded bag:
-    ./graphapi run tiago bag /data/bags/example --no-record --detach
+    ./graphapi run tiago bag /data/bags/example --detach
 ```
 
 </details>
@@ -469,14 +471,14 @@ Examples:
 
 ```text
 usage: graphapi run tiago physical [-h] [--profile NAME] [--config FILE]
-                                   [--gpu INDEX] [--gui] [--no-record]
-                                   [--no-perception] [--detach]
-                                   [--container NAME] [--resume]
+                                   [--gpu INDEX] [--gui]
+                                   [--record | --no-record] [--no-perception]
+                                   [--detach] [--container NAME] [--resume]
                                    [--map-source {slam,robot}]
 
 Connect to a physical TIAGO robot using private PAL Docker.
 RTAB-Map builds the application map by default.
-Perception and recording are on. Full perception needs REGOLO_API_KEY.
+Perception is on; recording is off unless --record is supplied. Full perception needs REGOLO_API_KEY.
 
 options:
   -h, --help            show this help message and exit
@@ -484,7 +486,8 @@ options:
   --config FILE         use this YAML settings file for the run
   --gpu INDEX           GPU number to use, for example 0
   --gui                 open visualization windows on this computer
-  --no-record           do not save another ROS topic recording; keep normal
+  --record              save a ROS topic recording (off by default)
+  --no-record           disable ROS topic recording (default); keep normal
                         results and logs
   --no-perception       disable object detection and the object manager; no
                         annotations will be produced
@@ -505,8 +508,11 @@ Examples:
   Show RViz:
     ./graphapi run tiago physical --gui
 
+  Save a ROS topic recording:
+    ./graphapi run tiago physical --record
+
   Check cameras and mapping without object detection:
-    ./graphapi run tiago physical --no-perception --no-record
+    ./graphapi run tiago physical --no-perception
 
   Reuse the current TIAGO session and output:
     ./graphapi run tiago physical --container tiago-127-dev --resume
@@ -519,7 +525,7 @@ Examples:
 
 ```text
 usage: graphapi run tiago bag [-h] [--profile NAME] [--config FILE]
-                              [--gpu INDEX] [--gui] [--no-record]
+                              [--gpu INDEX] [--gui] [--record | --no-record]
                               [--no-perception] [--detach] [--container NAME]
                               [--resume] [--map-source {slam,recorded}]
                               [--rate RATE] [--loop]
@@ -527,7 +533,7 @@ usage: graphapi run tiago bag [-h] [--profile NAME] [--config FILE]
 
 Replay a recorded TIAGO bag using private PAL Docker. No robot connection is needed.
 Use the map and transforms saved in the bag by default.
-Perception and recording are on. Full perception needs REGOLO_API_KEY.
+Perception is on; recording is off unless --record is supplied. Full perception needs REGOLO_API_KEY.
 In the dashboard, click ANNOTATIONS to keep the last completed detection visible.
 
 positional arguments:
@@ -539,7 +545,8 @@ options:
   --config FILE         use this YAML settings file for the run
   --gpu INDEX           GPU number to use, for example 0
   --gui                 open visualization windows on this computer
-  --no-record           do not save another ROS topic recording; keep normal
+  --record              save a ROS topic recording (off by default)
+  --no-record           disable ROS topic recording (default); keep normal
                         results and logs
   --no-perception       disable object detection and the object manager; no
                         annotations will be produced
@@ -559,13 +566,13 @@ options:
 
 Examples:
   Test perception without saving another recording:
-    ./graphapi run tiago bag /data/bags/example --no-record --detach
+    ./graphapi run tiago bag /data/bags/example --detach
 
   Replay repeatedly until you stop the run:
-    ./graphapi run tiago bag /data/bags/example --loop --no-record --detach
+    ./graphapi run tiago bag /data/bags/example --loop --detach
 
   Check cameras and the map without object detection:
-    ./graphapi run tiago bag /data/bags/example --no-perception --no-record
+    ./graphapi run tiago bag /data/bags/example --no-perception
 
   Build a new map with RTAB-Map:
     ./graphapi run tiago bag /data/bags/example --map-source slam
@@ -581,15 +588,15 @@ Examples:
 
 ```text
 usage: graphapi run bag [-h] [--profile NAME] [--config FILE] [--gpu INDEX]
-                        [--gui] [--no-record] [--no-perception] [--detach]
-                        [--container NAME] [--resume]
+                        [--gui] [--record | --no-record] [--no-perception]
+                        [--detach] [--container NAME] [--resume]
                         [--map-source {slam,recorded}] [--rate RATE] [--loop]
                         BAG_DIRECTORY
 
 Older spelling of run tiago bag. Prefer run tiago bag.
 Replay a recorded TIAGO bag using private PAL Docker. No robot connection is needed.
 Use the map and transforms saved in the bag by default.
-Perception and recording are on. Full perception needs REGOLO_API_KEY.
+Perception is on; recording is off unless --record is supplied. Full perception needs REGOLO_API_KEY.
 In the dashboard, click ANNOTATIONS to keep the last completed detection visible.
 
 positional arguments:
@@ -601,7 +608,8 @@ options:
   --config FILE         use this YAML settings file for the run
   --gpu INDEX           GPU number to use, for example 0
   --gui                 open visualization windows on this computer
-  --no-record           do not save another ROS topic recording; keep normal
+  --record              save a ROS topic recording (off by default)
+  --no-record           disable ROS topic recording (default); keep normal
                         results and logs
   --no-perception       disable object detection and the object manager; no
                         annotations will be produced
@@ -621,13 +629,13 @@ options:
 
 Examples:
   Test perception without saving another recording:
-    ./graphapi run tiago bag /data/bags/example --no-record --detach
+    ./graphapi run tiago bag /data/bags/example --detach
 
   Replay repeatedly until you stop the run:
-    ./graphapi run tiago bag /data/bags/example --loop --no-record --detach
+    ./graphapi run tiago bag /data/bags/example --loop --detach
 
   Check cameras and the map without object detection:
-    ./graphapi run tiago bag /data/bags/example --no-perception --no-record
+    ./graphapi run tiago bag /data/bags/example --no-perception
 
   Build a new map with RTAB-Map:
     ./graphapi run tiago bag /data/bags/example --map-source slam

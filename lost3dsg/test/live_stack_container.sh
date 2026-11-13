@@ -90,7 +90,7 @@ export PYTHONPATH="/graph_api${PYTHONPATH:+:$PYTHONPATH}"
 
 # Optional full topic recording; normal outputs/logs remain available when disabled.
 RECORD_PID=""
-if [ "${GRAPHAPI_RECORD:-1}" = "1" ]; then
+if [ "${GRAPHAPI_RECORD:-0}" = "1" ]; then
   ros2 bag record -a --include-hidden-topics -o /ws/output/recording >"$LOG_DIR/recording.log" 2>&1 &
   RECORD_PID=$!
 fi

@@ -1,5 +1,7 @@
 """Startup boundary tests: no dataset, GPU, ROS or private PAL image required."""
 import json
+import contextlib
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -155,15 +157,25 @@ class StartupTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'exactly one'):
             reg.select('active')
 
-    def test_recording_defaults_on_and_explicit_off(self):
-        for disabled in (False, True):
-            env, state = prepare_job(ROOT, {'mode':'sim','no_record':disabled}, self.env)
-            self.assertEqual(env['GRAPHAPI_RECORD'], '0' if disabled else '1')
-            self.assertEqual(state['recording'], not disabled)
+    def test_recording_defaults_off_and_explicit_on(self):
+        for request, enabled in (({}, False), ({'record': True}, True), ({'record': False}, False)):
+            inherited = dict(self.env, GRAPHAPI_RECORD='1')
+            env, state = prepare_job(ROOT, {'mode':'sim', **request}, inherited)
+            self.assertEqual(env['GRAPHAPI_RECORD'], '1' if enabled else '0')
+            self.assertEqual(state['recording'], enabled)
             self.assertEqual(env['GRAPH_API_AUTOSTART'], '0')
             self.assertIn('config/.runtime/', env['GRAPH_API_CONFIG'])
             Registry(self.work).release(state['operation_id'])
             Path(env['GRAPH_API_CONFIG']).unlink()
+
+    def test_recording_flags_for_all_run_workflows(self):
+        from graphapi_cli.cli import parser
+        for workflow in (['sim'], ['tiago', 'physical'], ['tiago', 'bag', '/bags/example'], ['bag', '/bags/example']):
+            for flags, enabled in (([], False), (['--record'], True), (['--no-record'], False)):
+                with self.subTest(workflow=workflow, flags=flags):
+                    self.assertEqual(parser().parse_args(['run', *workflow, *flags]).record, enabled)
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser().parse_args(['run', *workflow, '--record', '--no-record'])
 
     def test_private_modes_preserve_pose_and_replay_selection(self):
         bag = self.work / 'bag'
@@ -223,13 +235,13 @@ class StartupTest(unittest.TestCase):
         models.mkdir()
         for name in ('l2_encoder.onnx', 'l2_decoder.onnx'):
             (models / name).write_text('test placeholder')
-        env, state = prepare_job(ROOT, {'mode':'sim','no_record':True}, dict(self.env, SAM_MODEL_DIR=str(models)))
+        env, state = prepare_job(ROOT, {'mode':'sim','record':False}, dict(self.env, SAM_MODEL_DIR=str(models)))
         bundle = self.work / 'unexpected-child-exit'
         bundle.mkdir()
         (bundle / 'terminating_node.json').write_text('{"node":"PERCEPTION","exit_status":0}')
         Path(env['GRAPHAPI_RESULT_FILE']).write_text(str(bundle)+'\n')
         with patch('graphapi_cli.launch.ensure_image'), patch('graphapi_cli.docker.command',return_value=[sys.executable,'-c','pass']), patch('graphapi_cli.launch.owned_containers',return_value=[]), patch('graphapi_cli.launch.subprocess.run',return_value=SimpleNamespace(returncode=0)):
-            result = execute(ROOT,{'mode':'sim','no_record':True},env,state)
+            result = execute(ROOT,{'mode':'sim','record':False},env,state)
         self.assertEqual(result['state'],'FAILED')
         self.assertEqual(result['returncode'],1)
         self.assertFalse((self.work / 'results/latest').exists())

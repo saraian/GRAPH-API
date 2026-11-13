@@ -13,8 +13,10 @@ for `run tiago bag`.
 | Offline bag | Recorded map and TF (`map`, `/map`) | `config/tiago_bag.yaml` |
 | Offline bag with `--map-source slam` | Fresh RTAB-Map (`map`, `/rtabmap/map`) | `config/tiago_bag_rtabmap.yaml` |
 
-Perception and topic recording default on; GUI defaults off. Use
-`--no-perception`, `--no-record` and `--gui` to select these explicitly.
+Perception defaults on; topic recording and GUI default off. Use `--record`
+to save a ROS topic recording, `--no-perception` to disable detection, and
+`--gui` to open visualization windows. `--no-record` explicitly selects the
+default of keeping normal results and logs without a topic recording.
 The physical target defaults to `tiago-127-dev`, ROS domain `1`, robot address
 `10.68.0.1`, and automatic host DDS preparation. Set the existing robot/topic
 variables in `config/local.yaml` when the target differs. `--map-source robot`
@@ -44,7 +46,7 @@ commands below.
 ./graphapi run tiago physical --detach
 ./graphapi doctor --mode tiago-bag
 ./graphapi run tiago bag /data/bags/example --map-source recorded --detach
-./graphapi run tiago bag /data/bags/example --map-source slam --no-record --detach
+./graphapi run tiago bag /data/bags/example --map-source slam --detach
 ./graphapi status OPERATION_ID
 ./graphapi logs OPERATION_ID --follow
 ./graphapi stop OPERATION_ID

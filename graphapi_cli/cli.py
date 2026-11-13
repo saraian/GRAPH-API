@@ -56,7 +56,10 @@ def parser():
         sub.add_argument("--config", dest="run_config", metavar="FILE", help="use this YAML settings file for the run")
         sub.add_argument("--gpu", metavar="INDEX", help="GPU number to use, for example 0")
         sub.add_argument("--gui", action="store_true", help="open visualization windows on this computer")
-        sub.add_argument("--no-record", action="store_true", help="do not save another ROS topic recording; keep normal results and logs")
+        recording = sub.add_mutually_exclusive_group()
+        recording.add_argument("--record", dest="record", action="store_true", help="save a ROS topic recording (off by default)")
+        recording.add_argument("--no-record", dest="record", action="store_false", help="disable ROS topic recording (default); keep normal results and logs")
+        sub.set_defaults(record=False)
         sub.add_argument("--no-perception", action="store_true", help="run mapping without object detection; no annotations will be produced" if name == "sim" else "disable object detection and the object manager; no annotations will be produced")
         sub.add_argument("--detach", action="store_true", help="run in the background and print an ID for status, logs and stop")
         if name == "sim":
