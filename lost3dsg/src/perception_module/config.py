@@ -90,27 +90,10 @@ _DEFAULTS = {
         "batch_size": 8,
     },
     # lost_similarity weights; must sum to 1.0
-    "similarity": {"label": 0.05, "color": 0.30, "material": 0.15, "description": 0.50},
+    "similarity": {"label": 0.25, "color": 0.25, "material": 0.15, "description": 0.35},
     "association": {
         "exploration_iou_threshold": 0.10,
         "sim_threshold": 0.85,
-        # MASTER SWITCH for the evidence-accumulating association (association.py).
-        #   legacy   -> the shipped gate chain in _cb_merge_objects. Unchanged, and still
-        #               the only path that can merge anything.
-        #   evidence -> the six-channel log-odds path.
-        # DEFAULT IS legacy, and that is not timidity. Replayed against real bundles the
-        # evidence path, WITHOUT observation records, proposed merging pillows INTO THE BED
-        # they rest on (containment 0.850) -- containment cannot tell a fragment of X from
-        # an object resting on X. It is correct only once co-visibility is available.
-        # The old path is never deleted: both must run against one bundle to be compared.
-        "mode": "legacy",
-        # False-merge cost / missed-merge cost; the commit threshold is log(ratio). A
-        # POLICY, not a measurement -- D14 prefers strict because a duplicate is visible and
-        # repairable while a wrong merge destroys an identity.
-        "cost_ratio": 20.0,
-        # Consecutive updates a decision must hold before committing. Persistence, not
-        # summation: re-measuring unchanged geometry is not new evidence.
-        "min_consecutive": 3,
         # GA-101: how many of the three OPTIONAL terms (colour, material, description) must
         # have been comparable before a merge is allowed. With none of them the divisor is
         # the label weight alone, so two identical labels score exactly 1.0000 -- above any
@@ -124,43 +107,14 @@ _DEFAULTS = {
         # already sat beyond, and 2.3x the nearest recorded loser (0.355 m).
         "tracking_fallback_radius_m": 1.0,
 
-        # --- merge thresholds: THE NAMES THE CODE ACTUALLY READS -------------------------
-        # GA-341. `cost_ratio`, `min_consecutive` and `mode` are declared above and read by
-        # NOTHING; object_services reads the four names below, so until now every one of them
-        # silently took its module fallback and the documented values were dead. Declared with
-        # the values the code falls back to TODAY, so declaring them changes no behaviour --
-        # `merge_min_consecutive` is 2, which is what every recipe stamps and every bundle ran
-        # with, NOT the 3 the dead `min_consecutive` claims. Retiring the three dead names is
-        # GA-341's own change and is deliberately not done here.
-        "merge_engine": "legacy",          # legacy | evidence -- which merge path decides
-        "merge_cost_ratio": 20.0,          # false-merge cost / missed-merge cost; threshold = log(ratio)
-        "merge_min_consecutive": 2,        # consecutive sweeps a pair must hold before it commits
-        "merge_max_distance_m": 0.8,       # centre distance beyond which a pair is never merged
-        # DECLARED 2026-09-11. Both were read from the config and absent from these defaults, so a
-        # deployment whose yaml omits them took the module fallback silently -- the same fault as
-        # camera_pitch_deg and max_frame_age_s. Values are the fallbacks the code already used:
-        # object_manager_6.py:136 and object_services.py:82.
-        "association_margin_m": 0.3,
-        "merge_aabb_margin_m": 0.8,
-        # DECLARED 2026-09-11. The post-scan merge (8c25efa) read both from the environment
-        # only, and neither is on the launcher's -e list, so nothing host-side could reach
-        # them: the settle was pinned at its literal for every run. A config home makes the
-        # value settable where it is actually read -- config.yaml travels into the container
-        # -- and leaves the environment as the documented per-run override it is everywhere
-        # else. Values are the literals object_manager_6.py:281-282 already used.
-        "scan_complete_topic": "/habitat/scan_complete",
-        "scan_merge_settle_s": 1.0,
-        # A very close, substantially overlapping re-detection of the same base label is
-        # geometric identity evidence. It may bypass the semantic similarity floor, whose
-        # VLM attributes are known to fluctuate between views. The optional evidence gate
-        # still applies, so an identical label with no measured attributes is not enough.
-        "merge_near_distance_m": 0.02,      # 2 cm centre distance: depth noise / re-detection jitter
-        "merge_near_iou_threshold": 0.25,  # minimum 3D AABB overlap for the geometry override
-        # Must stay STRICTLY above `sim_threshold` or a merge fuses pairs the association loop
-        # just refused; object_services asserts that at load and the service now refuses a
-        # request that carries a lower floor.
+        # --- merge thresholds -------------------------------------------------------------
+        "merge_max_distance_m": 0.8,       # maximum centre distance for legacy merge locality
+        "merge_max_surface_gap_m": 0.02,   # tight box-surface exception to the centre gate
+        "merge_near_distance_m": 0.02,     # AABB surface gap for same-label overlap override
+        "merge_near_iou_threshold": 0.25,
+        "merge_near_containment_threshold": 0.80,
+        "merge_near_max_volume_ratio": 6.0,
         "merge_min_similarity": 0.925,
-        "merge_knn_k": None,               # None = the covariance-derived reach decides
         # --- what may absorb, move or delete an object ------------------------------------
         "update_in_place_distance_m": 0.5,   # a new box this close updates in place, not a move
         "transition_move_distance_m": 0.35,  # movement that promotes exploration to tracking
@@ -496,13 +450,6 @@ _DEFAULTS = {
         # storeys, and HM3D navmeshes join them through the stairs
         "single_floor": True,
         "floor_tolerance_m": 0.5,
-        # GA-258. DWELL MODE, dynamic by default. A fixed dwell is wrong in both
-        # directions: it wastes frames when no merge is waiting to be confirmed, and leaves
-        # before confirmation when one is. Dynamic dwell asks the object manager what is
-        # pending and stays while the answer is above zero, between the bounds below.
-        # Set dwell_dynamic false for a fixed-length dwell -- which is what a clean
-        # one-variable ablation of merge_min_consecutive needs, since dynamic dwell makes
-        # duration co-vary with the parameter under test.
 
         # --- the camera the simulator renders ----------------------------------------------
         "hfov": 90.0,              # horizontal field of view, degrees; changes the intrinsics
@@ -521,7 +468,7 @@ _DEFAULTS = {
         # THE MULTIPLE-STOP TOUR. Degrees the agent turns when the route RE-ENTERS a waypoint it
         # already scanned, which happens every time it leaves a branch -- 23 and 24 times on the
         # two storeys of hm3d_00861. It is already standing there, so the second look costs scan
-        # frames and NO travel, and it is the second sighting merge_min_consecutive is short of.
+        # frames and NO travel, allowing another view of the same waypoint.
         # 0 is the single-stop tour every schedule before 2026-09-12 used.
         "revisit_scan_deg": 0.0,
         # How far from the waypoint a RE-OBSERVATION stands, in metres. Standing on the same spot
@@ -532,9 +479,7 @@ _DEFAULTS = {
         "revisit_offset_m": 0.0,
         # Degrees per turn action. ONE number for the agent, the schedule's frame budget and the
         # scan counter; schedule_batch.py --turn-step-deg must match it. It is a MERGE parameter:
-        # a full 360 scan is 360/step frames, and a merge needs merge_min_consecutive cycles at
-        # ~3.2 s to commit. 10 gives 36 frames (3.75 cycles); 20 gives 18 (1.87) and no stop clears
-        # the threshold. Owner 2026-09-11, after 20 was tried and measured.
+        # a full 360 scan is 360/step frames. Owner 2026-09-11, after 20 was tried and measured.
         "turn_step_deg": 10.0,
         "tour_end_settle_s": 90.0,  # stand still at the end so the last merges can commit
         "min_floor_share": 0.10,    # a storey holding less than this share of the navmesh is
@@ -646,6 +591,20 @@ _DEFAULTS = {
         # a knob.
         "fov_max_depth_m": 1.8,
         "backend": "local",  # "modal", "managed", "local"
+        # Optional original Boxer pipeline. Its OWLv2 detector supplies the 2D boxes,
+        # BoxerNet predicts world-frame OBBs, and the upstream tracker smooths them.
+        "detector": "vlm",  # "vlm" | "boxer"
+        "boxer": {
+            "labels": "lvisplus",
+            "threshold_2d": 0.20,
+            "threshold_3d": 0.50,
+            "nms_iou_threshold": 0.50,
+            "precision": "auto",
+            "depth_stride": 8,
+            "max_depth_m": 10.0,
+            "max_depth_points": 12000,
+            "startup_timeout_s": 900,
+        },
         "modal_endpoint": "",  # e.g. "https://<user>--lost3dsg-perception-predict.modal.run"
         "score_threshold": 0.15,
         "nms_threshold": 0.50,
@@ -808,7 +767,15 @@ def vlm_completion_kwargs():
     """
     vlm = CFG.get("vlm") or {}
     extra = dict(vlm.get("extra_body") or {})
-    if vlm.get("enable_thinking") is False:
+    # This option is specific to llama.cpp chat templates. The official OpenAI
+    # endpoint rejects it as an unknown request argument, even inside extra_body.
+    from urllib.parse import urlparse
+    host = (urlparse(str(vlm.get("base_url") or "")).hostname or "").lower()
+    if host == "api.openai.com":
+        extra.pop("chat_template_kwargs", None)
+        if not extra:
+            return {}
+    if vlm.get("enable_thinking") is False and host not in {"api.openai.com"}:
         template = dict(extra.get("chat_template_kwargs") or {})
         template["enable_thinking"] = False
         extra["chat_template_kwargs"] = template

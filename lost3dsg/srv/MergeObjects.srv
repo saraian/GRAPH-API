@@ -2,6 +2,7 @@
 float32 max_distance       # metres, MUST be > 0 (GA-25: zero is refused, it does not mean "default" and cannot mean "off")
 float32 min_similarity     # unitless, MUST be > 0 (same rule); config defaults live in config.py association.*
 bool    dry_run            # se True, calcola ma non esegue il merge
+bool    full_audit          # bypass incremental cache for periodic/final reconciliation
 ---
 # Response
 bool     success

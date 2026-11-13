@@ -106,6 +106,7 @@ def path_from(value, base):
 PATH_ENV = {
     "workspace": "WORKSPACE_ROOT", "dataset": "HM3D_ROOT", "models": "SAM_MODEL_DIR",
     "cache": "HF_SHARED_CACHE", "bags": "TIAGO_BAG_DIR", "pal_bundle": "TIAGO_ISO_DIR",
+    "boxer_checkpoints": "BOXER_CHECKPOINT_DIR",
     "baseline_repos": "BASELINE_REPOS_ROOT",
 }
 
@@ -136,8 +137,12 @@ def environment(root, selected=None, inherited=None):
         env.setdefault(key, str(value))
     defaults = {"workspace": root, "models": root / "models/efficientvit_sam",
                 "cache": root / "models/huggingface", "bags": root / "bags",
+                "boxer_checkpoints": root / "models/boxer/ckpts",
                 "pal_bundle": root / "TIAGO_ISO"}
     for key, env_key in PATH_ENV.items():
+        if key == "boxer_checkpoints" and env.get(env_key) == "/opt/boxer/ckpts":
+            # /opt/boxer/ckpts is the container destination, never the host source.
+            env.pop(env_key)
         value = settings.get("paths", {}).get(key, defaults.get(key))
         if value is not None:
             env.setdefault(env_key, str(path_from(value, local_path.parent)))

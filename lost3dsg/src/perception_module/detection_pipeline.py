@@ -3,6 +3,7 @@ import http.client
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -18,6 +19,28 @@ from detection_types import Detection
 # the objects the operator was trying to inspect.  The shared fitter still rejects truly
 # degenerate point sets; 1.0 only removes the arbitrary visual stability gate.
 RVIZ_PCA_MIN_ANISOTROPY = 1.0
+
+
+def _native_boxer_bbox(box):
+    """Validate a world-frame Boxer prediction and keep its center/extent contract."""
+    center = np.asarray(box["center"], dtype=float)
+    extents = np.asarray(box["extents"], dtype=float)
+    lower = np.asarray(box["aabb_min"], dtype=float)
+    upper = np.asarray(box["aabb_max"], dtype=float)
+    yaw, confidence = float(box["yaw"]), float(box["confidence"])
+    vectors = (center, extents, lower, upper)
+    if (any(v.shape != (3,) or not np.all(np.isfinite(v)) for v in vectors)
+            or not np.isfinite(yaw) or not np.isfinite(confidence)
+            or np.any(extents <= 0) or np.any(upper <= lower)):
+        raise ValueError("Boxer geometry must have finite coordinates and positive extents")
+    return {
+        "x_min": float(lower[0]), "x_max": float(upper[0]),
+        "y_min": float(lower[1]), "y_max": float(upper[1]),
+        "z_min": float(lower[2]), "z_max": float(upper[2]),
+        "yaw": yaw, "oriented_center": center.tolist(),
+        "oriented_extents": extents.tolist(), "has_orientation": True,
+        "boxer_confidence": confidence,
+    }
 
 
 def mask_touches_border(mask, margin_px=2):
@@ -93,16 +116,70 @@ class DetectionPipelineMixin:
         clip_reported = False
         backend = getattr(self, "perception_backend", None)
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
+        detector_type = CFG.get("perception", {}).get("detector", "vlm").lower()
 
-        t0 = time.time()
-        # Scene analysis is a VLM operation, independent of where detection and
-        # segmentation run. Every perception backend therefore starts from the same
-        # single structured VLM response rather than selecting a VLM workflow by
-        # backend type.
-        scene_objects = self._extract_scene_objects(camera_data["rgb"])
-        if not scene_objects:
-            return []
-        t_vlm = time.time() - t0
+        boxer_timing = {"owl": 0.0, "boxernet": 0.0}
+        t_vlm = 0.0
+        if detector_type == "boxer":
+            if backend_type != "local":
+                raise RuntimeError("perception.detector=boxer requires perception.backend=local")
+            if getattr(self, "boxer_runtime", None) is None:
+                raise RuntimeError("Boxer is selected but its runtime was not initialized")
+            semantic_by_index = {}
+            semantic_wall_s = [0.0]
+            semantic_future = [None]
+
+            def classify_proposals(proposals):
+                # Run one batch VLM request while BoxerNet computes 3D boxes.
+                semantic_wall_s[0] = time.time()
+                semantic_future[0] = self._vlm_executor.submit(
+                    self._classify_boxer_frame, camera_data["rgb"], proposals)
+
+            result = self.boxer_runtime.infer(
+                camera_data["rgb"], camera_data["depth"], camera_data["camera_info"],
+                camera_data["transform"], on_boxes_2d=classify_proposals,
+            )
+            if semantic_future[0] is not None:
+                try:
+                    semantic_by_index.update(semantic_future[0].result())
+                except Exception as exc:
+                    self.log_both(
+                        "error", f"[BOXER] full-frame VLM attributes failed: "
+                        f"{type(exc).__name__}: {str(exc)[:200]}")
+                semantic_wall_s[0] = time.time() - semantic_wall_s[0]
+            boxer_timing.update(result.get("timing_ms") or {})
+            t_vlm = semantic_wall_s[0]
+            scene_objects = []
+            for item in result.get("detections", []):
+                proposal_index = int(item.get("proposal_index", -1))
+                semantic = semantic_by_index.get(proposal_index) or {}
+                # The VLM decides the semantic label; proposal_index binds its answer
+                # to the detector's exact box. OWLv2's label is only a visual hint.
+                label = str(semantic.get("label") or "unknown").strip()
+                if label.lower() in ("", "unknown", "none", "n/a"):
+                    label = "unknown"
+                scene_objects.append(SimpleNamespace(
+                    label=label,
+                    bbox=tuple(item["bbox"]),
+                    score=item.get("score"),
+                    boxer_bbox_3d=item.get("box_3d"),
+                    description=semantic.get("description", "unknown"),
+                    color=semantic.get("color", "unknown"),
+                    material=semantic.get("material", "unknown"),
+                    shape="unknown",
+                ))
+            self.log_both(
+                "info", f"[BOXER] {len(scene_objects)} native 3D proposals with VLM attributes",
+            )
+            if not scene_objects:
+                self.log_both("warn", "[BOXER] no 3D proposals survived BoxerNet")
+                return []
+        else:
+            t0 = time.time()
+            scene_objects = self._extract_scene_objects(camera_data["rgb"])
+            if not scene_objects:
+                return []
+            t_vlm = time.time() - t0
 
         if backend_type != "local":
             if backend is None:
@@ -173,23 +250,37 @@ class DetectionPipelineMixin:
             server_total_reported = server_total is not None
             t_wire = max(0.0, t_cloud - server_total / 1000.0) if server_total_reported else None
         else:
-            # The VLM already produced one box per object instance. Keep the legacy
-            # timing fields well-defined for stages that were deliberately not run.
-            t_owlv2 = 0.0
+            # Boxer includes the original OWLv2 detector and BoxerNet in this local path.
+            t_owlv2 = boxer_timing["owl"] / 1000.0
             t_nms = 0.0
-            nms_reported = False
-            t_backend_overhead = 0.0   # no round trip on the local path: measured, not assumed
+            nms_reported = detector_type != "boxer"
+            t_backend_overhead = boxer_timing["boxernet"] / 1000.0
             t_wire = 0.0               # likewise: no wire
             server_total_reported = False
 
-            t0 = time.time()
-            detections = self._segment_scene_objects(camera_data["rgb"], scene_objects)
-            t_sam = time.time() - t0
+            if detector_type == "boxer":
+                detections = []
+                for obj in scene_objects:
+                    try:
+                        _native_boxer_bbox(obj.boxer_bbox_3d)
+                    except (KeyError, TypeError, ValueError) as exc:
+                        self.log_both("warn", f"[BOXER] invalid native box skipped: {exc}")
+                        continue
+                    detections.append(Detection(
+                        bbox=obj.bbox, label=obj.label, score=obj.score, mask=None,
+                        description=obj.description, color=obj.color,
+                        material=obj.material, shape=obj.shape,
+                        boxer_bbox_3d=obj.boxer_bbox_3d))
+                t_sam = 0.0
+            else:
+                t0 = time.time()
+                detections = self._segment_scene_objects(camera_data["rgb"], scene_objects)
+                t_sam = time.time() - t0
             if not detections:
-                self.log_both("warn", "VitSAM returned no masks for the VLM scene boxes")
+                self.log_both("warn", "No valid detections from the local perception pipeline")
                 return []
 
-        if self._abort_if_moving("SAM segmentation"):
+        if self._abort_if_moving("perception inference"):
             return []
 
         if backend_type == "local":
@@ -206,7 +297,8 @@ class DetectionPipelineMixin:
             clip_reported = getattr(self, "clip_embedder", None) is not None
 
         t0 = time.time()
-        self._publish_detection_pointclouds(detections, camera_data)
+        if detector_type != "boxer":
+            self._publish_detection_pointclouds(detections, camera_data)
         t_proj = time.time() - t0
 
         t_total = time.time() - t_cycle_start
@@ -236,6 +328,8 @@ class DetectionPipelineMixin:
             # a 36.6 KiB body cannot take 42 s, and that was an inference until now.
             "client": client_timings,
             "sam_ms": round(t_sam * 1000.0, 1),
+            "sam_enabled": detector_type != "boxer",
+            "boxernet_ms": round(boxer_timing["boxernet"], 1),
             "clip_ms": round(t_clip * 1000.0, 1),
             "clip_reported": clip_reported,
             "projection_ms": round(t_proj * 1000.0, 1),
@@ -271,6 +365,46 @@ class DetectionPipelineMixin:
         self.log_both("info", f"Detection complete: {len(detections)} objects (detection span: {t_total:.3f}s; "
                               f"the full cycle is `cycle_ms`, written at publish_objects completion -- WN1)")
         return detections
+
+    def _classify_boxer_frame(self, image, proposals):
+        """Ask the LLM for visible attributes in one indexed full-frame proposal batch."""
+        prompt_path = os.path.join(
+            os.path.dirname(__file__), "prompts", "boxer_guided_semantics_prompt.txt")
+        proposal_semantics = {}
+        try:
+            proposal_semantics = self.vlm.call_boxer_proposals_semantics(
+                prompt_path, image, proposals)
+        except Exception as exc:
+            self.log_both(
+                "error", f"[BOXER] full-frame VLM semantics call failed: "
+                f"{type(exc).__name__}: {str(exc)[:200]}")
+        results = {}
+        attribute_fields = ("description", "color", "material")
+        known_attributes = {field: 0 for field in attribute_fields}
+        known_labels = 0
+        for proposal in proposals:
+            index = int(proposal["proposal_index"])
+            semantic = proposal_semantics.get(index) or {}
+            label = str(semantic.get("label") or "unknown").strip()
+            if label.lower() not in ("", "unknown", "none", "n/a"):
+                known_labels += 1
+            results[index] = {
+                "label": label or "unknown",
+                "description": semantic.get("description", "unknown"),
+                "color": semantic.get("color", "unknown"),
+                "material": semantic.get("material", "unknown"),
+            }
+            for field in attribute_fields:
+                value = str(semantic.get(field) or "unknown").strip().lower()
+                if value not in ("", "unknown", "none", "n/a"):
+                    known_attributes[field] += 1
+        self.log_both(
+            "info", f"[BOXER] VLM labels {known_labels}/{len(proposals)}; "
+            f"attributes " + " ".join(
+                f"{field}={count}/{len(proposals)}"
+                for field, count in known_attributes.items()) +
+            "; unanswered fields remain unknown")
+        return results
 
     def _refresh_room_geometry_if_available(self):
         refresh_fn = getattr(self, "refresh_current_room_geometry", None)
@@ -400,19 +534,20 @@ class DetectionPipelineMixin:
                         Detection(
                             bbox=tuple(scene_object.bbox),
                             label=scene_object.label,
-                            # This VLM schema provides no calibrated detector
-                            # confidence. None is honest; 1.0 would be invented.
-                            score=None,
+                            # OWLv2's calibrated score is retained in Boxer mode;
+                            # VLM proposals have no detector score.
+                            score=getattr(scene_object, "score", None),
                             mask=mask[..., None],
                             description=scene_object.description,
                             color=scene_object.color,
                             material=scene_object.material,
                             shape=scene_object.shape,
+                            boxer_bbox_3d=getattr(scene_object, "boxer_bbox_3d", None),
                         )
                     )
         self.log_both(
             "info",
-            f"[PROFILE] VitSAM on unified VLM boxes: {time.time() - t0:.3f}s",
+            f"[PROFILE] VitSAM on detector-proposed boxes: {time.time() - t0:.3f}s",
         )
         return detections
 
@@ -422,6 +557,14 @@ class DetectionPipelineMixin:
         self.color_pcl(detections, camera_data)
         self.log_both("info", f"[PROFILE] PointCloud2 (color_pcl): {time.time() - t0:.3f}s")
 
+    def _compute_boxer_geometry(self, detections):
+        boxes = [_native_boxer_bbox(det.boxer_bbox_3d) for det in detections]
+        for det in detections:
+            # No segmented surface was measured. Never fabricate voxel evidence.
+            det.points_map = None
+            det.fusion_voxel_keys = None
+        return [box["oriented_center"] for box in boxes], boxes
+
     def _add_pca_orientation(self, detections, bboxes_3d, depth, camera_info, transform):
         """Add the optional PCA keys to each valid bbox dict, in place.
         Reads the points the geometry stage kept on each detection (2026-09-06); the
@@ -429,6 +572,9 @@ class DetectionPipelineMixin:
         fx, fy, cx, cy = camera_info.k[0], camera_info.k[4], camera_info.k[2], camera_info.k[5]
         for det, bbox in zip(detections, bboxes_3d):
             if not bbox:
+                continue
+            if getattr(det, "boxer_bbox_3d", None) is not None:
+                # Native geometry is already complete; no mask projection or PCA.
                 continue
             try:
                 # GA-315. A mask that runs off the image edge is a wedge of the object. Keep

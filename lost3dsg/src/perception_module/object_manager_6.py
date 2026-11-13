@@ -9,6 +9,7 @@ Room changes are handled by the Room Manager using detected wall segments and
 its normal scene-evaluation logic.
 """
 import hashlib
+import object_evidence
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ import cv2
 import numpy as np
 import rclpy
 import requests
-from association import AssocObject, Observation, search_radius
+from association import AssocObject, CoVisibilityObservation, Observation, search_radius
 from bbox_fusion import add_fusion_view, fusion_http_fields
 from builtin_interfaces.msg import Time as TimeMsg
 from config import CFG, world_frame
@@ -283,7 +284,13 @@ _SVC = (CFG.get("services", {}) or {})
 GRAPH_API_BASE_URL = os.environ.get("GRAPH_API_BASE_URL") or (
     f"http://{_SVC.get('bridge_host', '127.0.0.1')}:"
     f"{os.environ.get('BRIDGE_PORT') or _SVC.get('bridge_port', 8081)}")
-GRAPH_API_TIMEOUT = float(os.environ.get("GRAPH_API_TIMEOUT", "10.0"))
+# Keep the initial HTTP request alive long enough to receive the bridge's explicit 202
+# response. That response is then followed through /operations/{id}; it is never retried.
+GRAPH_API_TIMEOUT = max(
+    float(os.environ.get("GRAPH_API_TIMEOUT", "10.0")),
+    float(os.environ.get("BRIDGE_SERVICE_TIMEOUT", "30.0")) + 10.0,
+)
+GRAPH_API_PENDING_WAIT_SEC = float(os.environ.get("GRAPH_API_PENDING_WAIT", "300.0"))
 GRAPH_API_AUTOSTART = os.environ.get("GRAPH_API_AUTOSTART", "1").lower() not in {"0", "false", "no"}
 SYNC_BUFFER_LIMIT = 20
 # Discards tolerated before the stuck-latch alarm fires, and only while NOT ONE
@@ -811,10 +818,19 @@ class ObjectManagerService(Node):
         # that the waypoint's full turn is complete.
         self._scan_state_lock = threading.RLock()
         self._scan_merge_pending = None
+        self._scan_merge_pending_full_audit = False
+        self._scan_merge_ready = False
+        self._scan_merge_ready_full_audit = False
         self._scan_merge_timer = None
         self._last_scan_id = None
+        self._scan_merge_worker_running = False
+        self._scan_merge_thread = None
+        self._scan_merge_seen_ids = deque(maxlen=256)
         self._periodic_merge_timer = None
         self._merge_call_lock = threading.Lock()
+        # Keep scan notifications responsive while perception, room updates, or the
+        # graph-wide merge occupy the node's default mutually-exclusive callback group.
+        self.scan_merge_callback_group = MutuallyExclusiveCallbackGroup()
         
         # --- INIT ROOM MANAGER ---
         self.room_manager = RoomManager(
@@ -839,6 +855,7 @@ class ObjectManagerService(Node):
         self._reeval_last = {}            # object_id -> monotonic time of its last queueing (GA-11)
         self._reeval_debounced = 0        # counters, so a run can report how often the bounds bit
         self._reeval_fanout_capped = 0
+        self._reeval_lock = threading.RLock()
         self.decision_log = DecisionLog(CFG["hooks"]["decisions_log"] or os.path.join(log_dir, "hook_decisions.jsonl"))
         self.get_logger().info(f"hooks: filter={self.filter_hook.name} refiner={self.refiner_hook.name} "
                                f"log={self.decision_log.path}")
@@ -847,7 +864,8 @@ class ObjectManagerService(Node):
             String,
             '/detected_wall_segments',
             self.walls_callback,
-            10
+            10,
+            callback_group=self.room_manager._cb_group,
         )
         from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
@@ -934,7 +952,9 @@ class ObjectManagerService(Node):
         self.create_subscription(Bbox3dArray, '/bbox_3d', self._bboxes_callback, qos_standard)
         self.create_subscription(PoseStamped, '/agent_camera_pose', self._agent_pose_callback, qos_standard)
         self.get_logger().info("Subscribing to /object_descriptions, /bbox_3d and /agent_camera_pose")
-        self.create_subscription(String, SCAN_COMPLETE_TOPIC, self._scan_complete_callback, qos_standard)
+        self.create_subscription(
+            String, SCAN_COMPLETE_TOPIC, self._scan_complete_callback, qos_standard,
+            callback_group=self.scan_merge_callback_group)
         self.get_logger().info(f"Scan-complete merge hook: {SCAN_COMPLETE_TOPIC}")
         if TIAGO_MERGE_INTERVAL_S > 0.0:
             self._periodic_merge_timer = self.create_timer(
@@ -1169,10 +1189,28 @@ class ObjectManagerService(Node):
         if scan_id is None:
             scan_id = f"scan-{time.monotonic_ns()}"
         scan_id = str(scan_id)
+        scans_done = int(payload.get("scans_done", 0) or 0)
+        stops_total = int(payload.get("stops_total", 0) or 0)
+        laps_total = max(1, int(payload.get("laps_total", 1) or 1))
+        final_scan = stops_total > 0 and scans_done >= stops_total * laps_total
+        if final_scan:
+            self._final_scan_id = scan_id
+        self._schedule_scan_merge(scan_id, final_scan)
+
+    def _schedule_scan_merge(self, scan_id, final_scan):
+        """Debounce scan completion and observations arriving after the final scan."""
         with self._scan_state_lock:
-            if scan_id in (self._last_scan_id, self._scan_merge_pending):
+            if (scan_id == self._last_scan_id
+                    or scan_id == self._scan_merge_pending
+                    or scan_id in self._scan_merge_seen_ids):
                 return
+            if len(self._scan_merge_seen_ids) == self._scan_merge_seen_ids.maxlen:
+                self._scan_merge_seen_ids.popleft()
+            self._scan_merge_seen_ids.append(scan_id)
             self._scan_merge_pending = scan_id
+            self._scan_merge_pending_full_audit = final_scan
+            self._scan_merge_ready = False
+            self._scan_merge_ready_full_audit = False
             if self._scan_merge_timer is not None:
                 try:
                     self._scan_merge_timer.cancel()
@@ -1182,10 +1220,11 @@ class ObjectManagerService(Node):
             self._scan_merge_timer = self.create_timer(
                 _settle,
                 self._run_pending_scan_merge,
+                callback_group=self.scan_merge_callback_group,
             )
         self.object_services.log_both(
             'info',
-            f"[SCAN] completed full-turn hook received ({scan_id}); "
+            f"[SCAN] reconciliation requested ({scan_id}); "
             f"merge scheduled in {_settle:.2f}s "
             f"(measured description lag, {len(self._desc_lag_s)} samples)",
         )
@@ -1195,10 +1234,23 @@ class ObjectManagerService(Node):
             scan_id = self._scan_merge_pending
             if scan_id is None:
                 return
-            self._scan_merge_pending = None
-            self._last_scan_id = scan_id
             timer = self._scan_merge_timer
             self._scan_merge_timer = None
+            self._scan_merge_ready = True
+            self._scan_merge_ready_full_audit = self._scan_merge_pending_full_audit
+            if self._scan_merge_worker_running:
+                # A previous sweep is still running in its worker thread. Leave this
+                # scan queued; that worker drains it as soon as it finishes.
+                start_worker = False
+            else:
+                self._scan_merge_worker_running = True
+                worker = threading.Thread(
+                    target=self._drain_scan_merge_queue,
+                    name="scan-merge-worker",
+                    daemon=True,
+                )
+                self._scan_merge_thread = worker
+                start_worker = True
 
         if timer is not None:
             try:
@@ -1207,27 +1259,60 @@ class ObjectManagerService(Node):
             except Exception:
                 pass
 
-        if self.ga493_replay_capture is not None:
-            self.ga493_replay_capture.event("scan_merge_started", {"scan_id": scan_id})
-        self._merge_call_lock.acquire()
-        try:
+        if start_worker:
             try:
-                merged_count = self.merge_duplicate_objects(scan_id=scan_id)
+                worker.start()
+            except Exception as exc:
+                with self._scan_state_lock:
+                    self._scan_merge_worker_running = False
+                    self._scan_merge_thread = None
+                self.object_services.log_both(
+                    'error', f"[SCAN MERGE] could not start worker: {exc}")
+        else:
+            self.object_services.log_both(
+                'info',
+                f"[SCAN MERGE] scan {scan_id!r} queued behind the active reconciliation",
+            )
+
+    def _drain_scan_merge_queue(self):
+        """Run expensive sweeps off-executor while retaining the newest scan trigger."""
+        while True:
+            with self._scan_state_lock:
+                if self._scan_merge_pending is None or not self._scan_merge_ready:
+                    self._scan_merge_worker_running = False
+                    self._scan_merge_thread = None
+                    return
+                scan_id = self._scan_merge_pending
+                full_audit = self._scan_merge_ready_full_audit
+                self._scan_merge_pending = None
+                self._scan_merge_pending_full_audit = False
+                self._scan_merge_ready = False
+                self._scan_merge_ready_full_audit = False
+                self._last_scan_id = scan_id
+
+            try:
+                self.object_services.log_both(
+                    'info', f"[SCAN MERGE] starting reconciliation for {scan_id!r}")
+                if self.ga493_replay_capture is not None:
+                    self.ga493_replay_capture.event(
+                        "scan_merge_started", {"scan_id": scan_id})
+                # This lock can wait for a physical-robot periodic sweep, but the wait
+                # happens here, outside every ROS callback group.
+                with self._merge_call_lock:
+                    merged_count = self.merge_duplicate_objects(
+                        scan_id=scan_id, full_audit=full_audit)
+                if self.ga493_replay_capture is not None:
+                    self.ga493_replay_capture.event(
+                        "scan_merge_completed",
+                        {"scan_id": scan_id, "merged_count": merged_count})
+                self.object_services.log_both(
+                    'info',
+                    f"[SCAN MERGE] scan {scan_id!r}: {merged_count} merge(s) applied",
+                )
             except Exception as exc:
                 self.object_services.log_both(
                     'error', f"[SCAN MERGE] reconciliation failed for {scan_id!r}: {exc}"
                 )
-                return
-        finally:
-            self._merge_call_lock.release()
-
-        if self.ga493_replay_capture is not None:
-            self.ga493_replay_capture.event(
-                "scan_merge_completed", {"scan_id": scan_id, "merged_count": merged_count})
-        self.object_services.log_both(
-            'info',
-            f"[SCAN MERGE] scan {scan_id!r}: {merged_count} merge(s) applied",
-        )
 
     def _periodic_merge_callback(self):
         """Run the existing merge criterion periodically on physical TIAGo.
@@ -1460,6 +1545,17 @@ class ObjectManagerService(Node):
         co-visibility abstains rather than reading a wrong box."""
         return getattr(obj, "_cycle_bbox_2d", None)
 
+    def _stash_cycle_observation(self, obj, bbox_entry):
+        obj._cycle_bbox_2d = (bbox_entry or {}).get("bbox_2d")
+        observation = (bbox_entry or {}).get("observation") or {}
+        obj._cycle_capture_id = observation.get("capture_id")
+        obj._cycle_observation_id = observation.get("observation_id")
+        evidence = (bbox_entry or {}).get("semantic_evidence")
+        if evidence:
+            object_evidence.record(obj, evidence)
+            if object_evidence.stabilize(obj, self.room_manager.scene_graph, wm.snapshot()):
+                obj.embedding = get_embedding(world2vec, obj.description)
+
     @staticmethod
     def _frame_seconds(frame_id):
         """perception's frame id ("<sec>_<nanosec>") or om6's float seconds -> float seconds."""
@@ -1507,6 +1603,7 @@ class ObjectManagerService(Node):
             return best
         if len(by_label) == 1:
             return by_label[0]
+
         return None
 
     def _record_sighting(self, obj, perception_timestamp):
@@ -1544,6 +1641,8 @@ class ObjectManagerService(Node):
                 # compares MEASURED crops rather than a shape descriptor derived from the
                 # box the two objects already agree on.
                 appearance=(getattr(obj, "bbox", None) or {}).get("clip_embedding"),
+                capture_id=getattr(obj, "_cycle_capture_id", None),
+                observation_id=getattr(obj, "_cycle_observation_id", None),
             )
         except (KeyError, TypeError, ValueError) as e:
             # A malformed pose or centroid is a real defect and must not be silently
@@ -1557,6 +1656,29 @@ class ObjectManagerService(Node):
         obj.observations.append(obs)
         if len(obj.observations) > MAX_OBSERVATIONS_PER_OBJECT:
             del obj.observations[:-MAX_OBSERVATIONS_PER_OBJECT]
+
+        # Keep a compact, uncapped capture/box ledger. The full observations above are
+        # deliberately bounded for covariance and appearance; capping those also erased
+        # historical co-visibility vetoes after an object had been merged.
+        history = getattr(obj, "covisibility_observations", None)
+        if history is None:
+            history = [
+                CoVisibilityObservation(
+                    getattr(old, "frame_id", None), getattr(old, "bbox_2d", None),
+                    getattr(old, "capture_id", None), getattr(old, "observation_id", None))
+                for old in obj.observations[:-1]
+            ]
+            obj.covisibility_observations = history
+        capture_id = getattr(obj, "_cycle_capture_id", None)
+        observation_id = getattr(obj, "_cycle_observation_id", None)
+        history_key = observation_id or (
+            str(capture_id or perception_timestamp), tuple(obs.bbox_2d or ()))
+        if not any(
+                (old.observation_id or (
+                    str(old.capture_id or old.frame_id), tuple(old.bbox_2d or ()))) == history_key
+                for old in history):
+            history.append(CoVisibilityObservation(
+                perception_timestamp, obs.bbox_2d, capture_id, observation_id))
 
     def publish_kb_facts(self, current_perception_objects):
         facts = []
@@ -1582,7 +1704,14 @@ class ObjectManagerService(Node):
         if not self.exploration_mode:
             self.tracking_step_counter += 1
 
-        if self.robot_has_moved:
+        # Keep this guard aligned with _try_process(). With the frame queue enabled,
+        # detections arrive after inference using the transform captured with their frame;
+        # current robot motion may have started during that round trip and does not make
+        # the queued observation stale. Without the queue, retain the live-motion guard.
+        frame_queue_enabled = int(
+            CFG.get("perception", {}).get("frame_queue_max", 0) or 0
+        ) > 0
+        if self.robot_has_moved and not frame_queue_enabled:
             self.object_services.log_both('warn', "Robot is moving — data discarded by object_tracking_callback")
             for box in request.bboxes.boxes:
                 observation = observation_dict_from_msg(
@@ -1645,6 +1774,8 @@ class ObjectManagerService(Node):
                 "y_min": y_min, "y_max": y_max,
                 "z_min": z_min, "z_max": z_max
             }
+            if getattr(box, "has_boxer_confidence", False):
+                bbox_data["boxer_confidence"] = float(box.boxer_confidence)
             # GA-100: carry the oriented box through, and ONLY when the publisher says it
             # measured one. Reading yaw unconditionally would put a fabricated 0.0 into
             # every bbox dict and make an unoriented object indistinguishable from one
@@ -1784,6 +1915,12 @@ class ObjectManagerService(Node):
             bbox = bbox_entry["bbox"]
             bbox_fusion = bbox_entry.get("bbox_fusion")
             bbox_observation = bbox_entry.get("observation")
+            bbox["observation"] = bbox_observation or {}
+            bbox["semantic_evidence"] = {
+                **(bbox_observation or {}), "label": label_base,
+                "color": color, "material": material, "description": description_text,
+                "boxer_confidence": bbox.get("boxer_confidence"),
+            }
             if (bbox_observation and description_observation and
                     bbox_observation.get("observation_id") !=
                     description_observation.get("observation_id")):
@@ -1820,7 +1957,7 @@ class ObjectManagerService(Node):
                              if getattr(o, "object_id", None) == update_response.object_id),
                             obj,
                         )
-                        matching_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
+                        self._stash_cycle_observation(matching_obj, bbox)
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
                         self._note_update(update_response.object_id)
@@ -1885,7 +2022,7 @@ class ObjectManagerService(Node):
                     # re-evaluation path (D15), not the association loop.
                     if similarity > SIM_THRESHOLD:
                         already_seen = True
-                        obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
+                        self._stash_cycle_observation(obj, bbox)
                         current_perception_objects.append(obj)
                         # GA-07: the confirm_stationary guard that stood here is DELETED,
                         # with its twin below and the config key. It read
@@ -1905,6 +2042,8 @@ class ObjectManagerService(Node):
                         # GA-315 part 2: the AABB is this view's; the axis is fused over
                         # every accepted view, never the last one's alone.
                         obj.bbox, obj._yaw_acc = fuse_orientation(obj, bbox)
+                        obj.centroid = tuple((obj.bbox[f"{axis}_min"] + obj.bbox[f"{axis}_max"]) / 2
+                                             for axis in "xyz")
                         if bbox_fusion:
                             add_fusion_view(
                                 obj, obj.label, bbox_fusion["view_id"],
@@ -1995,7 +2134,7 @@ class ObjectManagerService(Node):
                              if getattr(o, "object_id", None) == update_response.object_id),
                             best_match,
                         )
-                        matching_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
+                        self._stash_cycle_observation(matching_obj, bbox)
                         current_perception_objects.append(matching_obj)
                         objects_modified = True
                         self._note_update(update_response.object_id)
@@ -2065,10 +2204,10 @@ class ObjectManagerService(Node):
                     bbox_fusion, bbox_observation, description_observation,
                 )
                 if new_obj is not None:
-                    # Join the decision to the object it produced. The admission line above is
+                    # Join this object to its admission crop. The admission line above is
                     # written BEFORE the object exists -- add_new_object only learns object_id
-                    # from the Graph API's POST response -- and refused proposals never get one,
-                    # so the link cannot live on that line and must be a second, later record.
+                    # from the Graph API's POST response -- so the per-object link is a second,
+                    # later record. The filter's decision_id is optional; crop identity is not.
                     #
                     # Without it the only key shared by the decision log and the world model is
                     # the label, which joined 9 of 11 objects on the 26 Aug run. That gap is why
@@ -2076,13 +2215,21 @@ class ObjectManagerService(Node):
                     # object", making a published denominator a function of a rounding constant
                     # (54 at 0.1 m, 33 at 1.0 m, same run).
                     #
-                    # decision_id is an opaque string the hook put in its own annotation dict:
+                    # decision_id is an opaque string the hook may put in its annotation dict:
                     # generic seam data, nothing imported from any particular filter.
                     decision_id = _ann.get("decision_id")
                     linked_id = getattr(new_obj, "object_id", None)
-                    if decision_id and linked_id:
-                        self.decision_log.write("link", linked_id,
-                                                decision_id=decision_id, label=label)
+                    if linked_id:
+                        link = {"label": label}
+                        if decision_id:
+                            link["decision_id"] = decision_id
+                        # Keep the crop captured for this object's admission. Resolving
+                        # object_id -> label -> newest crop made every object sharing a
+                        # label display the same unrelated image in the dashboard.
+                        # An empty value means this object has no linked crop; it must not
+                        # fall back to another object's newest crop with the same label.
+                        link["crop_file"] = os.path.basename(str(crop_path or ""))
+                        self.decision_log.write("link", linked_id, **link)
 
                     # GA-192: carry the ONTOLOGY TYPE the filter just resolved onto the
                     # object. The hook already computed it -- `entity` is the aligned class
@@ -2130,7 +2277,7 @@ class ObjectManagerService(Node):
                     # None when the hook wrote no gaps block.
                     new_obj.admission_filled = (ann.get("gaps") or {}).get("filled")
 
-                    new_obj._cycle_bbox_2d = (bbox or {}).get("bbox_2d")
+                    self._stash_cycle_observation(new_obj, bbox)
                     current_perception_objects.append(new_obj)
                     objects_modified = True
 
@@ -2286,6 +2433,66 @@ class ObjectManagerService(Node):
             self._graph_api_strike(f"unreachable ({method} {url}): {e}")
             raise RuntimeError(f"Graph API non raggiungibile ({method} {url}): {e}")
 
+        # A dispatched ROS mutation can outlive the bridge's initial wait. Poll its receipt
+        # rather than replaying POST/PATCH and risking a duplicate object or merge.
+        if response.status_code == 202:
+            try:
+                pending = response.json()
+            except ValueError:
+                pending = {}
+            operation_id = pending.get("operation_id")
+            if not operation_id:
+                self._graph_api_strike(f"202 without operation_id on {method} {path}")
+                raise RuntimeError(f"Graph API {method} {path}: pending reply has no operation_id")
+            status_url = self._graph_api_url(f"/operations/{urllib.parse.quote(str(operation_id), safe='')}")
+            deadline = time.monotonic() + GRAPH_API_PENDING_WAIT_SEC
+            last_notice = time.monotonic()
+            while time.monotonic() < deadline:
+                time.sleep(0.5)
+                try:
+                    status = requests.get(status_url, timeout=min(10.0, self.graph_api_timeout))
+                except requests.RequestException as exc:
+                    self._graph_api_strike(f"operation poll failed ({operation_id}): {exc}")
+                    raise RuntimeError(f"Graph API operation {operation_id} poll failed: {exc}")
+                if status.status_code == 202:
+                    now = time.monotonic()
+                    if now - last_notice >= 15.0:
+                        self.get_logger().warn(
+                            f"[GRAPH-API] operation {operation_id} still pending "
+                            f"({now - (deadline - GRAPH_API_PENDING_WAIT_SEC):.0f}s)")
+                        last_notice = now
+                    continue
+                if status.status_code != 200:
+                    detail = status.text
+                    self._graph_api_strike(
+                        f"{status.status_code} polling operation {operation_id}: {detail}")
+                    raise RuntimeError(
+                        f"Graph API operation {operation_id}: HTTP {status.status_code}: {detail}")
+                try:
+                    completed = status.json()
+                    if completed.get("error"):
+                        raise RuntimeError(completed["error"])
+                    response_data = completed.get("result")
+                    if not isinstance(response_data, dict):
+                        raise ValueError("operation result is not an object")
+                    response = requests.Response()
+                    response.status_code = 200
+                    response._content = json.dumps(response_data).encode("utf-8")
+                    response.headers["Content-Type"] = "application/json"
+                    break
+                except (ValueError, RuntimeError) as exc:
+                    self._graph_api_strike(f"invalid result for operation {operation_id}: {exc}")
+                    raise RuntimeError(f"Graph API operation {operation_id} failed: {exc}")
+            else:
+                # Preserve uncertainty explicitly. In particular, do not count a still-
+                # dispatched mutation as a dead bridge or automatically send it again.
+                self._graph_api_strikes = 0
+                self.get_logger().error(
+                    f"[GRAPH-API] operation {operation_id} is still pending after "
+                    f"{GRAPH_API_PENDING_WAIT_SEC:.0f}s; no retry was sent")
+                return {"success": False, "pending": True, "operation_id": operation_id,
+                        "message": f"still pending after {GRAPH_API_PENDING_WAIT_SEC:.0f}s"}
+
         if expected_status is None:
             ok = 200 <= response.status_code < 300
         elif isinstance(expected_status, (list, tuple, set)):
@@ -2438,6 +2645,12 @@ class ObjectManagerService(Node):
             self.get_logger().error(f"Add object failed via Graph API: {e}")
             return None
 
+        if result.get("pending"):
+            self.get_logger().warn(
+                f"Add object {label} remains pending as {result.get('operation_id')}; "
+                "the request was not resent")
+            return None
+
         object_id = result.get("object_id")
         if not object_id:
             # GA-01: the label was the fallback identity, so two beds filed this way became one.
@@ -2470,7 +2683,7 @@ class ObjectManagerService(Node):
             **({"yaw": bbox["yaw"], "oriented_center": list(bbox["oriented_center"]),
                 "oriented_extents": list(bbox["oriented_extents"])}
                if bbox.get("oriented_extents") and "yaw" in bbox else {}),   # GA-312
-            "description_embedding": self._serialize_embedding(description_embedding),
+            "description_embedding": self._serialize_embedding(best_match.embedding),
             **fusion_http_fields(bbox_fusion),
             "observation": observation,
             "description_observation": description_observation,
@@ -2484,8 +2697,12 @@ class ObjectManagerService(Node):
             stable_id = getattr(best_match, "object_id", None) or best_match.label
             encoded_id = urllib.parse.quote(stable_id, safe='')
             result = self._call_graph_api("PATCH", f"/objects/{encoded_id}", json_body=payload)
-            response.success = bool(result.get("success", False))
+            response.success = bool(result.get("success", False)) and not result.get("pending")
             response.message = str(result.get("message", ""))
+            if result.get("pending"):
+                response.message = (
+                    f"Update still pending as {result.get('operation_id')}; not resent")
+                self.get_logger().warn(f"[GRAPH-API] {response.message}")
             response.object_id = str(result.get("object_id", stable_id))
             response.distance = float(result.get("distance", 0.0))
             response.iou = float(result.get("iou", 0.0))
@@ -2513,7 +2730,7 @@ class ObjectManagerService(Node):
             self.get_logger().error(f"Update object failed via Graph API: {e}")
         return response
 
-    def merge_duplicate_objects(self, scan_id=None):
+    def merge_duplicate_objects(self, scan_id=None, full_audit=False):
         """Run the existing graph-wide merge criterion after a completed scan."""
         payload = {
             # GA-06: from config, and strictly stricter than the match gate. These were
@@ -2526,6 +2743,7 @@ class ObjectManagerService(Node):
             "max_distance": MERGE_MAX_DISTANCE,
             "min_similarity": MERGE_MIN_SIMILARITY,
             "dry_run": False,
+            "full_audit": bool(full_audit),
         }
 
         try:
@@ -2627,6 +2845,9 @@ class ObjectManagerService(Node):
                 "object_descriptions_arrived", {"message": msg},
                 cycle_id=str(getattr(msg, "cycle_id", "") or ""))
         self._n_desc_msgs += 1
+        self.get_logger().info(
+            f"[PERCEPTION-RX] descriptions={self._n_desc_msgs} "
+            f"cycle={getattr(msg, 'cycle_id', '')} items={len(msg.descriptions)}")
         stamp = getattr(getattr(msg, "header", None), "stamp", None)
         if stamp is None:
             self._n_desc_no_stamp += 1
@@ -2745,7 +2966,8 @@ class ObjectManagerService(Node):
                 f"[INPUT] ENDING THE RUN: no /bbox_3d for {silent_for:.0f}s across "
                 f"{self._input_silence_strikes} consecutive checks "
                 f"({self._n_bbox_msgs} received in total, {len(wm.persistent_perceptions)} objects "
-                f"in the map). The producer is gone and this node cannot make progress.")
+                f"in the map). Input delivery stalled; this does not distinguish a stopped "
+                f"producer from transport loss or blocked callbacks.")
             try:
                 if hasattr(self, "room_manager"):
                     self.room_manager.finalize_current_room(wm.persistent_perceptions)
@@ -2787,6 +3009,9 @@ class ObjectManagerService(Node):
                 cycle_id=str(getattr(msg, "cycle_id", "") or ""))
         self._n_bbox_msgs += 1
         self._last_bbox_at = time.time()
+        self.get_logger().info(
+            f"[PERCEPTION-RX] bboxes={self._n_bbox_msgs} "
+            f"cycle={getattr(msg, 'cycle_id', '')} items={len(msg.boxes)}")
         self._input_silence_reported = False
         self._stops_since_input = 0          # GA-94b: input arrived; the stop count restarts
         stamp = getattr(getattr(msg, "header", None), "stamp", None)
@@ -2938,6 +3163,13 @@ class ObjectManagerService(Node):
                     cycle_id=str(getattr(bboxes, "cycle_id", "") or ""))
             response = ObjectTrackingService.Response()
             self.object_tracking_callback(request, response)
+            # The final navigation scan is not the end of perception: queued VLM
+            # cycles can still add objects after that audit. Reconcile those late
+            # updates too, using the same debounced queue and fresh full sweeps.
+            final_scan_id = self.__dict__.get("_final_scan_id")
+            if final_scan_id is not None:
+                self._schedule_scan_merge(
+                    f"{final_scan_id}:late:{self._processed_pairs}", True)
             if self.ga493_replay_capture is not None:
                 self.ga493_replay_capture.event(
                     "consumer_result", {"response": response},
@@ -2999,14 +3231,14 @@ class ObjectManagerService(Node):
         """
         import time as _t
         now = _t.monotonic() if now is None else now
-        last = self._reeval_last.get(object_id)
-        if last is not None and now - last < REEVALUATION_DEBOUNCE_S:
-            self._reeval_debounced += 1
-            return
+        with self._reeval_lock:
+            last = self._reeval_last.get(object_id)
+            if last is not None and now - last < REEVALUATION_DEBOUNCE_S:
+                self._reeval_debounced += 1
+                return
         node = self._find_node(object_id)
         if node is None:
             return
-        self._reeval_last[object_id] = now
         radius = REEVALUATION_RADIUS
         # GA-11: queue the node that CHANGED, not only its neighbours. `on_update` adds
         # the neighbour ids and never the subject -- hooks.py's own self-test pins that
@@ -3018,12 +3250,20 @@ class ObjectManagerService(Node):
         # blueprint an extension implements; widening on_update's contract would change it
         # for every subclass and break the blueprint's self-test. WHICH nodes deserve a
         # second look is the caller's trigger policy, which is what this method is.
-        self.reeval.mark(object_id, reason)
         neighbours = [self._node_dict(o)["object_id"] for o in self._neighbours(node, radius)]
-        if len(neighbours) > REEVALUATION_MAX_FANOUT:
-            self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
-            neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
-        self.reeval.on_update(object_id, neighbours)
+        with self._reeval_lock:
+            # Recheck after the world-model lookup: the scan merge worker can report the
+            # same survivor while a normal object callback is queueing it as well.
+            last = self._reeval_last.get(object_id)
+            if last is not None and now - last < REEVALUATION_DEBOUNCE_S:
+                self._reeval_debounced += 1
+                return
+            self._reeval_last[object_id] = now
+            self.reeval.mark(object_id, reason)
+            if len(neighbours) > REEVALUATION_MAX_FANOUT:
+                self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
+                neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
+            self.reeval.on_update(object_id, neighbours)
 
     def _note_removed(self, obj):
         """GA-47. A deleted object cannot be re-examined, but what stood around its last
@@ -3032,17 +3272,20 @@ class ObjectManagerService(Node):
             return
         oid = getattr(obj, "object_id", None) or obj.label
         neighbours = [self._node_dict(o)["object_id"] for o in self._neighbours(obj, REEVALUATION_RADIUS)]
-        if len(neighbours) > REEVALUATION_MAX_FANOUT:
-            self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
-            neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
-        for n in neighbours:
-            self.reeval.mark(n, f"neighbour {oid} deleted")
+        with self._reeval_lock:
+            if len(neighbours) > REEVALUATION_MAX_FANOUT:
+                self._reeval_fanout_capped += len(neighbours) - REEVALUATION_MAX_FANOUT
+                neighbours = neighbours[:REEVALUATION_MAX_FANOUT]
+            for n in neighbours:
+                self.reeval.mark(n, f"neighbour {oid} deleted")
 
     def _drain_reevaluations(self):
         """Periodic: hand every queued node, with its neighbours, to the Refiner and log
         what it proposes. Proposals are recorded, not applied — applying one is an
         UpdateObject with the revised fields, wired once the policy is settled."""
-        for object_id, reason in self.reeval.drain():
+        with self._reeval_lock:
+            pending = self.reeval.drain()
+        for object_id, reason in pending:
             node = self._find_node(object_id)
             if node is None:
                 continue
@@ -3055,7 +3298,51 @@ class ObjectManagerService(Node):
             if revision:
                 self.decision_log.write("revision", object_id, refiner=self.refiner_hook.name, reason=reason, revision=revision)
 
+    def wait_for_scan_merge(self, timeout=None):
+        # The merge worker owns no ROS executor callback, but it may still be waiting
+        # for an HTTP reconciliation when the feed ends. Give it time to finish while
+        # the bridge is still alive; otherwise shutdown could discard the final sweep.
+        if timeout is None:
+            # The bridge can return 202 and keep the mutation pending for this long.
+            # Keep its client and bridge alive through that receipt window at shutdown.
+            timeout = GRAPH_API_PENDING_WAIT_SEC + self.graph_api_timeout + 5.0
+        with self._scan_state_lock:
+            # If shutdown lands during the settle timer, the executor may never run its
+            # callback. Promote that already received scan to ready and drain it now.
+            if self._scan_merge_pending is not None:
+                self._scan_merge_ready = True
+                self._scan_merge_ready_full_audit = self._scan_merge_pending_full_audit
+            if self._scan_merge_ready and not self._scan_merge_worker_running:
+                self._scan_merge_worker_running = True
+                scan_merge_thread = threading.Thread(
+                    target=self._drain_scan_merge_queue,
+                    name="scan-merge-worker-shutdown",
+                    daemon=True,
+                )
+                self._scan_merge_thread = scan_merge_thread
+                start_worker = True
+            else:
+                scan_merge_thread = self._scan_merge_thread
+                start_worker = False
+        if start_worker:
+            try:
+                scan_merge_thread.start()
+            except Exception as exc:
+                with self._scan_state_lock:
+                    self._scan_merge_worker_running = False
+                    self._scan_merge_thread = None
+                self.get_logger().error(f"could not start final scan-merge worker: {exc}")
+                return
+        with self._scan_state_lock:
+            scan_merge_thread = self._scan_merge_thread
+        if scan_merge_thread is not None and scan_merge_thread is not threading.current_thread():
+            scan_merge_thread.join(timeout=float(timeout))
+            if scan_merge_thread.is_alive():
+                self.get_logger().warning(
+                    f"scan-merge worker did not finish within {float(timeout):.0f}s during shutdown")
+
     def destroy_node(self):
+        self.wait_for_scan_merge()
         if self.ga493_replay_capture is not None:
             ledger = FilePath(self.object_services._mutation_ledger_path)
             ledger_ref = {"path": ledger.name, "exists": ledger.is_file()}
@@ -3140,9 +3427,12 @@ def main(args=None):
 
     finally:
         executor.shutdown()
+        # Keep the bridge and ObjectServices logger alive until the final asynchronous
+        # scan merge has either completed or hit its bounded shutdown wait.
+        service_node.wait_for_scan_merge()
+        service_node.object_services.destroy_node()
         if bridge_process is not None and bridge_process.poll() is None:
             bridge_process.terminate()
-        service_node.object_services.destroy_node()
         service_node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

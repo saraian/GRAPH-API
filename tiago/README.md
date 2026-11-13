@@ -21,6 +21,24 @@ variables in `config/local.yaml` when the target differs. `--map-source robot`
 disables application RTAB-Map and requires a node configuration matching the
 robot’s actual map topic and frame.
 
+On PAL TIAGo, the camera launcher waits for `rgbd_container`, which the robot's
+`navigation` module creates. If that module is disabled, the robot can be
+reachable while the RGB-D topics have no publishers. In a PAL shell connected
+to the physical robot, enable navigation for subsequent module-manager starts
+(including robot boot), and start it for the current session:
+
+```bash
+pal module enable navigation
+pal module start navigation
+pal module info navigation
+```
+
+The enable command persists the robot configuration; its change takes effect
+when the module manager next starts. The explicit start handles the current
+session without restarting the whole module manager. This starts navigation
+and camera on the robot. GRAPH API on the PC is started separately with the
+commands below.
+
 ```bash
 ./graphapi doctor --mode tiago-physical
 ./graphapi run tiago physical --detach

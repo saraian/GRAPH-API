@@ -109,10 +109,10 @@ class Observation:
     """
 
     __slots__ = ("frame_id", "camera_position", "bearing", "range_m", "stamp", "centroid",
-                 "bbox_2d", "appearance")
+                 "bbox_2d", "appearance", "capture_id", "observation_id")
 
     def __init__(self, frame_id, camera_position, centroid, stamp=None, bbox_2d=None,
-                 appearance=None):
+                 appearance=None, capture_id=None, observation_id=None):
         self.frame_id = frame_id
         self.camera_position = np.asarray(camera_position, dtype=float)
         self.centroid = np.asarray(centroid, dtype=float)
@@ -127,11 +127,104 @@ class Observation:
         # a missing descriptor and must never see a zero vector standing in for one.
         self.appearance = (None if appearance is None
                            else np.asarray(appearance, dtype=float).ravel())
+        self.capture_id = None if capture_id is None else str(capture_id)
+        self.observation_id = None if observation_id is None else str(observation_id)
         d = self.centroid - self.camera_position
         self.range_m = float(np.linalg.norm(d))
         # Unit bearing from camera to object, in the map frame. Two observations are
         # "comparable" for appearance only when their bearings are close (see cone_ok).
         self.bearing = d / self.range_m if self.range_m > 1e-9 else np.array([1.0, 0.0, 0.0])
+
+
+class CoVisibilityObservation:
+    """Compact, durable frame/box record used only for co-visibility checks."""
+
+    __slots__ = ("frame_id", "capture_id", "observation_id", "bbox_2d")
+
+    def __init__(self, frame_id, bbox_2d, capture_id=None, observation_id=None):
+        self.frame_id = frame_id
+        self.capture_id = None if capture_id is None else str(capture_id)
+        self.observation_id = None if observation_id is None else str(observation_id)
+        self.bbox_2d = None if bbox_2d is None else [float(v) for v in bbox_2d]
+
+
+def covisibility_records(obj):
+    """Return the complete compact history, falling back to recent full observations."""
+    records = getattr(obj, "covisibility_observations", None)
+    if records:
+        return records
+    return getattr(obj, "observations", None) or []
+
+
+def merge_covisibility_history(keeper, discard):
+    """Union capture-linked 2D histories without duplicating the same detection."""
+    records = []
+    for obj in (keeper, discard):
+        existing = getattr(obj, "covisibility_observations", None)
+        if not existing:
+            existing = [
+                CoVisibilityObservation(
+                    getattr(o, "frame_id", None), getattr(o, "bbox_2d", None),
+                    getattr(o, "capture_id", None), getattr(o, "observation_id", None))
+                for o in (getattr(obj, "observations", None) or [])
+            ]
+        records.extend(existing)
+
+    unique = {}
+    for record in records:
+        capture = getattr(record, "capture_id", None) or getattr(record, "frame_id", None)
+        observation_id = getattr(record, "observation_id", None)
+        bbox = getattr(record, "bbox_2d", None)
+        key = (("observation", observation_id) if observation_id else
+               ("frame_box", str(capture), tuple(bbox) if bbox is not None else None))
+        unique.setdefault(key, record)
+
+    def order_key(record):
+        value = getattr(record, "frame_id", None)
+        try:
+            return (0, float(value))
+        except (TypeError, ValueError):
+            return (1, str(value))
+
+    merged = sorted(unique.values(), key=order_key)
+    keeper.covisibility_observations = merged
+    return merged
+
+
+def merge_observation_history(keeper, discard, max_count=64):
+    """Union recent full sightings while retaining each distinct source capture."""
+    observations = (getattr(keeper, "observations", None) or []) + (
+        getattr(discard, "observations", None) or [])
+    unique = {}
+    for observation in observations:
+        observation_id = getattr(observation, "observation_id", None)
+        capture_id = getattr(observation, "capture_id", None)
+        frame_id = getattr(observation, "frame_id", None)
+        bbox = getattr(observation, "bbox_2d", None)
+        centroid = getattr(observation, "centroid", None)
+        if observation_id:
+            key = ("observation", observation_id)
+        else:
+            key = ("sighting", str(capture_id or frame_id),
+                   tuple(bbox) if bbox is not None else None,
+                   tuple(np.asarray(centroid, dtype=float).ravel())
+                   if centroid is not None else None)
+        unique.setdefault(key, observation)
+
+    def order_key(observation):
+        value = getattr(observation, "stamp", None)
+        if value is None:
+            value = getattr(observation, "frame_id", None)
+        try:
+            return (0, float(value))
+        except (TypeError, ValueError):
+            return (1, str(value))
+
+    merged = sorted(unique.values(), key=order_key)
+    if max_count and max_count > 0:
+        merged = merged[-int(max_count):]
+    keeper.observations = merged
+    return merged
 
 
 def shared_frame_overlap_2d(a, b):
@@ -151,20 +244,26 @@ def shared_frame_overlap_2d(a, b):
     one region, and averaging a 0.99 overlap with three frames of partial occlusion would
     dilute exactly the evidence that matters.
     """
-    if not a.observations or not b.observations:
+    observations_a = covisibility_records(a)
+    observations_b = covisibility_records(b)
+    if not observations_a or not observations_b:
         return None
     by_frame_b = {}
-    for o in b.observations:
-        if o.frame_id is not None and o.bbox_2d is not None:
-            by_frame_b.setdefault(o.frame_id, []).append(o.bbox_2d)
+    for o in observations_b:
+        frame = getattr(o, "capture_id", None) or getattr(o, "frame_id", None)
+        box = getattr(o, "bbox_2d", None)
+        if frame is not None and box is not None:
+            by_frame_b.setdefault(frame, []).append(box)
     if not by_frame_b:
         return None
     best = None
-    for oa in a.observations:
-        if oa.frame_id is None or oa.bbox_2d is None:
+    for oa in observations_a:
+        frame = getattr(oa, "capture_id", None) or getattr(oa, "frame_id", None)
+        box_a = getattr(oa, "bbox_2d", None)
+        if frame is None or box_a is None:
             continue
-        for box_b in by_frame_b.get(oa.frame_id, ()):
-            iou = _iou_2d(oa.bbox_2d, box_b)
+        for box_b in by_frame_b.get(frame, ()):
+            iou = _iou_2d(box_a, box_b)
             if best is None or iou > best:
                 best = iou
     return best
@@ -470,8 +569,12 @@ def channel_covisibility(obs_a, obs_b, overlap_2d=None, duplicate_iou=0.30):
     """
     if not obs_a or not obs_b:
         return Abstain("no observation records to compare")
-    frames_a = {o.frame_id for o in obs_a if o.frame_id is not None}
-    frames_b = {o.frame_id for o in obs_b if o.frame_id is not None}
+    frames_a = {getattr(o, "capture_id", None) or getattr(o, "frame_id", None)
+                for o in obs_a}
+    frames_b = {getattr(o, "capture_id", None) or getattr(o, "frame_id", None)
+                for o in obs_b}
+    frames_a.discard(None)
+    frames_b.discard(None)
     if not frames_a or not frames_b:
         return Abstain("observations carry no frame ids")
     shared = frames_a & frames_b
@@ -802,8 +905,9 @@ def score_pair(a, b, ctx):
     # GA-181: the 2D overlap decides whether co-visibility is a veto or an abstention. With
     # no 2D boxes to compare, `overlap_2d` stays None and the channel abstains rather than
     # assuming the two detections are disjoint.
-    s.add("covisibility", channel_covisibility(a.observations, b.observations,
-                                               overlap_2d=ctx.overlap_2d(a, b)))
+    s.add("covisibility", channel_covisibility(
+        a.covisibility_observations, b.covisibility_observations,
+        overlap_2d=ctx.overlap_2d(a, b)))
     s.add("overlap", channel_overlap(bounds_a, bounds_b, ctx.map_volume_m3))
 
     ov = s.channels.get("overlap", {})
@@ -1043,17 +1147,21 @@ class Hypothesis:
 
 
 class AssocObject:
-    __slots__ = ("object_id", "label", "bbox", "centroid", "observations", "covariance",
-                 "descriptors", "descriptor_spread", "room_id", "onto_type", "onto_aligned")
+    __slots__ = ("object_id", "label", "bbox", "centroid", "observations",
+                 "covisibility_observations", "covariance", "descriptors",
+                 "descriptor_spread", "room_id", "onto_type", "onto_aligned")
 
     def __init__(self, object_id, bbox=None, centroid=None, label=None, observations=None,
                  room_id=None, onto_type=None, onto_aligned=False,
-                 descriptors=None, descriptor_spread=None,
+                 descriptors=None, descriptor_spread=None, covisibility_observations=None,
                  depth_sparsity=0.0, pose_sigma_m=0.0):
         self.object_id = object_id
         self.label = label
         self.bbox = bbox
         self.observations = list(observations or [])
+        self.covisibility_observations = list(
+            covisibility_observations if covisibility_observations is not None
+            else self.observations)
         b = _as_bounds(bbox)
         if centroid is not None:
             self.centroid = np.asarray(centroid, dtype=float)

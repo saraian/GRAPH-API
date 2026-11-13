@@ -24,8 +24,13 @@ def prepare_vlm_credentials(root, cfg, env):
     vlm = cfg.get("vlm", {}) or {}
     base_url = str(vlm.get("base_url", ""))
     gemini = is_gemini(vlm)
-    names = (("GEMINI_API_KEY", "GOOGLE_API_KEY") if gemini else ()) + (
-        "OPENAI_API_KEY", "REGOLO_API_KEY", "OPENROUTER_API_KEY")
+    if gemini:
+        names = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
+                 "REGOLO_API_KEY", "OPENROUTER_API_KEY")
+    elif (urlparse(base_url).hostname or "").lower() == "api.regolo.ai":
+        names = ("REGOLO_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY")
+    else:
+        names = ("OPENAI_API_KEY", "REGOLO_API_KEY", "OPENROUTER_API_KEY")
     key = str(vlm.get("api_key") or "").strip()
     if not key:
         key = next((str(env[name]).strip() for name in names

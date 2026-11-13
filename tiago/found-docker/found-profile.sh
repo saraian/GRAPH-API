@@ -44,9 +44,9 @@ if [ -z "${XAUTHORITY:-}" ] && [ -n "${LOCAL_XDG_RUNTIME_DIR:-}" ]; then
 fi
 # The PAL image ships PyTorch with CUDA 12 libraries under its Python
 # environment.  ONNX Runtime GPU also needs to find those libraries, plus the
-# isolated cuDNN 9 tree used by the CUDA 12 provider.  Keep this separate from
-# PyTorch's cuDNN 8 installation.
-_found_onnxruntime_cuda_libs="/opt/onnxruntime-cuda12-libs/nvidia/cudnn/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cufft/lib:/usr/local/lib/python3.10/dist-packages/nvidia/curand/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/dist-packages/nvidia/nvjitlink/lib"
+# cuDNN bundled with PyTorch. Prefer that matching version over the legacy
+# isolated cuDNN tree retained by older PAL images.
+_found_onnxruntime_cuda_libs="/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:/opt/onnxruntime-cuda12-libs/nvidia/cudnn/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cufft/lib:/usr/local/lib/python3.10/dist-packages/nvidia/curand/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/dist-packages/nvidia/nvjitlink/lib"
 export LD_LIBRARY_PATH="${_found_onnxruntime_cuda_libs}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 unset _found_onnxruntime_cuda_libs
 # PAL robots use CycloneDDS. Do not override RMW_IMPLEMENTATION here.

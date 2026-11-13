@@ -128,6 +128,52 @@ Settings live in `config/`; local paths go in ignored `config/local.yaml`.
 Use `./graphapi tools list` for other tools and `./graphapi COMMAND --help`
 for more options and examples.
 
+### Optional Boxer perception
+
+The upstream Boxer inference code lives locally in `third_party/boxer` as a
+submodule pinned to a fixed revision, and is copied into the simulation image.
+After a fresh clone, initialize it with `git submodule update --init --recursive`.
+Download its OWLv2, DINOv3 and BoxerNet checkpoints, then set
+`perception.detector: boxer` in `config/graphapi.yaml` (or a local config
+override) to use OWLv2 proposals and native per-frame BoxerNet 3D boxes.
+The VLM receives the RGB image and indexed 2D proposals to provide labels,
+descriptions, colors and materials, so Boxer mode still needs `REGOLO_API_KEY`.
+GRAPH-API owns object identity and merging; the Boxer tracker and VitSAM are not
+loaded in this mode. Boxes and centroids come from the same Boxer prediction.
+During graph updates and merges, original Boxer predictions are retained and the
+observed box closest to their normalized median boundaries represents the object.
+This avoids recursive envelope growth; orientation stays paired with that prediction.
+The retained samples are archived as `geometry_consensus`. Existing enlarged boxes
+cannot be reconstructed without their original observations; this policy applies to
+new runs and does not rewrite saved maps. Two conflicting views alone cannot establish
+which geometry is correct.
+Segmentation masks, per-object point clouds and measured fusion voxels are absent;
+mask-based ground-truth attribution is therefore unavailable for these detections.
+Checkpoints stay outside Docker in `models/boxer/ckpts`.
+
+```bash
+./graphapi setup sim --dataset "$PWD/habitat/hm3d-val-habitat-v0.2"
+bash tools/download_boxer_checkpoints.sh
+```
+
+In `config/local.yaml`, set this under the existing `overrides` key:
+
+```yaml
+overrides:
+  perception:
+    detector: boxer
+```
+
+Then start the run as usual; Boxer handles detection and 3D boxes, while the
+Regolo key is still used for object descriptions:
+
+```bash
+export REGOLO_API_KEY='your-key'
+./graphapi run sim --scene hm3d_00861 --detach
+```
+
+Set `perception.detector` back to `vlm` to restore the existing detector.
+
 ## Complete CLI help
 
 The output below includes every public command and subcommand. Expand a
@@ -1170,3 +1216,28 @@ Examples:
 ```
 
 </details>
+
+### Evidenza temporale degli oggetti
+
+GRAPH_API conserva `perception_evidence` per `capture_id` e `observation_id` nelle
+percezioni persistenti. Ogni acquisizione contribuisce al massimo un voto per
+etichetta, colore e materiale; classificazioni discordanti nello stesso frame
+si astengono. Una maggioranza stretta sostenuta da almeno due acquisizioni può
+correggere gli attributi. Pareggi e risposte sconosciute mantengono il valore
+corrente. Le correzioni avvengono solo dopo un'associazione accettata: non risolvono
+un'associazione rifiutata a causa di etichette troppo diverse. Il cambio di classe
+mantiene `object_id`, aggiorna i riferimenti della stanza e invalida l'allineamento
+ontologico della classe precedente. I merge uniscono e deduplicano le evidenze.
+
+`perception_confirmation` distingue `tentative` (una acquisizione), `confirmed`
+(almeno due) e `unmeasured` (provenienza assente). È uno stato di evidenza, non una
+prova di esistenza: due acquisizioni possono ripetere lo stesso errore. Gli oggetti
+tentativi restano nella mappa e nell'eval; non vengono eliminati né esclusi dalle
+metriche automaticamente. Questo stato è separato dal `provisional` dei filtri
+ontologici. La confidenza nativa Boxer 3D attraversa ora `Bbox3d` con un flag di
+presenza ed è conservata per acquisizione; non viene combinata con score VLM o
+interpretata come probabilità calibrata. Una soglia aggiuntiva di eliminazione
+richiede prima una valutazione del compromesso precision/recall sulle run.
+
+Questa modifica richiede il rebuild delle interfacce ROS e dei nodi produttore e
+consumatore. Le vecchie run non contengono retroattivamente questa evidenza.

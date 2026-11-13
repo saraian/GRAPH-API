@@ -175,13 +175,20 @@ class _TemporalPointBuffer:
         return [frame[4].copy() for frame in self.frames if frame[4] is not None]
 
 
-def _distinct_viewpoint_count(camera_positions, separation_m=0.15):
+def _distinct_viewpoints(camera_positions, separation_m=0.15):
     kept = []
     for point in camera_positions:
         point = np.asarray(point, dtype=np.float64)
+        if point.ndim != 1 or point.size < 2 or not np.all(np.isfinite(point)):
+            continue
+        point = point[:2]
         if not any(float(np.linalg.norm(point - old)) < separation_m for old in kept):
-            kept.append(point)
-    return len(kept)
+            kept.append(point.copy())
+    return kept
+
+
+def _distinct_viewpoint_count(camera_positions, separation_m=0.15):
+    return len(_distinct_viewpoints(camera_positions, separation_m))
 
 
 def _organized_surface_masks(depth, fx, fy, cx, cy, rotation,
@@ -776,6 +783,12 @@ def _wall_confidence(segment, temporal_frames=1, evidence_points=None,
         "planarity": round(rms_score, 4), "point_support": round(point_score, 4),
         "temporal_support": round(temporal_score, 4),
     }
+    if camera_positions:
+        evidence["viewpoint_positions_m"] = [
+            [round(float(value), 3) for value in point]
+            for point in _distinct_viewpoints(
+                camera_positions, float(_WCFG.get("viewpoint_separation_m", 0.15)))
+        ]
     if evidence_points is not None:
         xy, zs, ranges = (np.asarray(value) for value in evidence_points)
         along = (xy - p0) @ direction
@@ -863,6 +876,10 @@ def segments_to_wall_dicts(segments, temporal_frames=1, floor_z=None, floor_sour
             "n_points": n, "inlier_rms_m": round(rms, 4),
             "confidence": confidence,
             "evidence": evidence,
+            # Keep the independent camera positions so RoomManager can accumulate
+            # view diversity across detector windows instead of treating repeated
+            # fits from one stationary view as independent confirmation.
+            "viewpoint_positions_m": evidence.get("viewpoint_positions_m", []),
             "temporal_frames": int(temporal_frames),
             # Formal, gravity-constrained vertical-plane representation:
             # normal.x*x + normal.y*y = offset_m.

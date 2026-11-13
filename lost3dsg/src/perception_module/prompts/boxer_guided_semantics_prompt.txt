@@ -1,0 +1,18 @@
+Analyze the complete RGB image and provide semantic information for the object proposals below.
+
+Each proposal has a stable proposal_index, a 2D bounding box in image pixels using [x_min, y_min, x_max, y_max], an OWLv2 candidate label, and a detector confidence. The image dimensions are {IMAGE_WIDTH} by {IMAGE_HEIGHT} pixels. Use each box to locate its object in the image. Return exactly one result for every proposal_index, preserving those indices.
+
+The first image is the complete RGB frame. It is followed by enlarged crops, each preceded by a text marker naming its proposal_index. Use the complete frame for scene context and the crop marked for a proposal to inspect that object's visible details. Never assign one crop's attributes to another proposal.
+
+- You, the vision language model, decide and return the object's label. OWLv2's candidate is only a location/category hint; use the pixels to choose a common, specific category. Distinguish an entire object from a visible component or item resting on it (for example, bed, headboard, mattress, pillow, quilt, or bedspread).
+- For each proposal, return the label, a concise description, dominant visible color, and main visible material. If a box contains several parts or surfaces and no single color or material can be assigned confidently, use "unknown" instead of guessing or borrowing a nearby part's attribute.
+- Describe visible evidence, not typical properties of that object category. Do not infer hidden materials or confuse nearby objects, shadows, or background with the proposal.
+- Make the description concise and distinguishing. Use the full frame for context and the marked crop for visible detail.
+- Do not return or alter any bounding box. Do not add objects that are not in the proposal list. Do not omit proposals.
+- For color, material, or description, use "unknown" when the image does not provide enough visual evidence.
+
+Return valid JSON only, matching this structure exactly:
+{"objects":[{"proposal_index":0,"label":"object category or unknown","description":"brief visible distinguishing details","color":"one dominant color or unknown","material":"one main visible material or unknown"}]}
+
+Image dimensions: {IMAGE_WIDTH} x {IMAGE_HEIGHT}
+Boxer proposals: {BOXER_PROPOSALS}

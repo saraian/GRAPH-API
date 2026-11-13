@@ -113,7 +113,7 @@ class Detection:
     bbox: Tuple[float, float, float, float]
     label: str
     score: Optional[float]
-    mask: np.ndarray
+    mask: Optional[np.ndarray]  # None for native Boxer detections
     # Whole-scene VLM attributes. Detector/cloud detections retain the historical
     # unknown defaults; the unified local path fills them from the same request
     # that produced bbox, so no later crop-VLM request is needed.
@@ -131,3 +131,5 @@ class Detection:
     # description. Declared here because the sidecar and the archive both read it, and
     # an attribute that is assigned and read should not be undeclared.
     detection_id: Optional[str] = field(default=None)
+    # Native upstream Boxer OBB for this OWLv2 detection, already in the world frame.
+    boxer_bbox_3d: Optional[Dict[str, Any]] = None

@@ -67,11 +67,17 @@ fi
 # machine ran it. So an evaluation is NOT reproducible from a bundle alone. Filed as GA-464. The
 # resolver prints WHICH source answered, so a reader can see when a name was resolved rather than
 # read, and this script prints that line.
-_res="$(python3 "$HERE/lost3dsg/test/eval_scene_of_bundle.py" "$BUNDLE")" || {
-  echo "!! $_res" >&2
-  echo "   Pass EVAL_SCENE=/path/scene.basis.glb and EVAL_DATASET_CONFIG=/path/cfg.json to override." >&2
-  [ -n "${EVAL_SCENE:-}" ] || exit 3
-}
+if [ -n "${EVAL_SCENE:-}" ] && [ -n "${EVAL_DATASET_CONFIG:-}" ]; then
+  # Explicit scene and dataset paths are a complete override. Do not print the
+  # resolver's expected stale-config refusal as an error before using them.
+  _res="$EVAL_SCENE $EVAL_DATASET_CONFIG explicit environment overrides"
+else
+  _res="$(python3 "$HERE/lost3dsg/test/eval_scene_of_bundle.py" "$BUNDLE")" || {
+    echo "!! $_res" >&2
+    echo "   Pass EVAL_SCENE=/path/scene.basis.glb and EVAL_DATASET_CONFIG=/path/cfg.json to override." >&2
+    [ -n "${EVAL_SCENE:-}" ] || exit 3
+  }
+fi
 SCENE="${EVAL_SCENE:-$(echo "$_res" | cut -d" " -f1)}"
 DSCFG="${EVAL_DATASET_CONFIG:-$(echo "$_res" | cut -d" " -f2)}"
 echo "scene:  $SCENE"

@@ -6,8 +6,10 @@
 numpy==1.26.4
 scipy==1.11.4
 
-torch==2.2.2
-torchvision==0.17.2
+# Match the simulator runtime: RTX 50-series requires CUDA 12.8 kernels.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchvision==0.22.1+cu128
 timm==0.9.16
 transformers==4.44.2
 sentence-transformers==3.1.1
@@ -17,7 +19,7 @@ ultralytics==8.2.103
 onnx==1.16.2
 # VitSAM uses ONNX Runtime directly; the Tiago container has CUDA and must use
 # the GPU provider instead of silently falling back to CPU.
-onnxruntime-gpu==1.19.0
+onnxruntime-gpu==1.20.2
 onnxsim==0.4.36
 
 gensim==4.3.2

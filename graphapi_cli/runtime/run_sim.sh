@@ -719,13 +719,7 @@ fi
 mkdir -p "$RUN_DIR/logs"
 echo "    run results: $RUN_DIR (live output and bundle are the same directory)"
 
-# GA-258b. EXPORTED, because the FEED HOST needs it. The host process reads
-# merge_pending.json to decide how long to dwell, and that file is written by the container
-# into /ws/output -- which is bind-mounted to $RUN_DIR, not to $OUT_DIR (/out). The feed host
-# was building the path from GRAPH_API_OUTPUT_DIR, which only exists INSIDE the container, so
-# on the host it resolved to a bare relative filename and never opened. Measured on run
-# 20260902_125130: every dwell line read "? merges pending (sweep None)" and every waypoint
-# ran to the 90-frame cap.
+# RUN_DIR is exported for host-side processes that need the active bundle path.
 export RUN_DIR
 # GA-463. rtabmap's database is written to /root/.ros, which habitat_launch.py hardcodes, and until
 # now that was the container's own writable layer -- outside every mount and discarded by --rm.
@@ -1427,7 +1421,6 @@ cat <<EOF > "$RUN_DIR/run_metadata.json"
    # know what they are: EXT_POLICY_JSON is a comma-terminated JSON fragment the extension
    # supplies, or nothing at all when no extension is loaded. Owner ruling 2026-09-09.`
   "policy": {${EXT_POLICY_JSON:-}
-    "merge_min_consecutive": ${MERGE_MIN_CONSECUTIVE:-2},
     "pose_source": "$FEED_POSE_SOURCE",
     "rtabmap_pub_loc_pose_only_when_localizing": true,
     "rtabmap_launch": "ros2 launch lost3dsg habitat_launch.py; database path and mapping/localization session mode are explicit launch arguments. See logs/launch.log for the resolved RTAB-Map child configuration.",
@@ -1485,16 +1478,7 @@ print(json.dumps({
                'config supplied 640 and the sensor stayed at 640x480.',
     '_config_file': CFG_PATH,
     'rooms.gvd_method': g('rooms', 'gvd_method'),
-    # GA-204. The engine that decides a merge MUST be stamped. It was set in the config
-    # rather than by environment precisely so the bundle would record it -- and this list is
-    # hand-maintained, so a new key resolves at runtime and appears in no artefact. Run
-    # 20260901_144539 ran with association.merge_engine absent from its own metadata.
-    # NO BACKTICKS IN THIS HEREDOC: it is unquoted, so a backtick is command substitution.
-    # This comment used them and bash reported 'association.merge_engine: command not found'
-    # at the heredoc's opening line -- the trap the docker-block comment already documents.
-    'association.merge_engine': g('association', 'merge_engine'),
-    'association.merge_cost_ratio': g('association', 'merge_cost_ratio'),
-    'association.merge_min_consecutive': g('association', 'merge_min_consecutive'),
+    'association.merge_engine': 'legacy',
     'archive.per_detection': g('archive', 'per_detection'),
     'crop.construction': g('crop', 'construction'),
     'perception.backend': g('perception', 'backend'),
@@ -1722,11 +1706,10 @@ fi
 # a "#" line here is not a comment -- docker receives "#" and each following word as ARGUMENTS.
 # `bash -n` accepts it, because it is valid syntax; only the run fails. Done once, 2026-09-11.
 docker run --name "${GRAPH_API_CONTAINER_NAME:-graphapi_live}" --rm --init --label "graphapi.operation=${GRAPHAPI_OPERATION_ID:-legacy}" --entrypoint bash --gpus "${GRAPH_API_GPUS:-all}" --network=host \
-  -e OPENAI_API_KEY -e GEMINI_API_KEY -e GOOGLE_API_KEY -e CFG_NAME -e PERCEPTION_EXECUTABLE -e MODAL_PERCEPTION_URL -e MERGE_ENGINE -e PERCEPTION_DEBUG \
+  -e OPENAI_API_KEY -e GEMINI_API_KEY -e GOOGLE_API_KEY -e CFG_NAME -e PERCEPTION_EXECUTABLE -e MODAL_PERCEPTION_URL -e PERCEPTION_DEBUG \
   -e GRAPH_API_RUN_ID -e FEED_GT_SEMANTIC -e FEED_GT_BBOX -e FEED_GT_BBOX_ALL_FLOORS -e ROS_DOMAIN_ID \
   -e GA493_REPLAY_CAPTURE_DIR -e GA493_REPLAY_CAPTURE_MAX_CYCLES -e GA493_REPLAY_CAPTURE_MAX_BYTES \
   -e FRAME_QUEUE_MAX -e SCAN_COMPLETE_TOPIC -e SCAN_MERGE_SETTLE_S -e MOTION_POSITION_THRESHOLD \
-  -e MERGE_MIN_CONSECUTIVE \
   -e RUN_START_EPOCH -e PREFLIGHT_EXPECT_POLICY -e PREFLIGHT_SKIP \
   -e RTABMAP_LOCALIZE_DB -e RTABMAP_SESSION_MODE -e RTABMAP_DATABASE_PATH -e RTABMAP_CLOSE_TIMEOUT \
   -e MULTI_FLOOR_SESSION_ID -e MULTI_FLOOR_FLOOR_ID -e MULTI_FLOOR_VISIT_INDEX \
@@ -1768,6 +1751,8 @@ docker run --name "${GRAPH_API_CONTAINER_NAME:-graphapi_live}" --rm --init --lab
   -v "$RUN_DIR/ros":/root/.ros \
   -v "${SAM_MODEL_DIR:-/DATA/models/efficientvit_sam}":/models/vitsam:ro \
   -v "${HF_SHARED_CACHE:-/DATA/huggingface_cache}":/models/hf \
+  -v "${BOXER_CHECKPOINT_DIR:-$REPO/models/boxer/ckpts}":/models/boxer/ckpts \
+  -e GRAPHAPI_BOXER_CHECKPOINTS_RUNTIME=/models/boxer/ckpts \
   -v "$OUT_DIR":/out \
   "$IMAGE_TAG" /ws/output/live_stack_container.sh
 

@@ -55,16 +55,10 @@ association:
   bbox_reduction_ratio: 0.3
   reevaluation_radius_m: 2.0
   association_margin_m: 0.3
-  merge_engine: legacy
-  merge_cost_ratio: 20.0
-  merge_min_consecutive: 2
   merge_max_distance_m: 0.8
-  merge_near_distance_m: 0.02
-  merge_near_iou_threshold: 0.25
   merge_aabb_margin_m: 0.8
   merge_min_evidence: 1
   merge_min_similarity: 0.925
-  merge_knn_k: null
   update_in_place_distance_m: 0.5
   transition_move_distance_m: 0.35
   uncertain_move_distance_m: 0.8

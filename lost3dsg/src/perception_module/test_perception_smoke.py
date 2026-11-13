@@ -424,10 +424,8 @@ def merge_lock_covers_writes_only():
 
 def every_config_key_read_is_declared():
     """A key the code reads and the file never declares silently takes the module fallback,
-    so the config says one thing and the run does another. This swept 22 such keys out of
-    association, habitat and perception in one pass -- including the five merge thresholds,
-    where config.yaml documented `cost_ratio` and `min_consecutive` while object_services read
-    `merge_cost_ratio` and `merge_min_consecutive` and got neither.
+    so the config says one thing and the run does another. This checks the perception, habitat,
+    association and room settings against the defaults that the runtime actually reads.
 
     Literal reads only: `CFG["section"]["key"]`, `CFG["section"].get("key")` and the
     `<name>_cfg.get("key")` locals. A dynamic read is invisible here and always will be."""
@@ -1441,61 +1439,6 @@ def orientation_fusion():
     assert legacy.bbox["has_orientation"] is True
 
 
-def ontology_veto_seam():
-    """GA-309: the hook's optional `disjoint` reaches the ontology channel and the record
-    names which component answered; an absent attribute reproduces today's record exactly
-    (no `disjoint_source`, "disjoint": False as the literal default); a raise is not caught."""
-    import association as assoc
-
-    def obj(oid, typ):
-        o = assoc.AssocObject(object_id=oid, bbox=dict(BOX), centroid=[0.5, 0.5, 0.5], label=oid,
-                              onto_type=typ)
-        o.onto_aligned = True
-        return o
-
-    a, b = obj("a", "Bed"), obj("b", "Pillow")
-
-    class Hook:
-        name = "kg-test"
-
-        def disjoint(self, x, y):
-            return {x, y} == {"Bed", "Pillow"}
-
-    svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
-    svc.filter_hook = Hook()
-    ctx, _built = object_services.ObjectServices._assoc_build(svc, [])
-    assert ctx.disjoint_fn is not None and ctx.disjoint_source == "kg-test", ctx.disjoint_source
-    ps = assoc.score_pair(a, b, ctx)
-    assert ps.vetoed and ps.vetoed_by == ["ontology"], ps.vetoed_by
-    assert ps.channels["ontology"]["disjoint_source"] == "kg-test", ps.channels["ontology"]
-
-    class NoAttr:
-        name = "exemplar"
-
-    svc.filter_hook = NoAttr()
-    ctx0, _ = object_services.ObjectServices._assoc_build(svc, [])
-    assert ctx0.disjoint_fn is None and ctx0.disjoint_source is None
-    ps0 = assoc.score_pair(a, b, ctx0)
-    # the record every bundle before 2026-09-07 carried, byte for byte: no disjoint_source
-    assert not ps0.vetoed and ps0.channels["ontology"] == {
-        "log_odds": 0.0, "type_a": "Bed", "type_b": "Pillow", "disjoint": False}, ps0.channels["ontology"]
-
-    class Raises:
-        name = "kg-strict"
-
-        def disjoint(self, x, y):
-            raise KeyError(x)
-
-    svc.filter_hook = Raises()
-    ctx1, _ = object_services.ObjectServices._assoc_build(svc, [])
-    try:
-        assoc.score_pair(a, b, ctx1)
-    except KeyError:
-        pass
-    else:
-        raise AssertionError("an unknown class name must raise through the channel (rule 14)")
-
-
 def overlap_null_uses_larger_box():
     """GA-307: the overlap null is the LARGER box's share of the map, not the intersection's,
     so a sliver of contact scores less than a real containment of a big fragment."""
@@ -1515,61 +1458,6 @@ def overlap_null_uses_larger_box():
     assert lo_same < lo_sliver, "two views of one large object score below a tiny fragment: the null says a small box is the likelier chance overlap"
     # a genuine fragment/whole pair keeps a strong positive term
     assert lo_sliver > 3.0 and lo_same > 3.0, (lo_sliver, lo_same)
-
-
-def merge_pending_blob():
-    """GA-339 (a)+(b): needs_max rides in merge_pending.json (0 when nothing is pending), and a
-    non-serialisable value RAISES instead of being warned away (rule 14).
-
-    GA-341 follow-up: the blob also carries the EFFECTIVE floor of the arm that ran
-    (engine, min_similarity, max_distance_m, sim_threshold), because run 1 showed the
-    similarity floor reaches no other artefact — the evidence arm emits threshold_log_odds
-    and a criterion naming threshold_similarity had no subject to test."""
-    import tempfile
-
-    import association as assoc
-
-    svc = object_services.ObjectServices.__new__(object_services.ObjectServices)
-    svc.get_logger = lambda: rosstub.Any()
-    svc._merge_sweep = 7
-    h = assoc.Hypothesis(("a", "b"))
-    h.state = {"overlap": 5.0}
-    h._streak = 0
-    h2 = assoc.Hypothesis(("c", "d"))
-    h2.state = {"overlap": 4.0}
-    h2._streak = 1
-    svc._hypotheses = {("a", "b"): h, ("c", "d"): h2}
-    old = os.environ.get("GRAPH_API_OUTPUT_DIR")
-    with tempfile.TemporaryDirectory() as tmp:
-        os.environ["GRAPH_API_OUTPUT_DIR"] = tmp
-        try:
-            object_services.ObjectServices._publish_merge_pending(svc)
-            with open(os.path.join(tmp, "merge_pending.json")) as fh:
-                blob = json.load(fh)
-            assert blob["pending"] == 2 and blob["needs_max"] == object_services.MERGE_MIN_CONSECUTIVE, blob
-            # GA-341 follow-up: the blob carries the EFFECTIVE floor of the arm that ran.
-            for k, want in (("engine", object_services.MERGE_ENGINE),
-                            ("min_similarity", object_services.MERGE_MIN_SIMILARITY),
-                            ("max_distance_m", object_services.MERGE_MAX_DISTANCE),
-                            ("sim_threshold", object_services.SIM_THRESHOLD)):
-                assert blob[k] == want, (k, blob.get(k), want)
-            assert blob["min_similarity"] > blob["sim_threshold"], blob
-            svc._hypotheses = {}
-            object_services.ObjectServices._publish_merge_pending(svc)
-            with open(os.path.join(tmp, "merge_pending.json")) as fh:
-                assert json.load(fh)["needs_max"] == 0
-            svc._merge_sweep = object()   # not JSON-serialisable
-            try:
-                object_services.ObjectServices._publish_merge_pending(svc)
-            except TypeError:
-                pass
-            else:
-                raise AssertionError("a non-serialisable blob must raise, not warn")
-        finally:
-            if old is None:
-                os.environ.pop("GRAPH_API_OUTPUT_DIR", None)
-            else:
-                os.environ["GRAPH_API_OUTPUT_DIR"] = old
 
 
 def gt_semantic_cache_depth():
@@ -1696,12 +1584,10 @@ for name, fn in [("description chain (build -> publish -> world model)", descrip
                  ("reassign_objects_by_geometry", reassign_rooms),
                  ("merge survivor: credibility, then filled slots, before age (GA-314, GA-372)", merge_survivor_by_grade),
                  ("yaw fused over accepted views, extents from one (GA-315 part 2)", orientation_fusion),
-                 ("ontology veto reaches the channel and names its source (GA-309)", ontology_veto_seam),
                  ("overlap null charges the larger box, not the sliver (GA-307)", overlap_null_uses_larger_box),
                  ("GT semantic cache: 120 compressed frames, exact lookup (GA-353)", gt_semantic_cache_depth),
                  ("oriented boxes are yaw-only: two z levels, vertical edges (GA-360)", oriented_boxes_are_yaw_only),
                  ("localisation gate: stale pose skips and counts, simulator arm open (GA-359)", localisation_gate),
-                 ("merge_pending carries needs_max; a bad blob raises (GA-339)", merge_pending_blob),
                  ("merge request below the match gate is refused (GA-341)", merge_request_below_match_gate_refused),
                  ("detector failure skips the cycle, counted (GA-427)", detector_failure_skips_the_cycle),
                  ("merge lock covers the writes, not the sweep (GA-393)", merge_lock_covers_writes_only),

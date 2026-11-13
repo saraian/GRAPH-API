@@ -41,6 +41,16 @@ print("  onnxruntime", ort.__version__, "providers", ort_providers)
 require_cuda = os.environ.get("VITSAM_REQUIRE_CUDA", "1").strip().lower() in {
     "1", "true", "yes", "on"
 }
+if require_cuda and not torch.cuda.is_available():
+    raise SystemExit(
+        "VitSAM GPU check failed: PyTorch cannot access CUDA. Recreate the container "
+        "with NVIDIA GPU access (--gpus all) and verify the host NVIDIA Container Toolkit."
+    )
+if require_cuda:
+    try:
+        (torch.ones(1, device="cuda") + 1).cpu()
+    except RuntimeError as exc:
+        raise SystemExit(f"PyTorch GPU operation failed: {exc}") from exc
 if require_cuda and "CUDAExecutionProvider" not in ort_providers:
     raise SystemExit("VitSAM GPU check failed: CUDAExecutionProvider is unavailable")
 

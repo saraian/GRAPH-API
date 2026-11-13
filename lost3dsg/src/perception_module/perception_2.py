@@ -271,27 +271,41 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         self.file_logger = module_logger
         self.file_logger.info("=== DetectObjectsNode initialized ===")
 
+        self.boxer_runtime = None
+        _detector_type = CFG.get("perception", {}).get("detector", "vlm").lower()
+        if _detector_type == "boxer":
+            if CFG.get("perception", {}).get("backend", "local").lower() != "local":
+                raise ValueError("perception.detector=boxer requires perception.backend=local")
+            from boxer_runtime import BoxerRuntime
+            _boxer_cfg = dict(CFG.get("perception", {}).get("boxer", {}))
+            _boxer_cfg["excluded_labels"] = CFG.get("perception", {}).get("excluded_labels", [])
+            self.boxer_runtime = BoxerRuntime(_boxer_cfg)
+
         self.bridge = CvBridge()
         self.perception_backend = get_perception_backend(CFG)
         backend_type = CFG.get("perception", {}).get("backend", "local").lower()
         if backend_type == "local":
-            # The unified VLM response supplies the 2D boxes, so this path does
-            # not need a separate detector; VitSAM only lifts those boxes to masks.
+            # Native Boxer boxes bypass segmentation; VLM mode retains VitSAM.
             self.detector = None
-            self.vitsam = VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH)
+            self.vitsam = (None if _detector_type == "boxer" else
+                           VitSam(utils.ENCODER_VITSAM_PATH, utils.DECODER_VITSAM_PATH))
             # The cloud backend has always returned CLIP image features.  Instantiate the
             # identical local image encoder for the unified-VLM + VitSAM path, otherwise
             # `Detection.clip_embedding` remains None and appearance evidence silently
             # disappears before it reaches the graph.
             self.clip_embedder = ClipEmbedder.from_config(CFG)
+            detector_name = ("Boxer native 3D boxes + full-frame VLM semantics"
+                             if _detector_type == "boxer"
+                             else "unified whole-scene VLM boxes")
+            segmentation_name = "" if _detector_type == "boxer" else " with local VitSAM"
             if self.clip_embedder is None:
                 self.file_logger.info(
-                    "Using unified whole-scene VLM boxes with local VitSAM; "
+                    f"Using {detector_name}{segmentation_name}; "
                     "appearance embeddings disabled"
                 )
             else:
                 self.file_logger.info(
-                    "Using unified whole-scene VLM boxes with local VitSAM and "
+                    f"Using {detector_name}{segmentation_name}; "
                     f"CLIP appearance ({self.clip_embedder.model_id}, "
                     f"device={self.clip_embedder.device}, "
                     f"dim={self.clip_embedder.dimension})"
@@ -307,7 +321,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         # without saying which backend produced it.
         _pp = (CFG.get("perception_parallel") or {})
         self._bbox_fusion_measurement = None
-        if _pp.get("enabled", False):
+        if _pp.get("enabled", False) and _detector_type != "boxer":
             self._bbox_fusion_encoder = ParallelFusionEncoder.from_config(CFG)
             self.log_both(
                 "info",
@@ -416,10 +430,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                                   f"(compressed, decoded at lookup)")
 
         # The live a6 gate waits for this marker before it samples the camera transform.
-        # Write it only after the node has loaded VitSAM and completed all startup work.
+        # Keep the historical marker name for the gate, including native Boxer mode.
+        # Write it only after the selected backend has completed all startup work.
         # The gate and this process share the archive directory, so no extra environment
         # variable is required in the normal container launch.
-        if self.vitsam is not None:
+        if self.vitsam is not None or self.boxer_runtime is not None:
             ready_path = os.environ.get("VITSAM_READY_FILE") or os.path.join(
                 os.fspath(self.detection_archive.root), "vitsam_ready")
             ready_tmp = f"{ready_path}.{os.getpid()}.tmp"
@@ -428,9 +443,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 with open(ready_tmp, "w", encoding="utf-8") as ready_file:
                     ready_file.write("ready\n")
                 os.replace(ready_tmp, ready_path)
-                self.log_both("info", f"VitSAM readiness marker written: {ready_path}")
+                self.log_both("info", f"Perception readiness marker written: {ready_path}")
             except OSError as exc:
-                self.log_both("error", f"Could not write VitSAM readiness marker: {exc}")
+                self.log_both("error", f"Could not write Perception readiness marker: {exc}")
 
         self.get_logger().info("Perception startup ready")
 
@@ -1160,9 +1175,10 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         _mark("archive")
         self._attach_crop_embeddings(detections, crops_data)
         _mark("embeddings")
-        # All perception backends consume the same whole-frame VLM reply. Reuse its
-        # attributes here so the VLM workflow remains one request regardless of where
-        # detection and segmentation are supplied.
+        # In Boxer mode, OWLv2 supplies indexed 2D proposals and candidate labels; the
+        # VLM refines semantics from the full frame while BoxerNet computes 3D geometry.
+        # Other detector modes use the whole-frame VLM result. Each Detection already
+        # carries the chosen semantics here.
         vlm_results = self._unified_scene_description_results(detections)
         descriptions = self._build_descriptions(detections, vlm_results, crops_data)
         _mark("describer_queue")
@@ -1398,6 +1414,8 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
 
     def _compute_3d_geometry(self, detections, depth, camera_info, transform):
         self.clear_accumulated_markers()
+        if CFG.get("perception", {}).get("detector", "vlm").lower() == "boxer":
+            return self._compute_boxer_geometry(detections)
         all_masks = [det.mask[:, :, 0] for det in detections]
         instance_labels = [det.instance_label for det in detections]
         points = []
@@ -1653,9 +1671,12 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
         return results
 
     def _unified_scene_description_results(self, detections):
-        """Adapt same-call scene attributes to the existing description seam."""
+        """Adapt the active VLM semantics to the existing description message."""
         results = {}
         model = CFG.get("vlm", {}).get("model", "unknown")
+        source = ("boxer_guided_full_frame_vlm" if str(
+            CFG.get("perception", {}).get("detector", "vlm")).lower() == "boxer"
+                  else "unified_scene_call")
         unknown = {"", "unknown", "none", "n/a"}
         for det in detections:
             values = {
@@ -1666,7 +1687,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             values["provenance"] = {
                 "model": model,
                 "status": "ok" if has_answer else "model_abstained",
-                "source": "unified_scene_call",
+                "source": source,
             }
             results[det.instance_label] = values
         return results
@@ -1887,6 +1908,11 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             # what the generic hasattr loop above could not express -- it would have written
             # yaw=0.0 for an object with no orientation and left the reader unable to tell
             # that from a genuine yaw of zero.
+            if hasattr(box_msg, "has_boxer_confidence"):
+                score = bbox_3d.get("boxer_confidence")
+                box_msg.has_boxer_confidence = score is not None and bool(np.isfinite(score))
+                if box_msg.has_boxer_confidence:
+                    box_msg.boxer_confidence = float(score)
             oc, oe = bbox_3d.get("oriented_center"), bbox_3d.get("oriented_extents")
             if oc is not None and oe is not None and len(oc) == 3 and len(oe) == 3:
                 box_msg.has_orientation = True
@@ -1935,6 +1961,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 box_msg.has_fusion_voxels = False
             msg.boxes.append(box_msg)
         self.bbox_pub.publish(msg)
+        self.get_logger().info(
+            f"[PERCEPTION-TX] bbox cycle={cycle_id} boxes={len(msg.boxes)} "
+            f"fusion_values={sum(len(box.fusion_voxel_keys) for box in msg.boxes)}")
 
     def _publish_description_array(self, detections, descriptions, cycle_stamp, cycle_id=""):
         desc_array = self.make_header_msg(ObjectDescriptionArray, stamp=cycle_stamp, frame_id=world_frame())
@@ -2182,6 +2211,9 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
             self._vlm_executor.shutdown(wait=False)
         except Exception:
             pass
+        if getattr(self, "boxer_runtime", None) is not None:
+            self.boxer_runtime.close()
+            self.boxer_runtime = None
         super().destroy_node()
 
 

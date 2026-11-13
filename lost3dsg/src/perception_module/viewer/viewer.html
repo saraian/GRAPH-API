@@ -3978,6 +3978,8 @@
     const EDGE_TYPES = [
       { rel: 'isLocatedIn', match: ['isLocatedIn'], color: '#38bdf8', dashed: true,
         name: 'isLocatedIn', note: '(Room containment)', on: true },
+      { rel: 'doorway', match: ['doorway'], color: '#fb7185',
+        name: 'doorway', note: '(Room-to-room passage)', on: true },
       { rel: 'isIn', match: ['isIn'], color: '#38bdf8', dashed: true,
         name: 'isIn', note: '(Membership)', on: false },
       { rel: 'isOn', match: ['isOn', 'supports'], color: '#f59e0b',
@@ -4805,7 +4807,8 @@
       if (edge.hasClass('semantic-summary-edge')) return semanticLevel !== 'detail';
       if (semanticLevel === 'overview') return false;
       const relation = edge.data('label');
-      const structural = relation === 'isLocatedIn' || relation === 'isIn' ||
+      const structural = relation === 'isLocatedIn' || relation === 'doorway' ||
+        relation === 'isIn' ||
         relation === 'isOn' || relation === 'supports';
       if (semanticLevel === 'room') return structural;
       if (!semanticFocusNodeId) return structural;
@@ -6454,6 +6457,11 @@
               'line-style': 'dashed'
             }
           },
+          { selector: 'edge[label="doorway"]', style: {
+              'line-color': '#fb7185', 'target-arrow-shape': 'none',
+              'target-arrow-color': '#fb7185', 'color': '#fda4af',
+              'width': 3, 'line-style': 'solid'
+          } },
           { selector: 'edge[label="isIn"]', style: { 'line-color': '#38bdf8', 'target-arrow-color': '#38bdf8', 'color': '#38bdf8' } },
           { selector: 'edge[label="supports"]', style: { 'line-color': '#f59e0b', 'target-arrow-color': '#f59e0b', 'color': '#f59e0b' } },
           { selector: 'edge[label="isOn"]', style: { 'line-color': '#f59e0b', 'target-arrow-color': '#f59e0b', 'color': '#f59e0b' } },

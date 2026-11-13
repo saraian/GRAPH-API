@@ -10,12 +10,22 @@ from std_msgs.msg import ColorRGBA
 import config 
 from rclpy.time import Time
 from scene_analysis import clip_pixel_bbox
+from functools import wraps
+from threading import RLock
 
 bridge = CvBridge()
 
 file_path = os.path.abspath(__file__)
 ENCODER_VITSAM_PATH = config.CFG["paths"]["vitsam_encoder"] or os.path.join(os.path.dirname(file_path), "utils", "l2_encoder.onnx")
 DECODER_VITSAM_PATH = config.CFG["paths"]["vitsam_decoder"] or os.path.join(os.path.dirname(file_path), "utils", "l2_decoder.onnx")
+
+
+def _camera_cache_locked(method):
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._cache_lock:
+            return method(self, *args, **kwargs)
+    return locked
 
 
 class SyncedCameraData:
@@ -30,6 +40,9 @@ class SyncedCameraData:
             sync_tolerance_ms: Not used (kept for compatibility)
         """
         self.node = node
+        # ROS sensor and timer callbacks run concurrently. Conversion and cache
+        # consumption must see the same complete frame, including its transform.
+        self._cache_lock = RLock()
         self.bridge = CvBridge()
         self.sync_tolerance_sec = float(sync_tolerance_ms) / 1000.0
         self.default_camera_frame = config.CFG["frames"]["camera"]
@@ -74,6 +87,7 @@ class SyncedCameraData:
         node.create_subscription(CameraInfo, '/camera/camera_info', self._camera_info_callback, qos_sensor)
         self.node.get_logger().info("Subscriptions created!")
 
+    @_camera_cache_locked
     def _rgb_callback(self, msg):
         """ALWAYS updates with the most recent RGB"""
         first_time = self.cached_rgb is None
@@ -84,6 +98,7 @@ class SyncedCameraData:
         # Always try to get the transform
         self._try_get_transform()
 
+    @_camera_cache_locked
     def _depth_callback(self, msg):
         """ALWAYS updates with the most recent Depth"""
         first_time = self.cached_depth is None
@@ -93,6 +108,7 @@ class SyncedCameraData:
             self._check_all_ready()
         self._try_get_transform()
 
+    @_camera_cache_locked
     def _camera_info_callback(self, msg):
         """Keep the latest CameraInfo header stamp aligned with the current frame."""
         first_time = self.cached_camera_info is None
@@ -102,6 +118,7 @@ class SyncedCameraData:
         self._check_all_ready()
         self._try_get_transform()
 
+    @_camera_cache_locked
     def _try_get_transform(self):
         if self.cached_rgb is None:
             return
@@ -171,6 +188,7 @@ class SyncedCameraData:
                 self.node.get_logger().warn(f"Transform not available: {e}")
                 self._transform_error_logged = True
 
+    @_camera_cache_locked
     def _check_all_ready(self):
         """Checks if we have ALL the data"""
         if (self.cached_rgb is not None and
@@ -181,6 +199,7 @@ class SyncedCameraData:
                 self.node.get_logger().info("OK - All data ready!")
                 self.all_ready = True
 
+    @_camera_cache_locked
     def get_synced_data(self, max_age=None, *, consume=True):
         # GA-164: reachable, not hardcoded. 1.0 s was a literal default that no config could
         # reach -- the same class as the three unreachable settings found tonight -- and it

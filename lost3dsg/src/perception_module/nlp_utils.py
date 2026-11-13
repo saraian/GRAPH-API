@@ -15,16 +15,22 @@ class SemanticEmbedder:
     def __init__(self):
         self.st_model = None
         self.w2v_model = None
+        self._st_encode_error_reported = False
 
         # 1. Try SentenceTransformer (high accuracy, handles any open-vocabulary phrase)
         try:
             from sentence_transformers import SentenceTransformer
-            cache_folder = os.environ.get("HF_HOME") or "/models/hf"
+            # HF_HOME is the cache root; Hub snapshots live in its `hub/` child.
+            # SentenceTransformer's `cache_folder` is passed as HF Hub's cache_dir,
+            # so giving it HF_HOME itself makes offline lookup miss an otherwise
+            # populated cache at $HF_HOME/hub.
+            cache_folder = (os.environ.get("HF_HUB_CACHE") or
+                            os.path.join(os.environ.get("HF_HOME", "/models/hf"), "hub"))
             self.st_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", cache_folder=cache_folder)
             print("[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅")
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[NLP] SentenceTransformer load failed: {type(exc).__name__}: {exc}")
 
         # 2. Fallback to Word2Vec KeyedVectors
         try:
@@ -36,6 +42,8 @@ class SemanticEmbedder:
                 print(f"[NLP] Loaded Word2Vec from {path} ✅")
         except Exception as exc:
             print(f"[NLP] Word2Vec fallback notice: {exc}")
+        if self.st_model is None and self.w2v_model is None:
+            print("[NLP] No semantic encoder loaded; description embeddings are unavailable")
 
     def encode(self, text: str):
         text = text.lower().strip()
@@ -50,8 +58,10 @@ class SemanticEmbedder:
                     emb = emb / norm
                 _EMB_CACHE[text] = emb
                 return emb
-            except Exception:
-                pass
+            except Exception as exc:
+                if not self._st_encode_error_reported:
+                    print(f"[NLP] SentenceTransformer encode failed: {type(exc).__name__}: {exc}")
+                    self._st_encode_error_reported = True
 
         if self.w2v_model is not None:
             words = text.replace("_", " ").split()
@@ -235,11 +245,9 @@ def get_embedding(model, text):
         # on the FIRST word, the handler at the bottom printed it, and this returned None.
         #
         # So every description embedding was None WITH THE SENTENCETRANSFORMER LOADED AND
-        # WORKING. lost_similarity drops a term with no evidence on either side and
-        # renormalises, so the description term -- weight 0.50, the LARGEST of the four --
-        # has never once entered an association decision. Label 0.05 / colour 0.30 /
-        # material 0.15 renormalise to 0.10 / 0.60 / 0.30: colour has been deciding
-        # associations at double its configured weight.
+        # WORKING. At the time, lost_similarity dropped the missing description term and
+        # renormalised the remaining configured weights; this made colour outweigh its
+        # configured share. The current weights are documented in config/graphapi.yaml.
         #
         # Era (rule 34): the in/[] pattern predates the extension and was correct for the model it
         # had; the None-state dates to 683a2b0, 2026-08-26, when the SemanticEmbedder
@@ -317,11 +325,9 @@ def lost_similarity(word2vec_model, label1, label2, color1, color2, material1, m
     Calculate overall similarity between two objects using:
     lost_similarity = alpha*label_sim + beta*color_sim + gamma*material_sim + delta*desc_sim
 
-    MODIFIED v7: Optimized weights to give more importance to description
-    - alpha (label):       0.25 (25%)
-    - beta (color):        0.20 (20%) - USES RGB DISTANCE instead of word2vec
-    - gamma (material):    0.15 (15%) - reduced because "paper" matched too much
-    - delta (description): 0.40 (40%) - increased to distinguish similar objects
+    Weights are configured in the `similarity` section and renormalised over the
+    attributes that are measurable for both objects. Color uses RGB distance rather
+    than word2vec.
 
     Args:
         word2vec_model: Word2vec model for semantic similarity
@@ -347,10 +353,11 @@ def lost_similarity_detailed(word2vec_model, label1, label2, color1, color2,
     description are all absent the score is the label term alone -- and two identical label
     strings short-circuit to 1.0 inside semantic_similarity before any model is consulted.
 
-    Measured against the live config:
-        same label, nothing else measured      -> 1.0000   (merge gate is 0.9250: MERGES)
-        same label, colours disagree           -> 0.1429
-        different labels, nothing else         -> 0.0000
+    With the current weights, a same-label pair with no other measurable terms scores
+    1.0 on the label term, but the merge evidence gate prevents a label-only merge. If
+    the only additional term is maximally disagreeing color, label and color each weigh
+    0.25 and the normalized score is 0.5. Different labels with no optional evidence
+    score according to the label semantic similarity alone.
 
     So ADDING EVIDENCE LOWERS THE SCORE. The least-informed pair in the map is the highest
     scoring one, and the gate is most confident exactly where it knows least. That is why

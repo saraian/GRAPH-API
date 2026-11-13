@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import copy
 import io
 import json
 import math
@@ -62,6 +63,60 @@ def _cluster_heights(values, tolerance):
         else:
             groups[-1].append(height)
     return [float(np.median(group)) for group in groups]
+
+
+def region_floor_height(native_height, lower_y, tolerance=0.50):
+    """Reject missing/default floor heights inconsistent with the region geometry.
+
+    Some Habitat bindings return zero for every SemanticRegion.floor_height,
+    including upper storeys. Zero is valid only when close to the region base.
+    Habitat boxes are Y-up; this must run before conversion to ROS coordinates.
+    """
+    try:
+        height = float(native_height)
+    except (TypeError, ValueError):
+        height = float('nan')
+    base = float(lower_y)
+    if not math.isfinite(base):
+        raise ValueError('Region base height must be finite')
+    if not math.isfinite(height) or abs(height - base) > tolerance:
+        return base
+    return height
+
+
+def repair_cached_region_floors(manifest, tolerance=0.50):
+    """Repair legacy Habitat GT floor metadata without changing its geometry.
+
+    Cached manifests otherwise retain the all-zero floor bug indefinitely.
+    Leave non-Habitat fixtures and manifests lacking complete region boxes alone.
+    """
+    frame = str((manifest.get('geometry_space') or {}).get('coordinate_frame', ''))
+    rows = manifest.get('ground_truth_regions', [])
+    if not frame.startswith('Habitat:') or not rows:
+        return manifest
+    if not all(len(row.get('aabb_min_m', [])) == 3 for row in rows):
+        return manifest
+    heights = [region_floor_height(row.get('floor_height_m'), row['aabb_min_m'][1], tolerance)
+               for row in rows]
+    if all(height == row.get('floor_height_m') for height, row in zip(heights, rows)):
+        return manifest
+    result = copy.deepcopy(manifest)
+    floors = _cluster_heights(heights, tolerance)
+    source = result.setdefault('ground_truth_source', {})
+    if source.get('selected_floor_index') is not None and len(floors) > 1:
+        raise ValueError('Cached selected-floor GT contains multiple storeys; regenerate the full GT')
+    for row, height in zip(result['ground_truth_regions'], heights):
+        row['floor_height_m'] = height
+        row['floor_index'] = int(np.argmin(np.abs(np.asarray(floors) - height)))
+    result['ground_truth_floors_m'] = floors
+    if source.get('selected_floor_index') is None:
+        source['all_floor_heights_m'] = floors
+    source['floor_metadata_repair'] = {
+        'method': 'validate_floor_height_against_habitat_region_base',
+        'tolerance_m': tolerance,
+        'previous_floor_heights_m': manifest.get('ground_truth_floors_m', []),
+    }
+    return result
 
 
 def _aabb(entity):
@@ -832,7 +887,8 @@ def extract(sim, scene: Path, region_resolution=0.10, object_voxel=0.10,
                 flush=True,
             )
             continue
-        floor_height = float(getattr(region, "floor_height", box[0][1]))
+        floor_height = region_floor_height(
+            getattr(region, "floor_height", None), box[0][1], floor_tolerance)
         if geometry_source == "semantic_object_aabb_envelope":
             floor_height = float(box[0][1])
         if not math.isfinite(floor_height):

@@ -608,6 +608,18 @@ def match_details(scenes, region_threshold, object_threshold, include_all_pairs=
             associations = (object_assignment(pred, gt, None)
                             if name == "objects" else hovsg_region_assignment(pred, gt, None))
             for pi, gi, score in associations:
+                if name == "objects":
+                    pred_centre, gt_centre = _centre(pred[pi]), _centre(gt[gi])
+                    distance_m = (float(np.linalg.norm(pred_centre - gt_centre))
+                                  if pred_centre is not None and gt_centre is not None else None)
+                    # Object detection is gated in metres when centres exist;
+                    # legacy mask-only manifests use the geometric IoU gate.
+                    passes_threshold = (True if threshold is None else
+                                        (distance_m <= threshold if distance_m is not None
+                                         else score > threshold))
+                else:
+                    distance_m = None
+                    passes_threshold = True if threshold is None else score > threshold
                 rows.append({
                     "predicted_index": pi,
                     "predicted_id": _entity_id(pred[pi], pi, name[:-1]),
@@ -616,7 +628,8 @@ def match_details(scenes, region_threshold, object_threshold, include_all_pairs=
                     "ground_truth_id": _entity_id(gt[gi], gi, name[:-1]),
                     "ground_truth_label": gt[gi].get("category_name"),
                     "iou": round(score, 6),
-                    "passes_metric_threshold": True if threshold is None else score > threshold,
+                    **({"center_distance_m": round(distance_m, 6)} if distance_m is not None else {}),
+                    "passes_metric_threshold": passes_threshold,
                 })
             block = {"threshold": threshold, "assigned_matches": rows,
                      "predicted_count": len(pred), "ground_truth_count": len(gt)}
@@ -846,15 +859,16 @@ def objects(scenes, threshold=.5):
         if categories is None:
             categories = []
         class_names = _semantic_classes(s, len(categories))
-        # top_k.py evaluates the Hungarian object associations themselves;
-        # its semantic curve is not additionally filtered by the IoU threshold.
+        # Semantic ranking is meaningful only for eligible object associations;
+        # eligibility uses HOV-SG's max directional AABB overlap above 0.5.
         incompatible = (s.get("category_embedding_model") and
                         s.get("object_embedding_model") and
                         s["category_embedding_model"] != s["object_embedding_model"])
-        # HOV-SG classification uses Hungarian AABB-IoU associations and
-        # applies IoU > 0.5 after assignment; it is independent of the
-        # centre-distance operating point used by the spatial table.
-        semantic_matches = [] if incompatible else hovsg_object_assignment(pred, gt)
+        # HOV-SG uses maximum directional AABB overlap for association. Keep
+        # only pairs above its 0.5 eligibility threshold for semantic scoring.
+        semantic_matches = ([] if incompatible else
+                            [match for match in hovsg_object_assignment(pred, gt)
+                             if match[2] > 0.5])
         semantic_match_total += len(semantic_matches)
         accuracy, auc, classified = _top_k_semantics(
             semantic_matches, pred, gt, categories, class_names)
@@ -886,12 +900,9 @@ def objects(scenes, threshold=.5):
     out["object_recall_pct"] = out["recall_pct"]
     out["matched_object_iou_mean"] = round(sum(geometric_matches)/len(geometric_matches),4) if geometric_matches else None
     out["box_quality_mean"] = {"iou_3d": out["matched_object_iou_mean"]}
-    out["matched_objects_iou_gt_0.5"] = len(geometric_matches)
+    out["matched_objects_iou_gt_0.5"] = sum(iou > 0.5 for iou in geometric_matches)
     out["classified_matched_objects"] = classified_matches
-    out["top_k_eligible_pairs"] = sum(
-        len(hovsg_object_assignment(filtered_scene(s).get("predicted_objects", []),
-                                    filtered_scene(s).get("ground_truth_objects", [])))
-        for s in scenes)
+    out["top_k_eligible_pairs"] = semantic_match_total
     out["top_k_unclassified_pairs"] = semantic_match_total - classified_matches
     out["top_k_embedding_coverage_pct"] = (round(100 * classified_matches / semantic_match_total, 4)
                                             if semantic_match_total else None)
@@ -902,18 +913,21 @@ def objects(scenes, threshold=.5):
     out["top_k_association_details"] = [{"scene": str(s.get("scene", "unknown")),
                                           "associations": [{"predicted_index": pi,
                                                              "ground_truth_index": gi,
-                                                             "iou": round(score, 6)}
+                                                             "overlap": round(score, 6)}
                                                             for pi, gi, score in hovsg_object_assignment(
                                                                 filtered_scene(s).get("predicted_objects", []),
-                                                                filtered_scene(s).get("ground_truth_objects", []))]}
+                                                                filtered_scene(s).get("ground_truth_objects", []))
+                                                            if score > 0.5]}
                                          for s in scenes]
     semantic_labels = []
     for s in scenes:
         fs = filtered_scene(s)
-        for pi, gi, _ in hovsg_object_assignment(fs.get("predicted_objects", []), fs.get("ground_truth_objects", [])):
+        for pi, gi, overlap in hovsg_object_assignment(fs.get("predicted_objects", []), fs.get("ground_truth_objects", [])):
+            if overlap <= 0.5:
+                continue
             semantic_labels.append(str(fs["predicted_objects"][pi].get("label", "")).casefold() ==
                                    str(fs["ground_truth_objects"][gi].get("category_name", "")).casefold())
-    out["semantic_accuracy_pct"] = round(100 * sum(semantic_labels) / len(semantic_labels), 4) if semantic_labels else 0
+    out["semantic_accuracy_pct"] = round(100 * sum(semantic_labels) / len(semantic_labels), 4) if semantic_labels else None
     out["distance_sweep"] = {str(distance): {"matched_objects": sum(
         len(object_assignment(filtered_scene(s).get("predicted_objects", []),
                               filtered_scene(s).get("ground_truth_objects", []), distance))

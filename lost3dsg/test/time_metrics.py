@@ -38,7 +38,8 @@ import math
 import pathlib
 import sys
 
-STAGES = ("total_ms", "vlm_ms", "latency_ms", "sam_ms", "nms_ms", "projection_ms",
+STAGES = ("total_ms", "vlm_ms", "latency_ms", "owlv2_ms", "boxernet_ms",
+          "sam_ms", "nms_ms", "projection_ms",
           "backend_overhead_ms", "wire_ms", "cycle_ms")
 ONLINE_STAGES = ("vlm_ms", "wire_ms", "backend_overhead_ms")
 MOVE_M = 0.01          # 1 cm
@@ -227,9 +228,11 @@ def _selfcheck():
             "".join(json.dumps(f) + "\n" for f in frames))
         (b / "perception_latencies.jsonl").write_text(
             json.dumps({"total_ms": 1000, "vlm_ms": 400, "wire_ms": 100,
-                        "backend_overhead_ms": 50, "sam_ms": 200}) + "\n"
+                        "backend_overhead_ms": 50, "sam_ms": 200,
+                        "boxernet_ms": 60, "owlv2_ms": 150}) + "\n"
             + json.dumps({"total_ms": 3000, "vlm_ms": 900, "wire_ms": 200,
-                          "backend_overhead_ms": 100, "sam_ms": 300}) + "\n")
+                          "backend_overhead_ms": 100, "sam_ms": 300,
+                          "boxernet_ms": 80, "owlv2_ms": 170}) + "\n")
         (b / "hook_decisions.jsonl").write_text(
             json.dumps({"t": 2.5, "kind": "admission", "outcome": "admit"}) + "\n")
         m = compute(b)
@@ -237,6 +240,9 @@ def _selfcheck():
         assert m["online_time_s"] == round((400 + 100 + 50 + 900 + 200 + 100) / 1000, 1), m
         assert m["first_frame_to_kg_s"] == 2.5, m
         assert m["latency_ms"]["total_ms"]["median"] == 2000.0, m["latency_ms"]["total_ms"]
+        assert m["latency_ms"]["boxernet_ms"] == {
+            "median": 70.0, "p95": 79.0, "max": 80.0, "n": 2}, m["latency_ms"]
+        assert m["latency_ms"]["owlv2_ms"]["median"] == 160.0, m["latency_ms"]
         assert m["cycles"] == 2 and m["decisions"] == 1, m
         # AN ABSENT SOURCE IS null AND SAYS SO, never 0.
         b2 = pathlib.Path(d) / "empty"

@@ -98,9 +98,12 @@ def mount_plan(root, arguments, inherited, *, host_view=False, host_root=Path("/
     add(local.parent, True)
     defaults = {"workspace": root, "models": root / "models/efficientvit_sam",
                 "cache": root / "models/huggingface", "bags": root / "bags",
+                "boxer_checkpoints": root / "models/boxer/ckpts",
                 "pal_bundle": root / "TIAGO_ISO"}
     for key, env_key in PATH_ENV.items():
         value = env.get(env_key)
+        if key == "boxer_checkpoints" and value == "/opt/boxer/ckpts":
+            value = None  # This container path is not a valid Docker-host source.
         if value:
             path = absolute(value, root, home)
         else:
@@ -108,6 +111,10 @@ def mount_plan(root, arguments, inherited, *, host_view=False, host_root=Path("/
             if value is None:
                 continue
             path = absolute(value, local.parent, home)
+        if key == "boxer_checkpoints":
+            # The detached supervisor must inherit the host-side source path so
+            # its nested simulation container can bind-mount the downloaded files.
+            env[env_key] = str(path)
         flag = key.replace("_", "-")
         if flag in selected:
             path = absolute(selected[flag], root, home)

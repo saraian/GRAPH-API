@@ -49,6 +49,8 @@ install(PROGRAMS
   src/perception_module/metrics_eval_visualize.py
   src/perception_module/extract_hovsg_object_embeddings.py
   src/perception_module/perception_2.py
+  src/perception_module/boxer_runtime.py
+  src/perception_module/boxer_worker.py
   src/perception_module/cv_utils.py
   src/perception_module/utils.py
   src/perception_module/detection_pipeline.py
@@ -57,6 +59,8 @@ install(PROGRAMS
   src/perception_module/perception_utils.py
   src/perception_module/object_manager_6.py
   src/perception_module/object_services.py
+  src/perception_module/object_evidence.py
+  src/perception_module/boxer_geometry.py
   src/perception_module/scan_hook.py
   src/perception_module/room_manager.py
   # GA-299. habitat_camera_node.py is NOT installed: it is a HOST-side node. It imports
@@ -132,6 +136,7 @@ install(FILES
   src/perception_module/prompts/object_identification_prompt.txt
   src/perception_module/prompts/visual_prompt.txt
   src/perception_module/prompts/scene_analysis_prompt.txt
+  src/perception_module/prompts/boxer_guided_semantics_prompt.txt
   DESTINATION lib/${PROJECT_NAME}/prompts
 )
 install(DIRECTORY src/perception_module/data

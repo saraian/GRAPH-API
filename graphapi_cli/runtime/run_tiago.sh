@@ -718,6 +718,14 @@ stage_private_builder() {
   # cp is runtime staging, not a second source tree: the checked-in helpers
   # remain authoritative and are synced again on every run.
   cp -a "$TIAGO_HELPER_DIR/." "$TIAGO_BUILDER_STAGE/found-docker/"
+  # These checked-in config assets are symlinks into config/. The private
+  # builder uses found-docker as its Docker context, so stage regular files
+  # there. Remove an older staged symlink first; cp otherwise follows it.
+  local rel
+  for rel in tiago_robot.yaml tiago_bag.yaml tiago_bag_rtabmap.yaml tiago_live.rviz; do
+    rm -f -- "$TIAGO_BUILDER_STAGE/found-docker/$rel"
+    cp -L -- "$TIAGO_HELPER_DIR/$rel" "$TIAGO_BUILDER_STAGE/found-docker/$rel"
+  done
   local key
   if key=$(private_apt_key); then
     cp -- "$key" "$TIAGO_BUILDER_STAGE/found-docker/pal-apt-keys.deb"
@@ -762,7 +770,11 @@ create_container() {
   args+=("$TIAGO_DOCKER_TARGET")
 
   echo "creating $CONTAINER with the private TIAGo Docker builder"
-  bash "$builder_script" "${args[@]}"
+  TIAGO_EXCHANGE_DIR=${TIAGO_EXCHANGE_DIR:-$TIAGO_BUILDER_STAGE/exchange} \
+  HF_HOME=${HF_HOME:-$TIAGO_BUILDER_STAGE/huggingface} \
+  BOXER_ROOT=${BOXER_ROOT:-$REPO_DIR/third_party/boxer} \
+  GRAPHAPI_BOXER_CHECKPOINTS=${GRAPHAPI_BOXER_CHECKPOINTS:-$REPO_DIR/models/boxer/ckpts} \
+    bash "$builder_script" "${args[@]}"
 }
 
 ensure_container() {

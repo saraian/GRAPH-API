@@ -58,3 +58,7 @@ float32[] clip_embedding
 bool has_fusion_voxels
 float32 fusion_voxel_size_m
 int32[] fusion_voxel_keys
+
+# Native Boxer 3D confidence; absent for other detector modes.
+bool has_boxer_confidence
+float32 boxer_confidence

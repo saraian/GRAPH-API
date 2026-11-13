@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from metrics_eval import hovsg_region_assignment
+from hm3d_ground_truth_manifest import repair_cached_region_floors
 
 
 def _load(path, default, required=False):
@@ -199,6 +200,7 @@ def _rotate_ros_aabb(box, yaw_deg):
 
 
 def build(gt, run_dir, persistent_path=None, prediction_yaw_deg=0.0):
+    gt = repair_cached_region_floors(gt)
     room_doc = _load(run_dir / "room.json", {}, required=True)
     bev = _load(run_dir / "bev_data.json", {}, required=True)
     objects = _load(persistent_path or run_dir / "persistent_perception.json", [],

@@ -1040,12 +1040,19 @@ def _resolve_api_key():
             or os.environ.get("OPENROUTER_API_KEY", "")
         )
     else:
-        key = (
-            vlm.get("api_key")
-            or os.environ.get("OPENAI_API_KEY")
-            or os.environ.get("REGOLO_API_KEY")
-            or os.environ.get("OPENROUTER_API_KEY", "")
-        )
+        try:
+            host = (urllib.parse.urlparse(str(vlm.get("base_url", ""))).hostname or "").lower()
+        except Exception:
+            host = ""
+        # When both variables are present, use the credential named for the selected
+        # endpoint. run_sim may also mirror REGOLO_API_KEY into OPENAI_API_KEY for
+        # OpenAI-compatible clients, so the generic variable must not shadow Regolo's key.
+        endpoint_keys = (("REGOLO_API_KEY", "OPENAI_API_KEY")
+                         if host == "api.regolo.ai" else
+                         ("OPENAI_API_KEY", "REGOLO_API_KEY"))
+        key = vlm.get("api_key") or next(
+            (os.environ.get(name) for name in endpoint_keys + ("OPENROUTER_API_KEY",)
+             if os.environ.get(name)), "")
     if not key:
         legacy = os.path.join(os.path.dirname(__file__), "api.txt")
         if os.path.exists(legacy):
@@ -1200,7 +1207,8 @@ def _gemini_generation_config(response_format=None):
     return generation
 
 
-def _gemini_payload(prompt, encoded_image=None, response_format=None, image_mime_type=None):
+def _gemini_payload(prompt, encoded_image=None, response_format=None, image_mime_type=None,
+                    additional_images=None):
     """Build the REST body used by Google's ``contents``/``parts`` API."""
     vlm = CFG.get("vlm", {}) or {}
     parts = [{"text": prompt}]
@@ -1211,6 +1219,18 @@ def _gemini_payload(prompt, encoded_image=None, response_format=None, image_mime
                 "data": encoded_image,
             }
         })
+    for image in additional_images or ():
+        if not isinstance(image, dict) or not image.get("encoded_image"):
+            continue
+        label = str(image.get("label") or "Additional image")
+        parts.append({"text": f"\n{label}"})
+        parts.append({
+            "inlineData": {
+                "mimeType": image.get("mime_type") or
+                            image_mime_type or vlm.get("image_mime_type", "image/png"),
+                "data": image["encoded_image"],
+            }
+        })
     payload = {"contents": [{"role": "user", "parts": parts}]}
     generation_config = _gemini_generation_config(response_format)
     if generation_config:
@@ -1219,13 +1239,14 @@ def _gemini_payload(prompt, encoded_image=None, response_format=None, image_mime
 
 
 def _gemini_completion(prompt, encoded_image, timeout, response_format=None, model=None,
-                       image_mime_type=None):
+                       image_mime_type=None, additional_images=None):
     """Perform one Gemini REST request and return ``(text, usage, request_id)``."""
     payload = _gemini_payload(
         prompt,
         encoded_image,
         response_format=response_format,
         image_mime_type=image_mime_type,
+        additional_images=additional_images,
     )
     request = urllib.request.Request(
         _gemini_endpoint(model=model),
@@ -1276,7 +1297,8 @@ def _gemini_completion(prompt, encoded_image, timeout, response_format=None, mod
 
 
 def vlm_call(prompt, encoded_image=None, timeout=None, response_format=None, image_detail=None,
-             trace_fn=None, request_kind="vlm", model=None, image_mime_type=None):
+             trace_fn=None, request_kind="vlm", model=None, image_mime_type=None,
+             additional_images=None):
     """One VLM round-trip. Transport failures (timeout, malformed envelope)
     retry up to cfg vlm.retries times, then raise — never silently degraded.
     A well-formed response is returned as-is (may be empty: a semantic outcome
@@ -1291,6 +1313,11 @@ def vlm_call(prompt, encoded_image=None, timeout=None, response_format=None, ima
     the boxes and attributes for the entire frame.
     """
     last_err = None
+    additional_images = [image for image in (additional_images or ())
+                         if isinstance(image, dict) and image.get("encoded_image")]
+    image_b64_chars = len(encoded_image or "") + sum(
+        len(image.get("encoded_image") or "") for image in additional_images)
+    image_count = int(bool(encoded_image)) + len(additional_images)
     attempts_total = CFG["vlm"]["retries"] + 1
     model_name = model or CFG["vlm"]["model"]
     gemini = _is_gemini_vlm()
@@ -1314,12 +1341,25 @@ def vlm_call(prompt, encoded_image=None, timeout=None, response_format=None, ima
                     response_format=response_format,
                     model=model_name,
                     image_mime_type=image_mime_type,
+                    additional_images=additional_images,
                 )
             else:
                 image_content = [{"type": "text", "text": prompt}]
                 if encoded_image:
                     mime_type = image_mime_type or "image/png"
                     image_url = {"url": f"data:{mime_type};base64,{encoded_image}"}
+                    if image_detail is not None:
+                        image_url["detail"] = image_detail
+                    image_content.append({"type": "image_url", "image_url": image_url})
+                for image in additional_images:
+                    image_content.append({
+                        "type": "text",
+                        "text": str(image.get("label") or "Additional image"),
+                    })
+                    image_url = {
+                        "url": f"data:{image.get('mime_type') or image_mime_type or 'image/png'};"
+                              f"base64,{image['encoded_image']}"
+                    }
                     if image_detail is not None:
                         image_url["detail"] = image_detail
                     image_content.append({"type": "image_url", "image_url": image_url})
@@ -1362,7 +1402,8 @@ def vlm_call(prompt, encoded_image=None, timeout=None, response_format=None, ima
                 "backoff_ms": round(backoff_s * 1000.0, 1),
                 "model": model_name,
                 "prompt_chars": len(prompt),
-                "image_b64_chars": len(encoded_image or ""),
+                "image_b64_chars": image_b64_chars,
+                "image_count": image_count,
                 "image_detail": image_detail,
                 "structured_response": response_format is not None,
                 "prompt_tokens": (usage.get("promptTokenCount") if isinstance(usage, dict)
@@ -1388,7 +1429,8 @@ def vlm_call(prompt, encoded_image=None, timeout=None, response_format=None, ima
                 "backoff_ms": round(backoff_s * 1000.0, 1),
                 "model": model_name,
                 "prompt_chars": len(prompt),
-                "image_b64_chars": len(encoded_image or ""),
+                "image_b64_chars": image_b64_chars,
+                "image_count": image_count,
                 "image_detail": image_detail,
                 "structured_response": response_format is not None,
                 "http_status": getattr(e, "status_code", None) or getattr(e, "code", None),

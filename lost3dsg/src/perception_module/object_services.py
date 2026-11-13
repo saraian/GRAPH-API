@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from functools import wraps
 from types import SimpleNamespace
 
 import association as assoc
+import boxer_geometry
 import numpy as np
 import rclpy
 from bbox_fusion import (
@@ -90,29 +92,36 @@ UNCERTAIN_MOVE_DISTANCE_M = CFG["association"].get("uncertain_move_distance_m", 
 # sim_threshold 0.85 that is 0.925. It is a knob, and it is the one to turn if the merge
 # rate is still high.
 MERGE_MAX_DISTANCE = CFG["association"].get("merge_max_distance_m", 0.8)
-# A very close, substantially overlapping re-detection of the same base label is stronger
-# identity evidence than a fluctuating VLM description. This is a separate geometry-
-# dominant lane rather than a lower global similarity threshold: distant or merely nearby
-# objects still have to satisfy the ordinary semantic gate.
-MERGE_NEAR_DISTANCE = float(CFG["association"].get("merge_near_distance_m", 0.02))
-MERGE_NEAR_IOU_THRESHOLD = float(CFG["association"].get(
-    "merge_near_iou_threshold", 0.25))
-if MERGE_NEAR_DISTANCE < 0.0:
-    raise ValueError(
-        f"association.merge_near_distance_m ({MERGE_NEAR_DISTANCE}) must be >= 0")
-if not 0.0 <= MERGE_NEAR_IOU_THRESHOLD <= 1.0:
-    raise ValueError(
-        f"association.merge_near_iou_threshold ({MERGE_NEAR_IOU_THRESHOLD}) must be in [0, 1]")
-# AABB broad-phase radius for the legacy merge criterion.  It is deliberately at least the
-# criterion's centre-distance threshold: a smaller margin could hide a valid merge before the
-# exact distance/similarity checks get to evaluate it.  This is a candidate-generation value,
-# not a second merge criterion.
+MERGE_MAX_SURFACE_GAP = float(CFG["association"].get("merge_max_surface_gap_m", 0.02))
+if not math.isfinite(MERGE_MAX_SURFACE_GAP) or MERGE_MAX_SURFACE_GAP < 0.0:
+    raise ValueError("association.merge_max_surface_gap_m must be finite and >= 0")
+# A conservative geometry identity override for repeated detections of the same class.
+# It is intentionally stricter than the broad-phase/locality gate above and never bypasses
+# room/distance gates, nor the minimum attribute-evidence requirement.
+MERGE_NEAR_DISTANCE_M = float(CFG["association"].get("merge_near_distance_m", 0.02))
+MERGE_NEAR_IOU_THRESHOLD = float(CFG["association"].get("merge_near_iou_threshold", 0.25))
+MERGE_NEAR_CONTAINMENT_THRESHOLD = float(CFG["association"].get(
+    "merge_near_containment_threshold", 0.80))
+MERGE_NEAR_MAX_VOLUME_RATIO = float(CFG["association"].get(
+    "merge_near_max_volume_ratio", 6.0))
+if (not all(math.isfinite(v) for v in (
+        MERGE_NEAR_DISTANCE_M, MERGE_NEAR_IOU_THRESHOLD,
+        MERGE_NEAR_CONTAINMENT_THRESHOLD, MERGE_NEAR_MAX_VOLUME_RATIO))
+        or MERGE_NEAR_DISTANCE_M < 0.0
+        or not 0.0 <= MERGE_NEAR_IOU_THRESHOLD <= 1.0
+        or not 0.0 <= MERGE_NEAR_CONTAINMENT_THRESHOLD <= 1.0
+        or MERGE_NEAR_MAX_VOLUME_RATIO < 1.0):
+    raise ValueError("invalid association.merge_near_* geometry override settings")
+# AABB broad-phase expansion for merge candidates. It must cover both the centre-distance
+# threshold and the surface-gap exception; this is a search bound, not a merge criterion.
 MERGE_AABB_MARGIN_M = float(CFG["association"].get(
     "merge_aabb_margin_m", MERGE_MAX_DISTANCE))
-if MERGE_AABB_MARGIN_M < MERGE_MAX_DISTANCE:
+if (not math.isfinite(MERGE_AABB_MARGIN_M)
+        or MERGE_AABB_MARGIN_M < max(MERGE_MAX_DISTANCE, MERGE_MAX_SURFACE_GAP)):
     raise ValueError(
         f"association.merge_aabb_margin_m ({MERGE_AABB_MARGIN_M}) must be >= "
-        f"merge_max_distance_m ({MERGE_MAX_DISTANCE}) so the AABB broad phase cannot hide "
+        f"both merge distance limits ({MERGE_MAX_DISTANCE}, {MERGE_MAX_SURFACE_GAP}) so "
+        "the AABB broad phase cannot hide "
         "a pair that the legacy merge criterion would evaluate")
 # GA-101: how many of the three OPTIONAL terms (colour, material, description) must have
 # been comparable for a merge to be allowed. 0 restores the old behaviour, where a pair
@@ -129,72 +138,6 @@ if MERGE_MIN_SIMILARITY <= SIM_THRESHOLD:
         f"than association.sim_threshold ({SIM_THRESHOLD}): merging two objects destroys an "
         f"identity and must demand more evidence than matching them, never less")
 
-
-def _merge_base_label(label):
-    """Return the identity label used by the geometry-dominant merge lane."""
-    return str(label or "").split("#", 1)[0].strip().casefold()
-
-
-def _near_geometry_duplicate(a, b, distance):
-    """Whether a close same-label pair has enough 3D overlap to bypass VLM similarity.
-
-    The distance check alone is intentionally insufficient: two small, adjacent objects can
-    have nearby centres without being the same object. Requiring AABB overlap keeps this
-    exception tied to the same measured volume rather than turning it into a broad distance
-    relaxation. Invalid geometry follows the normal gate.
-    """
-    if distance > MERGE_NEAR_DISTANCE:
-        return False, None
-    if _merge_base_label(getattr(a, "label", None)) != _merge_base_label(
-            getattr(b, "label", None)):
-        return False, None
-    try:
-        iou = float(compute_iou_3d(a.bbox, b.bbox))
-    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
-        return False, None
-    if not math.isfinite(iou):
-        return False, iou
-    return iou >= MERGE_NEAR_IOU_THRESHOLD, iou
-
-# GA-186. Which association engine decides a merge.
-#
-#   "legacy"   -- the hard-gate cascade: AABB candidates, then room-inequality -> similarity
-#                 < MERGE_MIN_SIMILARITY -> evidence -> distance > MERGE_MAX_DISTANCE, each
-#                 a refusal on a calibrated constant. The AABB stage is a broad phase and
-#                 does not change any of those exact merge criteria.
-#   "evidence" -- association.py: kNN candidates from each object's OWN covariance shell,
-#                 then fused log-odds over overlap / separation / co-visibility / ontology
-#                 / appearance / room, committed against log(cost_ratio). No calibrated
-#                 similarity threshold, and abstention is a first-class outcome.
-#
-# DEFAULT IS "legacy" ON PURPOSE: flipping the engine changes every decision the system
-# makes, and it must be an explicit act in a run config, not something a reader of this
-# file discovers afterwards in a bundle. Set association.merge_engine or MERGE_ENGINE=evidence.
-MERGE_ENGINE = (os.environ.get("MERGE_ENGINE")
-                or CFG["association"].get("merge_engine", "legacy")).strip().lower()
-if MERGE_ENGINE not in ("legacy", "evidence"):
-    raise ValueError(f"association.merge_engine must be 'legacy' or 'evidence', got {MERGE_ENGINE!r}")
-
-# The cost of a FALSE MERGE relative to a MISSED MERGE. The only judgement call in the
-# evidence engine, and deliberately a config value rather than a threshold: a duplicate is
-# visible and repairable, a wrong merge destroys an identity, so it sits well above 1.
-# commit_threshold() turns it into log-odds -- there is no similarity constant to tune.
-MERGE_COST_RATIO = float(CFG["association"].get("merge_cost_ratio", 20.0))
-# How many nearest neighbours per object survive candidate generation. None = no cap, keep
-# everything inside the covariance shell. A cap that silently drops a pair is the defect
-# that lost the air-conditioner pair, so generate_candidates reports what the cap removed.
-_knn_k = CFG["association"].get("merge_knn_k", None)
-MERGE_KNN_K = None if _knn_k in (None, 0, "", "none") else int(_knn_k)
-# GA-188: how many CONSECUTIVE sweeps a pair must clear the commit threshold before the
-# merge is applied. 1 restores commit-on-first-sighting. Above 1, a transient geometry
-# error has to survive being re-measured before it can destroy an identity -- which is the
-# design's answer to "one lucky frame must not commit a merge", and it is enforced by
-# persistence rather than by inflating a score through repetition.
-# Env overrides config, so an ablation changes ONE variable per run instead of editing a
-# shared file between two runs that must otherwise be identical. Recorded into
-# run_metadata by run_sim.sh, so a bundle states which arm produced it.
-MERGE_MIN_CONSECUTIVE = int(os.environ.get(
-    "MERGE_MIN_CONSECUTIVE", CFG["association"].get("merge_min_consecutive", 2)))
 
 file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(file_path)
@@ -226,6 +169,51 @@ def _apply_orientation(bbox, request):
         bbox["oriented_extents"] = [float(v) for v in request.oriented_extents]
     else:
         bbox["has_orientation"] = False
+
+
+def _aabb_surface_distance(a, b):
+    """Euclidean distance between two axis-aligned boxes (zero if they overlap)."""
+    keys = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        raise ValueError("AABB must be mappings")
+    if any(k not in a or k not in b for k in keys):
+        raise ValueError("AABB is missing a bound")
+
+    gaps = []
+    for axis in "xyz":
+        amin, amax = float(a[f"{axis}_min"]), float(a[f"{axis}_max"])
+        bmin, bmax = float(b[f"{axis}_min"]), float(b[f"{axis}_max"])
+        if not all(math.isfinite(v) for v in (amin, amax, bmin, bmax)) or amin > amax or bmin > bmax:
+            raise ValueError(f"Invalid {axis}-axis bounds")
+        gaps.append(max(0.0, bmin - amax, amin - bmax))
+    return math.sqrt(sum(gap * gap for gap in gaps))
+
+
+def _aabb_overlap_evidence(a, b):
+    """Return (intersection / smaller volume, larger / smaller volume) for AABBs."""
+    lengths = []
+    intersection_lengths = []
+    for axis in "xyz":
+        amin, amax = float(a[f"{axis}_min"]), float(a[f"{axis}_max"])
+        bmin, bmax = float(b[f"{axis}_min"]), float(b[f"{axis}_max"])
+        if not all(math.isfinite(v) for v in (amin, amax, bmin, bmax)):
+            raise ValueError(f"Invalid {axis}-axis bounds")
+        alen, blen = max(0.0, amax - amin), max(0.0, bmax - bmin)
+        lengths.append((alen, blen))
+        intersection_lengths.append(max(0.0, min(amax, bmax) - max(amin, bmin)))
+    va = math.prod(v[0] for v in lengths)
+    vb = math.prod(v[1] for v in lengths)
+    smaller = min(va, vb)
+    if smaller <= 1e-12:
+        return 0.0, None
+    intersection = math.prod(intersection_lengths)
+    return min(1.0, intersection / smaller), max(va, vb) / smaller
+
+
+def _merge_base_label(label):
+    """Normalize formatting only; do not collapse semantically distinct classes."""
+    value = re.sub(r"#\d+$", "", str(label or "").strip().casefold())
+    return re.sub(r"[\s_-]+", " ", value).strip()
 
 
 def _axial_delta(a, b):
@@ -344,7 +332,9 @@ def _enclose_geometry(points, include_orientation):
 
 
 def _combine_object_geometry(a, b):
-    """Return a box and accumulator that enclose both object geometries."""
+    """Combine native full-object predictions or enclose partial surface geometry."""
+    if CFG.get("perception", {}).get("detector", "vlm").lower() == "boxer":
+        return boxer_geometry.merge_geometry(a, b)
     pa = _object_geometry_points(a)
     pb = _object_geometry_points(b)
     points = (np.concatenate((pa, pb), axis=0) if len(pa) and len(pb)
@@ -516,14 +506,16 @@ def _merge_in_object_frame(points, yaw):
 
 
 def fuse_orientation(obj, bbox):
-    """Return one coherent enclosing box for the object's retained observations.
+    """Fuse full-object predictions by consensus, partial surfaces by enclosure.
 
     The former implementation averaged yaw independently from the dimensions of one
     representative view. That produced a box whose extents were measured in one orientation
     but rendered at another. We now union the previous and incoming box corners, fit PCA once to
-    that union, and use exact projections. The accumulator retains only the current eight
-    corners, so its memory use is bounded.
+    that union, and use exact projections for partial surfaces. Native Boxer geometry
+    retains original predictions instead, so a previous envelope never becomes evidence.
     """
+    if CFG.get("perception", {}).get("detector", "vlm").lower() == "boxer":
+        return boxer_geometry.update_geometry(obj, bbox)
     acc = getattr(obj, "_yaw_acc", None) if obj is not None else None
     previous = getattr(obj, "bbox", None) if obj is not None else None
     prior_points = _object_geometry_points(obj) if obj is not None else np.empty((0, 3))
@@ -646,11 +638,27 @@ def _centroid_from_bbox(bbox):
 
 
 def synchronized_world_model(callback):
-    """Serialize callbacks that read/write the shared world model."""
+    """Serialize world-model access and expose unusually long lock wait/hold times."""
     @wraps(callback)
     def wrapper(*args, **kwargs):
-        with wm.lock:
+        waiting_at = time.monotonic()
+        wm.lock.acquire()
+        acquired_at = time.monotonic()
+        try:
             return callback(*args, **kwargs)
+        finally:
+            released_at = time.monotonic()
+            wm.lock.release()
+            wait_s = acquired_at - waiting_at
+            hold_s = released_at - acquired_at
+            if max(wait_s, hold_s) >= 1.0 and args:
+                owner = args[0]
+                try:
+                    owner.get_logger().warn(
+                        f"[WORLD-LOCK] {callback.__name__} wait={wait_s:.3f}s "
+                        f"hold={hold_s:.3f}s objects={len(wm.persistent_perceptions)}")
+                except Exception:
+                    pass
     return wrapper
 
 def normalise_embedding(raw):
@@ -886,6 +894,36 @@ def save_persistent_perceptions(node):
             else:
                 description_embedding = None
 
+        covisibility_history = []
+        for observation in getattr(obj, "covisibility_observations", None) or []:
+            frame_id = getattr(observation, "frame_id", None)
+            capture_id = getattr(observation, "capture_id", None)
+            observation_id = getattr(observation, "observation_id", None)
+            bbox_2d = getattr(observation, "bbox_2d", None)
+            covisibility_history.append({
+                "frame_id": frame_id,
+                "capture_id": capture_id,
+                "observation_id": observation_id,
+                "bbox_2d": bbox_2d,
+            })
+
+        observation_history = []
+        for observation in getattr(obj, "observations", None) or []:
+            observation_history.append({
+                "frame_id": getattr(observation, "frame_id", None),
+                "capture_id": getattr(observation, "capture_id", None),
+                "observation_id": getattr(observation, "observation_id", None),
+                "stamp": getattr(observation, "stamp", None),
+                "bbox_2d": getattr(observation, "bbox_2d", None),
+                "centroid": (np.asarray(getattr(observation, "centroid", []),
+                                         dtype=float).tolist()
+                             if getattr(observation, "centroid", None) is not None else None),
+                "camera_position": (
+                    np.asarray(getattr(observation, "camera_position", []),
+                               dtype=float).tolist()
+                    if getattr(observation, "camera_position", None) is not None else None),
+            })
+
         new_entry = {
             "object_id": obj_id,
             "label": obj.label,
@@ -894,10 +932,15 @@ def save_persistent_perceptions(node):
             "material": obj.material,
             "shape": obj.shape,
             "bbox": bbox,
+            "geometry_consensus": (getattr(obj, "_yaw_acc", None)
+                                   if (getattr(obj, "_yaw_acc", None) or {}).get("policy")
+                                   == boxer_geometry.POLICY else None),
             # The measured-view box above remains the association geometry.
             # This separate box is reconstructed from several accepted views.
             "fused_bbox": fused_bbox,
             "bbox_fusion": fusion_summary(obj),
+            "observations": observation_history,
+            "covisibility_observations": covisibility_history,
             "room_id": getattr(obj, "room_id", "unknown"),
             "relations": {k: sorted(list(v)) for k, v in obj.relations.items()},
             # Added 2026-08-31. This was in-memory only, so GA-12's invariant -- every
@@ -1170,12 +1213,14 @@ class ObjectServices(Node):
         self.decision_log = DecisionLog(
             CFG["hooks"]["decisions_log"] or os.path.join(log_dir, "hook_decisions.jsonl"))
 
-        # GA-188. Beliefs about pairs, carried ACROSS merge sweeps -- this is the state that
-        # makes `merge_min_consecutive` mean anything. Keyed by the sorted object-id pair,
-        # garbage-collected each sweep so it cannot grow for the life of the process.
-        # Unused by the legacy engine, which decides from a single scoring and keeps nothing.
-        self._hypotheses = {}
-        self._merge_sweep = 0
+        self._merge_request_count = 0
+        self._merge_object_signatures = {}
+        self._merge_room_signature = None
+        self._merge_request_signature = None
+        self._merge_candidate_neighbors = {}
+        self._merge_refusal_cache = {}
+        self._merge_incremental_stats = {}
+        self._merge_force_next_full = False
         self._mutation_sequence = 0
         self._provenance_incomplete = False
         self._mutation_ledger_path = os.path.join(
@@ -1445,928 +1490,1050 @@ class ObjectServices(Node):
 
         return response
     
-    @synchronized_world_model
-    def _publish_merge_pending(self):
-        """Write the pending-merge state where the FEED HOST can read it. GA-258.
+    @staticmethod
+    def _merge_object_key(obj):
+        return str(getattr(obj, "object_id", None) or obj.label)
 
-        WHY THIS EXISTS. A hypothesis commits only after `merge_min_consecutive` consecutive
-        sweeps over the threshold. MEASURED on 20260901_174810_hm3d_00861: of 265,944 held
-        pairs the fused log-odds reached p90 7.77 against a commit threshold of 3.0 -- more
-        than a tenth of them had ENOUGH evidence and were held anyway, because the agent kept
-        turning and the pair left view before a second consecutive sweep could confirm it.
-        A fixed dwell either wastes time when nothing is pending or leaves too early when
-        something is; the agent should look for exactly as long as there is something to
-        confirm.
+    @classmethod
+    def _merge_pair_key(cls, a, b):
+        return tuple(sorted((cls._merge_object_key(a), cls._merge_object_key(b))))
 
-        The feed host runs on the HOST and this runs in the container, so a file is the
-        channel: `/ws/output` is bind-mounted to the run directory, and this needs no port,
-        no service and no ordering between two processes that start independently.
+    @staticmethod
+    def _freeze_merge_value(value):
+        """Convert mutable/numpy-backed object state to a hashable cache value."""
+        if isinstance(value, dict):
+            return tuple(sorted((str(key), ObjectServices._freeze_merge_value(item))
+                                for key, item in value.items()))
+        if isinstance(value, np.ndarray):
+            return ObjectServices._freeze_merge_value(value.tolist())
+        if isinstance(value, (list, tuple)):
+            return tuple(ObjectServices._freeze_merge_value(item) for item in value)
+        if isinstance(value, (np.integer,)):
+            return int(value)
+        if isinstance(value, (np.floating,)):
+            return float(value)
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        return repr(value)
 
-        Written atomically -- GA-257 was a 0-byte knowledge_graph.ttl caused by a
-        non-atomic serialise being interrupted, and a reader polling this file mid-write
-        would see a truncated one for the same reason.
-        """
-        out = os.environ.get("GRAPH_API_OUTPUT_DIR")
-        if not out:
-            return
-        try:
-            thr = assoc.commit_threshold(MERGE_COST_RATIO)
-            pending = []
-            for key, h in self._hypotheses.items():
-                if h.committed or h.vetoed_by:
-                    continue
-                streak = getattr(h, "_streak", 0)
-                total = h.total
-                # PENDING means "over the bar, short of the streak" -- the population that
-                # more looking would convert. A pair below threshold is not pending; waiting
-                # for it is waiting for evidence that is not accumulating.
-                if total >= thr and streak < MERGE_MIN_CONSECUTIVE:
-                    pending.append({"a": key[0], "b": key[1],
-                                    "log_odds": round(float(total), 3),
-                                    "streak": int(streak),
-                                    "needs": MERGE_MIN_CONSECUTIVE})
-            pending.sort(key=lambda d: -d["log_odds"])
-            blob = {
-                "t": time.time(),
-                "sweep": self._merge_sweep,
-                # GA-339 (a). The most sweeps any pending pair still needs, so the feed host
-                # can bound a hold without scanning `pairs`, which is capped at 40 below.
-                # 0 when nothing is pending: measured, not absent.
-                "needs_max": max((d["needs"] - d["streak"] for d in pending), default=0),
-                # Additive, NOT a rename: found/dashboard/replay_server.py:1297 renders
-                # `d.threshold` from this blob, and a renamed key reads as undefined there
-                # with no error. Same log-odds unit as the evidence engine's row.
-                "threshold_log_odds": round(float(thr), 3),
-                "threshold": round(float(thr), 3),
-                "min_consecutive": MERGE_MIN_CONSECUTIVE,
-                # GA-341 follow-up (orchestrator, 2026-09-08). The EFFECTIVE merge floor and
-                # reach of the arm that actually ran, so a bundle can attest them. Run 1's
-                # criterion "no merge row with threshold_similarity <= sim_threshold" read 0
-                # and that zero was VACUOUS: the similarity floor belongs to the legacy arm
-                # and the evidence arm emits `threshold_log_odds`, so NO row carried the key
-                # the criterion named. A check whose subject is absent asserts nothing. These
-                # keys are what a reader should test instead (rule 6, additive).
-                "engine": MERGE_ENGINE,
-                "min_similarity": MERGE_MIN_SIMILARITY,
-                "max_distance_m": MERGE_MAX_DISTANCE,
-                "sim_threshold": SIM_THRESHOLD,
-                "live_hypotheses": len(self._hypotheses),
-                "pending": len(pending),
-                # Capped: the feed host only needs the COUNT, and the list is for the viewer.
-                # An unbounded list would rewrite megabytes every sweep.
-                "pairs": pending[:40],
-            }
-            path = os.path.join(out, "merge_pending.json")
-            tmp = path + ".tmp"
-            with open(tmp, "w") as fh:
-                json.dump(blob, fh)
-            os.replace(tmp, path)
-        except OSError as exc:
-            # GA-339 (b), rule 14. Only the write itself may fail softly: the feed host reads
-            # an absent or stale file as UNKNOWN and holds to its cap, so a disk error costs
-            # frames, not a merge. A non-serialisable value (TypeError / ValueError from
-            # json.dump) is a bug in this function and crashes -- it used to be swallowed by
-            # `except Exception`, which made the feed hold to cap at every stop with no trace.
-            self.get_logger().warn(f"[ASSOC] could not publish merge_pending: {exc}")
-
-    def _hypothesis_gc(self, live_keys):
-        """Drop hypotheses whose pair no longer exists. GA-188.
-
-        Without this the store grows for the life of the process and keeps a belief about
-        objects that were merged away sweeps ago -- and a stale hypothesis whose object_id
-        is later reused would carry a streak nobody measured. Committed ones go too: the
-        merge is applied and its provenance is already in the decision record.
-        """
-        stale = [k for k, h in self._hypotheses.items() if h.committed or k not in live_keys]
-        for k in stale:
-            del self._hypotheses[k]
-        return len(stale)
-
-    def _assoc_build(self, objects):
-        """-> (AssocContext, {id(world_model_object): AssocObject}). GA-186.
-
-        The adapter between the world model's `Object` and `association.AssocObject`.
-        Everything it cannot measure is left as None so the corresponding channel ABSTAINS;
-        nothing here invents a value to keep a channel running.
-
-        `map_volume_m3` is the axis-aligned hull of the objects themselves, not the metric
-        map. It is the volume the overlap and separation priors are taken over -- "how
-        surprising is this much overlap in a space this big" -- and the objects' own extent
-        is the honest answer to that when no map volume is published. A tiny scene must not
-        read as a huge one, so it is floored rather than allowed to reach zero on a
-        single-object map.
-        """
-        boxes = [o.bbox for o in objects if getattr(o, "bbox", None)]
-        if boxes:
-            xs = [b["x_min"] for b in boxes] + [b["x_max"] for b in boxes]
-            ys = [b["y_min"] for b in boxes] + [b["y_max"] for b in boxes]
-            zs = [b["z_min"] for b in boxes] + [b["z_max"] for b in boxes]
-            map_volume = max((max(xs) - min(xs)) * (max(ys) - min(ys)) * (max(zs) - min(zs)), 1.0)
-        else:
-            map_volume = 1.0
-
-        rooms = {getattr(o, "room_id", None) for o in objects}
-        rooms.discard(None)
-        # GA-192: how many DISTINCT aligned types this scene actually contains. The channel
-        # needs it as the null model -- "how surprising is it that two objects share a type"
-        # depends on how many types were available to differ. MEASURED from the scene, never
-        # a guessed vocabulary size: a fabricated n_types turns an abstention into a
-        # confident prior, and the channel is explicitly built to abstain instead.
-        types = {getattr(o, "onto_type", None) for o in objects
-                 if getattr(o, "onto_aligned", False)}
-        types.discard(None)
-        n_types = len(types) if len(types) >= 2 else None
-        # GA-309. The ontology veto is supplied by the admission hook, through ONE optional
-        # attribute: `disjoint(type_a, type_b) -> bool`. An absent attribute is "not supplied"
-        # -- exactly the arm every bundle before 2026-09-07 ran, where channel_ontology never
-        # vetoed -- and the record then carries no `disjoint_source`. The hook is the object
-        # manager's; it hands it over at startup (`self.object_services.filter_hook`). The
-        # callable raises on an unknown class name by contract (rule 14); nothing here
-        # substitutes a False for it.
-        hook = getattr(self, "filter_hook", None)
-        disjoint_fn = getattr(hook, "disjoint", None)
-        ctx = assoc.AssocContext(
-            map_volume_m3=map_volume,
-            n_rooms=max(len(rooms), 1),
-            n_types=n_types,
-            cost_ratio=MERGE_COST_RATIO,
-            disjoint_fn=disjoint_fn,
-            disjoint_source=(getattr(hook, "name", type(hook).__name__)
-                             if disjoint_fn is not None else None),
-            # GA-186: the detector's 2D boxes now reach the object through Bbox3d.msg, so
-            # co-visibility can tell a duplicate detection of one object from two objects in
-            # one frame -- and vetoes only on a MEASURED disjoint overlap. The function
-            # returns None when a shared frame has no box on either side, which keeps the
-            # abstention for the case that was never measurable.
-            overlap_2d_fn=assoc.shared_frame_overlap_2d,
+    @classmethod
+    def _merge_object_state_signature(cls, obj):
+        """Fields that can change a legacy pair verdict, computed once per object/sweep."""
+        return (
+            cls._freeze_merge_value(getattr(obj, "bbox", None)),
+            str(getattr(obj, "label", "")),
+            str(getattr(obj, "color", "")),
+            str(getattr(obj, "material", "")),
+            str(getattr(obj, "description", "")),
+            cls._freeze_merge_value(getattr(obj, "embedding", None)),
+            cls._freeze_merge_value(getattr(obj, "room_id", None)),
         )
 
-        built = {}
-        for o in objects:
-            if getattr(o, "bbox", None) is None:
-                continue
+    @classmethod
+    def _merge_room_state_signature(cls, room_manager):
+        """Room geometry changes can alter room_at_bbox without mutating an object."""
+        regions = getattr(room_manager, "regions", {}) or {}
+        active = tuple(sorted(
+            (str(getattr(region, "room_id", key)),
+             int(getattr(region, "misses", 0)),
+             cls._freeze_merge_value(getattr(region, "polygon", None)))
+            for key, region in regions.items()
+        ))
+        historical = getattr(room_manager, "scene_graph", {}) or {}
+        fallback = tuple(sorted(
+            (str(room_id), bool(room.get("active", True)),
+             cls._freeze_merge_value(room.get("polygon", [])))
+            for room_id, room in historical.items()
+        ))
+        return active, fallback
+
+    @classmethod
+    def _merge_pair_state_signature(cls, a, b, state_signatures,
+                                    room_a, room_b, max_distance, min_similarity):
+        sides = sorted((
+            (state_signatures[id(a)], cls._freeze_merge_value(room_a)),
+            (state_signatures[id(b)], cls._freeze_merge_value(room_b)),
+        ), key=repr)
+        return (
+            float(max_distance), float(min_similarity),
+            float(MERGE_MAX_SURFACE_GAP), float(MERGE_NEAR_DISTANCE_M),
+            float(MERGE_NEAR_MAX_VOLUME_RATIO), float(MERGE_NEAR_IOU_THRESHOLD),
+            float(MERGE_NEAR_CONTAINMENT_THRESHOLD), int(MERGE_MIN_EVIDENCE),
+            tuple(sides),
+        )
+
+    def _merge_candidates(self, objects, max_distance_m=None,
+                          dirty_object_ids=None, previous_neighbors=None):
+        """Build AABB candidates and the affected conflict component."""
+        # Geometry keeps distant pairs out; co-visibility adapters are built only
+        # when a candidate survives the room and distance gates.
+        # Each query expands one box by `margin`. It must cover both the centre-distance gate
+        # and the surface-gap exception. It also includes `request.max_distance`, which is
+        # what `_cb_merge_objects` compares against. Earlier, a larger request was narrowed
+        # to the configured margin, dropping pairs before they could be evaluated.
+        #
+        # WIDEN, NEVER NARROW. `max` cannot drop a pair the configured margin would have kept.
+        # `max_distance_m` is positive by the time it arrives: `_cb_merge_objects` refuses a
+        # request at or below zero before reaching here. A non-numeric value raises rather than
+        # being muted --
+        # silently falling back to the config margin is the bug this removes.
+        margin = max(MERGE_AABB_MARGIN_M, MERGE_MAX_SURFACE_GAP)
+        if max_distance_m is not None:
+            margin = max(margin, float(max_distance_m))
+        index = DetectionIndex()
+        indexed = {}
+        valid = []
+        invalid = []
+        examined = 0
+        for i, obj in enumerate(objects):
+            key = f"merge:{i}"
             try:
-                built[id(o)] = assoc.AssocObject(
-                    object_id=getattr(o, "object_id", None) or o.label,
-                    label=o.label,
-                    bbox=o.bbox,
-                    centroid=getattr(o, "centroid", None),
-                    observations=getattr(o, "observations", None) or [],
-                    room_id=getattr(o, "room_id", None),
-                    # GA-192: the type the extension aligned this object to, and whether that
-                    # alignment held. Absent stays absent -- channel_ontology abstains on an
-                    # unaligned side rather than comparing labels the ontology never endorsed.
-                    onto_type=getattr(o, "onto_type", None),
-                    onto_aligned=bool(getattr(o, "onto_aligned", False)),
-                )
-            except (TypeError, ValueError, KeyError) as e:
-                # A malformed object must not be silently dropped from candidate
-                # generation -- that is the unlogged-skip defect this design exists to end.
-                self.log_both('error', f"[ASSOC] AssocObject non costruito per "
-                                       f"'{getattr(o, 'label', '?')}': {e}")
-        return ctx, built
+                index.upsert(key, obj.bbox)
+                indexed[key] = i
+                valid.append(i)
+            except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+                invalid.append(i)
+        valid_set = set(valid)
 
-    def _merge_candidates(self, objects, _refused, max_distance_m=None):
-        """-> (pairs, ctx, assoc_objects). Which pairs are even offered to a decision.
+        pair_indices = set()
+        full_scope = dirty_object_ids is None
+        object_index = {id(obj): i for i, obj in enumerate(objects)}
+        if full_scope:
+            query_indices = set(valid)
+            scope_indices = set(range(len(objects)))
+        else:
+            dirty_ids = set(dirty_object_ids or ())
+            seed_indices = {object_index[oid] for oid in dirty_ids
+                            if oid in object_index}
+            scope_indices = set(seed_indices)
 
-        The legacy engine uses the old merge gates, but its all-pairs enumeration is now
-        narrowed by the cleanup branch's binary-search AABB index.  The index is a broad
-        phase only: every candidate still goes through the unchanged room, distance,
-        similarity, and evidence checks below.  Objects with malformed/missing boxes are
-        retained as explicit fallback pairs so they still reach the existing
-        ``bbox_absent`` diagnostic instead of disappearing silently.
-
-        The evidence engine retains its covariance-shell candidate generator, because its
-        spatial shell is part of that engine's decision model rather than the legacy AABB
-        broad phase.
-        """
-        if MERGE_ENGINE == "legacy":
-            # The load-time guard at the top of this module asserts the margin is at least the
-            # CONFIG distance, so the broad phase "cannot hide a pair that the legacy merge
-            # criterion would evaluate". It never sees `request.max_distance`, which is what
-            # `_cb_merge_objects` actually compares against, so a request asking for MORE than
-            # the config default was narrowed to the fixed margin and the pairs between the two
-            # were dropped here, uncompared. MEASURED before this fix: two objects 2.0 m apart
-            # with a 1.0 m box gap and `request.max_distance=3.0` were never compared.
-            #
-            # WIDEN, NEVER NARROW. `max` cannot drop a pair the fixed margin would have kept, so
-            # this changes no decision that the config path already makes. `max_distance_m` is
-            # positive by the time it arrives: `_cb_merge_objects` refuses a request at or below
-            # zero before reaching here. A non-numeric value raises rather than being muted --
-            # silently falling back to the config margin is the bug this removes.
-            margin = MERGE_AABB_MARGIN_M
-            if max_distance_m is not None:
-                margin = max(margin, float(max_distance_m))
-            index = DetectionIndex()
-            indexed = {}
-            valid = []
-            invalid = []
-            examined = 0
-            for i, obj in enumerate(objects):
-                key = f"merge:{i}"
-                try:
-                    index.upsert(key, obj.bbox)
-                    indexed[key] = i
-                    valid.append(i)
-                except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
-                    invalid.append(i)
-
-            pair_indices = set()
-            for i in valid:
-                key = f"merge:{i}"
-                for hit in index.query(objects[i].bbox, margin):
+            # A deleted or newly moved object can change which edge wins a
+            # deterministic conflict set. Include its previous AABB neighbours
+            # as well as its current ones, then reevaluate the complete local
+            # conflict neighbourhood among those objects.
+            for oid in dirty_ids:
+                for neighbor_id in (previous_neighbors or {}).get(oid, ()):
+                    neighbor_index = object_index.get(neighbor_id)
+                    if neighbor_index is not None:
+                        scope_indices.add(neighbor_index)
+            # Expand the whole affected candidate component, not just one hop.
+            # Proposal conflict resolution ranks edges that share an endpoint; a
+            # change at A can therefore change whether B-C wins even when B-C itself
+            # did not change. The union of previous and current candidate edges gives
+            # the same conflict component as a full sweep without revisiting unrelated
+            # components.
+            pending = list(scope_indices)
+            visited = set()
+            invalid_set = set(invalid)
+            while pending:
+                i = pending.pop()
+                if i in visited:
+                    continue
+                visited.add(i)
+                neighbor_indices = set()
+                oid = id(objects[i])
+                for neighbor_id in (previous_neighbors or {}).get(oid, ()):
+                    neighbor_index = object_index.get(neighbor_id)
+                    if neighbor_index is not None:
+                        neighbor_indices.add(neighbor_index)
+                if i in valid_set:
+                    hits = index.query(objects[i].bbox, margin)
                     examined += index.last_examined
-                    j = indexed[hit]
-                    if i < j:
-                        pair_indices.add((i, j))
+                    neighbor_indices.update(indexed[hit] for hit in hits
+                                            if indexed[hit] != i)
+                elif i in invalid_set:
+                    # Invalid boxes conservatively connect to every track, as before.
+                    neighbor_indices.update(range(len(objects)))
+                for neighbor_index in neighbor_indices:
+                    if neighbor_index not in visited:
+                        pending.append(neighbor_index)
+            scope_indices.update(visited)
+            # Objects without a valid AABB are deliberately paired with every
+            # track, preserving the existing bbox_absent decision and log.
+            if seed_indices.intersection(invalid_set):
+                scope_indices.update(range(len(objects)))
+            query_indices = scope_indices.intersection(valid)
 
-            # A missing/invalid box cannot be safely pruned by geometry.  Keep all pairs
-            # involving it so the exact merge loop logs ``bbox_absent`` as before.
-            for i in invalid:
-                for j in range(i + 1, len(objects)):
+        for i in query_indices:
+            key = f"merge:{i}"
+            hits = index.query(objects[i].bbox, margin)
+            examined += index.last_examined
+            for hit in hits:
+                j = indexed[hit]
+                if i < j:
                     pair_indices.add((i, j))
-                for j in range(i):
+                elif j < i:
+                    # In a dirty sweep, the queried endpoint can have a larger
+                    # snapshot index than a neighbour outside query_indices.
+                    # Keep that edge too; otherwise the incremental sweep silently
+                    # drops a candidate that a full audit would evaluate.
                     pair_indices.add((j, i))
 
-            pairs = [(objects[i], objects[j], {})
-                     for i, j in sorted(pair_indices)]
-            all_pairs = len(objects) * max(0, len(objects) - 1) // 2
-            self.log_both(
-                'info',
-                f"[MERGE AABB] objects={len(objects)} all_pairs={all_pairs} "
-                f"candidates={len(pairs)} examined={examined} "
-                f"invalid_bbox={len(invalid)} margin={margin:.3f}m "
-                f"(config {MERGE_AABB_MARGIN_M:.3f}m, request {max_distance_m})",
-            )
-            # GA-232's rule, applied to this engine too: COUNTS, never per-pair rows -- the
-            # per-pair population is what took hook_decisions.jsonl to 1.71 GB. Without this
-            # row the broad phase reintroduces the exact defect `_refused` exists to prevent:
-            # a pair dropped here never reaches the distance check, so no `merge_refused` is
-            # written, and "the gate refused N pairs" and "association produced no pairs"
-            # become one observation again. Its only other trace is the log line above, which
-            # goes to the container log -- a property of the launch, not of the bundle.
-            not_offered = all_pairs - len(pairs)
-            if not_offered > 0:
-                try:
-                    self.decision_log.write(
-                        "not_offered_summary", "<sweep>",
-                        n_pairs=not_offered,
-                        by_reason={"aabb_margin": not_offered})
-                except Exception as e:
-                    self.get_logger().error(
-                        f"decision_log not_offered_summary failed: {e}")
-            return pairs, None, {}
+        # A missing/invalid box cannot be safely pruned by geometry.  Keep all pairs
+        # involving it so the exact merge loop logs ``bbox_absent`` as before.
+        for i in invalid:
+            for j in range(i + 1, len(objects)):
+                pair_indices.add((i, j))
+            for j in range(i):
+                pair_indices.add((j, i))
 
-        ctx, built = self._assoc_build(objects)
-        ordered = [o for o in objects if id(o) in built]
-        offered, excluded = assoc.generate_candidates(
-            [built[id(o)] for o in ordered], ctx, k=MERGE_KNN_K)
+        if not full_scope:
+            pair_indices = {
+                (i, j) for i, j in pair_indices
+                if i in scope_indices or j in scope_indices
+            }
 
-        back = {id(built[id(o)]): o for o in ordered}
-
-        # GA-232. COUNTED, NOT WRITTEN ONE BY ONE.
-        #
-        # A `not_offered` pair is one the kNN candidate generator never put forward, so it
-        # was never compared and it HAS NO SIMILARITY -- the field is null on every one of
-        # them. MEASURED on 20260901_174810_hm3d_00861: 2,350,062 of the 2,617,640
-        # merge_refused records are not_offered, 89.8% of the file, and 2,351,696 records
-        # carry no similarity at all. Those two numbers are the same population.
-        #
-        # That matters because of what the per-pair record is FOR. The docstring below
-        # defends writing full records rather than counters, and the argument it defends is
-        # about the similarity band -- "the 0.85-0.925 band was EMPTY, so the old gate would
-        # have refused them too". A record with no similarity cannot participate in that
-        # argument. Every record that CAN still gets written in full: 267,578 of them,
-        # including all 120,635 at or above 0.85.
-        #
-        # The cost of writing them was not small. hook_decisions.jsonl reached 1.71 GB on a
-        # 61-minute run, /graph_data could not parse it inside 120 s, and the disk filled.
-        # Dropping this one population takes the file to roughly a tenth with no loss to any
-        # question the bundle is asked -- and the COUNT is kept exactly, by exclusion reason,
-        # so "how many pairs were never offered, and why" is still answerable.
-        excluded_tally = {}
-        for aa, bb, meta in excluded:
-            a, b = back.get(id(aa)), back.get(id(bb))
-            if a is not None and b is not None:
-                why = str((meta or {}).get("reason"))
-                excluded_tally[why] = excluded_tally.get(why, 0) + 1
-        if excluded_tally:
+        pairs = [(objects[i], objects[j]) for i, j in sorted(pair_indices)]
+        all_pairs = len(objects) * max(0, len(objects) - 1) // 2
+        self.log_both(
+            'info',
+            f"[MERGE AABB] objects={len(objects)} all_pairs={all_pairs} "
+            f"candidates={len(pairs)} examined={examined} "
+            f"invalid_bbox={len(invalid)} margin={margin:.3f}m "
+            f"(config {MERGE_AABB_MARGIN_M:.3f}m, request {max_distance_m}) "
+            f"scope={'full' if full_scope else 'dirty'} "
+            f"scope_objects={len(scope_indices)}",
+        )
+        # GA-232's rule, applied to this engine too: COUNTS, never per-pair rows -- the
+        # per-pair population is what took hook_decisions.jsonl to 1.71 GB. Without this
+        # row the broad phase reintroduces the exact defect `_refused` exists to prevent:
+        # a pair dropped here never reaches the distance check, so no `merge_refused` is
+        # written, and "the gate refused N pairs" and "association produced no pairs"
+        # become one observation again. Its only other trace is the log line above, which
+        # goes to the container log -- a property of the launch, not of the bundle.
+        not_offered = all_pairs - len(pairs)
+        if full_scope and not_offered > 0:
             try:
                 self.decision_log.write(
                     "not_offered_summary", "<sweep>",
-                    n_pairs=sum(excluded_tally.values()),
-                    by_reason=excluded_tally)
+                    n_pairs=not_offered,
+                    by_reason={"aabb_margin": not_offered})
             except Exception as e:
-                self.get_logger().error(f"decision_log not_offered_summary failed: {e}")
+                self.get_logger().error(
+                    f"decision_log not_offered_summary failed: {e}")
+        scope_ids = {id(objects[i]) for i in scope_indices}
+        return pairs, scope_ids
 
-        pairs = []
-        for aa, bb, meta in offered:
-            a, b = back.get(id(aa)), back.get(id(bb))
-            if a is not None and b is not None:
-                pairs.append((a, b, meta))
-        # One sweep = one hypothesis update per offered pair. The counter is the frame_id
-        # in each hypothesis's history, so the provenance says WHICH sweep saw what.
-        self._merge_sweep += 1
-        live = {tuple(sorted((str(getattr(a, "object_id", None) or a.label),
-                              str(getattr(b, "object_id", None) or b.label))))
-                for a, b, _m in pairs}
-        dropped = self._hypothesis_gc(live)
-        self.log_both('info', f"[ASSOC] sweep {self._merge_sweep}: {len(pairs)} offered, "
-                              f"{len(excluded)} excluded, of {len(ordered)} objects "
-                              f"(all-pairs would be {len(ordered) * (len(ordered) - 1) // 2}); "
-                              f"live hypotheses {len(self._hypotheses)}, dropped {dropped}")
-        self._publish_merge_pending()
-        return pairs, ctx, built
+
+    def _evaluate_merge_candidates(self, pair_iter, sweep,
+                                   current_candidate_pairs, refused):
+        """Apply the pair-level gates and return only eligible merge proposals.
+
+        Candidate generation and conflict resolution are separate phases. This method
+        evaluates one immutable world-model snapshot; it does not mutate live objects.
+        """
+        max_distance = sweep.max_distance
+        min_similarity = sweep.min_similarity
+        current_signatures = sweep.current_signatures
+        active_cache = sweep.active_cache
+        pair_cache_key = self._merge_pair_cache_key
+        pair_similarity = self._merge_pair_similarity
+
+        def skip_cached_refusal(a, b, signature):
+            return self._skip_cached_merge_refusal(sweep, a, b, signature)
+
+        room_by_object = {}
+
+        def room_for(obj):
+            key = id(obj)
+            if key not in room_by_object:
+                room_by_object[key] = self.room_manager.room_at_bbox(obj.bbox)
+            return room_by_object[key]
+
+        merge_proposals = []
+        for a, b in pair_iter:
+            # GA-23: `a` is re-tested on every pair rather than once per outer
+            # iteration. A pair resolving with keeper = b condemns `a` while later
+            # pairs still hold it, and it could then be chosen keeper again -- so the
+            # apply block would write keeper.bbox onto an object already removed from
+            # the world model. The flat iteration makes this a plain per-pair check.
+            pair_key = self._merge_pair_key(a, b)
+            cache_key = pair_cache_key(a, b)
+            current_candidate_pairs.add(cache_key)
+            active_cache["key"] = cache_key
+            active_cache["signature"] = None
+
+            if a.bbox is None or b.bbox is None:
+                signature = self._merge_pair_state_signature(
+                        a, b, current_signatures, None, None,
+                        max_distance, min_similarity)
+                if skip_cached_refusal(a, b, signature):
+                    continue
+                # THE LAST UNLOGGED EXIT IN THE SELECTION PATH, and it matters more
+                # than its two lines suggest. MEASURED in run 20260831_184822: a
+                # single service call saw 118 objects and logged 121 pairs, where
+                # all-pairs is 6903 -- so 98% of pairs left the loop before reaching
+                # any gate, and every refusal reason IS logged (similarity 5996,
+                # distance 285, room 9). The shortfall is therefore entirely in the
+                # exits that record nothing, and this is one of the two.
+                #
+                # The consequence is not abstract: ALL EIGHT air-conditioner pairs
+                # within 1.5 m of each other in that run were never offered to the
+                # comparison at all -- including a 0.385 m pair whose volumes are
+                # 0.0016 m3 and 0.2338 m3, a 146x ratio and the exact fragment/whole
+                # shape the redesign exists to catch. Nobody could say why, because
+                # the skip left no trace.
+                #
+                # A pair that is never compared is invisible in precisely the way
+                # refusals were before they were logged. So it is logged now.
+                refused(a, b, "bbox_absent", None,
+                         a_has_bbox=a.bbox is not None, b_has_bbox=b.bbox is not None)
+                continue
+
+            # Validate before room lookup or centroid arithmetic: the broad phase
+            # deliberately offers invalid boxes so one bad track must not abort
+            # the entire sweep (including otherwise valid pairs).
+            try:
+                surface_gap = _aabb_surface_distance(a.bbox, b.bbox)
+                ax, ay, az = (
+                    (float(a.bbox[f"{axis}_min"]) + float(a.bbox[f"{axis}_max"])) / 2.0
+                    for axis in "xyz")
+                bx, by, bz = (
+                    (float(b.bbox[f"{axis}_min"]) + float(b.bbox[f"{axis}_max"])) / 2.0
+                    for axis in "xyz")
+                center_dist = math.dist((ax, ay, az), (bx, by, bz))
+                dist = float(center_dist)
+                bbox_iou = float(compute_iou_3d(a.bbox, b.bbox))
+                containment_ratio, volume_ratio = _aabb_overlap_evidence(a.bbox, b.bbox)
+            except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+                refused(a, b, "bbox_invalid", None, error=str(exc))
+                continue
+
+            # GA-25: locality before attributes. Geometry, never the room-type
+            # belief. `room_at_bbox` returns None when it cannot say, and None is
+            # UNKNOWN -- never "same room". Refusing only on positive disagreement
+            # keeps the gate strict without inventing separation the map cannot
+            # support; the similarity and distance gates still apply beneath it.
+            #
+            # assign_room_by_geometry is NOT usable here: it falls back to the
+            # robot's own room, in the same type as a real answer, so two objects in
+            # different rooms would read as the same room exactly when the map is
+            # least able to separate them (GA-28).
+            a_label = a.label.split('#')[0] if '#' in a.label else a.label
+            b_label = b.label.split('#')[0] if '#' in b.label else b.label
+
+            room_a = room_for(a)
+            room_b = room_for(b)
+
+            signature = self._merge_pair_state_signature(
+                    a, b, current_signatures, room_a, room_b,
+                    max_distance, min_similarity)
+            if skip_cached_refusal(a, b, signature):
+                continue
+
+            if (room_a is not None and room_b is not None and room_a != room_b):
+                print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b})")
+                # The similarity is computed HERE, on the refusal path only, and
+                # solely to be recorded. The gate ORDER is unchanged -- locality
+                # still decides before attributes (GA-25) and no similarity can
+                # rescue a pair in two different rooms. Paying for it only on the
+                # pairs actually refused on room keeps the early gate's saving on
+                # every pair that passes it, and those refused pairs are exactly
+                # the population the log needs to be able to describe.
+                _room_sim, _room_ev = pair_similarity(a, b, a_label, b_label)
+                refused(a, b, "room", _room_sim,
+                         evidence_count=_room_ev["optional_count"],
+                         room_a=room_a, room_b=room_b)
+                continue
+
+            # GA-186: the loop is flat now, so there are no `i`/`j` indices to print.
+            # They were the enumeration of a nested loop that no longer exists, and
+            # printing them here would have been a NameError on the legacy path.
+            print(f"\n📐 COMPARISON {a_label} vs {b_label}:")
+            print(f"   Pos A: ({ax:.2f}, {ay:.2f}, {az:.2f})")
+            print(f"   Pos B: ({bx:.2f}, {by:.2f}, {bz:.2f})")
+
+            print(f"   Centre distance: {dist:.3f}m (threshold: {max_distance}m); "
+                  f"AABB surface gap: {surface_gap:.3f}m "
+                  f"(extension: {MERGE_MAX_SURFACE_GAP:.3f}m); "
+                  f"AABB IoU: {bbox_iou:.3f}")
+
+            if (dist > max_distance
+                    and surface_gap > MERGE_MAX_SURFACE_GAP):
+                # GA-25, second residual. This gate used to run LAST, after
+                # `pair_similarity` had already embedded both descriptions -- the
+                # expensive comparison on every pair the cheap one was about to
+                # reject. Every broad-phase candidate is offered, so that was
+                # every pair in the map. It now runs first, and the refusal record
+                # carries no similarity because none was measured.
+                print(f"   ❌ TOO FAR APART ({dist:.2f}m > {max_distance}m)")
+                # Same joint rename: this path's threshold is METRES, the
+                # similarity path's is unitless -- the typed key says which.
+                refused(a, b, "distance", None,
+                         evidence_count=None,
+                         distance=dist,
+                         center_distance_m=float(center_dist),
+                         aabb_surface_distance_m=float(surface_gap),
+                         bbox_iou=bbox_iou,
+                         threshold_distance_m=max_distance,
+                         threshold_surface_gap_m=MERGE_MAX_SURFACE_GAP,
+                         threshold_distance_basis="center_or_aabb_surface_gap",
+                         room_a=room_a, room_b=room_b)
+                continue
+
+            # Merge identity uses 3D geometry and semantics. Fragmented 2D
+            # detections in a shared frame must not veto an otherwise eligible pair.
+            # Embedding lazy; missing description embeddings are absent evidence,
+            # not a reason to skip the pair (lost_similarity renormalises).
+            sim, ev = pair_similarity(a, b, a_label, b_label)
+
+            # A strong, spatially bounded re-detection of the same normalized class
+            # can overcome VLM attribute drift. This deliberately does NOT treat
+            # containment alone as identity: labels must agree, dimensions must be
+            # plausible, and the earlier room/distance gates remain final.
+            same_base_label = _merge_base_label(a_label) == _merge_base_label(b_label)
+            colors_clash = (_known(a.color) and _known(b.color)
+                            and str(a.color).strip().casefold()
+                            != str(b.color).strip().casefold())
+            materials_clash = (_known(a.material) and _known(b.material)
+                               and str(a.material).strip().casefold()
+                               != str(b.material).strip().casefold())
+            geometry_override = bool(
+                same_base_label
+                and surface_gap <= MERGE_NEAR_DISTANCE_M
+                and volume_ratio is not None
+                and volume_ratio <= MERGE_NEAR_MAX_VOLUME_RATIO
+                and (bbox_iou >= MERGE_NEAR_IOU_THRESHOLD
+                     or containment_ratio >= MERGE_NEAR_CONTAINMENT_THRESHOLD)
+            )
+
+            print("   Sim semantiche:")
+            print(f"     Label: '{a_label}' vs '{b_label}'")
+            print(f"     Colore: '{a.color}' vs '{b.color}'")
+            print(f"     Materiale: '{a.material}' vs '{b.material}'")
+            print(f"     Similarity: {sim:.3f} (threshold: {min_similarity})")
+
+            # GA-21: the `forzo merge` bypass that stood here is deleted. It fired
+            # ONLY when the evidence had already said do not merge, and overrode that
+            # with label equality plus a hardcoded 0.5 overlap -- so a red hardback
+            # and a blue notebook, both labelled "book" at the same spot, scored ~0.55,
+            # were correctly refused, and were then fused anyway. Overlap is locality,
+            # not similarity; the same confusion as GA-05, in the one operation that
+            # destroys an identity.
+            if (sim < min_similarity
+                    and not geometry_override):
+                print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {min_similarity})")
+                # Unit-typed key (joint rename with the ontology lane, their
+                # inbox 00002/00004/00005): `threshold` was unit-polymorphic -- 0.925
+                # cosine here, 0.8 METRES on the distance path below -- and was
+                # misread once by a reader and once by a test. TRANSITION CLOSED
+                # 2026-09-06 on the owner's authorisation: the legacy key is retired
+                # here, ontology's reader prefers the typed key and keeps a fallback
+                # for rows written before d76f997.
+                refused(a, b, "similarity", sim,
+                         evidence_count=ev["optional_count"],
+                         center_distance_m=float(center_dist),
+                         aabb_surface_distance_m=float(surface_gap),
+                         bbox_iou=bbox_iou,
+                         containment_over_smaller=containment_ratio,
+                         aabb_volume_ratio=volume_ratio,
+                         geometry_override_eligible=geometry_override,
+                         color_conflict=colors_clash,
+                         material_conflict=materials_clash,
+                         threshold_similarity=min_similarity,
+                         threshold_surface_gap_m=MERGE_MAX_SURFACE_GAP,
+                         room_a=room_a, room_b=room_b)
+                continue
+
+            decision_reason = ("same_label_spatial_overlap" if geometry_override
+                               else "similarity")
+
+            # GA-101: a score that passed the gate on NOTHING must not merge.
+            # With colour, material and description all absent the divisor is the
+            # label weight alone, so two identical label strings score exactly
+            # 1.0000 -- above any threshold, from zero measured evidence. Raising
+            # min_similarity cannot reach this: the pairs it is meant to catch sit
+            # ABOVE the ones that actually agreed on something.
+            #
+            # Placed AFTER the similarity gate on purpose. Running it first would
+            # relabel every genuine low-score refusal as "evidence_absent" and hide
+            # a real signal -- a different-label pair with nothing else measured
+            # scored 0.0000 because the labels WERE compared and disagreed. This
+            # only refuses pairs that would otherwise have been merged.
+            if ev["optional_count"] < MERGE_MIN_EVIDENCE:
+                print(f"   ❌ NO EVIDENCE ({ev['optional_count']} optional "
+                      f"terms < {MERGE_MIN_EVIDENCE}; sim {sim:.3f} on the label alone)")
+                refused(a, b, "evidence_absent", sim,
+                         evidence_count=ev["optional_count"],
+                         center_distance_m=float(center_dist),
+                         aabb_surface_distance_m=float(surface_gap),
+                         bbox_iou=bbox_iou,
+                         required=MERGE_MIN_EVIDENCE, room_a=room_a, room_b=room_b)
+                continue
+
+            # GA-25 / GA-314: which identity survives follows the evidence, not list
+            # order -- credibility first, then the rule `merge_rank` documents.
+            keeper, discard = (a, b) if merge_rank(a) <= merge_rank(b) else (b, a)
+
+            # Native Boxer predictions describe complete objects: select a representative
+            # from their original observations. Partial surface boxes retain enclosure.
+            merged_bbox, merged_geometry_acc = _combine_object_geometry(keeper, discard)
+
+            vol_a = ((a.bbox['x_max']-a.bbox['x_min']) *
+                    (a.bbox['y_max']-a.bbox['y_min']) *
+                    (a.bbox['z_max']-a.bbox['z_min']))
+            vol_b = ((b.bbox['x_max']-b.bbox['x_min']) *
+                    (b.bbox['y_max']-b.bbox['y_min']) *
+                    (b.bbox['z_max']-b.bbox['z_min']))
+            vol_m = ((merged_bbox['x_max']-merged_bbox['x_min']) *
+                    (merged_bbox['y_max']-merged_bbox['y_min']) *
+                    (merged_bbox['z_max']-merged_bbox['z_min']))
+
+            print("   ◇ MERGE PROPOSAL (pending conflict resolution)")
+            print(f"     Volume A: {vol_a:.3f}m³ | Volume B: {vol_b:.3f}m³ → Kept: {vol_m:.3f}m³")
+            print(f"     Kept: '{keeper.label}' | Removed: '{discard.label}'")
+            print(f"     Keeper desc: '{keeper.description[:40]}...'")
+            print(f"     Bbox kept: x[{merged_bbox['x_min']:.2f},{merged_bbox['x_max']:.2f}] "
+                f"y[{merged_bbox['y_min']:.2f},{merged_bbox['y_max']:.2f}] "
+                f"z[{merged_bbox['z_min']:.2f},{merged_bbox['z_max']:.2f}]")
+
+            proposal = {
+                "keeper": keeper, "discard": discard, "bbox": merged_bbox,
+                "geometry_acc": merged_geometry_acc,
+                "similarity": sim,
+                "distance": dist,
+                "center_distance_m": float(center_dist),
+                "aabb_surface_distance_m": (
+                    float(surface_gap)),
+                "bbox_iou": bbox_iou,
+                "containment_over_smaller": (
+                    containment_ratio),
+                "aabb_volume_ratio": (
+                    volume_ratio),
+                "geometry_override": geometry_override,
+                "color_conflict": colors_clash,
+                "material_conflict": materials_clash,
+                "decision_reason": decision_reason,
+                "keeper_room": room_a if keeper is a else room_b,
+                "discard_room": room_b if keeper is a else room_a,
+                "pair_key": pair_key,
+                "evidence_count": ev.get("optional_count"),
+            }
+            proposal["merge_record"] = {
+                "keeper":      keeper.label,
+                "keeper_id":   getattr(keeper, "object_id", None),
+                "discarded":   discard.label,
+                # GA-25's room gate refuses a pair only when BOTH rooms are known
+                # and differ. Recording both -- including None for "geometry cannot
+                # say" -- is what makes that rule checkable from a bundle: without
+                # it, a merge that should have been refused and one that was
+                # correctly allowed are identical in the log.
+                "keeper_room":    room_a if keeper is a else room_b,
+                "discarded_room": room_b if keeper is a else room_a,
+                "distance":    round(dist, 3),
+                "center_distance_m": round(float(center_dist), 3),
+                "aabb_surface_distance_m": (
+                    round(float(surface_gap), 3)),
+                "bbox_iou": round(bbox_iou, 3),
+                "containment_over_smaller": (
+                    round(containment_ratio, 3)),
+                "aabb_volume_ratio": (
+                    round(volume_ratio, 3) if volume_ratio is not None else None),
+                "geometry_override": geometry_override,
+                "color_conflict": colors_clash,
+                "material_conflict": materials_clash,
+                "similarity":  round(sim, 3),
+                "decision_reason": decision_reason,
+                # Keep the same evidence metadata on accepted merges that the
+                # refusal path already records. A similarity of 1.0 is not enough
+                # to calibrate this gate: it can come from a label-only/identical
+                # attribute comparison, or from several genuinely agreeing fields.
+                "evidence_count": ev.get("optional_count"),
+                "engine": "legacy",
+                "score_type": "similarity",
+                "threshold_similarity": min_similarity,
+                "threshold_distance_m": max_distance,
+                "threshold_surface_gap_m": MERGE_MAX_SURFACE_GAP,
+                "threshold_distance_basis": "center_or_aabb_surface_gap",
+                "merged_bbox": merged_bbox,
+                # GA-20: `merged_bbox` keeps its name -- it is still the box after the
+                # merge -- but it is now an observation rather than a synthesis, so
+                # record WHOSE. Added, not renamed: a reader that does not look for
+                # this key cannot break on it.
+                "bbox_source": "keeper",
+                "bbox_from_object_id": getattr(keeper, "object_id", None) or keeper.label,
+            }
+            merge_proposals.append(proposal)
+
+        return merge_proposals
+
+    def _evaluate_merge_sweep(self, sweep):
+        """Run the decision stages for one snapshot, without mutating live objects."""
+        def refused(a, b, reason, similarity, **extra):
+            self._record_merge_refusal(sweep, a, b, reason, similarity, **extra)
+
+        pair_iter, scope_ids = self._merge_candidates(
+            sweep.objects,
+            sweep.max_distance,
+            dirty_object_ids=(None if sweep.full_audit else sweep.dirty_object_ids),
+            previous_neighbors=self._merge_candidate_neighbors)
+        current_candidate_pairs = set()
+        merge_proposals = self._evaluate_merge_candidates(
+            pair_iter, sweep, current_candidate_pairs, refused)
+        accepted = self._resolve_merge_proposals(merge_proposals, refused)
+        return SimpleNamespace(
+            pair_iter=pair_iter, scope_ids=scope_ids,
+            current_candidate_pairs=current_candidate_pairs,
+            accepted=accepted)
+
+    def _resolve_merge_proposals(self, merge_proposals, refused):
+        """Choose a deterministic non-conflicting set from eligible pair proposals."""
+        accepted = []
+        # Resolve the full scored edge set as a deterministic, support-ranked
+        # matching. No input-list order can decide which identity wins a conflict.
+        # Shared endpoints are deliberately deferred to a later sweep so we never
+        # chain a decision made against a partially merged object in this snapshot.
+        def _proposal_sort_key(proposal):
+            score = float(proposal["similarity"])
+            return (-score, float(proposal.get("center_distance_m") or 0.0),
+                    tuple(proposal["pair_key"]))
+
+        merge_proposals.sort(key=_proposal_sort_key)
+        selected_by_id = {}
+        for proposal in merge_proposals:
+            keeper, discard = proposal["keeper"], proposal["discard"]
+            endpoint_ids = {self._merge_object_key(keeper),
+                            self._merge_object_key(discard)}
+            conflicts = [selected_by_id[obj_id] for obj_id in sorted(endpoint_ids)
+                         if obj_id in selected_by_id]
+            if conflicts:
+                refused(
+                    keeper, discard, "competing_candidate", proposal["similarity"],
+                    selected_alternatives=[{
+                        "pair_key": list(winner["pair_key"]),
+                        "score": winner["similarity"],
+                        "evidence_count": winner["evidence_count"],
+                    } for winner in conflicts],
+                    pair_key=list(proposal["pair_key"]),
+                    center_distance_m=proposal["center_distance_m"],
+                    bbox_iou=proposal["bbox_iou"],
+                    evidence_count=proposal["evidence_count"],
+                    engine="legacy")
+                continue
+            for obj_id in endpoint_ids:
+                selected_by_id[obj_id] = proposal
+            accepted.append(proposal)
+
+        return accepted
+
+    def _apply_merge_proposals(self, proposals, *, max_distance, dry_run):
+        """Apply proposals under the world-model lock and report only applied pairs."""
+        applied = list(proposals) if dry_run else []
+        stale = 0
+
+        if proposals and not dry_run:
+            print(f"\n🗑️ REMOVING: {len(proposals)} duplicate objects:")
+            with wm.lock:
+                for pair in proposals:
+                    keeper, discard = pair["keeper"], pair["discard"]
+                    if (keeper not in wm.persistent_perceptions
+                            or discard not in wm.persistent_perceptions):
+                        stale += 1
+                        continue
+
+                    # Both endpoints are live. Fold the discarded track's history into
+                    # the keeper, then compute the resulting geometry from current state.
+                    merge_bbox_fusion(keeper, discard)
+                    assoc.merge_observation_history(
+                        keeper, discard,
+                        max_count=int(CFG["association"].get(
+                            "max_observations_per_object", 64)))
+                    assoc.merge_covisibility_history(keeper, discard)
+                    merged_bbox, merged_geometry_acc = _combine_object_geometry(keeper, discard)
+                    keeper.bbox = merged_bbox
+                    keeper.centroid = _centroid_from_bbox(merged_bbox)
+                    keeper._yaw_acc = merged_geometry_acc
+                    pair["bbox"] = merged_bbox
+                    pair["geometry_acc"] = merged_geometry_acc
+                    pair["merge_record"]["merged_bbox"] = merged_bbox
+                    pair["merge_record"]["geometry_policy"] = merged_geometry_acc.get(
+                        "policy", "surface_enclosure")
+                    pair["merge_record"]["geometry_samples"] = merged_geometry_acc.get("n")
+
+                    cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
+                    cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
+                    print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
+                    wm.persistent_perceptions.remove(discard)
+                    applied.append(pair)
+                    if hasattr(self, 'db'):
+                        try:
+                            self.db.on_object_merged(
+                                keeper, discard, step=self.tracking_step_counter)
+                        except Exception as exc:
+                            self.get_logger().error(f"db.on_object_merged failed: {exc}")
+
+                    try:
+                        discard_room = getattr(discard, 'room_id', None)
+                        if discard_room and discard_room in self.room_manager.scene_graph:
+                            room_objects = self.room_manager.scene_graph[discard_room]["objects"]
+                            if discard.label in room_objects:
+                                room_objects.remove(discard.label)
+                        self.room_manager.update_room_geometry(
+                            getattr(keeper, 'room_id', self.room_manager.current_room_id),
+                            merged_bbox)
+                    except Exception as exc:
+                        self.get_logger().error(f"room graph update after merge failed: {exc}")
+
+                if applied:
+                    try:
+                        save_persistent_perceptions(self)
+                        publish_persistent_bboxes(self, wm, self.persistent_bbox_pub)
+                        publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
+                    except Exception as exc:
+                        self.get_logger().error(f"persist/publish after merge failed: {exc}")
+
+            if stale:
+                self.log_both("warn", f"[MERGE] {stale} pair(s) skipped: an endpoint left "
+                                      f"the map between evaluation and application")
+
+        # A real merge is logged only after both endpoints passed the locked membership
+        # check and the mutation was applied. Dry-run decisions are logged as predictions.
+        for pair in applied:
+            keeper, discard = pair["keeper"], pair["discard"]
+            try:
+                self.decision_log.write(
+                    "merge", getattr(keeper, "object_id", keeper.label),
+                    merged_from=getattr(discard, "object_id", discard.label),
+                    keeper_label=keeper.label, discarded_label=discard.label,
+                    keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
+                    similarity=pair["similarity"],
+                    decision_reason=pair.get("decision_reason"),
+                    geometry_policy=(pair.get("geometry_acc") or {}).get(
+                        "policy", "surface_enclosure"),
+                    geometry_samples=(pair.get("geometry_acc") or {}).get("n"),
+                    distance=pair.get("distance"),
+                    center_distance_m=pair.get("center_distance_m"),
+                    aabb_surface_distance_m=pair.get("aabb_surface_distance_m"),
+                    bbox_iou=pair.get("bbox_iou"),
+                    color_conflict=pair.get("color_conflict", False),
+                    material_conflict=pair.get("material_conflict", False),
+                    threshold_distance_m=max_distance,
+                    threshold_surface_gap_m=MERGE_MAX_SURFACE_GAP,
+                    threshold_distance_basis="center_or_aabb_surface_gap",
+                    dry_run=bool(dry_run))
+            except Exception as exc:
+                self.get_logger().error(f"decision_log merge failed: {exc}")
+
+        if applied and not dry_run:
+            try:
+                with open(OPERATIONS_LOG, 'a') as stream:
+                    timestamp = datetime.now().strftime('%H:%M:%S')
+                    for pair in applied:
+                        keeper, discard = pair["keeper"], pair["discard"]
+                        stream.write(
+                            f"[{timestamp}] 🔗 MERGE: '{discard.label}' → '{keeper.label}'\n")
+            except Exception as exc:
+                self.get_logger().error(f"Could not write to operations.txt: {exc}")
+        elif not applied:
+            print("\n✅ NO duplicates found.")
+
+        return applied
+
+
+    def _prepare_merge_sweep(self, request, response, max_distance, min_similarity):
+        """Snapshot the world and decide whether this request needs a merge sweep."""
+        dry_run = getattr(request, 'dry_run', False)
+        self._merge_request_count += 1
+        audit_interval = max(1, int(CFG["association"].get(
+            "merge_full_sweep_interval", 10)))
+        requested_full_audit = bool(getattr(request, "full_audit", False))
+        periodic_full_audit = self._merge_request_count % audit_interval == 0
+        request_signature = (float(max_distance), float(min_similarity))
+        request_changed = request_signature != self._merge_request_signature
+        full_audit = (requested_full_audit or periodic_full_audit or dry_run or
+                      request_changed or self._merge_force_next_full or
+                      not self._merge_object_signatures)
+        if not dry_run:
+            self._merge_force_next_full = False
+        cache_hits_by_reason = {}
+        active_cache = {"key": None, "signature": None}
+        cacheable_refusal_reasons = {
+            "bbox_absent", "bbox_invalid", "room", "distance",
+            "similarity", "evidence_absent",
+        }
+
+        # Snapshot under the world-model lock; expensive similarity work stays outside it.
+        objects = wm.snapshot()
+        object_ids = {id(obj) for obj in objects}
+        removed_object_ids = set(self._merge_object_signatures) - object_ids
+        current_signatures = {
+            id(obj): self._merge_object_state_signature(obj) for obj in objects
+        }
+        room_signature = self._merge_room_state_signature(self.room_manager)
+        room_geometry_changed = (
+            self._merge_room_signature is not None and
+            room_signature != self._merge_room_signature)
+        full_audit = full_audit or room_geometry_changed
+        dirty_object_ids = {
+            object_id for object_id, signature in current_signatures.items()
+            if self._merge_object_signatures.get(object_id) != signature
+        }
+        dirty_object_ids.update(removed_object_ids)
+        if full_audit or room_geometry_changed:
+            dirty_object_ids.update(object_ids)
+
+        if not dirty_object_ids and not full_audit:
+            self._merge_object_signatures = current_signatures
+            self._merge_room_signature = room_signature
+            self.log_both(
+                "info",
+                f"[MERGE INCREMENTAL] no object or room changes; skipped global "
+                f"pair reevaluation (audit in "
+                f"{audit_interval - self._merge_request_count % audit_interval} sweep(s))",
+            )
+            self.decision_log.write(
+                "merge_incremental_summary", "<sweep>",
+                sweep=self._merge_request_count, full_audit=False,
+                objects=len(objects), dirty_objects=0,
+                evaluated_pairs=0, cached_refusals=0,
+                reason="world_model_unchanged")
+            response.success = True
+            response.merged_count = 0
+            response.merge_log_json = "[]"
+            response.message = "0 merge(s); no changed objects since prior sweep"
+            return None
+
+        if full_audit:
+            self._merge_refusal_cache.clear()
+        else:
+            for pair_id in list(self._merge_refusal_cache):
+                if pair_id[0] in dirty_object_ids or pair_id[1] in dirty_object_ids:
+                    self._merge_refusal_cache.pop(pair_id, None)
+
+        return SimpleNamespace(
+            max_distance=max_distance, min_similarity=min_similarity, dry_run=dry_run,
+            full_audit=full_audit, audit_interval=audit_interval,
+            cache_hits_by_reason=cache_hits_by_reason, active_cache=active_cache,
+            cacheable_refusal_reasons=cacheable_refusal_reasons, objects=objects,
+            object_ids=object_ids, removed_object_ids=removed_object_ids,
+            current_signatures=current_signatures, room_signature=room_signature,
+            request_signature=request_signature,
+            dirty_object_ids=dirty_object_ids,
+        )
+
+    def _finish_merge_sweep(self, sweep, pair_iter, scope_ids,
+                            current_candidate_pairs, to_remove_pairs):
+        """Refresh incremental state and record one sweep summary."""
+        objects = sweep.objects
+        object_ids = sweep.object_ids
+        removed_object_ids = sweep.removed_object_ids
+        full_audit = sweep.full_audit
+        dirty_object_ids = sweep.dirty_object_ids
+        current_signatures = sweep.current_signatures
+        room_signature = sweep.room_signature
+        dry_run = sweep.dry_run
+        cache_hits_by_reason = sweep.cache_hits_by_reason
+        live_after = {id(obj) for obj in wm.snapshot()}
+        removed_after = object_ids - live_after
+
+        if full_audit:
+            neighbors = {oid: set() for oid in live_after}
+        else:
+            touched = set(scope_ids) | removed_object_ids | removed_after
+            for oid, adjacent in list(self._merge_candidate_neighbors.items()):
+                if oid in touched:
+                    self._merge_candidate_neighbors.pop(oid, None)
+                else:
+                    adjacent.difference_update(touched)
+            neighbors = self._merge_candidate_neighbors
+            for oid in scope_ids & live_after:
+                neighbors[oid] = set()
+        for a, b in pair_iter:
+            aid, bid = id(a), id(b)
+            if aid in live_after and bid in live_after:
+                neighbors.setdefault(aid, set()).add(bid)
+                neighbors.setdefault(bid, set()).add(aid)
+        self._merge_candidate_neighbors = {
+            oid: adjacent for oid, adjacent in neighbors.items() if oid in live_after
+        }
+
+        if full_audit:
+            self._merge_refusal_cache = {
+                key: value for key, value in self._merge_refusal_cache.items()
+                if key[0] in live_after and key[1] in live_after
+                and key in current_candidate_pairs
+            }
+        else:
+            touched = set(scope_ids) | removed_object_ids | removed_after
+            for key in list(self._merge_refusal_cache):
+                if (key[0] not in live_after or key[1] not in live_after
+                        or (key[0] in touched or key[1] in touched)
+                        and key not in current_candidate_pairs):
+                    self._merge_refusal_cache.pop(key, None)
+        self._merge_object_signatures = current_signatures
+        self._merge_room_signature = room_signature
+        # Commit only after a completed sweep; failed evaluations must be retried.
+        self._merge_request_signature = sweep.request_signature
+        if dry_run:
+            self._merge_force_next_full = True
+
+        evaluated = max(0, len(pair_iter) - sum(cache_hits_by_reason.values()))
+        try:
+            self.decision_log.write(
+                "merge_incremental_summary", "<sweep>",
+                sweep=self._merge_request_count, full_audit=bool(full_audit),
+                objects=len(objects), dirty_objects=len(dirty_object_ids),
+                scope_objects=len(scope_ids), candidate_pairs=len(pair_iter),
+                evaluated_pairs=evaluated,
+                cached_refusals=sum(cache_hits_by_reason.values()),
+                cache_hits_by_reason=cache_hits_by_reason,
+                applied_merges=len(to_remove_pairs),
+            )
+        except Exception as exc:
+            self.get_logger().error(f"decision_log merge_incremental_summary failed: {exc}")
+
+
+    @staticmethod
+    def _merge_pair_similarity(a, b, a_label, b_label):
+        """Return semantic similarity and the number of comparable optional fields."""
+        if not hasattr(a, 'embedding') or a.embedding is None:
+            a.embedding = get_embedding(world2vec, a.description)
+        if not hasattr(b, 'embedding') or b.embedding is None:
+            b.embedding = get_embedding(world2vec, b.description)
+        return lost_similarity_detailed(
+            world2vec, a_label, b_label, a.color, b.color,
+            a.material, b.material, a.embedding, b.embedding)
+
+    @staticmethod
+    def _merge_pair_cache_key(a, b):
+        return tuple(sorted((id(a), id(b))))
+
+    def _skip_cached_merge_refusal(self, sweep, a, b, signature):
+        """Reuse a refusal only when the exact pair state still matches."""
+        if sweep.full_audit:
+            return False
+        key = self._merge_pair_cache_key(a, b)
+        cached = self._merge_refusal_cache.get(key)
+        if cached is not None and cached.get("signature") == signature:
+            reason = cached.get("reason", "unknown")
+            hits = sweep.cache_hits_by_reason
+            hits[reason] = hits.get(reason, 0) + 1
+            return True
+        self._merge_refusal_cache.pop(key, None)
+        sweep.active_cache["key"] = key
+        sweep.active_cache["signature"] = signature
+        return False
+
+    def _record_merge_refusal(self, sweep, a, b, reason, similarity, **extra):
+        """Write a durable refusal and retain cacheable legacy outcomes."""
+        active_cache = sweep.active_cache
+        if (reason in sweep.cacheable_refusal_reasons
+                and active_cache["key"] is not None
+                and active_cache["signature"] is not None):
+            self._merge_refusal_cache[active_cache["key"]] = {
+                "signature": active_cache["signature"], "reason": reason,
+            }
+        try:
+            self.decision_log.write(
+                "merge_refused", getattr(a, "object_id", a.label),
+                candidate=getattr(b, "object_id", b.label),
+                reason=reason,
+                a_label=a.label, b_label=b.label,
+                a_has_color=_known(a.color), b_has_color=_known(b.color),
+                a_has_material=_known(a.material), b_has_material=_known(b.material),
+                a_has_description=_known(a.description),
+                b_has_description=_known(b.description),
+                similarity=similarity, dry_run=bool(sweep.dry_run), **extra)
+        except Exception as exc:
+            self.get_logger().error(f"decision_log merge_refused failed: {exc}")
+
+    def _validate_merge_request(self, request, response):
+        """Reject invalid thresholds before snapshotting or comparing objects."""
+        # GA-25, first residual. This used to read `<= 0` as "use the configured value",
+        # the OPPOSITE of config.py's `0 = off`, so a caller sending 0 to DISABLE the
+        # similarity requirement silently got the loosest live gate in the system. A
+        # request can no longer configure zero at all: both gates must be positive, and
+        # a zero or negative value is refused with the value the caller must send. Every
+        # in-tree caller (the bridge, merge_duplicate_objects) already sends explicit
+        # positive values, so nothing relies on the old default-by-zero.
+        if (not math.isfinite(request.max_distance)
+                or not math.isfinite(request.min_similarity)
+                or request.max_distance <= 0.0 or request.min_similarity <= 0.0):
+            response.success = False
+            response.merged_count = 0
+            response.merge_log_json = "[]"
+            response.message = (
+                f"refused: max_distance={request.max_distance} min_similarity="
+                f"{request.min_similarity}; both must be finite and > 0. A merge request cannot "
+                f"disable a gate -- send the values you mean (config defaults are "
+                f"{MERGE_MAX_DISTANCE} m and {MERGE_MIN_SIMILARITY}).")
+            return None
+        # GA-341. The load-time assertion above forbids a CONFIG merge floor at or below the
+        # match gate, but a REQUEST could still carry one: the bridge's body default was
+        # 0.75 against sim_threshold 0.85, so `POST /merge {}` merged pairs the association
+        # loop had just refused. Refuse it here, naming the bound, rather than clamp it.
+        if request.min_similarity <= SIM_THRESHOLD:
+            response.success = False
+            response.merged_count = 0
+            response.merge_log_json = "[]"
+            response.message = (
+                f"refused: min_similarity={request.min_similarity} must be STRICTLY greater "
+                f"than association.sim_threshold ({SIM_THRESHOLD}); the config merge floor "
+                f"is {MERGE_MIN_SIMILARITY} (GA-341).")
+            return None
+        return request.max_distance, request.min_similarity
 
     def _cb_merge_objects(self, request, response):
+        """Orchestrate validation, one snapshot sweep, application, and reporting."""
         try:
             import json
 
-            # GA-25, first residual. This used to read `<= 0` as "use the configured value",
-            # the OPPOSITE of config.py's `0 = off`, so a caller sending 0 to DISABLE the
-            # similarity requirement silently got the loosest live gate in the system. A
-            # request can no longer configure zero at all: both gates must be positive, and
-            # a zero or negative value is refused with the value the caller must send. Every
-            # in-tree caller (the bridge, merge_duplicate_objects) already sends explicit
-            # positive values, so nothing relies on the old default-by-zero.
-            if request.max_distance <= 0.0 or request.min_similarity <= 0.0:
-                response.success = False
-                response.merged_count = 0
-                response.merge_log_json = "[]"
-                response.message = (
-                    f"refused: max_distance={request.max_distance} min_similarity="
-                    f"{request.min_similarity}; both must be > 0. A merge request cannot "
-                    f"disable a gate -- send the values you mean (config defaults are "
-                    f"{MERGE_MAX_DISTANCE} m and {MERGE_MIN_SIMILARITY}).")
+            limits = self._validate_merge_request(request, response)
+            if limits is None:
                 return response
-            # GA-341. The load-time assertion above forbids a CONFIG merge floor at or below the
-            # match gate, but a REQUEST could still carry one: the bridge's body default was
-            # 0.75 against sim_threshold 0.85, so `POST /merge {}` merged pairs the association
-            # loop had just refused. Refuse it here, naming the bound, rather than clamp it.
-            if request.min_similarity <= SIM_THRESHOLD:
-                response.success = False
-                response.merged_count = 0
-                response.merge_log_json = "[]"
-                response.message = (
-                    f"refused: min_similarity={request.min_similarity} must be STRICTLY greater "
-                    f"than association.sim_threshold ({SIM_THRESHOLD}); the config merge floor "
-                    f"is {MERGE_MIN_SIMILARITY} (GA-341).")
+            max_distance, min_similarity = limits
+            sweep = self._prepare_merge_sweep(
+                request, response, max_distance, min_similarity)
+            if sweep is None:
                 return response
-            MAX_DISTANCE   = request.max_distance
-            MIN_SIMILARITY = request.min_similarity
-            dry_run        = getattr(request, 'dry_run', False)
-
-            # Take the comparison snapshot under the world-model lock.  The legacy path
-            # intentionally performs its expensive similarity work outside the lock, but
-            # copying the live list without the lock allowed an admission/removal callback
-            # to race the iterator and made a scan-complete merge see a partially changed map.
-            # `wm.snapshot()` keeps the short critical section at the snapshot boundary;
-            # the existing membership checks below still protect the later write-back.
-            objects = wm.snapshot()
-            to_remove       = set()
-            # One dict per pair, not a tuple. It was a 3-tuple, then a 4-tuple when the
-            # similarity had to reach the decision record, and GA-80 needs the rooms there
-            # too -- each widening touching four unpack sites, any one of which could be
-            # missed for a ValueError inside a service callback that neither py_compile nor
-            # ruff can see. A dict ends that: adding a field never breaks a reader.
-            to_remove_pairs = []
-            merge_log       = []
-
-            def _pair_similarity(a, b, a_label, b_label):
-                """-> (score, evidence). Embeddings cache on the object, so once per object.
-
-                GA-101: the score alone cannot say whether four axes agreed or nothing was
-                comparable, and those two produce the SAME number when the labels match.
-                """
-                if not hasattr(a, 'embedding') or a.embedding is None:
-                    a.embedding = get_embedding(world2vec, a.description)
-                if not hasattr(b, 'embedding') or b.embedding is None:
-                    b.embedding = get_embedding(world2vec, b.description)
-                return lost_similarity_detailed(world2vec, a_label, b_label,
-                                                a.color, b.color,
-                                                a.material, b.material,
-                                                a.embedding, b.embedding)
-
-            def _refused(a, b, reason, similarity, **extra):
-                """A refusal is a decision and belongs beside the admissions.
-
-                Every refusal path here used to be print-then-continue, and only an APPLIED
-                merge reached hook_decisions.jsonl -- so from the bundle alone "the gate
-                refused twenty pairs" and "association produced no pairs" were THE SAME
-                OBSERVATION. Run 19's real numbers (20 pairs compared, 19 refused on
-                similarity, ceiling 0.797) were recoverable only because stdout happened to
-                be captured by how that run was launched, which is a property of the launch
-                and not of the bundle format.
-
-                Those numbers are what struck a claim already circulating as evidence:
-                "0/5 merges under 0.925 vs 87% under the old gate" reads as a threshold
-                effect and is not one -- the 0.85-0.925 band was EMPTY, so the old gate
-                would have refused them too. The run measured the scene, not the knob.
-
-                `similarity` is recorded on ALL THREE reasons, including room and distance.
-                Counters alone would not have carried that argument: a run that refuses
-                everything on locality must still show whether those pairs would have
-                passed on attributes, or the next reader repeats the same mistake.
-
-                `kind` is "merge_refused", never "merge" -- a reader counting merges must
-                separate these BY FIELD, not by inferring it from a payload key.
-                """
-                # The terms that EXISTED WHEN THE PAIR WAS COMPARED, per side.
-                # persistent_perception.json holds the final values of SURVIVING objects
-                # only, so a merge destroys its own diagnostic evidence -- 11 of run A's 14
-                # high-scoring pairs could not be resolved afterwards because they had been
-                # merged away, which makes every term-absence count computed from the
-                # bundle a LOWER BOUND. Recorded here, at the moment of comparison, it is
-                # exact and survives whatever happens to the objects afterwards.
-                try:
-                    self.decision_log.write(
-                        "merge_refused", getattr(a, "object_id", a.label),
-                        candidate=getattr(b, "object_id", b.label),
-                        reason=reason,
-                        a_label=a.label, b_label=b.label,
-                        a_has_color=_known(a.color), b_has_color=_known(b.color),
-                        a_has_material=_known(a.material), b_has_material=_known(b.material),
-                        a_has_description=_known(a.description),
-                        b_has_description=_known(b.description),
-                        similarity=similarity, dry_run=bool(dry_run), **extra)
-                except Exception as e:
-                    self.get_logger().error(f"decision_log merge_refused failed: {e}")
+            dry_run = sweep.dry_run
 
             print("══════════════════════════════════════════════")
-            print(f"🔍 MERGE CHECK: {len(objects)} objects in memory")
+            print(f"🔍 MERGE CHECK: {len(sweep.objects)} objects in memory")
             print("══════════════════════════════════════════════")
 
-            # GA-186. Candidate generation is a NAMED STEP now, and it is where the two
-            # engines differ first. "legacy" used to offer EVERY pair, which is what every
-            # run before the dev/lost3dsg-cleanup merge measured; it now applies an AABB
-            # broad phase at `merge_aabb_margin_m` first, so that sentence no longer
-            # describes it. "evidence" offers only pairs inside the two objects' own
-            # covariance shells. BOTH engines now report what they excluded, as a counted
-            # `not_offered_summary` row, so a pair that was never compared is visible in the
-            # bundle instead of being invisible the way refusals were before they were
-            # logged.
-            pair_iter, assoc_ctx, assoc_objs = self._merge_candidates(
-                objects, _refused, MAX_DISTANCE)
-
-            for a, b, pair_meta in pair_iter:
-                    # GA-23: `a` is re-tested on every pair rather than once per outer
-                    # iteration. A pair resolving with keeper = b condemns `a` while later
-                    # pairs still hold it, and it could then be chosen keeper again -- so the
-                    # apply block would write keeper.bbox onto an object already removed from
-                    # the world model. The flat iteration makes this a plain per-pair check.
-                    if a in to_remove:
-                        continue
-                    if b in to_remove:
-                        # Also logged: a pair skipped because one side is already condemned
-                        # is a pair that was never judged on its own evidence, and the count
-                        # of those is how you tell "the gate refused it" from "the gate
-                        # never saw it".
-                        _refused(a, b, "already_condemned", None)
-                        continue
-
-                    near_geometry_override = False
-                    near_geometry_iou = None
-
-                    if a.bbox is None or b.bbox is None:
-                        # THE LAST UNLOGGED EXIT IN THE SELECTION PATH, and it matters more
-                        # than its two lines suggest. MEASURED in run 20260831_184822: a
-                        # single service call saw 118 objects and logged 121 pairs, where
-                        # all-pairs is 6903 -- so 98% of pairs left the loop before reaching
-                        # any gate, and every refusal reason IS logged (similarity 5996,
-                        # distance 285, room 9). The shortfall is therefore entirely in the
-                        # exits that record nothing, and this is one of the two.
-                        #
-                        # The consequence is not abstract: ALL EIGHT air-conditioner pairs
-                        # within 1.5 m of each other in that run were never offered to the
-                        # comparison at all -- including a 0.385 m pair whose volumes are
-                        # 0.0016 m3 and 0.2338 m3, a 146x ratio and the exact fragment/whole
-                        # shape the redesign exists to catch. Nobody could say why, because
-                        # the skip left no trace.
-                        #
-                        # A pair that is never compared is invisible in precisely the way
-                        # refusals were before they were logged. So it is logged now.
-                        _refused(a, b, "bbox_absent", None,
-                                 a_has_bbox=a.bbox is not None, b_has_bbox=b.bbox is not None)
-                        continue
-
-                    # GA-25: locality before attributes. Geometry, never the room-type
-                    # belief. `room_at_bbox` returns None when it cannot say, and None is
-                    # UNKNOWN -- never "same room". Refusing only on positive disagreement
-                    # keeps the gate strict without inventing separation the map cannot
-                    # support; the similarity and distance gates still apply beneath it.
-                    #
-                    # assign_room_by_geometry is NOT usable here: it falls back to the
-                    # robot's own room, in the same type as a real answer, so two objects in
-                    # different rooms would read as the same room exactly when the map is
-                    # least able to separate them (GA-28).
-                    a_label = a.label.split('#')[0] if '#' in a.label else a.label
-                    b_label = b.label.split('#')[0] if '#' in b.label else b.label
-
-                    room_a = self.room_manager.room_at_bbox(a.bbox)
-                    room_b = self.room_manager.room_at_bbox(b.bbox)
-
-                    if MERGE_ENGINE == "evidence":
-                        # GA-186. No gate cascade and no similarity constant: every channel
-                        # runs, the log-odds are fused, and the pair commits only if the
-                        # total clears log(cost_ratio). Three outcomes, not two -- a HOLD is
-                        # not a refusal, and recording them as the same thing is what made
-                        # "the gate refused it" and "the gate could not tell" indistinguishable.
-                        aa = assoc_objs.get(id(a))
-                        bb = assoc_objs.get(id(b))
-                        if aa is None or bb is None:
-                            _refused(a, b, "assoc_object_missing", None)
-                            continue
-                        # Sorted, so the same pair keys identically whichever side is `a`
-                        # this sweep -- candidate order is not stable between sweeps and an
-                        # order-dependent key would start a fresh hypothesis every time,
-                        # silently disabling the persistence requirement below.
-                        hyp_key = tuple(sorted((str(getattr(a, "object_id", None) or a.label),
-                                                str(getattr(b, "object_id", None) or b.label))))
-                        ps = assoc.score_pair(aa, bb, assoc_ctx)
-                        threshold = assoc.commit_threshold(assoc_ctx.cost_ratio)
-
-                        # GA-188. The verdict comes from a HYPOTHESIS THAT PERSISTS ACROSS
-                        # SWEEPS, not from this one scoring. Scoring once and committing let
-                        # a single frame's geometry error destroy an identity; the design
-                        # says a decision must survive being re-measured. Hypothesis also
-                        # owns two things this branch was reimplementing badly: a veto is
-                        # PERMANENT for the pair (co-visibility is a fact, not evidence to
-                        # be outweighed later), and the full per-frame history is kept, so
-                        # the merge is explainable and reversible afterwards.
-                        h = self._hypotheses.get(hyp_key)
-                        if h is None:
-                            h = assoc.Hypothesis(hyp_key)
-                            self._hypotheses[hyp_key] = h
-                        h.update(ps, frame_id=self._merge_sweep)
-                        decision, why = h.decide(threshold,
-                                                 min_evidence=MERGE_MIN_EVIDENCE,
-                                                 min_consecutive=MERGE_MIN_CONSECUTIVE)
-
-                        rec = ps.as_record()
-                        rec.update(distance=pair_meta.get("distance_m"),
-                                   reach_m=pair_meta.get("reach_m"),
-                                   room_a=room_a, room_b=room_b, engine="evidence",
-                                   # The THIRD unit of a key called `threshold`: log-odds,
-                                   # not the similarity or the metres the 2026-09-06 rename
-                                   # split apart. Named rather than retired -- this is the
-                                   # arm that actually runs, so every existing reader of
-                                   # `threshold` on a merge_refused row is reading THIS,
-                                   # and the legacy key stays until those readers move.
-                                   threshold_log_odds=round(threshold, 4),
-                                   threshold=round(threshold, 4),
-                                   hypothesis_total=(None if h.vetoed_by else round(h.total, 4)),
-                                   updates=len(h.history), decision_reason=why)
-
-                        if decision != "merge":
-                            # "reject" (vetoed), "abstain" (nothing measured yet) and "hold"
-                            # (below threshold, or not yet persistent, or containment
-                            # unchecked) are DIFFERENT ANSWERS and are recorded as such. A
-                            # hold is not a refusal: the pair is still live and will be
-                            # re-decided on the next sweep.
-                            _refused(a, b, decision, None if h.vetoed_by else h.total, **rec)
-                            continue
-                        rec["provenance"] = h.provenance()
-                        h.committed = True
-
-                        # Committed. The apply block below is shared with the legacy engine
-                        # and reads `sim`, `dist` and `ev`, so they are filled from the
-                        # evidence result -- `sim` is LOG-ODDS here, not a 0..1 similarity,
-                        # which is why every record carries `engine`.
-                        sim = h.total
-                        ev = {"optional_count": ps.evidence_count}
-                        dist = pair_meta.get("distance_m")
-                        if dist is None:
-                            dist = float(np.linalg.norm(
-                                np.asarray(aa.centroid) - np.asarray(bb.centroid)))
-                    if (MERGE_ENGINE == "legacy"
-                            and room_a is not None and room_b is not None and room_a != room_b):
-                        print(f"   ❌ DIFFERENT ROOMS ({room_a} != {room_b})")
-                        # The similarity is computed HERE, on the refusal path only, and
-                        # solely to be recorded. The gate ORDER is unchanged -- locality
-                        # still decides before attributes (GA-25) and no similarity can
-                        # rescue a pair in two different rooms. Paying for it only on the
-                        # pairs actually refused on room keeps the early gate's saving on
-                        # every pair that passes it, and those refused pairs are exactly
-                        # the population the log needs to be able to describe.
-                        _room_sim, _room_ev = _pair_similarity(a, b, a_label, b_label)
-                        _refused(a, b, "room", _room_sim,
-                                 evidence_count=_room_ev["optional_count"],
-                                 room_a=room_a, room_b=room_b)
-                        continue
-
-                    ax = (a.bbox['x_min'] + a.bbox['x_max']) / 2.0
-                    ay = (a.bbox['y_min'] + a.bbox['y_max']) / 2.0
-                    az = (a.bbox['z_min'] + a.bbox['z_max']) / 2.0
-                    bx = (b.bbox['x_min'] + b.bbox['x_max']) / 2.0
-                    by = (b.bbox['y_min'] + b.bbox['y_max']) / 2.0
-                    bz = (b.bbox['z_min'] + b.bbox['z_max']) / 2.0
-
-                    # GA-186: the loop is flat now, so there are no `i`/`j` indices to print.
-                    # They were the enumeration of a nested loop that no longer exists, and
-                    # printing them here would have been a NameError on the legacy path.
-                    print(f"\n📐 COMPARISON {a_label} vs {b_label}:")
-                    print(f"   Pos A: ({ax:.2f}, {ay:.2f}, {az:.2f})")
-                    print(f"   Pos B: ({bx:.2f}, {by:.2f}, {bz:.2f})")
-
-                    if MERGE_ENGINE == "legacy":
-                        dist = np.sqrt((ax - bx)**2 + (ay - by)**2 + (az - bz)**2)
-                    print(f"   Distance: {dist:.3f}m (threshold: {MAX_DISTANCE}m)")
-
-                    if MERGE_ENGINE == "legacy" and dist > MAX_DISTANCE:
-                        # GA-25, second residual. This gate used to run LAST, after
-                        # `_pair_similarity` had already embedded both descriptions -- the
-                        # expensive comparison on every pair the cheap one was about to
-                        # reject. On the legacy engine every pair is offered, so that was
-                        # every pair in the map. It now runs first, and the refusal record
-                        # carries no similarity because none was measured.
-                        print(f"   ❌ TOO FAR APART ({dist:.2f}m > {MAX_DISTANCE}m)")
-                        # Same joint rename: this path's threshold is METRES, the
-                        # similarity path's is unitless -- the typed key says which.
-                        _refused(a, b, "distance", None,
-                                 evidence_count=None,
-                                 distance=dist, threshold_distance_m=MAX_DISTANCE,
-                                 room_a=room_a, room_b=room_b)
-                        continue
-
-                    if MERGE_ENGINE == "legacy":
-                        near_geometry_override, near_geometry_iou = _near_geometry_duplicate(
-                            a, b, dist)
-
-                    if MERGE_ENGINE == "legacy":
-                        # Embedding lazy; missing description embeddings are absent evidence,
-                        # not a reason to skip the pair (lost_similarity renormalises).
-                        # GUARDED: in evidence mode `sim` and `ev` are already the fused
-                        # log-odds and the channel count, and recomputing them here would
-                        # silently overwrite the decision that was just made.
-                        sim, ev = _pair_similarity(a, b, a_label, b_label)
-
-                    print("   Sim semantiche:")
-                    print(f"     Label: '{a_label}' vs '{b_label}'")
-                    print(f"     Colore: '{a.color}' vs '{b.color}'")
-                    print(f"     Materiale: '{a.material}' vs '{b.material}'")
-                    print(f"     Similarity: {sim:.3f} (threshold: {MIN_SIMILARITY})")
-
-                    # GA-21: the `forzo merge` bypass that stood here is deleted. It fired
-                    # ONLY when the evidence had already said do not merge, and overrode that
-                    # with label equality plus a hardcoded 0.5 overlap -- so a red hardback
-                    # and a blue notebook, both labelled "book" at the same spot, scored ~0.55,
-                    # were correctly refused, and were then fused anyway. Overlap is locality,
-                    # not similarity; the same confusion as GA-05, in the one operation that
-                    # destroys an identity.
-                    if (MERGE_ENGINE == "legacy" and sim < MIN_SIMILARITY
-                            and not near_geometry_override):
-                        print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {MIN_SIMILARITY})")
-                        # Unit-typed key (joint rename with the ontology lane, their
-                        # inbox 00002/00004/00005): `threshold` was unit-polymorphic -- 0.925
-                        # cosine here, 0.8 METRES on the distance path below -- and was
-                        # misread once by a reader and once by a test. TRANSITION CLOSED
-                        # 2026-09-06 on the owner's authorisation: the legacy key is retired
-                        # here, ontology's reader prefers the typed key and keeps a fallback
-                        # for rows written before d76f997. Rows from the EVIDENCE engine still
-                        # carry `threshold` -- a third unit, log-odds -- and are named by
-                        # `threshold_log_odds` beside it rather than swept into this rename.
-                        _refused(a, b, "similarity", sim,
-                                 evidence_count=ev["optional_count"],
-                                 threshold_similarity=MIN_SIMILARITY,
-                                 room_a=room_a, room_b=room_b)
-                        continue
-
-                    decision_reason = (
-                        "near_geometry_label_iou"
-                        if near_geometry_override else
-                        ("similarity" if MERGE_ENGINE == "legacy" else "evidence"))
-                    if near_geometry_override:
-                        print(
-                            f"   ✅ GEOMETRY OVERRIDE: same label, centre distance {dist:.3f}m, "
-                            f"AABB IoU {near_geometry_iou:.3f}; similarity {sim:.3f} is non-authoritative"
-                        )
-
-                    # GA-101: a score that passed the gate on NOTHING must not merge.
-                    # With colour, material and description all absent the divisor is the
-                    # label weight alone, so two identical label strings score exactly
-                    # 1.0000 -- above any threshold, from zero measured evidence. Raising
-                    # MIN_SIMILARITY cannot reach this: the pairs it is meant to catch sit
-                    # ABOVE the ones that actually agreed on something.
-                    #
-                    # Placed AFTER the similarity gate on purpose. Running it first would
-                    # relabel every genuine low-score refusal as "evidence_absent" and hide
-                    # a real signal -- a different-label pair with nothing else measured
-                    # scored 0.0000 because the labels WERE compared and disagreed. This
-                    # only refuses pairs that would otherwise have been merged.
-                    if MERGE_ENGINE == "legacy" and ev["optional_count"] < MERGE_MIN_EVIDENCE:
-                        print(f"   ❌ NO EVIDENCE ({ev['optional_count']} optional "
-                              f"terms < {MERGE_MIN_EVIDENCE}; sim {sim:.3f} on the label alone)")
-                        _refused(a, b, "evidence_absent", sim,
-                                 evidence_count=ev["optional_count"],
-                                 required=MERGE_MIN_EVIDENCE, room_a=room_a, room_b=room_b)
-                        continue
-
-                    # GA-25 / GA-314: which identity survives follows the evidence, not list
-                    # order -- credibility first, then the rule `merge_rank` documents.
-                    keeper, discard = (a, b) if merge_rank(a) <= merge_rank(b) else (b, a)
-
-                    # The survivor's geometry must enclose both measurements. Keeping only the
-                    # keeper's box left a merged duplicate represented by whichever partial view
-                    # happened to win the identity tie-break. `_combine_object_geometry` fits one
-                    # coherent PCA box over the two measured boxes and keeps the AABB exact too.
-                    merged_bbox, merged_geometry_acc = _combine_object_geometry(keeper, discard)
-
-                    vol_a = ((a.bbox['x_max']-a.bbox['x_min']) *
-                            (a.bbox['y_max']-a.bbox['y_min']) *
-                            (a.bbox['z_max']-a.bbox['z_min']))
-                    vol_b = ((b.bbox['x_max']-b.bbox['x_min']) *
-                            (b.bbox['y_max']-b.bbox['y_min']) *
-                            (b.bbox['z_max']-b.bbox['z_min']))
-                    vol_m = ((merged_bbox['x_max']-merged_bbox['x_min']) *
-                            (merged_bbox['y_max']-merged_bbox['y_min']) *
-                            (merged_bbox['z_max']-merged_bbox['z_min']))
-
-                    print("   ✅ MERGE!")
-                    print(f"     Volume A: {vol_a:.3f}m³ | Volume B: {vol_b:.3f}m³ → Kept: {vol_m:.3f}m³")
-                    print(f"     Kept: '{keeper.label}' | Removed: '{discard.label}'")
-                    print(f"     Keeper desc: '{keeper.description[:40]}...'")
-                    print(f"     Bbox kept: x[{merged_bbox['x_min']:.2f},{merged_bbox['x_max']:.2f}] "
-                        f"y[{merged_bbox['y_min']:.2f},{merged_bbox['y_max']:.2f}] "
-                        f"z[{merged_bbox['z_min']:.2f},{merged_bbox['z_max']:.2f}]")
-
-                    to_remove.add(discard)
-                    to_remove_pairs.append({
-                        "keeper": keeper, "discard": discard, "bbox": merged_bbox,
-                        "geometry_acc": merged_geometry_acc,
-                        "similarity": sim,
-                        "distance": dist,
-                        "decision_reason": decision_reason,
-                        "near_geometry_override": near_geometry_override,
-                        "near_geometry_iou": near_geometry_iou,
-                        "keeper_room": room_a if keeper is a else room_b,
-                        "discard_room": room_b if keeper is a else room_a,
-                    })
-                    merge_log.append({
-                        "keeper":      keeper.label,
-                        "keeper_id":   getattr(keeper, "object_id", None),
-                        "discarded":   discard.label,
-                        # GA-25's room gate refuses a pair only when BOTH rooms are known
-                        # and differ. Recording both -- including None for "geometry cannot
-                        # say" -- is what makes that rule checkable from a bundle: without
-                        # it, a merge that should have been refused and one that was
-                        # correctly allowed are identical in the log.
-                        "keeper_room":    room_a if keeper is a else room_b,
-                        "discarded_room": room_b if keeper is a else room_a,
-                        "distance":    round(dist, 3),
-                        "similarity":  round(sim, 3),
-                        "decision_reason": decision_reason,
-                        "near_geometry_override": near_geometry_override,
-                        "near_geometry_iou": (
-                            round(near_geometry_iou, 3)
-                            if near_geometry_iou is not None else None),
-                        # Keep the same evidence metadata on accepted merges that the
-                        # refusal path already records. A similarity of 1.0 is not enough
-                        # to calibrate this gate: it can come from a label-only/identical
-                        # attribute comparison, or from several genuinely agreeing fields.
-                        "evidence_count": ev.get("optional_count"),
-                        "engine": MERGE_ENGINE,
-                        "score_type": "log_odds" if MERGE_ENGINE == "evidence" else "similarity",
-                        "threshold_similarity": MIN_SIMILARITY if MERGE_ENGINE == "legacy" else None,
-                        "threshold_distance_m": MAX_DISTANCE if MERGE_ENGINE == "legacy" else None,
-                        "threshold_near_distance_m": (
-                            MERGE_NEAR_DISTANCE if MERGE_ENGINE == "legacy" else None),
-                        "threshold_near_iou": (
-                            MERGE_NEAR_IOU_THRESHOLD if MERGE_ENGINE == "legacy" else None),
-                        "threshold_log_odds": threshold if MERGE_ENGINE == "evidence" else None,
-                        "decision_details": rec if MERGE_ENGINE == "evidence" else None,
-                        "merged_bbox": merged_bbox,
-                        # GA-20: `merged_bbox` keeps its name -- it is still the box after the
-                        # merge -- but it is now an observation rather than a synthesis, so
-                        # record WHOSE. Added, not renamed: a reader that does not look for
-                        # this key cannot break on it.
-                        "bbox_source": "keeper",
-                        "bbox_from_object_id": getattr(keeper, "object_id", None) or keeper.label,
-                    })
-
-            # GA-197. THE MERGE RECORDS ARE WRITTEN WHETHER OR NOT THIS IS A DRY RUN, and
-            # they used to sit inside the `not dry_run` guard below. A dry run therefore
-            # decided merges, printed the "MERGE!" banner, filled `to_remove_pairs` -- and
-            # wrote NOTHING, while every REFUSAL logged normally. The bundle then showed a
-            # full refusal stream and zero merges, which reads as "the gate refused
-            # everything": exactly the ambiguity refusal-logging was introduced to end,
-            # reintroduced from the other side. The `dry_run` field on the record was dead
-            # by construction -- it could only ever be written as False.
-            #
-            # A dry run exists to say what the gate WOULD do. Its decisions are the output.
-            for pair in to_remove_pairs:
-                keeper, discard = pair["keeper"], pair["discard"]
-                try:
-                    self.decision_log.write(
-                        "merge", getattr(keeper, "object_id", keeper.label),
-                        merged_from=getattr(discard, "object_id", discard.label),
-                        keeper_label=keeper.label, discarded_label=discard.label,
-                        keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
-                        similarity=pair["similarity"],
-                        decision_reason=pair.get("decision_reason"),
-                        near_geometry_override=pair.get("near_geometry_override", False),
-                        near_geometry_iou=pair.get("near_geometry_iou"),
-                        distance=pair.get("distance"),
-                        threshold_near_distance_m=(
-                            MERGE_NEAR_DISTANCE if pair.get("near_geometry_override") else None),
-                        threshold_near_iou=(
-                            MERGE_NEAR_IOU_THRESHOLD if pair.get("near_geometry_override") else None),
-                        dry_run=bool(dry_run))
-                except Exception as e:
-                    self.get_logger().error(f"decision_log merge failed: {e}")
-
-            if to_remove_pairs and not dry_run:
-                print(f"\n🗑️ REMOVING: {len(to_remove_pairs)} duplicate objects:")
-
-                # GA-393, NARROWED per the owner's ruling ("keep the fix; reduce the guard to
-                # the part that writes"). The comparison sweep above runs on `objects`, a
-                # snapshot taken at entry, so holding the lock across it blocked the other
-                # executor threads for a median 569 ms and up to 2.8 s of a 7.4 s cycle. THIS
-                # is where the world model is actually mutated, and it was the only service
-                # callback in this file taking no lock at all while add, update, delete and
-                # query all take one.
-                #
-                # Because the sweep ran unlocked, a pair decided there may no longer be valid:
-                # another thread can have removed either side in between. BOTH are re-checked
-                # inside the lock -- the keeper was never checked before -- and a stale pair is
-                # skipped and COUNTED, never applied to an object that has left the map.
-                stale = 0
-                with wm.lock:
-                    for pair in to_remove_pairs:
-                        keeper, discard, merged_bbox = pair["keeper"], pair["discard"], pair["bbox"]
-
-                        if keeper not in wm.persistent_perceptions:
-                            stale += 1
-                            continue
-                        if discard in wm.persistent_perceptions:
-                            # Merge geometry while both tracks still exist. The
-                            # operation preserves distinct view IDs, so two
-                            # tracks containing the same cycle do not count it twice.
-                            merge_bbox_fusion(keeper, discard)
-                            # Recompute against the current keeper because several accepted
-                            # pairs in one sweep can share the same keeper. This makes a merge
-                            # chain enclose every member instead of letting the last pair shrink
-                            # the box back to its first two observations.
-                            merged_bbox, merged_geometry_acc = _combine_object_geometry(keeper, discard)
-                            keeper.bbox = merged_bbox
-                            keeper._yaw_acc = merged_geometry_acc
-                            cx = (discard.bbox['x_min'] + discard.bbox['x_max']) / 2.0
-                            cy = (discard.bbox['y_min'] + discard.bbox['y_max']) / 2.0
-                            print(f"   - {discard.label} @ ({cx:.2f}, {cy:.2f})")
-                            wm.persistent_perceptions.remove(discard)
-                            # GA-26: the store learns about the merge, or its row stays active
-                            # forever and the database disagrees with the map by one object.
-                            if hasattr(self, 'db'):
-                                try:
-                                    self.db.on_object_merged(keeper, discard, step=self.tracking_step_counter)
-                                except Exception as e:
-                                    self.get_logger().error(f"db.on_object_merged failed: {e}")
-
-                        discard_room = getattr(discard, 'room_id', None)
-                        if discard_room and discard_room in self.room_manager.scene_graph:
-                            objs = self.room_manager.scene_graph[discard_room]["objects"]
-                            if discard.label in objs:
-                                objs.remove(discard.label)
-
-                        self.room_manager.update_room_geometry(
-                            getattr(keeper, 'room_id', self.room_manager.current_room_id),
-                            merged_bbox
-                        )
-
-                    save_persistent_perceptions(self)
-                    publish_persistent_bboxes(self, wm, self.persistent_bbox_pub)
-                    publish_persistent_centroids(self, wm, self.persistent_centroids_pub)
-
-                if stale:
-                    self.log_both("warn", f"[MERGE] {stale} pair(s) skipped: an object left "
-                                          f"the map between the unlocked sweep and the write")
-
-                try:
-                    with open(OPERATIONS_LOG, 'a') as f:
-                        timestamp = datetime.now().strftime('%H:%M:%S')
-                        for pair in to_remove_pairs:
-                            keeper, discard = pair["keeper"], pair["discard"]
-                            f.write(f"[{timestamp}] 🔗 MERGE: '{discard.label}' → '{keeper.label}'\n")
-                except Exception as e:
-                    self.get_logger().error(f"Could not write to operations.txt: {e}")
-
-                # A merge is the one decision that RE-ROUTES history: the discarded object stops
-                # existing and its past belongs to the keeper. Record both ids, so a reader
-                # reconstructing the keeper knows to follow the discarded one backwards, and a
-                # reader looking up the discarded id learns where it went instead of finding a
-                # history that simply stops.
-            elif not to_remove_pairs:
-                print("\n✅ NO duplicates found.")
+            # An explicit final audit must also revisit competing candidates.
+            # Every pass uses fresh geometry/history after the previous mutations;
+            # never apply a chain of proposals from the same stale snapshot.
+            # Each productive pass removes at least one object, so N passes cover
+            # convergence plus its final empty pass in a static N-object map.
+            # The bound also prevents starvation if new tracks arrive concurrently.
+            drain = bool(getattr(request, "full_audit", False)) and not dry_run
+            max_passes = max(1, len(sweep.objects)) if drain else 1
+            applied = []
+            audit_limit_reached = False
+            for pass_index in range(max_passes):
+                decisions = self._evaluate_merge_sweep(sweep)
+                pass_applied = self._apply_merge_proposals(
+                    decisions.accepted, max_distance=sweep.max_distance, dry_run=dry_run)
+                applied.extend(pass_applied)
+                self._finish_merge_sweep(
+                    sweep, decisions.pair_iter, decisions.scope_ids,
+                    decisions.current_candidate_pairs, pass_applied)
+                if not drain or not pass_applied:
+                    break
+                if pass_index + 1 == max_passes:
+                    audit_limit_reached = True
+                    self._merge_force_next_full = True
+                    break
+                sweep = self._prepare_merge_sweep(
+                    request, response, max_distance, min_similarity)
+                if sweep is None:
+                    break
 
             print("══════════════════════════════════════════════\n")
 
             # ── Risposta ──────────────────────────────────────────────────────
             response.success        = True
-            response.merged_count   = len(to_remove_pairs)
-            response.merge_log_json = json.dumps(merge_log)
+            response.merged_count   = len(applied)
+            response.merge_log_json = json.dumps(
+                [pair["merge_record"] for pair in applied])
             response.message        = (
                 f"{'[DRY RUN] ' if dry_run else ''}"
-                f"{len(to_remove_pairs)} merge(s) "
+                f"{len(applied)} merge(s) "
                 f"{'simulati' if dry_run else 'eseguiti'}"
+                + ("; audit pass limit reached, another full audit is required"
+                   if audit_limit_reached else "")
             )
 
         except Exception as e:
@@ -2667,6 +2834,7 @@ class ObjectServices(Node):
                 old_bbox = best_match.bbox
                 if old_bbox is None:
                     best_match.bbox = bbox
+                    best_match.centroid = _centroid_from_bbox(bbox)
                     best_match._yaw_acc = yaw_acc   # GA-315 part 2
                     apply_request_fusion(best_match, request, label=best_match.label)
                     if clip_embedding is not None:
@@ -2695,14 +2863,18 @@ class ObjectServices(Node):
                     self._set_receipt_response(
                         response, mutation_event_id, "applied_and_checkpointed", best_match)
                     return response
-                iou = compute_iou_3d(bbox, old_bbox)
+                # Movement/plausibility must inspect the incoming measurement; consensus
+                # may deliberately keep a previous prediction and would hide a real move.
+                measured_bbox = (raw_bbox if CFG.get("perception", {}).get(
+                    "detector", "vlm").lower() == "boxer" else bbox)
+                iou = compute_iou_3d(measured_bbox, old_bbox)
 
                 old_x = (old_bbox["x_min"] + old_bbox["x_max"]) / 2.0
                 old_y = (old_bbox["y_min"] + old_bbox["y_max"]) / 2.0
                 old_z = (old_bbox["z_min"] + old_bbox["z_max"]) / 2.0
-                new_x = (bbox["x_min"] + bbox["x_max"]) / 2.0
-                new_y = (bbox["y_min"] + bbox["y_max"]) / 2.0
-                new_z = (bbox["z_min"] + bbox["z_max"]) / 2.0
+                new_x = (measured_bbox["x_min"] + measured_bbox["x_max"]) / 2.0
+                new_y = (measured_bbox["y_min"] + measured_bbox["y_max"]) / 2.0
+                new_z = (measured_bbox["z_min"] + measured_bbox["z_max"]) / 2.0
                 distance = np.sqrt((new_x - old_x) ** 2 + (new_y - old_y) ** 2 + (new_z - old_z) ** 2)
 
                 if "door" in best_match.label.lower():
@@ -2713,7 +2885,7 @@ class ObjectServices(Node):
                     best_match._yaw_acc = yaw_acc   # GA-315 part 2
                     updated_obj = best_match
 
-                elif bbox_is_suspicious(bbox, old_bbox):
+                elif bbox_is_suspicious(measured_bbox, old_bbox):
                     # GA-26: this used to set a rejection message and fall through to
                     # the success tail, which overwrote it with success=True -- byte-
                     # identical to an attribute-only update. The detection was NOT
@@ -2913,6 +3085,7 @@ class ObjectServices(Node):
             # derived AABB index synchronized before the next detection or scan-complete
             # merge uses it.  Replacement moves already invalidated the index through the
             # tracked world-model list, so refresh_spatial is harmless there too.
+            updated_obj.centroid = _centroid_from_bbox(updated_obj.bbox)
             wm.refresh_spatial(updated_obj)
             updated_obj.object_revision = int(
                 getattr(updated_obj, "object_revision", 0)) + 1

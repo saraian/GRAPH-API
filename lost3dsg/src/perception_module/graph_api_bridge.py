@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 import cv2
@@ -50,17 +51,70 @@ from detection_types import write_observation_msg
 
 app = FastAPI(title="Graph API")
 
+# A service call can outlive the HTTP request that dispatched it. Keep its ROS future so
+# callers can ask for the actual result instead of retrying a non-idempotent mutation.
+_operation_lock = threading.Lock()
+_dispatched_operations = {}
+_OPERATION_TTL_SEC = 600.0
+
+
+def _json_ros_value(value):
+    if hasattr(value, "get_fields_and_field_types"):
+        return {name: _json_ros_value(getattr(value, name))
+                for name in value.get_fields_and_field_types()}
+    if hasattr(value, "tolist"):
+        return _json_ros_value(value.tolist())
+    if isinstance(value, dict):
+        return {str(k): _json_ros_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ros_value(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
 
 class DispatchedTimeout(RuntimeError):
     """GA-183: the ROS request was sent and our wait expired. The work may still land
     (89 merges did, reported as 500, in run 20260901_055513), so it is not a failure."""
 
+    def __init__(self, operation_id, service_key):
+        self.operation_id = operation_id
+        self.service_key = service_key
+        super().__init__(f"service '{service_key}' is still running")
+
 
 @app.exception_handler(DispatchedTimeout)
 def _dispatched_timeout(request, exc):
-    # 202: accepted, outcome unknown. The client (object_manager_6) treats 2xx as a reply
-    # with no counts, logs the message, and re-reads the world model on the next cycle.
-    return JSONResponse(status_code=202, content={"success": False, "pending": True, "message": str(exc)})
+    return JSONResponse(status_code=202, content={
+        "success": False, "pending": True, "operation_id": exc.operation_id,
+        "status_url": f"/operations/{exc.operation_id}", "message": str(exc),
+    })
+
+
+@app.get("/operations/{operation_id}")
+def dispatched_operation_status(operation_id: str):
+    with _operation_lock:
+        item = _dispatched_operations.get(operation_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="operation expired or unknown")
+    future = item["future"]
+    if not future.done():
+        return JSONResponse(status_code=202, content={
+            "pending": True, "operation_id": operation_id,
+            "service": item["service"], "elapsed_s": round(time.monotonic() - item["started"], 3),
+        })
+    try:
+        result = future.result()
+        if result is None:
+            error = future.exception()
+            raise RuntimeError(str(error) if error else "service returned no response")
+        return {"pending": False, "operation_id": operation_id,
+                "service": item["service"], "result": _json_ros_value(result)}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={
+            "pending": False, "operation_id": operation_id,
+            "service": item["service"], "error": str(exc),
+        })
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = Path(
@@ -225,6 +279,46 @@ def rooms():
         return []
 
 
+def _bev_room_overlays():
+    """Return the active room polygons in the BEV's map-frame coordinate system."""
+    try:
+        room_data = json.loads((_active_output_dir() / "room.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"rooms": [], "detected_walls": []}
+    if isinstance(room_data, list):
+        source_rooms = room_data
+        source_walls = []
+    elif isinstance(room_data, dict):
+        source_rooms = room_data.get("rooms") or (room_data.get("building") or {}).get("rooms") or []
+        source_walls = room_data.get("detected_walls") or []
+    else:
+        return {"rooms": [], "detected_walls": []}
+
+    overlays = []
+    for room in source_rooms:
+        if not isinstance(room, dict) or room.get("active", True) is False:
+            continue
+        polygon = room.get("polygon")
+        if not isinstance(polygon, list) or len(polygon) < 3:
+            continue
+        try:
+            points = [[float(point[0]), float(point[1])] for point in polygon]
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not all(math.isfinite(value) for point in points for value in point):
+            continue
+        item = {
+            "room_id": room.get("room_id"),
+            "label": room.get("semantic_label") or room.get("label"),
+            "polygon": points,
+            "area_m2": room.get("area_m2"),
+            "centroid": room.get("centroid"),
+        }
+        overlays.append(item)
+    walls = [wall for wall in source_walls if isinstance(wall, (list, dict))]
+    return {"rooms": overlays, "detected_walls": walls}
+
+
 # Frames that could not be decoded. Counted rather than swallowed: see _jpeg_from_msg.
 _FRAME_DECODE_FAILURES = {"n": 0, "last": None}
 
@@ -333,20 +427,36 @@ class BridgeNode(Node):
 
         future = client.call_async(req)
 
-        deadline = time.time() + SERVICE_CALL_TIMEOUT_SEC
-        while time.time() < deadline:
+        started = time.monotonic()
+        deadline = started + SERVICE_CALL_TIMEOUT_SEC
+        while time.monotonic() < deadline:
             if future.done():
                 break
             time.sleep(0.05)
 
         if not future.done():
-            # The request WAS dispatched by call_async above; only our wait expired. Say so,
-            # because the caller's next move differs: a retry here re-runs work that is still
-            # in flight, and for `merge` that means merging an object twice (GA-183).
-            raise DispatchedTimeout(
-                f"Timeout dopo {SERVICE_CALL_TIMEOUT_SEC:.0f}s in attesa del servizio '{key}'; "
-                f"la richiesta E' STATA INVIATA e puo' ancora completarsi -- non ritentare "
-                f"senza verificare lo stato (BRIDGE_SERVICE_TIMEOUT per allungare l'attesa)")
+            # The request was dispatched. Retain its Future and provide a status URL; do
+            # not make the caller repeat an add/update/merge whose outcome is still unknown.
+            operation_id = uuid.uuid4().hex
+            now = time.monotonic()
+            with _operation_lock:
+                expired = [oid for oid, entry in _dispatched_operations.items()
+                           if now - entry["created"] > _OPERATION_TTL_SEC]
+                for oid in expired:
+                    _dispatched_operations.pop(oid, None)
+                if len(_dispatched_operations) >= 512:
+                    oldest = min(_dispatched_operations,
+                                 key=lambda oid: _dispatched_operations[oid]["created"])
+                    _dispatched_operations.pop(oldest, None)
+                _dispatched_operations[operation_id] = {
+                    "future": future, "service": key, "started": started, "created": now,
+                }
+            node = get_node()
+            if node:
+                node.get_logger().warn(
+                    f"[SERVICE-LATENCY] {key} still pending after {now - started:.3f}s; "
+                    f"operation_id={operation_id}")
+            raise DispatchedTimeout(operation_id, key)
 
         result = future.result()
         if result is None:
@@ -355,6 +465,11 @@ class BridgeNode(Node):
                 raise RuntimeError(f"Errore dal servizio '{key}': {exc}")
             raise RuntimeError(f"no response from service '{key}'")
 
+        elapsed = time.monotonic() - started
+        if elapsed >= 0.5:
+            node = get_node()
+            if node:
+                node.get_logger().info(f"[SERVICE-LATENCY] {key} completed in {elapsed:.3f}s")
         return result
 
 
@@ -599,6 +714,7 @@ def merge_objects(body: dict = None):
     req.max_distance = float(body.get("max_distance", MERGE_MAX_DISTANCE_DEFAULT))
     req.min_similarity = float(body.get("min_similarity", MERGE_MIN_SIMILARITY_DEFAULT))
     req.dry_run = bool(body.get("dry_run", False))
+    req.full_audit = bool(body.get("full_audit", False))
 
     res = require_node().call('merge', req)
     if not res.success:
@@ -736,6 +852,15 @@ def graph_data(request: Request = None):
 
     objects = _load("persistent_perception.json")
     rooms = _load("room.json")
+    room_doc = {}
+    for room_path in (out / "room.json", out.parent / "room.json"):
+        try:
+            candidate = json.loads(room_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(candidate, dict):
+            room_doc = candidate
+            break
 
     # Load ontological hook admission decisions if logged
     decisions = {}
@@ -839,6 +964,29 @@ def graph_data(request: Request = None):
             "vlm_status": r.get("vlm_status") or {},
         })
 
+    # Confirmed room-to-room doorway relations are already recorded by RoomManager
+    # in room.json. Keep them as explicit graph edges; they are structural links,
+    # separate from object containment and object-to-object relations.
+    for doorway_key, doorway in (room_doc.get("doorway_room_edges") or {}).items():
+        if not isinstance(doorway, dict) or doorway.get("resolved") is not True:
+            continue
+        room_a, room_b = doorway.get("room_a"), doorway.get("room_b")
+        if not room_a or not room_b or room_a == room_b:
+            continue
+        source, target = _nid(room_a), _nid(room_b)
+        if source not in known_room_ids or target not in known_room_ids:
+            continue
+        element_id = doorway.get("structural_element_id") or doorway.get("element_id") or doorway_key
+        edges.append({
+            "id": f"e_{_nid(element_id)}_doorway",
+            "source": source,
+            "target": target,
+            "label": "doorway",
+            "kind": "doorway",
+            "doorway_id": element_id,
+            "doorway_key": doorway_key,
+        })
+
     # Node id: object_id when the writer provides it, label for old-format files
     def _oid(o):
         return _nid(o.get("object_id") or o.get("label", "object"))
@@ -854,9 +1002,8 @@ def graph_data(request: Request = None):
                 (bbox.get("z_min", 0.0) + bbox.get("z_max", 0.0)) / 2.0,
             ]
         decision = decisions.get(o.get("object_id")) or decisions.get(label)
-        # Key the crop on the object identity when there is one. The label joined
-        # 9 of 11 objects on the 26 Aug run; /crop resolves an object_id back to
-        # its label through the `link` records in hook_decisions.jsonl.
+        # Key the crop on object identity. New `link` records carry the admission crop
+        # filename; older records resolve the identity to a label as a compatibility fallback.
         crop_target = o.get("object_id") or str(label).replace("#", "_").replace(" ", "_")
         nodes.append({
             "id": _oid(o),
@@ -1053,8 +1200,8 @@ def get_admission_audit():
     return JSONResponse(content=g.get("admission_summary", {}))
 
 
-# object_id -> label, from the `link` records object_manager_6 writes into
-# hook_decisions.jsonl. Rebuilt only when the file changes.
+# object_id -> {label, crop_file}, from `link` records in hook_decisions.jsonl.
+# Older records have no crop_file and retain the label-based fallback.
 _LINK_CACHE = {"key": None, "map": {}}
 
 
@@ -1076,7 +1223,11 @@ def _link_index():
                 continue
             oid, label = rec.get("object"), rec.get("label")
             if oid and label:
-                mapping[str(oid)] = str(label)
+                mapping[str(oid)] = {
+                    "label": str(label),
+                    "crop_file": str(rec.get("crop_file") or ""),
+                    "has_crop_file": "crop_file" in rec,
+                }
         _LINK_CACHE.update(key=key, map=mapping)
         return mapping
     return {}
@@ -1296,11 +1447,11 @@ def _crop_label(target: str) -> str:
     """
     index = _link_index()
     if target in index:
-        return index[target]
+        return index[target]["label"]
     if target.startswith("n_"):
         stripped = target[2:]
         if stripped in index:
-            return index[stripped]
+            return index[stripped]["label"]
     return target
 
 
@@ -1313,14 +1464,31 @@ def _crop_target_forms(target: str):
 
 
 def _crop_file(target: str):
-    """Newest crop written for `target`, matched EXACTLY.
+    """Resolve the object's linked crop, or the newest exact-label crop for legacy data.
 
     input_output.prepare_crops names files crop_<safe_label>_<%Y%m%d>_<%H%M%S>_<idx>.jpg.
-    Anchoring on that shape is what makes the match exact: a bare `desk` cannot
-    collect `desk#1`'s crops, which a prefix or substring test does. The old
-    substring and base-prefix fallbacks are deleted deliberately -- they served a
-    wrong image confidently, which is worse than serving none.
+    New object links carry that file's basename, so two instances with the same label get
+    their own image. Older links and label-only requests use the newest exact-label crop.
+    The old substring and base-prefix fallbacks stay deleted: a wrong image is worse than
+    serving none.
     """
+    index = _link_index()
+    link = index.get(target)
+    if link is None and target.startswith("n_"):
+        link = index.get(target[2:])
+    crop_file = str((link or {}).get("crop_file") or "")
+    # Link rows are replayable data. Use only the basename and resolve it inside a
+    # configured run crop directory; never follow a path stored in JSONL.
+    if crop_file and Path(crop_file).name == crop_file:
+        for cdir in _crop_dirs():
+            exact = cdir / crop_file
+            if exact.is_file():
+                return exact
+    if link and link.get("has_crop_file"):
+        # New records carry explicit per-object crop provenance, including the absence
+        # case. Never substitute the newest crop for a different instance with this label.
+        return None
+
     label = _crop_label(target)
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label))
     pattern = re.compile(r"^crop_" + re.escape(safe) + r"_\d{8}_\d{6}_\d+\.jpg$")
@@ -1912,6 +2080,7 @@ def proxy_bev_data(floor_y: str = None):
                 "source_errors": ["ROS BEV subscriber is not running"],
             })
         data = _externalise_maps(_node.ros_bev.payload())
+        data.update(_bev_room_overlays())
         latency_file = _active_output_dir() / "perception_latencies.json"
         if latency_file.exists():
             try:
@@ -2061,6 +2230,8 @@ def proxy_bev_data(floor_y: str = None):
                 data["stats"] = json.loads(stats_file.read_text())
             except (OSError, json.JSONDecodeError) as exc:
                 bev_errors.append(f"{stats_file}: {type(exc).__name__}: {exc}")
+
+    data.update(_bev_room_overlays())
 
     # Re-attach: the reads above may have added reasons after the earlier assignment.
     if bev_errors:

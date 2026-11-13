@@ -1,3 +1,6 @@
 [submodule "lost3dsg/FOUND-Dataset"]
 	path = lost3dsg/FOUND-Dataset
 	url = https://github.com/saraian/FOUND-Dataset.git
+[submodule "third_party/boxer"]
+	path = third_party/boxer
+	url = https://github.com/facebookresearch/boxer.git

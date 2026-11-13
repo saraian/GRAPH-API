@@ -21,12 +21,16 @@
 # the arm set it deliberately: `regen_arm_configs.py --check` answers that.
 
 vlm:
-  base_url: https://api.regolo.ai/v1
-  model: qwen3.8-27b
+  provider: openai_compatible
+  base_url: http://localhost:11434/v1
+  model: gemma4:e2b
   api_key: ''
-  timeout: 120.0
+  timeout: 240.0
   retries: 2
   enable_thinking: false
+  extra_body:
+    options:
+      num_ctx: 8192
 embedding:
   word2vec_path: /root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz
   word2vec_limit: 200000
@@ -38,10 +42,10 @@ appearance:
   min_crop_px: 4
   batch_size: 8
 similarity:
-  label: 0.05
-  color: 0.3
+  label: 0.25
+  color: 0.25
   material: 0.15
-  description: 0.5
+  description: 0.35
 association:
   input_silence_timeout_s: 180.0
   input_silence_max_strikes: 3
@@ -57,16 +61,18 @@ association:
   bbox_reduction_ratio: 0.3
   reevaluation_radius_m: 2.0
   association_margin_m: 0.3
-  merge_engine: legacy
-  merge_cost_ratio: 20.0
-  merge_min_consecutive: 2
   merge_max_distance_m: 0.8
+  merge_max_surface_gap_m: 0.02
   merge_near_distance_m: 0.02
   merge_near_iou_threshold: 0.25
+  merge_near_containment_threshold: 0.8
+  merge_near_max_volume_ratio: 6.0
   merge_aabb_margin_m: 0.8
+  # Incremental legacy merge: force a complete AABB candidate and refusal-cache audit
+  # every N merge requests, in addition to the final scheduled-tour audit.
+  merge_full_sweep_interval: 10
   merge_min_evidence: 1
-  merge_min_similarity: 0.925
-  merge_knn_k: null
+  merge_min_similarity: 0.86
   update_in_place_distance_m: 0.5
   transition_move_distance_m: 0.35
   uncertain_move_distance_m: 0.8
@@ -176,9 +182,14 @@ rooms:
   gvd_topo_fill_max_area_m2: 20.0
   room_nested_merge_max_area_m2: 8.0
   room_nested_merge_area_ratio: 0.3
+  room_stale_overlap_retire_ratio: 0.50
   gvd_3d_nonwall_component_ratio: 0.01
   gvd_door_nms_m: 1.6
   gvd_critical_endpoint_margin_m: 0.2
+  gvd_wall_gap_max_m: 0.25
+  gvd_wall_gap_support_m: 0.30
+  room_cut_noise_max_area_m2: 0.10
+  room_cut_noise_max_ratio: 0.01
   doorway_vlm_enabled: true
   doorway_vlm_min_confidence: 0.55
   doorway_vlm_min_confirmations: 1
@@ -250,6 +261,17 @@ perception:
   frame_queue_min_translation_m: 0.25
   frame_queue_min_rotation_rad: 0.26
   backend: local
+  detector: vlm
+  boxer:
+    labels: lvisplus
+    threshold_2d: 0.20
+    threshold_3d: 0.50
+    nms_iou_threshold: 0.50
+    precision: auto
+    depth_stride: 8
+    max_depth_m: 10.0
+    max_depth_points: 12000
+    startup_timeout_s: 900
   max_frame_age_s: 1.0
   modal_endpoint: ''
   score_threshold: 0.15

@@ -5,6 +5,7 @@ paths:
   dataset: null                 # HM3D scene folders and scene_dataset_config.json
   models: ../models/efficientvit_sam
   cache: ../models/huggingface
+  boxer_checkpoints: ../models/boxer/ckpts
   bags: ../bags
   pal_bundle: ../TIAGO_ISO
   baseline_repos: null          # parent of external Clio/HOV/DynamicGSG repositories

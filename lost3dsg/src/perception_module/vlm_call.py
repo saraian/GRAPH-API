@@ -16,6 +16,37 @@ from crop_context import (
 )
 
 
+BOXER_SEMANTICS_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "boxer_proposal_semantics",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "objects": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "proposal_index": {"type": "integer"},
+                            "label": {"type": "string"},
+                            "description": {"type": "string"},
+                            "color": {"type": "string"},
+                            "material": {"type": "string"},
+                        },
+                        "required": ["proposal_index", "label", "description", "color", "material"],
+                    },
+                }
+            },
+            "required": ["objects"],
+        },
+    },
+}
+
+
 def compute_crop_hash(cropped_image) -> str:
     """Compute robust MD5 hash of downscaled crop to ignore micro-pixel jitter."""
     if cropped_image is None or getattr(cropped_image, "size", 0) == 0:
@@ -132,6 +163,98 @@ class VlmClient:
             image_height=height,
             excluded_labels=excluded,
         )
+
+    def call_boxer_proposals_semantics(self, prompt_path, rgb, proposals):
+        """Return labels and visible attributes for indexed proposals in one VLM request."""
+        height, width = rgb.shape[:2]
+        with open(prompt_path, encoding="utf-8") as prompt_file:
+            prompt = prompt_file.read()
+        prompt = prompt.replace("{IMAGE_WIDTH}", str(width)).replace(
+            "{IMAGE_HEIGHT}", str(height))
+        prompt = prompt.replace(
+            "{BOXER_PROPOSALS}",
+            json.dumps(proposals, ensure_ascii=False, separators=(",", ":")),
+        )
+        zoom_images = []
+        for proposal in proposals:
+            zoom = self._boxer_proposal_zoom(rgb, proposal.get("bbox"))
+            if zoom is None:
+                continue
+            zoom_images.append({
+                "encoded_image": self._encode(zoom),
+                "label": f"Enlarged crop for proposal_index={int(proposal['proposal_index'])}",
+            })
+        payload = None
+        last_parse_error = None
+        for parse_attempt in range(2):
+            raw = self._vlm_call(
+                prompt,
+                self._encode(rgb),
+                response_format=BOXER_SEMANTICS_RESPONSE_FORMAT,
+                image_detail="high",
+                additional_images=zoom_images,
+            )
+            cleaned = re.sub(r"```(?:json)?|```", "", raw, flags=re.IGNORECASE).strip()
+            try:
+                candidate = json.loads(cleaned)
+                objects = candidate.get("objects") if isinstance(candidate, dict) else None
+                if not isinstance(objects, list):
+                    raise ValueError("VLM response must contain an objects array")
+                payload = candidate
+                break
+            except (json.JSONDecodeError, ValueError) as exc:
+                last_parse_error = exc
+                if parse_attempt == 0:
+                    self.log_both("warn", "[VLM] malformed Boxer JSON; retrying the batch once")
+        if payload is None:
+            raise ValueError(f"VLM returned invalid Boxer JSON after retry: {last_parse_error}")
+        objects = payload["objects"]
+        valid_indices = {int(item["proposal_index"]) for item in proposals}
+        results = {}
+        for item in objects:
+            if not isinstance(item, dict):
+                continue
+            try:
+                index = int(item["proposal_index"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if index not in valid_indices or index in results:
+                continue
+            results[index] = {
+                key: (str(item.get(key) or "unknown").strip() or "unknown")
+                for key in ("label", "description", "color", "material")
+            }
+        return results
+
+    @staticmethod
+    def _boxer_proposal_zoom(rgb, bbox, max_side=512, padding_ratio=0.15):
+        """Crop an xyxy proposal and enlarge it without changing its aspect ratio."""
+        try:
+            x0, y0, x1, y1 = (float(value) for value in bbox)
+            if not np.isfinite([x0, y0, x1, y1]).all():
+                return None
+            height, width = rgb.shape[:2]
+            pad_x = max(2, int(round(max(0.0, x1 - x0) * padding_ratio)))
+            pad_y = max(2, int(round(max(0.0, y1 - y0) * padding_ratio)))
+            left = max(0, int(np.floor(min(x0, x1))) - pad_x)
+            top = max(0, int(np.floor(min(y0, y1))) - pad_y)
+            right = min(width, int(np.ceil(max(x0, x1))) + pad_x)
+            bottom = min(height, int(np.ceil(max(y0, y1))) + pad_y)
+            if right - left < 2 or bottom - top < 2:
+                return None
+            crop = rgb[top:bottom, left:right]
+            scale = float(max_side) / max(crop.shape[:2])
+            if scale > 1.0:
+                import cv2
+                crop = cv2.resize(
+                    crop,
+                    (max(1, int(round(crop.shape[1] * scale))),
+                     max(1, int(round(crop.shape[0] * scale)))),
+                    interpolation=cv2.INTER_CUBIC,
+                )
+            return np.ascontiguousarray(crop)
+        except (TypeError, ValueError, OverflowError):
+            return None
 
     def _clean_labels(self, raw_labels):
         """Lemmatise and de-duplicate, logging what was collapsed. GA-285.
