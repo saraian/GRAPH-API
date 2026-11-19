@@ -11,13 +11,37 @@ fi
 
 command -v docker >/dev/null || { echo 'graphapi: install Docker and start its daemon first' >&2; exit 2; }
 IMAGE=${GRAPHAPI_CLI_IMAGE:-graphapi-cli:latest}
-# The CLI image copies this package, so source edits must invalidate its image.
-REVISION=$(cat "$ROOT/docker/cli/Dockerfile" "$ROOT"/graphapi_cli/*.py "$ROOT"/graphapi_cli/runtime/* | cksum)
+# Both planning and execution mount the current source and set PYTHONPATH to
+# that checkout. Only image dependency changes need a rebuild.
+REVISION=$(cksum < "$ROOT/docker/cli/Dockerfile")
 REVISION=${REVISION// /-}
-INSTALLED=$(docker image inspect -f '{{index .Config.Labels "graphapi.cli.build"}}' "$IMAGE" 2>/dev/null || true)
-if [[ "$INSTALLED" != "$REVISION" ]]; then
+IMAGE_EXISTS=0
+if INSTALLED=$(docker image inspect -f '{{index .Config.Labels "graphapi.cli.build"}}' "$IMAGE" 2>/dev/null); then
+  IMAGE_EXISTS=1
+fi
+# Stopping and inspecting a run must remain available even when the image
+# recipe has changed. Use its existing dependencies with the mounted source.
+CONTROL_COMMAND=0
+SKIP_VALUE=0
+for argument in "$@"; do
+  if [[ "$SKIP_VALUE" == 1 ]]; then SKIP_VALUE=0; continue; fi
+  case "$argument" in
+    --project|--local|--config) SKIP_VALUE=1 ;;
+    --project=*|--local=*|--config=*|--json) ;;
+    stop|status|logs|attach) CONTROL_COMMAND=1; break ;;
+    *) break ;;
+  esac
+done
+build_cli_image() (
+  BUILD_CONTEXT=$(mktemp -d "${TMPDIR:-/tmp}/graphapi-cli-build.XXXXXX")
+  trap 'rm -rf "$BUILD_CONTEXT"' EXIT
+  cp "$ROOT/docker/cli/Dockerfile" "$BUILD_CONTEXT/Dockerfile"
+  cp -a "$ROOT/graphapi_cli" "$BUILD_CONTEXT/graphapi_cli"
+  docker build --build-arg "BUILD_REVISION=$REVISION" -f "$BUILD_CONTEXT/Dockerfile" -t "$IMAGE" "$BUILD_CONTEXT" >&2
+)
+if [[ "$IMAGE_EXISTS" == 0 || ( "$INSTALLED" != "$REVISION" && "$CONTROL_COMMAND" == 0 ) ]]; then
   echo "graphapi: preparing CLI image $IMAGE" >&2
-  docker build --build-arg "BUILD_REVISION=$REVISION" -f "$ROOT/docker/cli/Dockerfile" -t "$IMAGE" "$ROOT" >&2
+  build_cli_image
 fi
 
 ENDPOINT=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}

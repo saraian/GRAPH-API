@@ -64,8 +64,8 @@ a container. An existing container must have a mount covering the selected bag.
 
 The default is recorded map/TF. Fresh SLAM excludes the recorded map topic and
 filters conflicting global-map transforms. Neither bag mode connects to the
-physical robot. Perception and recording default on in both physical and bag
-workflows; add `--no-perception` or `--no-record` for an explicit opt-out.
+physical robot. Perception defaults on and recording defaults off in both physical and bag
+workflows. Use `--record` to save a recording or `--no-perception` to skip detection.
 
 An already prepared private PAL container can be reused without this ISO/builder
 bundle. The bundle is needed when creating a missing container or image; this

@@ -280,11 +280,11 @@ def rooms():
 
 
 def _bev_room_overlays():
-    """Return the active room polygons in the BEV's map-frame coordinate system."""
+    """Return room, wall, and confirmed doorway overlays in the BEV map frame."""
     try:
         room_data = json.loads((_active_output_dir() / "room.json").read_text())
     except (OSError, json.JSONDecodeError):
-        return {"rooms": [], "detected_walls": []}
+        return {"rooms": [], "detected_walls": [], "doorways": []}
     if isinstance(room_data, list):
         source_rooms = room_data
         source_walls = []
@@ -292,7 +292,7 @@ def _bev_room_overlays():
         source_rooms = room_data.get("rooms") or (room_data.get("building") or {}).get("rooms") or []
         source_walls = room_data.get("detected_walls") or []
     else:
-        return {"rooms": [], "detected_walls": []}
+        return {"rooms": [], "detected_walls": [], "doorways": []}
 
     overlays = []
     for room in source_rooms:
@@ -316,7 +316,25 @@ def _bev_room_overlays():
         }
         overlays.append(item)
     walls = [wall for wall in source_walls if isinstance(wall, (list, dict))]
-    return {"rooms": overlays, "detected_walls": walls}
+    doorways = []
+    confirmed_cuts = room_data.get("confirmed_door_cuts") if isinstance(room_data, dict) else {}
+    for key, cut in (confirmed_cuts or {}).items():
+        if not isinstance(cut, dict):
+            continue
+        left, right = cut.get("left_world"), cut.get("right_world")
+        if not (isinstance(left, (list, tuple)) and len(left) >= 2 and
+                isinstance(right, (list, tuple)) and len(right) >= 2):
+            continue
+        try:
+            points = [[float(left[0]), float(left[1])],
+                      [float(right[0]), float(right[1])]]
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(value) for point in points for value in point):
+            continue
+        doorways.append({"doorway_id": cut.get("element_id") or key,
+                         "points": points})
+    return {"rooms": overlays, "detected_walls": walls, "doorways": doorways}
 
 
 # Frames that could not be decoded. Counted rather than swallowed: see _jpeg_from_msg.
@@ -955,6 +973,7 @@ def graph_data(request: Request = None):
         nodes.append({
             "id": nid,
             "label": _room_label(r, rid),
+            "centroid": r.get("centroid"),
             "type": "room",
             "room": rid,
             "semantic_label": sem,
@@ -1157,6 +1176,7 @@ def graph_data(request: Request = None):
         # producer died and this is the last thing it wrote".
         "produced_at": time.time(),
         "sources_mtime": _sources_mtime(out),
+        "building_id": (room_doc.get("building") or {}).get("building_id"),
         "elements": {
             "nodes": [{"data": n} for n in nodes],
             "edges": [{"data": e} for e in edges],

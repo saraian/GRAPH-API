@@ -8,9 +8,6 @@ maps
 models
 bags
 ws
-TIAGO_ISO
-.tiago-runtime
-.tiago-found-root
 config/local.yaml
 config/.runtime
 lost3dsg/test/env.local.sh

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, Tuple
@@ -115,14 +116,24 @@ class CropVlmCache:
 
 
 class VlmClient:
-    def __init__(self, vlm_call_fn, image_encoder_fn, crop_call_fn=None):
+    def __init__(self, vlm_call_fn, image_encoder_fn, crop_call_fn=None, log_fn=None):
         self._vlm_call = vlm_call_fn
         # GA-303: the describer calls (single crop, crop grid) go through this one, which
         # perception_2 binds to cfg vlm.crop_timeout; the label call keeps vlm.timeout.
         self._crop_call = crop_call_fn or vlm_call_fn
         self._encode = image_encoder_fn
+        self._log_fn = log_fn
         self.last_room_belief = None
         self.cache = CropVlmCache()
+
+    def _log(self, level, message):
+        """Log VLM-side diagnostics through the perception node when available."""
+        if self._log_fn is not None:
+            self._log_fn(level, message)
+            return
+        logger = logging.getLogger("perception_module")
+        method = "warning" if level == "warn" else level
+        getattr(logger, method, logger.info)(message)
 
     def call_labels(self, prompt_path, rgb, current_room="unknown", room_evidence=""):
         prompt = open(prompt_path).read()
@@ -165,7 +176,27 @@ class VlmClient:
         )
 
     def call_boxer_proposals_semantics(self, prompt_path, rgb, proposals):
-        """Return labels and visible attributes for indexed proposals in one VLM request."""
+        """Classify indexed proposals from pixels, preserving IDs but hiding OWL labels."""
+        # OWLv2's category prediction must not bias the VLM's semantic decision.
+        # Keep only geometry, confidence and the stable index in the prompt payload.
+        proposals = [
+            {key: value for key, value in proposal.items() if key != "label"}
+            for proposal in proposals
+        ]
+        batch_size = int((CFG.get("vlm") or {}).get("proposals_per_request", 0) or 0)
+        if batch_size > 0 and len(proposals) > batch_size:
+            batches = [proposals[i:i + batch_size]
+                       for i in range(0, len(proposals), batch_size)]
+            combined = {}
+            for batch_index, batch in enumerate(batches, start=1):
+                self._log(
+                    "info", f"[VLM] Boxer proposal batch {batch_index}/{len(batches)} "
+                    f"({len(batch)} proposals)")
+                combined.update(self.call_boxer_proposals_semantics(
+                    prompt_path, rgb, batch))
+            return combined
+        if not proposals:
+            return {}
         height, width = rgb.shape[:2]
         with open(prompt_path, encoding="utf-8") as prompt_file:
             prompt = prompt_file.read()
@@ -175,8 +206,30 @@ class VlmClient:
             "{BOXER_PROPOSALS}",
             json.dumps(proposals, ensure_ascii=False, separators=(",", ":")),
         )
+        # The full frame is always supplied. Crops are extra high-resolution evidence and
+        # are most valuable for small proposals; sending one for every proposal made the
+        # multimodal request needlessly large in cluttered scenes. Keep every proposal in
+        # the prompt, and crop only the smallest boxes up to the configured budget.
+        vlm_config = CFG.get("vlm") or {}
+        crop_limit = max(0, int(vlm_config.get("boxer_max_proposal_crops", 6)))
+        def proposal_area(proposal):
+            try:
+                x0, y0, x1, y1 = (float(value) for value in proposal.get("bbox"))
+                if not np.isfinite([x0, y0, x1, y1]).all():
+                    return float("inf")
+                return max(0.0, abs(x1 - x0)) * max(0.0, abs(y1 - y0))
+            except (TypeError, ValueError):
+                return float("inf")
+
+        crop_indices = {
+            int(proposal["proposal_index"])
+            for proposal in sorted(proposals, key=proposal_area)[:crop_limit]
+            if "proposal_index" in proposal
+        }
         zoom_images = []
         for proposal in proposals:
+            if int(proposal.get("proposal_index", -1)) not in crop_indices:
+                continue
             zoom = self._boxer_proposal_zoom(rgb, proposal.get("bbox"))
             if zoom is None:
                 continue
@@ -205,7 +258,7 @@ class VlmClient:
             except (json.JSONDecodeError, ValueError) as exc:
                 last_parse_error = exc
                 if parse_attempt == 0:
-                    self.log_both("warn", "[VLM] malformed Boxer JSON; retrying the batch once")
+                    self._log("warn", "[VLM] malformed Boxer JSON; retrying the batch once")
         if payload is None:
             raise ValueError(f"VLM returned invalid Boxer JSON after retry: {last_parse_error}")
         objects = payload["objects"]

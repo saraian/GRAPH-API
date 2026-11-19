@@ -16,32 +16,55 @@ class SemanticEmbedder:
         self.st_model = None
         self.w2v_model = None
         self._st_encode_error_reported = False
+        embedding_cfg = CFG.get("embedding", {}) or {}
+        requested = str(embedding_cfg.get("backend", "auto")).strip().lower()
+        requested = {"minilm": "sentence_transformer", "sentence-transformer":
+                     "sentence_transformer", "w2v": "word2vec"}.get(requested, requested)
+        if requested not in ("auto", "sentence_transformer", "word2vec"):
+            raise ValueError(
+                "embedding.backend must be 'auto', 'sentence_transformer' or 'word2vec' "
+                f"(got {requested!r})"
+            )
+        self.requested_backend = requested
 
-        # 1. Try SentenceTransformer (high accuracy, handles any open-vocabulary phrase)
-        try:
-            from sentence_transformers import SentenceTransformer
-            # HF_HOME is the cache root; Hub snapshots live in its `hub/` child.
-            # SentenceTransformer's `cache_folder` is passed as HF Hub's cache_dir,
-            # so giving it HF_HOME itself makes offline lookup miss an otherwise
-            # populated cache at $HF_HOME/hub.
-            cache_folder = (os.environ.get("HF_HUB_CACHE") or
-                            os.path.join(os.environ.get("HF_HOME", "/models/hf"), "hub"))
-            self.st_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", cache_folder=cache_folder)
-            print("[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) for semantic matching ✅")
-            return
-        except Exception as exc:
-            print(f"[NLP] SentenceTransformer load failed: {type(exc).__name__}: {exc}")
+        if requested in ("auto", "sentence_transformer"):
+            try:
+                from sentence_transformers import SentenceTransformer
+                # HF_HOME is the cache root; Hub snapshots live in its `hub` child.
+                cache_folder = (os.environ.get("HF_HUB_CACHE") or
+                                os.path.join(os.environ.get("HF_HOME", "/models/hf"), "hub"))
+                self.st_model = SentenceTransformer(
+                    "sentence-transformers/all-MiniLM-L6-v2", cache_folder=cache_folder)
+                print("[NLP] Loaded SentenceTransformer (all-MiniLM-L6-v2) "
+                      "for semantic matching ✅")
+                return
+            except Exception as exc:
+                print(f"[NLP] SentenceTransformer load failed: {type(exc).__name__}: {exc}")
+                if requested == "sentence_transformer":
+                    raise RuntimeError(
+                        "embedding.backend selects sentence_transformer, but "
+                        "all-MiniLM-L6-v2 could not be loaded"
+                    ) from exc
 
-        # 2. Fallback to Word2Vec KeyedVectors
-        try:
-            from gensim.models import KeyedVectors
-            path = CFG.get("embedding", {}).get("word2vec_path", "")
-            limit = CFG.get("embedding", {}).get("word2vec_limit", 200000)
-            if path and os.path.exists(path):
-                self.w2v_model = KeyedVectors.load_word2vec_format(path, binary=True, limit=limit)
+        if requested in ("auto", "word2vec"):
+            try:
+                from gensim.models import KeyedVectors
+                path = embedding_cfg.get("word2vec_path", "")
+                limit = embedding_cfg.get("word2vec_limit", 200000)
+                if not path or not os.path.isfile(path):
+                    raise FileNotFoundError(
+                        f"Word2Vec weights not found at {path!r} inside the runtime"
+                    )
+                self.w2v_model = KeyedVectors.load_word2vec_format(
+                    path, binary=True, limit=limit)
                 print(f"[NLP] Loaded Word2Vec from {path} ✅")
-        except Exception as exc:
-            print(f"[NLP] Word2Vec fallback notice: {exc}")
+            except Exception as exc:
+                print(f"[NLP] Word2Vec load failed: {type(exc).__name__}: {exc}")
+                if requested == "word2vec":
+                    raise RuntimeError(
+                        "embedding.backend selects word2vec, but the configured model "
+                        "could not be loaded"
+                    ) from exc
         if self.st_model is None and self.w2v_model is None:
             print("[NLP] No semantic encoder loaded; description embeddings are unavailable")
 

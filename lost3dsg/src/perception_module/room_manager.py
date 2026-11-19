@@ -124,6 +124,7 @@ class RoomManager:
         self._latest_cloud_points = None
         self._latest_cloud_frame = None
         self._latest_cloud_stamp = None
+        self._door_track_boxes = ()
         self._latest_cloud_received_at = None
         self._latest_cloud_ground_points = None
         self._latest_cloud_ground_received_at = None
@@ -136,6 +137,10 @@ class RoomManager:
         self.last_segmentation_stats = {}
         self._pending_partition = None
         self._pending_partition_count = 0
+        # Stable physical separators are re-derived from verified walls and
+        # confirmed doorways on each map update.  They prevent an
+        # intermittent GVD pass from merging two rooms through a known boundary.
+        self._room_separators = {}
         # Doorway hypotheses are deliberately kept separate from the GVD state.  The
         # GVD/wall detector proposes; a background VLM call is the only thing allowed
         # to promote a proposal to a room cut.
@@ -159,6 +164,7 @@ class RoomManager:
         self._structural_element_ids = {}
         self._next_structural_element_id = {'door': 0, 'window': 0}
         self._latest_rgb = None
+        self._latest_rgb_stamp_ns = None
         self._latest_rgb_received_at = 0.0
         self._camera_info = None
         self._doorway_marker_pub = None
@@ -306,7 +312,7 @@ class RoomManager:
             # request.  Calls run outside the ROS callback thread.
             'doorway_vlm_enabled': True,
             'doorway_vlm_min_confidence': 0.55,
-            'doorway_vlm_min_confirmations': 1,
+            'doorway_vlm_min_confirmations': 2,
             'doorway_require_wall_support': True,
             'doorway_vlm_max_candidates_per_call': 8,
             'doorway_vlm_retry_s': 8.0,
@@ -499,7 +505,10 @@ class RoomManager:
                 raw = raw[:, :, :3][:, :, ::-1]
             else:
                 raw = raw[:, :, :3]
+            stamp = getattr(getattr(msg, "header", None), "stamp", None)
+            stamp_ns = stamp.sec * 10**9 + stamp.nanosec if stamp is not None else None
             self._cache_sensor_state(_latest_rgb=np.ascontiguousarray(raw),
+                                     _latest_rgb_stamp_ns=stamp_ns,
                                      _latest_rgb_received_at=time.monotonic())
         except Exception as exc:
             self._log('warn', f'Doorway VLM: cannot decode RGB frame: {exc}')
@@ -517,6 +526,8 @@ class RoomManager:
         with self._sensor_lock:
             state = self._pending_sensor_state
             self._pending_sensor_state = {}
+        if '_door_track_boxes' in state and state['_door_track_boxes'] != self._door_track_boxes:
+            self._last_grid_signature = None
         self.__dict__.update(state)
 
     def _cache_cloud(self, points, kind, frame, stamp, received_at):
@@ -1089,6 +1100,27 @@ class RoomManager:
         future = self._doorway_vlm_executor.submit(self._submit_window_vlm, image)
         future.add_done_callback(self._on_window_vlm_done)
 
+    def _doorway_center_traversable(self, grid, world):
+        """Check a minimum-width crossing at the proposed midpoint."""
+        support = getattr(self, '_active_detected_wall_support', None)
+        if (grid is None or support is None or
+                support.shape != (grid.info.height, grid.info.width)):
+            return False
+        x, y = self._world_to_grid(*world, grid)
+        resolution = float(grid.info.resolution)
+        radius = float(self._params['detected_wall_door_min_m']) / (2 * resolution)
+        extent = math.ceil(radius) - 1
+        if (x - extent < 0 or y - extent < 0 or
+                x + extent >= grid.info.width or y + extent >= grid.info.height):
+            return False
+        patch = np.s_[y-extent:y+extent+1, x-extent:x+extent+1]
+        cells = np.asarray(grid.data).reshape(grid.info.height, grid.info.width)[patch]
+        dy, dx = np.ogrid[-extent:extent+1, -extent:extent+1]
+        interior = dx*dx + dy*dy < radius*radius
+        return bool(np.all((cells[interior] >= 0) &
+                           (cells[interior] <= self._params['free_threshold'])) and
+                    np.all(support[patch][interior] < self._params['detected_wall_door_min_support']))
+
     def _on_doorway_vlm_done(self, key, hypotheses, future):
         resegment_grid = None
         try:
@@ -1097,7 +1129,15 @@ class RoomManager:
                      if isinstance(item, dict)}
             with self._lock:
                 for hypothesis in hypotheses:
-                    answer = by_id.get(hypothesis['candidate_id'], {})
+                    if hypothesis['candidate_id'] not in by_id:
+                        # Preserve prior evidence and wait for the next retry.
+                        state = self._doorway_vlm_state.setdefault(hypothesis['key'], {
+                            'status': 'unanswered', 'world': hypothesis['world'],
+                            'theta': hypothesis['theta']})
+                        state['retry_after'] = time.time() + float(self._params['doorway_vlm_retry_s'])
+                        state['updated_at'] = time.time()
+                        continue
+                    answer = by_id[hypothesis['candidate_id']]
                     bbox = self._sanitize_feature_bbox_2d(answer.get('bbox', []))
                     confidence = float(answer.get('confidence', 0.0) or 0.0)
                     try:
@@ -1134,18 +1174,32 @@ class RoomManager:
                     previously_validated = (
                         previous.get('status') == 'confirmed' and
                         previous.get('cuttable', False))
-                    cuttable = (wall_confirmed or previously_validated) and normalized_type in (
-                        'door', 'doorway', 'open doorway', 'opening', 'passage',
-                        'open passage')
+                    passage = normalized_type in (
+                        'door', 'doorway', 'open doorway', 'opening', 'passage', 'open passage')
+                    cuttable = passage and (previously_validated or (
+                        wall_confirmed and self._doorway_center_traversable(grid, hypothesis['world'])))
                     visual_confirmed = str(answer.get('confirmed', 'false')).lower() == 'true'
-                    positive = (visual_confirmed and inside and
+                    positive = (visual_confirmed and inside and (not passage or cuttable) and
                                 (wall_confirmed or previously_validated) and
                                 confidence >= float(self._params['doorway_vlm_min_confidence']) and
                                 normalized_type in (
                                     'door', 'doorway', 'window', 'open doorway',
                                 'opening', 'passage', 'open passage'))
+                    # A single image can mistake a wall gap or furniture edge for
+                    # a doorway. Require repeated positive observations before
+                    # promoting it to a permanent topological cut. A negative
+                    # observation clears the consecutive-vote streak.
+                    prior_votes = int(previous.get('positive_votes', 0))
+                    if previous.get('cuttable') != cuttable:
+                        prior_votes = 0
+                    positive_votes = prior_votes + 1 if positive else 0
+                    required_confirmations = max(1, int(self._params.get(
+                        'doorway_vlm_min_confirmations', 2)))
+                    confirmation_count = positive_votes
+                    confirmed = (previous.get('status') == 'confirmed' or
+                                 positive_votes >= required_confirmations)
                     existing_lock = self._confirmed_door_cuts.get(hypothesis['key'])
-                    if positive and existing_lock is None:
+                    if confirmed and positive and cuttable and existing_lock is None:
                         self._confirmed_door_cuts[hypothesis['key']] = {
                             'world': tuple(hypothesis['world']),
                             'left_world': (None if hypothesis.get('left_world') is None
@@ -1162,13 +1216,6 @@ class RoomManager:
                         'right_world': hypothesis.get('right_world'),
                         'theta': float(hypothesis.get('theta', 0.0)),
                     }
-                    positive_votes = (int(previous.get('positive_votes', 0)) + 1
-                                      if positive else 0)
-                    # One valid visual confirmation is immediately permanent until
-                    # an explicit map reset. There is no time-based recheck.
-                    confirmation_count = 1 if positive else int(
-                        previous.get('confirmation_count', 0))
-                    confirmed = positive or previous.get('status') == 'confirmed'
                     permanent = confirmed
                     recheck_at = 0.0
                     self._doorway_vlm_state[hypothesis['key']] = {
@@ -1176,8 +1223,10 @@ class RoomManager:
                             'door' if object_type != 'window' else 'window',
                             hypothesis['key']),
                         'status': ('confirmed' if confirmed
-                                   else 'pending_confirmation' if positive else 'rejected'),
+                                   else 'pending_confirmation' if positive_votes else 'rejected'),
                         'cuttable': cuttable,
+                        'rgb_id': hypothesis.get('rgb_id'),
+                        'floor_z': hypothesis.get('floor_z'),
                         'positive_votes': positive_votes,
                         'confirmation_count': confirmation_count,
                         'permanent_confirmed': permanent,
@@ -1189,6 +1238,7 @@ class RoomManager:
                         'right_world': geometry.get('right_world'),
                         'type': object_type, 'confidence': confidence,
                         'wall_support_score': wall_score,
+                        'visual_positive': visual_confirmed, 'pixel_inside_bbox': inside,
                         'bbox': bbox,
                         'bbox_3d': (self._doorway_bbox_3d({
                             'world': geometry['world'],
@@ -1222,9 +1272,97 @@ class RoomManager:
         if resegment_grid is not None:
             self.process_grid(resegment_grid, True, force_resegment=True)
 
+    @classmethod
+    def is_door_track_label(cls, label):
+        return cls._vlm_room_label(label) in (
+            'door', 'doorway', 'door_frame', 'doorframe', 'open_door',
+            'open_doorframe', 'open_door_frame', 'doorway_structure_(frame)')
+
+    def update_door_tracks(self, objects):
+        """Collect capture identities for each measured door box."""
+        tracks = {}
+        for obj in objects:
+            fields = obj if isinstance(obj, dict) else vars(obj)
+            if not self.is_door_track_label(fields.get('label', '')):
+                continue
+            bbox = fields.get('fused_bbox') or fields.get('bbox')
+            try:
+                bounds = tuple(float(bbox[axis + suffix]) for axis in 'xyz'
+                               for suffix in ('_min', '_max'))
+            except (TypeError, ValueError, KeyError):
+                continue
+            if not all(map(math.isfinite, bounds)):
+                continue
+            x0, x1, y0, y1, z0, z1 = bounds
+            if x1 < x0 or y1 < y0 or z1 - z0 < self._params['detected_wall_min_vertical_extent_m']:
+                continue
+            captures = {str(obs.get('capture_id') or obs['frame_id'])
+                        for obs in fields.get('observations') or [] if isinstance(obs, dict)
+                        and (obs.get('capture_id') or obs.get('frame_id') is not None)}
+            if captures:
+                box = ((x0+x1)/2, (y0+y1)/2, x1-x0, y1-y0, z0, z1)
+                tracks.setdefault(box, set()).update(captures)
+        self._cache_sensor_state(_door_track_boxes=tuple(
+            (box, frozenset(ids)) for box, ids in sorted(tracks.items())))
+
+    def _tracked_doorway_points(self, grid):
+        """Propose visual checks at observed openings bracketed by verified walls."""
+        if not self._door_track_boxes or self._active_detected_wall_support is None:
+            return []
+        resolution = float(grid.info.resolution)
+        yaw = self._yaw(grid.info.origin.orientation)
+        data = np.asarray(grid.data).reshape(grid.info.height, grid.info.width)
+        height = self._robot_height() + float(self._params.get('doorway_vlm_projection_height_m', 1.0))
+        supported = []
+        for box, captures in self._door_track_boxes:
+            cx, cy, dx, dy, z0, z1 = box
+            width = math.hypot(dx, dy)
+            if not (z0 <= height <= z1 and self._params['detected_wall_door_min_m'] <=
+                    width <= self._params['detected_wall_door_max_m']):
+                continue
+            x, y = self._world_to_grid(cx, cy, grid)
+            if not (0 <= x < data.shape[1] and 0 <= y < data.shape[0] and
+                    0 <= data[y, x] <= self._params['free_threshold']):
+                continue
+            if self._active_detected_wall_support[y, x] >= self._params['detected_wall_door_min_support']:
+                continue
+            # An axis-aligned box cannot distinguish the two diagonal directions.
+            # Select the orientation with the stronger measured pair of jambs.
+            angle = math.atan2(dy, dx)
+            radius = width / (2 * resolution)
+            orientations = [math.pi/2 + sign * angle - yaw for sign in (1, -1)]
+            score, theta = max((self._door_wall_support_score(y, x, t, radius, resolution), t)
+                               for t in orientations)
+            if score >= self._params['detected_wall_door_min_support']:
+                supported.append(((y, x, theta, radius, score), captures))
+
+        points = []
+        for point, captures in supported:
+            if len(captures) >= 2:
+                points.append(point)
+                continue
+            y, x, theta, radius, _ = point
+            for other, other_captures in supported:
+                oy, ox, other_theta, other_radius, _ = other
+                # Both centres must fit inside each other's measured opening.
+                # Cluster orientation uses the same criterion as the VLM scheduler.
+                if captures == other_captures or not self._doorway_same_cluster(
+                        (x, y), theta, (ox, oy), other_theta, radius=min(radius, other_radius)):
+                    continue
+                # Check the bounding grid patch, including diagonal corner cells.
+                rows = slice(min(y, oy), max(y, oy) + 1)
+                cols = slice(min(x, ox), max(x, ox) + 1)
+                patch = data[rows, cols]
+                if (np.all((patch >= 0) & (patch <= self._params['free_threshold'])) and
+                        np.all(self._active_detected_wall_support[rows, cols] <
+                               self._params['detected_wall_door_min_support'])):
+                    points.append(point)
+                    break
+        return points
+
     def _schedule_doorway_confirmations(self, grid, points):
         if (not self._params.get('doorway_vlm_enabled', True) or
-                getattr(self, '_doorway_vlm_executor', None) is None or not points):
+                getattr(self, '_doorway_vlm_executor', None) is None):
             return
         # One in-flight batch is enough.  Without this guard every map callback
         # queued another batch while the previous request was still running.
@@ -1235,9 +1373,34 @@ class RoomManager:
             image_age = time.monotonic() - self._latest_rgb_received_at
         if image is None or image_age > float(self._params['doorway_vlm_max_image_age_s']):
             return
+        rgb_id = self._latest_rgb_stamp_ns or self._latest_rgb_received_at
+        floor_z = self._robot_height()
+        pending_points = []
+        for state in self._doorway_vlm_state.values():
+            if state.get('status') != 'pending_confirmation' or not state.get('cuttable'):
+                continue
+            if state.get('floor_z') is None or abs(state['floor_z'] - floor_z) > 0.5:
+                continue
+            left, right = state.get('left_world'), state.get('right_world')
+            if left is None or right is None:
+                continue
+            x, y = self._world_to_grid(*state['world'], grid)
+            if not (0 <= x < grid.info.width and 0 <= y < grid.info.height and
+                    0 <= grid.data[y * grid.info.width + x] <= self._params['free_threshold']):
+                continue
+            dx, dy = right[0] - left[0], right[1] - left[1]
+            theta = math.atan2(dx, -dy) - self._yaw(grid.info.origin.orientation)
+            radius = math.hypot(dx, dy) / (2 * grid.info.resolution)
+            support = self._door_wall_support_score(y, x, theta, radius, grid.info.resolution)
+            if support >= self._params['detected_wall_door_min_support']:
+                pending_points.append((y, x, theta, radius))
+
         hypotheses = []
         batch_worlds = []
-        for index, point in enumerate(points[:int(self._params['doorway_vlm_max_candidates_per_call'])]):
+        limit = int(self._params['doorway_vlm_max_candidates_per_call'])
+        for index, point in enumerate([*pending_points, *points]):
+            if len(hypotheses) >= limit:
+                break
             world = self._grid_to_world(point[1], point[0], grid)
             pixel = self._project_world_to_image(world)
             if pixel is None:
@@ -1253,14 +1416,14 @@ class RoomManager:
             previous = self._doorway_vlm_state.get(key, {})
             if previous.get('status') == 'confirmed':
                 continue
-            if key in self._doorway_vlm_pending:
+            if previous.get('rgb_id') == rgb_id or previous.get('retry_after', 0) > time.time():
                 continue
-            if (previous.get('status') in ('rejected', 'pending_confirmation') and
+            if (previous.get('status') in ('rejected', 'unanswered') and
                     time.time() - float(previous.get('updated_at', 0.0)) <
                     float(self._params['doorway_vlm_retry_s'])):
                 continue
             hypotheses.append({
-                'candidate_id': f'c{index}', 'key': key,
+                'candidate_id': f'c{index}', 'key': key, 'rgb_id': rgb_id, 'floor_z': floor_z,
                 'world': world, 'pixel': pixel,
                 'theta': theta, 'radius_px': float(point[3]),
                 'left_world': self._grid_to_world(
@@ -1275,7 +1438,7 @@ class RoomManager:
         if not hypotheses:
             return
         batch_key = '|'.join(item['key'] for item in hypotheses)
-        self._doorway_vlm_pending[batch_key] = True
+        self._doorway_vlm_pending[batch_key] = len(hypotheses)
         future = self._doorway_vlm_executor.submit(
             self._submit_doorway_vlm, hypotheses, image)
         future.add_done_callback(
@@ -1555,23 +1718,13 @@ class RoomManager:
             if thin_segment or sparse_network:
                 structural[labels == i] = 255
 
-        if cloud_support is None and self._params.get('enable_3d_structural_filter', False) and grid is not None:
-            cloud_support = self._cloud_structural_support(grid)
-        if cloud_support is not None:
-            observed = self._latest_cloud_observed_mask
-            # The 3D cloud may confirm a 2D wall or identify clutter, but it must
-            # never veto a structural wall already present in occupancy. Sparse
-            # or locally missing cloud returns otherwise open a false passage and
-            # let the GVD merge rooms through the wall.
-            # cloud_obstacles is evidence that an obstacle exists, not a wall
-            # detector.  Real wall reinforcement is supplied separately by
-            # detected_wall_support below.  Keeping this out of structural_occ
-            # prevents a tall wardrobe/table from becoming a room divider merely
-            # because it has a vertical point cloud.
-            # Ground is used to estimate the floor datum, not as a negative
-            # obstacle vote. At a wall/floor junction both clouds legitimately
-            # occupy the same projected cell; treating ground as a veto erases
-            # real walls, especially after the support-mask dilation.
+        if cloud_support is not None and grid is not None:
+            # The cloud has already passed the vertical-band and wall-shape
+            # tests. Use it to retain measured portions of a wall whose 2D
+            # component also contains furniture and fails the shape test.
+            raw = np.asarray(grid.data).reshape(occupied.shape)
+            measured = (raw >= self._params['occupied_threshold']) & (raw <= 100)
+            structural[measured & (occupied > 0) & cloud_support] = 255
         return structural
 
     def _repair_wall_gaps(self, occupied, structural_support, grid, cloud_support=None):
@@ -2194,7 +2347,7 @@ class RoomManager:
         }
         return mask
 
-    def _detected_wall_doorway_cuts(self, free, cut, grid, resolution):
+    def _detected_wall_doorway_cuts(self, free, cut, grid, resolution, strokes=None, doorway_points=None):
         """Cut doorway-sized gaps between confirmed collinear wall pieces.
 
         The GVD remains useful for doors inferred only from free-space shape, but
@@ -2270,16 +2423,13 @@ class RoomManager:
                 else:
                     continue
                 if min_gap <= gap <= max_gap:
-                    # Keep the direction with the proposal.  Using the loop-scoped
-                    # ``adir`` below made every proposal inherit the direction of the
-                    # last wall pair examined, producing oblique/wrong doorway cuts.
-                    proposals.append((gap, left, right, adir))
+                    proposals.append((gap, left, right))
 
         # Narrow, strongly delimited openings first.  Once a cut has separated a
         # room, later candidates are validated only inside their current parent.
         wall_points = []
         height, width = result.shape
-        for _gap, left, right, proposal_direction in proposals:
+        for _gap, left, right in proposals:
             q0 = self._world_to_grid(float(left[0]), float(left[1]), grid)
             q1 = self._world_to_grid(float(right[0]), float(right[1]), grid)
             if q0 is None or q1 is None:
@@ -2288,13 +2438,15 @@ class RoomManager:
                     0 <= q1[0] < width and 0 <= q1[1] < height):
                 continue
             midpoint = ((q0[0]+q1[0])//2, (q0[1]+q1[1])//2)
-            wall_points.append((midpoint[1], midpoint[0],
-                                math.atan2(float(proposal_direction[1]),
-                                           float(proposal_direction[0])),
+            # Hypotheses carry the passage direction in grid coordinates.
+            # Their jamb-to-jamb cut is normal to that direction.
+            passage_angle = math.atan2(q1[1] - q0[1], q1[0] - q0[0]) + math.pi / 2
+            wall_points.append((midpoint[1], midpoint[0], passage_angle,
                                 max(1.0, _gap / max(2.0 * resolution, 1e-6)), 1.0))
-        self._schedule_doorway_confirmations(grid, wall_points)
+        if doorway_points is not None:
+            doorway_points.extend(wall_points)
 
-        for _gap, left, right, proposal_direction in sorted(
+        for _gap, left, right in sorted(
                 proposals, key=lambda item: item[0]):
             q0 = self._world_to_grid(float(left[0]), float(left[1]), grid)
             q1 = self._world_to_grid(float(right[0]), float(right[1]), grid)
@@ -2338,6 +2490,8 @@ class RoomManager:
                 continue
             discarded_noise_px += self._discard_cut_noise(trial, parent, min_component_px)
             result = trial
+            if strokes is not None:
+                strokes.append((q0, q1, thickness))
             stats['accepted'] += 1
 
         stats['discarded_noise_area_m2'] = round(discarded_noise_px * resolution ** 2, 6)
@@ -2374,7 +2528,7 @@ class RoomManager:
                 recovered.append(point)
         return recovered
 
-    def _apply_confirmed_door_cuts(self, cut, grid, resolution, wall_mask=None):
+    def _apply_confirmed_door_cuts(self, cut, grid, resolution, wall_mask=None, strokes=None):
         """Apply immutable doorway cuts only when they split free space."""
         applied = 0
         painted = 0
@@ -2457,11 +2611,14 @@ class RoomManager:
                     # wall is temporarily missing from the map.  The next cycle
                     # can then reconnect it to the recovered wall network.
                     trial = extended
+                    q0, q1 = extended_q0, extended_q1
 
             # A confirmed doorway is itself a persistent separator.  It must be
             # retained even when this cycle's raster is too open for the line to
             # produce two connected components yet.
             cut = trial
+            if strokes is not None:
+                strokes.append((q0, q1, thickness))
             painted += 1
             applied += int(local_split)
         self._last_locked_door_cuts = applied
@@ -2510,11 +2667,6 @@ class RoomManager:
         return centre, True, int(z.size)
 
     def _cloud_structural_support(self, grid):
-        # The obstacle cloud is the cleanest source for vertical structure: it
-        # does not spend the point budget on the floor and therefore makes the
-        # height-band test much less sensitive to furniture/floor imbalance.
-        # Keep cloud_map as a fallback for setups where RTAB-Map does not publish
-        # cloud_obstacles continuously.
         max_age_s = float(self._params.get('gvd_3d_max_age_s', 0.0))
         now_mono = time.monotonic()
         obstacle_fresh = (
@@ -2533,20 +2685,15 @@ class RoomManager:
             points = np.concatenate((self._latest_cloud_points,
                                      self._latest_cloud_obstacle_points), axis=0)
             cloud_source = 'cloud_map+cloud_obstacles'
-            received_at = max(self._latest_cloud_received_at or 0.0,
-                              self._latest_cloud_obstacle_received_at or 0.0)
         elif map_fresh:
             points = self._latest_cloud_points
             cloud_source = 'cloud_map'
-            received_at = self._latest_cloud_received_at
         elif obstacle_fresh:
             points = self._latest_cloud_obstacle_points
             cloud_source = 'cloud_obstacles_fallback'
-            received_at = self._latest_cloud_obstacle_received_at
         else:
             points = None
             cloud_source = 'none'
-            received_at = None
         if points is None or points.shape[0] == 0:
             self._latest_cloud_observed_mask = None
             self._latest_cloud_nonwall_mask = None
@@ -2555,17 +2702,6 @@ class RoomManager:
             return None
         if grid is None or grid.info.resolution <= 0:
             return None
-
-        if received_at is not None and max_age_s > 0.0:
-            age_s = now_mono - received_at
-            if age_s > max_age_s:
-                self._latest_cloud_observed_mask = None
-                self._latest_cloud_nonwall_mask = None
-                now = time.time()
-                if now - self._last_cloud_warn_time > 5.0:
-                    self._log('warn', f'Ignoring stale 3D cloud ({age_s:.1f}s old)')
-                    self._last_cloud_warn_time = now
-                return None
 
         resolution = float(grid.info.resolution)
         origin = grid.info.origin
@@ -3061,7 +3197,7 @@ class RoomManager:
         rej = {"too_short_px": 0, "too_short_m": 0, "wider_than_door": 0,
                "minimum_at_endpoint": 0, "no_end_clearance": 0,
                "not_a_bottleneck": 0, "wall_supported_recovery": 0,
-               "wall_supported_endpoint_recovery": 0, "accepted": 0}
+               "wall_supported_endpoint_recovery": 0, "insufficient_local_wall_support": 0, "accepted": 0}
         min_branch_px = max(4, int(round(
             self._params['gvd_prune_min_branch_m'] / max(resolution, 1e-6))))
         endpoint_margin_px = max(1, int(round(
@@ -3090,9 +3226,14 @@ class RoomManager:
 
             y, x = path[min_idx]
             theta = float(self._branch_direction(path, min_idx))
-            wall_score = self._door_wall_support_score(
+            jamb_scores = self._door_jamb_scores(
                 int(y), int(x), theta, min_val, resolution)
             min_wall_support = float(self._params.get('detected_wall_door_min_support', 0.16))
+            wall_score = min(jamb_scores)
+            if (self._params.get('doorway_require_wall_support', True) and
+                    max(jamb_scores) > 0 and wall_score < min_wall_support):
+                rej['insufficient_local_wall_support'] += 1
+                continue
             wall_supported_width = (
                 wall_score >= min_wall_support and
                 width_m <= float(self._params.get('detected_wall_door_max_m', 2.0)))
@@ -3151,46 +3292,37 @@ class RoomManager:
         return selected
 
     def _door_wall_support_score(self, y, x, theta, radius_px, resolution):
-        """Return 0..1 when confirmed walls support both ends of a proposed door cut."""
+        return min(self._door_jamb_scores(y, x, theta, radius_px, resolution))
+
+    def _door_jamb_scores(self, y, x, theta, radius_px, resolution):
+        """Sample verified wall confidence near each predicted jamb independently."""
         support = getattr(self, '_active_detected_wall_support', None)
-        if support is None or not np.any(support):
-            return 0.0
+        if support is None:
+            return (0.0, 0.0)
         nx, ny = -math.sin(theta), math.cos(theta)
+        radius_px = max(1.0, float(radius_px))
         search_px = max(1, int(round(float(self._params.get(
             'detected_wall_door_endpoint_radius_m', 0.20)) / max(resolution, 1e-6))))
         h, w = support.shape
-        radius_px = max(1.0, float(radius_px))
-        # Look for the first wall hit along the proposed opening normal. Merely
-        # finding an unrelated wall somewhere in a broad endpoint window is not
-        # enough: the free-space ray must actually terminate at a wall on each side.
-        max_scan = int(math.ceil(radius_px + search_px))
-        min_hit = max(1, int(math.floor(0.35 * radius_px)))
-        values = []
+        scores = []
         for sign in (-1.0, 1.0):
-            hit_value = 0.0
-            hit_distance = None
-            for step in range(min_hit, max_scan + 1):
-                ix = int(round(x + sign * step * nx))
-                iy = int(round(y + sign * step * ny))
-                if not (0 <= ix < w and 0 <= iy < h):
-                    break
-                x0, x1 = max(0, ix-search_px), min(w, ix+search_px+1)
-                y0, y1 = max(0, iy-search_px), min(h, iy+search_px+1)
-                value = (float(np.max(support[y0:y1, x0:x1]))
-                         if x0 < x1 and y0 < y1 else 0.0)
-                if value > 0.0:
-                    hit_value = value
-                    hit_distance = step
-                    break
-            if hit_distance is None:
-                return 0.0
-            values.append(hit_value)
-        # Both rays must terminate on supported walls; one nearby fragment is not
-        # a doorway frame. The returned score still reflects the weaker side.
-        return min(values)
+            cx = int(round(x + sign * radius_px * nx))
+            cy = int(round(y + sign * radius_px * ny))
+            x0, x1 = max(0, cx - search_px), min(w, cx + search_px + 1)
+            y0, y1 = max(0, cy - search_px), min(h, cy + search_px + 1)
+            score = 0.0
+            if x0 < x1 and y0 < y1:
+                patch = support[y0:y1, x0:x1]
+                if patch.any():
+                    rows, cols = np.ogrid[y0:y1, x0:x1]
+                    near = (cols - cx)**2 + (rows - cy)**2 <= search_px**2
+                    side = sign * ((cols - x) * nx + (rows - y) * ny)
+                    score = float(np.max(patch, where=near & (side > 0), initial=0))
+            scores.append(score)
+        return scores
 
     def _cut_free_space(self, free, dist_real, critical_points, resolution=None,
-                        grid=None, wall_mask=None):
+                        grid=None, wall_mask=None, strokes=None):
         """Insert critical lines orthogonal to the GVD at doorway minima.
 
         Each line spans the local clearance diameter and reconnects the two nearest sides
@@ -3285,7 +3417,8 @@ class RoomManager:
                     p1 = (int(round(x+radius*nx)), int(round(y+radius*ny)))
 
             trial = cut.copy()
-            cv2.line(trial, p0, p1, 0, max(1, 2*margin_px+1))
+            thickness = 2 * margin_px + 1
+            cv2.line(trial, p0, p1, 0, thickness)
             _, before_labels = cv2.connectedComponents(cut, 8)
             _, after_labels = cv2.connectedComponents(trial, 8)
             parent_label = int(before_labels[int(y), int(x)])
@@ -3299,7 +3432,7 @@ class RoomManager:
             if children.size < 2:
                 rejected_no_split += 1
                 rejected_trial_no_split += 1
-                deferred.append((point, (cut > 0) & (trial == 0)))
+                deferred.append((point, (cut > 0) & (trial == 0), (p0, p1, thickness)))
                 deferred_details.append({
                     'x': int(x), 'y': int(y),
                     'locked': bool(locked_doorway),
@@ -3324,6 +3457,8 @@ class RoomManager:
             discarded_noise_px += self._discard_cut_noise(trial, parent, min_component_px)
             cut = trial
             accepted.append(point)
+            if strokes is not None:
+                strokes.append((p0, p1, thickness))
             accepted_locked += int(locked_doorway)
 
         # Multiple entrances to the same room must be closed together. Keep only
@@ -3332,10 +3467,10 @@ class RoomManager:
         # noisy component cannot prevent recovery in another part of the map.
         _, parent_labels = cv2.connectedComponents(cut, 8)
         groups = {}
-        for point, removed in deferred:
+        for point, removed, stroke in deferred:
             parent_id = int(parent_labels[int(point[0]), int(point[1])])
             if parent_id > 0:
-                groups.setdefault(parent_id, []).append((point, removed))
+                groups.setdefault(parent_id, []).append((point, removed, stroke))
         for parent_id, proposals in groups.items():
             if len(proposals) < 2:
                 continue
@@ -3343,7 +3478,7 @@ class RoomManager:
 
             def partition(selected):
                 trial = cut.copy()
-                for _, removed in selected:
+                for _, removed, _ in selected:
                     trial[removed & parent] = 0
                 _, labels = cv2.connectedComponents(trial, 8)
                 areas = np.bincount(labels[parent])
@@ -3364,13 +3499,15 @@ class RoomManager:
                     trial, areas = reduced_trial, reduced_areas
             discarded_noise_px += self._discard_cut_noise(trial, parent, min_component_px)
             cut = trial
-            accepted.extend(point for point, _ in selected)
+            accepted.extend(point for point, _, _ in selected)
+            if strokes is not None:
+                strokes.extend(stroke for _, _, stroke in selected)
             accepted_collective += len(selected)
             accepted_locked += sum(len(point) >= 8 and bool(point[7])
-                                   for point, _ in selected)
+                                   for point, _, _ in selected)
             rejected_no_split -= len(selected)
             rejected_trial_no_split -= len(selected)
-            recovered = {(int(point[1]), int(point[0])) for point, _ in selected}
+            recovered = {(int(point[1]), int(point[0])) for point, _, _ in selected}
             deferred_details = [detail for detail in deferred_details
                                 if (detail['x'], detail['y']) not in recovered]
 
@@ -3391,6 +3528,25 @@ class RoomManager:
             'deferred_details': deferred_details,
         }
         return cut
+
+    @staticmethod
+    def _restore_door_margins(markers, cut_floor, strokes):
+        """Reclaim measured floor only where the thinner partition has one owner."""
+        band = np.zeros(markers.shape, np.uint8)
+        seam = np.zeros_like(band)
+        for start, end, thickness in strokes:
+            cv2.line(band, start, end, 1, thickness)
+            cv2.line(seam, start, end, 1, 1, cv2.LINE_4)
+        margins = cut_floor & (band > 0) & (seam == 0) & (markers == 0)
+        count, thin = cv2.connectedComponents(((markers > 0) | margins).astype(np.uint8), 8)
+        seeded = markers > 0
+        low = np.full(count, np.iinfo(np.int32).max, np.int32)
+        high = np.zeros(count, np.int32)
+        np.minimum.at(low, thin[seeded], markers[seeded])
+        np.maximum.at(high, thin[seeded], markers[seeded])
+        restored = margins & (low[thin] == high[thin])
+        markers[restored] = high[thin[restored]]
+        return restored
 
     @staticmethod
     def _grow_labels(free, cut, dist_real):
@@ -3556,6 +3712,7 @@ class RoomManager:
         return triangles
 
     def _segment_regions_gvd(self, grid):
+        self._growth_labels = None
         free, occupied = self._binary_free_obstacle(grid)
         if not np.any(free):
             return []
@@ -3608,7 +3765,12 @@ class RoomManager:
             reinforced_cells = int(np.count_nonzero(
                 topology_wall_bool & (structural_occ == 0)))
             structural_occ[topology_wall_bool] = 255
-        free_topo = self._fill_nonstructural_obstacles(free, occupied, structural_occ, resolution)
+        unknown = np.asarray(grid.data).reshape(free.shape) < 0
+        protected_unknown = unknown & bool(self._params['unknown_is_obstacle'])
+        fillable_occupied = occupied.copy()
+        fillable_occupied[protected_unknown] = 0
+        free_topo = self._fill_nonstructural_obstacles(
+            free, fillable_occupied, structural_occ, resolution)
         # Repaired cells were known-free in the occupancy raster; make them a
         # barrier in topology as well as in the structural wall mask.
         free_topo[repaired_wall_gaps] = 0
@@ -3627,7 +3789,7 @@ class RoomManager:
             # This pass is intentionally based on the original occupancy map, not
             # on ``free_topo`` after measured-wall reinforcement.
             pre_free = self._fill_room_holes(
-                free.copy(), resolution, protected=pre_wall_structural_occ)
+                free.copy(), resolution, protected=(pre_wall_structural_occ > 0) | protected_unknown)
             pre_free = self._navigable_free_component(pre_free, grid)
             pre_method = str(self._params.get('gvd_method', 'label_diff'))
             if pre_method == 'medial_axis':
@@ -3638,17 +3800,6 @@ class RoomManager:
                 pre_raw, pre_dist = self._compute_gvd(pre_free, pre_wall_structural_occ)
             pre_points = self._critical_points(
                 self._prune_skeleton(pre_raw, resolution), pre_dist, resolution)
-            # Same abstain-vs-reject distinction as the main pass below. This copy tested
-            # only the flag, so it dropped every pre-pass proposal whenever no wall was
-            # confirmed -- and the pre-pass is what keeps a real doorway visible long enough
-            # for the VLM to confirm it.
-            if (self._params.get('doorway_require_wall_support', True) and
-                    self._active_detected_wall_support is not None and
-                    np.any(self._active_detected_wall_support)):
-                minimum = float(self._params.get('detected_wall_door_min_support', 0.16))
-                pre_points = [point for point in pre_points
-                              if len(point) >= 5 and point[4] >= minimum]
-            self._schedule_doorway_confirmations(grid, pre_points)
 
         if (topology_wall_mask is not None and
                 self._params.get('detected_wall_close_free_space', True)):
@@ -3676,8 +3827,9 @@ class RoomManager:
         # Furniture removed from the topology can leave isolated corner pixels after the
         # occupancy median filter. Closed holes below the configured area are clutter, not
         # navigable-space boundaries, and would create dense spurious medial-axis branches.
+        hole_protection = (topology_protected > 0) | protected_unknown
         free_topo = self._fill_room_holes(
-            free_topo, resolution, protected=topology_protected)
+            free_topo, resolution, protected=hole_protection)
         free_topo = self._navigable_free_component(free_topo, grid)
         self._active_resolution = resolution
         # GA-137: `label_diff` is today's behaviour and stays the default -- it is provably
@@ -3697,25 +3849,6 @@ class RoomManager:
                              f"expected 'medial_axis', 'boundary_sites', 'ridge', or 'label_diff'")
         skeleton = self._prune_skeleton(skeleton_raw, resolution)
         critical_points = self._critical_points(skeleton, dist_topo, resolution)
-
-        # A narrow branch in the middle of a room is not a doorway hypothesis.  When
-        # depth walls are available, require the GVD bottleneck to terminate against
-        # both sides of that wall network before spending a VLM call on it.
-        # `np.any`, NOT `is not None`. The guard means "do we have wall evidence to judge
-        # against"; `_detected_wall_support` returns None only when the feature is switched off
-        # or the grid is missing, and otherwise returns an ALL-ZERO raster when no wall has been
-        # confirmed. A zeros array is not None, so this filter always ran, every score was 0.0,
-        # and 0.0 < 0.16 deleted every doorway. MEASURED on 20260911_173938_hm3d_00861: 63
-        # skeleton branches, 12 bottlenecks accepted by geometry, all 12 dropped, door_cuts=0,
-        # one room for the whole house. `_door_wall_support_score` already draws this
-        # distinction (it returns 0.0 when the raster is empty); it died here, at the point of
-        # use, where 0.0 was read as "rejected" rather than as "cannot say".
-        if (self._params.get('doorway_require_wall_support', True) and
-                self._active_detected_wall_support is not None and
-                np.any(self._active_detected_wall_support)):
-            min_support = float(self._params.get('detected_wall_door_min_support', 0.16))
-            critical_points = [point for point in critical_points
-                               if len(point) >= 5 and point[4] >= min_support]
 
         # The wall-reinforced pass can no longer see an opening that was closed by
         # the measured wall raster. Retain original GVD candidates and, after a
@@ -3754,40 +3887,57 @@ class RoomManager:
                 # temporarily disappears.
                 critical_points.append(recovered)
 
-        # VLM runs after geometric hypotheses exist. It is deliberately not used to
-        # filter them: GVD topology determines the cut, VLM only stabilizes it.
-        self._schedule_doorway_confirmations(grid, critical_points)
-        vlm_candidate_worlds = [
-            self._grid_to_world(point[1], point[0], grid) for point in critical_points]
-        self._last_doorway_vlm_stats = {
-            'candidates': len(vlm_candidate_worlds),
-            'recovered_confirmed': len(recovered_points),
-            'cuttable_confirmed': sum(
-                self._doorway_cut_confirmed(world) for world in vlm_candidate_worlds),
-            'pending': sum(
-                self._doorway_key(world) in self._doorway_vlm_pending
-                for world in vlm_candidate_worlds),
-        }
-
+        strokes = []
         cut_wall_mask = (topology_protected > 0)
         cut = self._cut_free_space(
             free_topo, dist_topo, critical_points, resolution, grid=grid,
-            wall_mask=cut_wall_mask)
+            wall_mask=cut_wall_mask, strokes=strokes)
         # A VLM-confirmed doorway is a persistent separator. Reapply its
         # measured cut before extracting connected room components.
         cut = self._apply_confirmed_door_cuts(
-            cut, grid, resolution, wall_mask=structural_occ)
+            cut, grid, resolution, wall_mask=structural_occ, strokes=strokes)
         validated_cuts = getattr(self, '_last_validated_cuts', [])
+        wall_points = []
         cut = self._detected_wall_doorway_cuts(
-            free_topo, cut, grid, resolution)
+            free_topo, cut, grid, resolution, strokes=strokes, doorway_points=wall_points)
         wall_door_cuts = getattr(self, '_last_wall_door_cut_stats', {})
 
-        if self._params.get('room_use_watershed', False):
+        # A single request per image. Include wall gaps even when they do not
+        # split the global free-space component (rooms can have two entrances).
+        track_points = self._tracked_doorway_points(grid)
+        proposals = [*track_points, *validated_cuts, *wall_points, *critical_points, *pre_points]
+        self._schedule_doorway_confirmations(grid, proposals)
+        states = list(self._doorway_vlm_state.values())
+        self._last_doorway_vlm_stats = {
+            'candidates': len(critical_points),
+            'wall_proposals': len(wall_points),
+            'persistent_track_proposals': len(track_points),
+            'recovered_confirmed': len(recovered_points),
+            'cuttable_confirmed': sum(self._doorway_cut_confirmed(
+                self._grid_to_world(p[1], p[0], grid), p[2]) for p in critical_points),
+            'pending': sum(self._doorway_vlm_pending.values()),
+            'awaiting_second_view': sum(s.get('status') == 'pending_confirmation' for s in states),
+            'visual_positives_without_jamb_support': sum(
+                bool(s.get('visual_positive') and s.get('pixel_inside_bbox') and
+                     s.get('status') == 'rejected' and
+                     s.get('wall_support_score', 0) < self._params['detected_wall_door_min_support'])
+                for s in states),
+        }
+
+        watershed = self._params.get('room_use_watershed', False)
+        if watershed:
             markers = self._grow_labels(free_topo, cut, dist_topo)
         else:
             _, markers = cv2.connectedComponents(cut, 8)
         if markers is None:
             _, markers = cv2.connectedComponents(free_topo, 8)
+
+        measured = np.asarray(grid.data).reshape(free.shape)
+        measured_floor = (measured >= 0) & (measured <= self._params['free_threshold'])
+        cut_floor = (free_topo > 0) & (cut == 0) & measured_floor & ~hole_protection
+        restored = np.zeros_like(cut_floor)
+        if strokes and not watershed:
+            restored = self._restore_door_margins(markers, cut_floor, strokes)
 
         # Close only the small gaps between an already labelled component and a
         # detected wall. This is a local wall-boundary expansion; it does not
@@ -3795,7 +3945,8 @@ class RoomManager:
         if (self._active_detected_wall_support is not None and
                 np.any(self._active_detected_wall_support)):
             markers = self._expand_partition_unambiguously(
-                markers, structural_occ > 0, radius_px=3)
+                markers, structural_occ > 0,
+                eligible=(free > 0) & ~hole_protection & ~((free_topo > 0) & (cut == 0)))
 
         # A cut may create tiny connected components around clutter or map noise. Merge
         # them before polygon extraction using the configured minimum room area.
@@ -3805,6 +3956,11 @@ class RoomManager:
                       max(resolution * resolution, 1e-12))))
         markers = self._merge_small_labels(
             markers, min_pixels, dist_topo, resolution, grid=grid)
+
+        # Keep measured floor and validated cuts for contour updates while a
+        # different room count is awaiting temporal confirmation.
+        self._growth_labels = np.where(
+            measured_floor & ((cut > 0) | restored) & ~hole_protection, markers, 0)
 
         _skel_px = int(np.count_nonzero(skeleton))
         # GA-137: an empty skeleton is a FAILURE, not a measurement, and this line has been
@@ -3866,7 +4022,7 @@ class RoomManager:
             (topology_protected > 0).astype(np.uint8),
             np.ones((3, 3), dtype=np.uint8), iterations=1) > 0
         doorway_side_labels = getattr(self, '_last_small_label_doorway_labels', set())
-        for label in range(1, int(markers.max()) + 1):
+        for label in region_labels:
             mask = (markers == label).astype(np.uint8) * 255
             pixels = int(cv2.countNonZero(mask))
             reached_by_wall = bool(np.any((mask > 0) & wall_reach))
@@ -3885,30 +4041,13 @@ class RoomManager:
                     np.any(mask[:, 0]) or np.any(mask[:, -1]))
                 if touches_border:
                     continue
-            contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+            mask = self._fill_room_holes(mask, resolution, protected=hole_protection)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if not contours:
                 continue
-            hierarchy = hierarchy[0]
-            outer_idx = max(
-                (i for i in range(len(contours)) if hierarchy[i][3] == -1),
-                key=lambda i: cv2.contourArea(contours[i]), default=None)
-            if outer_idx is None:
-                continue
+            contour = max(contours, key=cv2.contourArea)
             epsilon = max(1.0, self._params['poly_approx_epsilon_m'] / resolution)
-            outer_pts = cv2.approxPolyDP(contours[outer_idx], epsilon, True).reshape(-1, 2).astype(np.float64)
-
-            mask = self._fill_room_holes(mask, resolution, protected=topology_protected)
-            if np.count_nonzero(mask) < min_pixels and not reached_by_wall and not doorway_side:
-                continue
-            contours2, hierarchy2 = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-            if contours2 and hierarchy2 is not None:
-                hierarchy2 = hierarchy2[0]
-                outer_idx2 = max(
-                    (i for i in range(len(contours2)) if hierarchy2[i][3] == -1),
-                    key=lambda i: cv2.contourArea(contours2[i]), default=None)
-                if outer_idx2 is not None:
-                    outer_pts = cv2.approxPolyDP(contours2[outer_idx2], epsilon, True).reshape(-1, 2).astype(np.float64)
-
+            outer_pts = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2)
             polygon = [self._grid_to_world(int(px), int(py), grid) for px, py in outer_pts]
             if len(polygon) >= 3:
                 polygon_area = self._polygon_area(polygon)
@@ -3930,6 +4069,8 @@ class RoomManager:
             'door_candidates': len(critical_points),
             'doorway_vlm': dict(getattr(self, '_last_doorway_vlm_stats', {})),
             'door_cuts': len(validated_cuts),
+            'cut_floor_area_m2': float(cut_floor.sum() * resolution**2),
+            'restored_door_margin_m2': float(restored.sum() * resolution**2),
             'locked_door_cuts_applied': int(getattr(self, '_last_locked_door_cuts', 0)),
             'wall_door_cuts': dict(wall_door_cuts),
             'cut_validation': dict(_cut_stats),
@@ -4011,14 +4152,30 @@ class RoomManager:
                 }
                 active_regions = [region for region in self.regions.values()
                                   if region.misses == 0]
+                # Refresh these anchors against the last accepted partition and
+                # the current wall/door evidence.  In particular, do not let a
+                # transient empty GVD skeleton erase a separator already seen
+                # between two rooms.
+                self._remember_room_separators(active_regions)
+                self.last_segmentation_stats['persistent_room_separators'] = len(
+                    self._room_separators)
                 # A confirmed doorway remains a hard separator. When the fresh
                 # segmentation proposes one polygon across both sides, first try
                 # to distribute its observed free-space envelope among the active
                 # room seeds. This lets the map grow/change shape without erasing
                 # the established room identities or the doorway cut.
-                if self._confirmed_doorway_blocks_merge(candidates, active_regions):
+                separator_merge_blocked = self._confirmed_doorway_blocks_merge(
+                    candidates, active_regions)
+                self.last_segmentation_stats['separator_merge_blocked'] = bool(
+                    separator_merge_blocked)
+                if separator_merge_blocked:
                     held_refinement['attempted'] = True
+                    self._last_held_refinement_stats = None
                     refined = self._refine_held_partition(candidates)
+                    refinement_stats = getattr(
+                        self, '_last_held_refinement_stats', None)
+                    if refinement_stats:
+                        held_refinement.update(refinement_stats)
                     if refined is candidates:
                         held_refinement['reason'] = 'could_not_build_complete_partition'
                     elif self._confirmed_doorway_blocks_merge(refined, active_regions):
@@ -4034,12 +4191,11 @@ class RoomManager:
                                     self._point_in_polygon(item[0], self.last_robot_xy, 0.20)
                                     for item in refined)),
                         })
-                strong_split = (
-                    (int(self.last_segmentation_stats.get('door_cuts', 0)) > 0 or
-                     int((self.last_segmentation_stats.get('wall_door_cuts', {}) or {}).get(
-                         'accepted', 0)) > 0) and
-                    int((self.last_segmentation_stats.get('doorway_vlm', {}) or {}).get(
-                        'cuttable_confirmed', 0)) > 0)
+                # Fast-path only a split made by an actually applied, persistent
+                # confirmed-door cut. A confirmed doorway elsewhere in the map
+                # must not make unrelated GVD candidates bypass temporal checks.
+                strong_split = int(self.last_segmentation_stats.get(
+                    'locked_door_cuts_applied', 0)) > 0
                 accept, stability = self._stabilize_partition(
                     candidates, strong_split=strong_split)
                 if held_refinement['attempted']:
@@ -4047,7 +4203,14 @@ class RoomManager:
                 self.last_segmentation_stats['stability'] = stability
                 if accept:
                     self._update_regions(candidates)
+                    self._remember_room_separators([
+                        region for region in self.regions.values()
+                        if region.misses == 0])
+                    self.last_segmentation_stats['persistent_room_separators'] = len(
+                        self._room_separators)
                 else:
+                    if stability['reason'] == 'pending_topology_change':
+                        stability['coverage_growth_cells'] = self._grow_held_rooms(grid, active_regions)
                     self._log(
                         'info',
                         'Room partition held: '
@@ -4086,20 +4249,32 @@ class RoomManager:
             threshold = float(self._params.get('region_match_iou_min', 0.20))
         else:
             threshold = float(threshold)
-        used = set()
-        for polygon in sorted(left_polys, key=self._polygon_area, reverse=True):
-            choices = [(self._polygon_iou(polygon, other), i)
-                       for i, other in enumerate(right_polys) if i not in used]
-            if not choices:
-                return False
-            score, index = max(choices)
-            if score < threshold:
-                return False
-            used.add(index)
-        return True
+        scores = np.asarray([[self._polygon_iou(a, b) for b in right_polys]
+                             for a in left_polys], dtype=float)
+        valid = scores >= threshold
+        weights = np.where(valid, float(len(left_polys) + 1) + scores, 0.0)
+        try:
+            from scipy.optimize import linear_sum_assignment
+            rows, cols = linear_sum_assignment(weights, maximize=True)
+        except ImportError:
+            pairs = sorted(((int(valid[i, j]), float(scores[i, j]), i, j)
+                            for i in range(scores.shape[0])
+                            for j in range(scores.shape[1])), reverse=True)
+            rows, cols, used_left, used_right = [], [], set(), set()
+            for _is_valid, _score, i, j in pairs:
+                if i not in used_left and j not in used_right:
+                    rows.append(i); cols.append(j)
+                    used_left.add(i); used_right.add(j)
+        return (len(rows) == len(left_polys) and
+                all(valid[i, j] for i, j in zip(rows, cols)))
 
     def _remember_room_separators(self, active):
         """Remember wall/door separators witnessed between active regions."""
+        # Rebuild instead of accumulating by wall-list index: wall indices can
+        # change when the detector fuses or expires segments, and stale anchors
+        # must not veto a legitimate later merge.
+        separators = {}
+        self._room_separators = separators
         if len(active) < 2:
             return
 
@@ -4108,18 +4283,17 @@ class RoomManager:
                        if self._point_in_polygon(region.polygon, point, 0.20)]
             return min(matches, key=lambda region: region.area_m2) if matches else None
 
-        separators = getattr(self, '_room_separators', None)
-        if separators is None:
-            separators = self._room_separators = {}
-
         sample_distance = max(0.25, float(self._params.get(
             'detected_wall_thickness_m', 0.06)) * 3.0)
         min_obs = max(1, int(self._params.get('detected_wall_min_observations', 2)))
         min_length = float(self._params.get('detected_wall_min_length_m', 0.50))
         min_confidence = float(self._params.get('detected_wall_min_confidence', 0.0))
         max_rms = float(self._params.get('detected_wall_max_rms_m', 0.05))
+        wall_max_age = float(self._params.get('detected_wall_max_age_s', 0.0))
+        now = time.time()
         for index, wall in enumerate(getattr(self, '_detected_wall_map', [])):
-            if (not self._wall_is_verified(wall) or
+            if (self._wall_is_expired(wall, now, wall_max_age) or
+                    not self._wall_is_verified(wall) or
                     int(wall.get('observations', 1)) < min_obs or
                     float(wall.get('confidence', 1.0)) < min_confidence or
                     float(wall.get('inlier_rms_m', float('inf'))) > max_rms):
@@ -4162,11 +4336,28 @@ class RoomManager:
             }
 
     def _confirmed_doorway_blocks_merge(self, candidates, active):
-        """Prevent temporal hysteresis from erasing a confirmed doorway split."""
+        """Keep candidates from erasing a verified wall or confirmed door split."""
         if not candidates or not active:
             return False
         candidate_polys = self._partition_polygons(candidates)
         active_polys = self._partition_polygons(active)
+        active_room_ids = {str(region.room_id) for region in active
+                           if region.room_id is not None}
+        for separator in getattr(self, '_room_separators', {}).values():
+            room_a, room_b = str(separator.get('room_a')), str(separator.get('room_b'))
+            if room_a not in active_room_ids or room_b not in active_room_ids:
+                continue
+            left = np.asarray(separator.get('left_world', ()), dtype=float)
+            right = np.asarray(separator.get('right_world', ()), dtype=float)
+            if left.shape != (2,) or right.shape != (2,):
+                continue
+            if any(self._point_in_polygon(polygon, left) and
+                   self._point_in_polygon(polygon, right)
+                   for polygon in candidate_polys):
+                return True
+
+        # Keep the direct state check as a fallback for doorways whose room-side
+        # samples could not be assigned when the anchor set was refreshed.
         for item in getattr(self, '_doorway_vlm_state', {}).values():
             if (item.get('status') != 'confirmed' or not item.get('cuttable') or
                     item.get('world') is None):
@@ -4185,14 +4376,14 @@ class RoomManager:
                 owners.append(matches[0] if matches else None)
             if (owners[0] is None or owners[1] is None or owners[0] == owners[1]):
                 continue
-            if any(self._point_in_polygon(polygon, samples[0], 0.20) and
-                   self._point_in_polygon(polygon, samples[1], 0.20)
+            if any(self._point_in_polygon(polygon, samples[0]) and
+                   self._point_in_polygon(polygon, samples[1])
                    for polygon in candidate_polys):
                 return True
         return False
 
     @staticmethod
-    def _expand_partition_unambiguously(markers, structural, radius_px=3):
+    def _expand_partition_unambiguously(markers, structural, eligible, radius_px=3):
         """Extend labels only toward a structural boundary, never into ties."""
         markers = np.asarray(markers, dtype=np.int32)
         structural = np.asarray(structural, dtype=bool)
@@ -4202,53 +4393,205 @@ class RoomManager:
             return result
         near = cv2.dilate(structural.astype(np.uint8), np.ones(
             (2 * int(radius_px) + 1, 2 * int(radius_px) + 1), np.uint8)) > 0
-        distances = {}
+        empty = (markers == 0) & near & eligible
+        if not empty.any():
+            return result
+        best = np.full(np.count_nonzero(empty), np.inf, dtype=np.float32)
+        second = best.copy()
+        owners = np.zeros(best.shape, dtype=np.int32)
         for label in labels:
-            seed = (markers == label).astype(np.uint8)
-            distances[label] = cv2.distanceTransform(1 - seed, cv2.DIST_L2, 3)
-        empty = (result == 0) & near
-        for y, x in zip(*np.nonzero(empty)):
-            ranked = sorted((float(distances[label][y, x]), label)
-                            for label in labels)
-            if ranked[0][0] > float(radius_px):
-                continue
-            if len(ranked) > 1 and abs(ranked[1][0] - ranked[0][0]) < 0.75:
-                continue
-            result[y, x] = ranked[0][1]
+            distance = cv2.distanceTransform(
+                (markers != label).astype(np.uint8), cv2.DIST_L2, 3)[empty]
+            closer = distance < best
+            second = np.minimum(second, np.maximum(best, distance))
+            best = np.minimum(best, distance)
+            owners[closer] = label
+        result[empty] = np.where((best <= radius_px) & (second - best >= 0.75), owners, 0)
         return result
 
+    @staticmethod
+    def _grow_without_enclosing_holes(seed, target):
+        """Preserve a single outer contour when floor surrounds an obstacle.
+
+        Add a boundary pixel only when its occupied neighbours form one arc.
+        Four interleaved passes keep simultaneously changed neighbourhoods
+        from sharing an edge or corner.
+        """
+        bits = np.arange(256)
+        transitions = bits ^ (((bits << 1) & 255) | (bits >> 7))
+        simple = np.array([int(n).bit_count() == 2 for n in transitions])
+        weights = np.array([[1, 2, 4], [128, 0, 8], [64, 32, 16]], np.float32)
+        x, y, w, h = cv2.boundingRect(target)
+        mask = seed[y:y+h, x:x+w]
+        wanted = target[y:y+h, x:x+w]
+        while True:
+            changed = False
+            for row, col in ((0, 0), (1, 1), (0, 1), (1, 0)):
+                codes = cv2.filter2D(mask, cv2.CV_16U, weights,
+                                     borderType=cv2.BORDER_CONSTANT)[row::2, col::2]
+                part = mask[row::2, col::2]
+                add = ((wanted[row::2, col::2] > part) & simple[codes] &
+                       ((codes & 170) != 0))
+                if add.any():
+                    part[add] = 1
+                    changed = True
+            if not changed:
+                return seed
+
+    def _grow_held_rooms(self, grid, active):
+        """Extend current tracks over connected measured floor within each fresh label."""
+        labels = getattr(self, '_growth_labels', None)
+        if labels is None or not active:
+            return 0
+        owners = np.zeros(labels.shape, np.int32)
+        footprints = []
+        for index, region in enumerate(active, 1):
+            points = np.asarray([self._world_to_grid(*p, grid) for p in region.polygon], np.int32)
+            footprint = np.zeros(labels.shape, np.uint8)
+            cv2.fillPoly(footprint, [points], 1)
+            inside = footprint > 0
+            owners[inside] = np.where(owners[inside] == 0, index, -1)
+            footprints.append(points)
+        initial = owners.copy()
+        kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        for label in np.unique(labels[labels > 0]):
+            x, y, w, h = cv2.boundingRect((labels == label).astype(np.uint8))
+            domain = labels[y:y+h, x:x+w] == label
+            local = owners[y:y+h, x:x+w]
+            wave = np.where(domain & (local > 0), local, 0).astype(np.float64)
+            available = domain & (local == 0)
+            # Propagate from all room interiors together. Equal-distance
+            # arrivals from different rooms leave the disputed cell unassigned.
+            while available.any():
+                high = cv2.dilate(wave, kernel)
+                reached = available & (high > 0)
+                if not reached.any():
+                    break
+                low = cv2.erode(np.where(wave > 0, wave, np.inf), kernel)
+                unique = reached & (low == high)
+                wave[unique] = high[unique]
+                available[reached] = False
+            local[domain & (wave > 0)] = wave[domain & (wave > 0)]
+
+        added = 0
+        height, width = labels.shape
+        for index, (region, points) in enumerate(zip(active, footprints), 1):
+            growth = (initial == 0) & (owners == index)
+            if not growth.any() or (points < 0).any() or (points >= [width, height]).any():
+                continue
+            mask = np.zeros(labels.shape, np.uint8)
+            cv2.fillPoly(mask, [points], 1)
+            seed = mask.copy()
+            mask[growth] = 1
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if len(contours) != 1:
+                continue
+            outline = np.zeros_like(mask)
+            cv2.drawContours(outline, contours, 0, 1, cv2.FILLED)
+            if np.any((outline > 0) & (mask == 0)):
+                mask = self._grow_without_enclosing_holes(seed, mask)
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                outline.fill(0)
+                cv2.drawContours(outline, contours, 0, 1, cv2.FILLED)
+                if len(contours) != 1 or np.any(outline != mask):
+                    continue
+            polygon = [self._grid_to_world(int(x), int(y), grid)
+                       for x, y in contours[0].reshape(-1, 2)]
+            if self._confirmed_doorway_blocks_merge([(polygon,)], active):
+                continue
+            region.polygon = polygon
+            region.area_m2 = self._polygon_area(polygon)
+            region.centroid = self._centroid(polygon)
+            self._store_region_geometry(region)
+            added += int(np.count_nonzero(growth & (mask > 0)))
+        return added
+
     def _refine_held_partition(self, candidates):
-        """Preserve held room identities while expanding their common envelope."""
+        """Repair only candidates spanning an established separator."""
         active = [region for region in self.regions.values() if region.misses == 0]
         grid = getattr(self, 'last_grid', None)
         if len(active) < 2 or not candidates or grid is None:
             return candidates
+        refined = []
+        stats = {'refined_candidates': 0, 'unaffected_candidates': 0}
+        for candidate in candidates:
+            if not self._confirmed_doorway_blocks_merge([candidate], active):
+                refined.append(candidate)
+                stats['unaffected_candidates'] += 1
+                continue
+            pieces = self._split_held_candidate(candidate, active, grid)
+            if not pieces:
+                self._last_held_refinement_stats = stats
+                return candidates
+            refined.extend(pieces)
+            stats['refined_candidates'] += 1
+        self._last_held_refinement_stats = stats
+        return refined
+
+    def _split_held_candidate(self, candidate, active, grid):
         height, width = int(grid.info.height), int(grid.info.width)
         envelope = np.zeros((height, width), dtype=np.uint8)
-        for polygon, _area, _centroid, _flag in candidates:
-            points = [self._world_to_grid(x, y, grid) for x, y in polygon]
-            points = [point for point in points if point is not None]
-            if len(points) >= 3:
-                cv2.fillPoly(envelope, [np.asarray(points, dtype=np.int32)], 255)
-        if not np.any(envelope):
-            return candidates
-        seeds = []
-        for region in active:
-            q = self._world_to_grid(*region.centroid, grid)
-            if q is None:
-                return candidates
-            seeds.append(q)
-        yy, xx = np.indices(envelope.shape)
-        distances = [((xx - x) ** 2 + (yy - y) ** 2, i)
-                     for i, (x, y) in enumerate(seeds)]
-        order = np.argsort(np.stack([item[0] for item in distances]), axis=0)
-        labels = np.zeros_like(envelope, dtype=np.int32)
-        for index, item in enumerate(distances):
-            labels[order[0] == index] = item[1] + 1
-        labels[envelope == 0] = 0
-        refined = []
+        points = [self._world_to_grid(x, y, grid) for x, y in candidate[0]]
+        cv2.fillPoly(envelope, [np.asarray(points, dtype=np.int32)], 255)
         resolution = float(grid.info.resolution)
-        for index, region in enumerate(active, 1):
+        seed_masks = []
+        room_index = {}
+        for region in active:
+            points = [self._world_to_grid(x, y, grid) for x, y in region.polygon]
+            if len(points) < 3:
+                continue
+            seed = np.zeros_like(envelope)
+            cv2.fillPoly(seed, [np.asarray(points, dtype=np.int32)], 255)
+            seed[envelope == 0] = 0
+            # A shared contour pixel is insufficient evidence of a room interior.
+            if not cv2.erode(seed, np.ones((3, 3), np.uint8)).any():
+                continue
+            room_index[str(region.room_id)] = len(seed_masks)
+            seed_masks.append(seed)
+        if len(seed_masks) < 2:
+            return []
+        # Pin a small observed patch on each side of every remembered separator to
+        # its existing room. These anchors prevent a nearest-footprint boundary from
+        # swallowing the wall-side samples that the hard separator check protects.
+        hard_labels = np.zeros((height, width), dtype=np.int32)
+        # Separator samples are placed 0.25 m from the wall on each side.
+        # A 0.22 m radius made the raster anchors nearly touch at 5 cm
+        # resolution; at door corners, overlapping anchors could overwrite
+        # one room's seed with its neighbour's label. Keep anchors local to
+        # the sampled free-space point.
+        anchor_radius = max(1, int(math.ceil(0.08 / max(resolution, 1e-6))))
+        for separator in getattr(self, '_room_separators', {}).values():
+            for point_key, room_key in (('left_world', 'room_a'),
+                                        ('right_world', 'room_b')):
+                index = room_index.get(str(separator.get(room_key)))
+                point = separator.get(point_key)
+                if index is None or point is None:
+                    continue
+                q = self._world_to_grid(float(point[0]), float(point[1]), grid)
+                if (q is None or not (0 <= q[0] < width and 0 <= q[1] < height) or
+                        envelope[q[1], q[0]] == 0):
+                    continue
+                anchor = np.zeros((height, width), dtype=np.uint8)
+                cv2.circle(anchor, q, anchor_radius, 255, -1)
+                anchor[envelope == 0] = 0
+                anchor_pixels = anchor > 0
+                if np.any(anchor_pixels & (hard_labels > 0) & (hard_labels != index + 1)):
+                    return []
+                if not np.any(anchor_pixels):
+                    continue
+                seed_masks[index][anchor > 0] = 255
+                hard_labels[anchor_pixels] = index + 1
+
+        distances = []
+        for seed in seed_masks:
+            distances.append(cv2.distanceTransform(
+                (seed == 0).astype(np.uint8), cv2.DIST_L2, 5))
+        labels = np.argmin(np.stack(distances, axis=0), axis=0).astype(np.int32) + 1
+        labels[envelope == 0] = 0
+        labels[hard_labels > 0] = hard_labels[hard_labels > 0]
+
+        refined = []
+        for index in range(1, len(seed_masks) + 1):
             mask = (labels == index).astype(np.uint8) * 255
             if cv2.countNonZero(mask) == 0:
                 continue
@@ -4265,7 +4608,7 @@ class RoomManager:
             area = self._polygon_area(polygon)
             if len(polygon) >= 3 and area > 0.0:
                 refined.append((polygon, area, self._centroid(polygon), False))
-        return refined if len(refined) == len(active) else candidates
+        return refined if len(refined) == len(seed_masks) else []
 
     def _stabilize_partition(self, candidates, strong_split=False):
         """Require repeated evidence before replacing the active room topology.
@@ -4409,6 +4752,17 @@ class RoomManager:
         self.room_counter += 1
         return room_id
 
+    def _store_region_geometry(self, region):
+        room = self.init_room_node(region.room_id)
+        room.update({
+            'region_id': region.region_id, 'polygon': list(region.polygon),
+            'area_m2': float(region.area_m2), 'centroid': list(region.centroid),
+            'walls': self._polygon_edges(region.polygon),
+            'wall_segments': self._polygon_edges(region.polygon),
+            'confirmed': region.area_m2 >= self._params['min_room_area_m2'],
+            'last_seen': region.last_seen,
+        })
+
     def _update_regions(self, candidates):
         now = time.time()
         updated = {}
@@ -4416,19 +4770,41 @@ class RoomManager:
         old = list(self.regions.values())
         used = set()
         overlap_retired_regions = 0
-        for polygon, area, centroid, _ in candidates:
-            best = None
-            best_score = -1.0
-            best_index = None
-            for i, previous in enumerate(old):
-                if i in used:
-                    continue
-                distance = float(np.linalg.norm(np.asarray(centroid)-np.asarray(previous.centroid)))
-                if distance > self._params['region_match_distance_m']:
-                    continue
-                score = self._polygon_iou(polygon, previous.polygon)
-                if score >= self._params['region_match_iou_min'] and score > best_score:
-                    best, best_score, best_index = previous, score, i
+        candidate_to_previous = {}
+        if candidates and old:
+            scores = np.asarray([[self._polygon_iou(item[0], previous.polygon)
+                                  for previous in old] for item in candidates], dtype=float)
+            distances = np.asarray([[float(np.linalg.norm(
+                np.asarray(item[2], dtype=float) -
+                np.asarray(previous.centroid, dtype=float)))
+                for previous in old] for item in candidates], dtype=float)
+            valid = ((scores >= float(self._params['region_match_iou_min'])) &
+                     (distances <= float(self._params['region_match_distance_m'])))
+            # Maximize the number of valid identity matches first, then total IoU.
+            # Greedy per-candidate matching can swap room IDs when two polygons
+            # overlap similarly after a split, merge, or contour correction.
+            bonus = float(min(scores.shape) + 1)
+            weights = np.where(valid, bonus + scores, 0.0)
+            try:
+                from scipy.optimize import linear_sum_assignment
+                rows, cols = linear_sum_assignment(weights, maximize=True)
+            except ImportError:
+                pairs = sorted(((float(scores[i, j]), -float(distances[i, j]), i, j)
+                                for i in range(scores.shape[0])
+                                for j in range(scores.shape[1]) if valid[i, j]),
+                               reverse=True)
+                rows, cols, used_rows, used_cols = [], [], set(), set()
+                for _score, _distance, i, j in pairs:
+                    if i not in used_rows and j not in used_cols:
+                        rows.append(i); cols.append(j)
+                        used_rows.add(i); used_cols.add(j)
+            candidate_to_previous = {
+                int(i): int(j) for i, j in zip(rows, cols) if valid[i, j]
+            }
+
+        for candidate_index, (polygon, area, centroid, _) in enumerate(candidates):
+            best_index = candidate_to_previous.get(candidate_index)
+            best = old[best_index] if best_index is not None else None
             if best is None:
                 region_id = f'region_{self.region_counter}'
                 self.region_counter += 1
@@ -4442,15 +4818,7 @@ class RoomManager:
             best.last_seen = now
             updated[best.region_id] = best
             observed_room_ids.add(best.room_id)
-            room = self.init_room_node(best.room_id)
-            room.update({
-                'region_id': best.region_id, 'polygon': list(best.polygon),
-                'area_m2': float(best.area_m2), 'centroid': list(best.centroid),
-                'walls': self._polygon_edges(best.polygon),
-                'wall_segments': self._polygon_edges(best.polygon),
-                'confirmed': best.area_m2 >= self._params['min_room_area_m2'],
-                'last_seen': now,
-            })
+            self._store_region_geometry(best)
         for i, previous in enumerate(old):
             if i not in used and previous.region_id not in updated:
                 # Candidate partition changes are accepted only after the topology

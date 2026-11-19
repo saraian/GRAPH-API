@@ -49,6 +49,7 @@ Binding it to every interface is a decision to publish that, so it is opt-in via
 import argparse
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -2114,9 +2115,9 @@ def _room_overlays(bundle):
     try:
         r = json.loads((bundle / "room.json").read_text())
     except (OSError, ValueError):
-        return {"rooms": [], "detected_walls": []}
+        return {"rooms": [], "detected_walls": [], "doorways": []}
     if not isinstance(r, dict):
-        return {"rooms": [], "detected_walls": []}
+        return {"rooms": [], "detected_walls": [], "doorways": []}
     rooms = []
     for rm in (r.get("rooms") or (r.get("building") or {}).get("rooms") or []):
         poly = rm.get("polygon")
@@ -2132,7 +2133,24 @@ def _room_overlays(bundle):
                       "area_m2": rm.get("area_m2"),
                       "centroid": rm.get("centroid")})
     walls = [w for w in (r.get("detected_walls") or []) if isinstance(w, (list, dict))]
-    return {"rooms": rooms, "detected_walls": walls}
+    doorways = []
+    for key, cut in (r.get("confirmed_door_cuts") or {}).items():
+        if not isinstance(cut, dict):
+            continue
+        left, right = cut.get("left_world"), cut.get("right_world")
+        if not (isinstance(left, (list, tuple)) and len(left) >= 2 and
+                isinstance(right, (list, tuple)) and len(right) >= 2):
+            continue
+        try:
+            points = [[float(left[0]), float(left[1])],
+                      [float(right[0]), float(right[1])]]
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(value) for point in points for value in point):
+            continue
+        doorways.append({"doorway_id": cut.get("element_id") or key,
+                         "points": points})
+    return {"rooms": rooms, "detected_walls": walls, "doorways": doorways}
 
 
 def _bundle_names(limit: int = 60):
