@@ -436,7 +436,7 @@ exploration:
     rate_hz: 1.0                # max filter rate
     # drop-off detection
     drop_m: 0.2                 # a point this far below the floor counts as a drop
-    floor_band_m: 0.10          # |z - floor| within this counts as floor
+    floor_band_m: 0.10          # floor evidence from this far below the floor up to ground_max_m above
     min_points: 2               # below-floor points needed around a seed cell (3x3)
     floor_ratio: 0.5            # a seed cell holds at most this ratio of floor to below-floor points
     min_seed_area_m2: 0.05      # smaller seed areas are noise

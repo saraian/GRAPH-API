@@ -312,6 +312,19 @@ def _node_class():
             if robot is None:
                 self.state["message"] = "AUTO: waiting for the robot pose"
                 return
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Always start with one 360-degree scan in place (a goto to the robot's own position: the feed
+            #         scans on arrival), then choose a frontier from the ranking of the scanned map. Before, the scan
+            #         ran only when nothing was ranked yet, so a start with a few frontiers drove off at once.
+            # *****
+            if not self.bootstrapped:
+                self.send_goto(robot, robot, None)
+                if self.sent_at is not None:          # sent: the feed scans on arrival; else retry next tick
+                    self.bootstrapped = True
+                    self.state["message"] = "AUTO: initial 360-degree scan in place"
+                return
             since_end = time.monotonic() - self.goto_end
             got = self.candidates
             fresh = got is not None and got[0] > self.goto_end
@@ -320,17 +333,9 @@ def _node_class():
                 return
             cands = (got[1].get("candidates") if got else None) or []
             pick = choose_candidate(cands, self.blacklist + self.reached, self.blacklist_radius)
-            if pick is not None:
-                self.bootstrapped = True
             if pick is None:
-                if not self.bootstrapped:
-                    # Nothing to rank yet (right after start the map is tiny): scan in place once.
-                    self.bootstrapped = True
-                    self.send_goto(robot, robot, None)
-                    self.state["message"] = "AUTO: no candidates yet, scanning in place"
-                else:
-                    self.state.update(candidate_id=None,
-                                      message="AUTO: exploration complete (no reachable candidate left)")
+                self.state.update(candidate_id=None,
+                                  message="AUTO: exploration complete (no reachable candidate left)")
                 return
             vp = pick["viewpoint"]
             self.send_goto(robot, vp, pick.get("id"))

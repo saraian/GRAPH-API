@@ -105,7 +105,14 @@ def height_evidence(points, shape, res, origin_x, origin_y, floor_z, params=None
     idx = rows[inside] * w + cols[inside]
     z = z[inside] - float(floor_z)
     below = z < -float(p["drop_m"])
-    at = np.abs(z) <= float(p["floor_band_m"])
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Floor evidence reaches up to ground_max_m (rtabmap's own ground limit), not just +floor_band_m: rooms
+    #         on one storey differ by ~0.1 m (live 00861) and a slightly higher floor is walkable, never a drop.
+    #         With the band at +-0.10 m the neighbouring room had no floor evidence and the stairwell mask grew into it.
+    # *****
+    at = (z >= -float(p["floor_band_m"])) & (z <= float(p["ground_max_m"]))
     neg += np.bincount(idx[below], minlength=h * w).astype(np.int32)
     flo += np.bincount(idx[at], minlength=h * w).astype(np.int32)
     return neg.reshape(h, w), flo.reshape(h, w)
@@ -134,7 +141,8 @@ def continuous_ground(points, shape, res, origin_x, origin_y, floor_z, params=No
         return out
     rows, cols, z, inside = points_to_cells(points, shape, res, origin_x, origin_y, yaw)
     band = float(p["floor_band_m"])
-    sel = inside & (z <= float(floor_z) + band)
+    top = float(p["ground_max_m"])          # floor evidence up to rtabmap's ground limit (see height_evidence)
+    sel = inside & (z <= float(floor_z) + top)
     if not sel.any():
         return out
     lo = -1e6
@@ -165,7 +173,7 @@ def continuous_ground(points, shape, res, origin_x, origin_y, floor_z, params=No
     graph = coo_matrix((np.ones(len(src), np.int8), (src, dst)), shape=(h * w, h * w))
     _, lab = connected_components(graph, directed=False)
     lab = lab.reshape(h, w)
-    floor_cells = valid & (np.abs(ground - float(floor_z)) <= band)
+    floor_cells = valid & (ground >= float(floor_z) - band) & (ground <= float(floor_z) + top)
     if not floor_cells.any():
         return out
     good = np.zeros(lab.max() + 1, bool)
@@ -182,27 +190,39 @@ def continuous_ground(points, shape, res, origin_x, origin_y, floor_z, params=No
 #         overhead clearing) and below drop_m (false drop-offs). The floor is the largest horizontal surface, so
 #         it is the histogram peak; the search radius is 3 m to reach past the blind zone.
 # *****
-def estimate_floor(points, robot_xyz, radius_m=3.0, band_m=0.3, bin_m=0.02, fallback=None):
+def estimate_floor(points, robot_xyz, radius_m=(1.5, 3.0), band_m=0.3, bin_m=0.02, fallback=None, min_points=50,
+                   peak_share=0.2):
     """Floor height near the robot: the densest height bin within band_m of the robot height, else `fallback`
     (the last good estimate; the robot z when None -- the habitat base sits ~0.17 m above the mesh floor)."""
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Nearest radius first. Live 00861: rooms on one storey differ by ~0.13 m and at 3 m the larger
+    #         neighbouring room won (1.175 vs 1.057 under the robot), close to drop_m. The search now tries 1.5 m
+    #         and widens to 3 m when the near band has fewer than min_points points (blind zone) or no sharp peak
+    #         (the floor is a plane, a sharp peak; scattered wall-base / furniture points are flat): the peak bin
+    #         must hold at least peak_share of the band points.
+    # *****
     rz = float(robot_xyz[2])
-    if fallback is not None:
-        fallback = float(fallback)
-    else:
-        fallback = rz
+    fallback = rz if fallback is None else float(fallback)
     if points is None or len(points) == 0:
         return fallback
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    near = (np.hypot(pts[:, 0] - robot_xyz[0], pts[:, 1] - robot_xyz[1]) <= radius_m) & \
-           (np.abs(pts[:, 2] - rz) <= band_m)
-    if int(near.sum()) < 50:
-        return fallback
-    z = pts[near, 2]
-    edges = np.arange(rz - band_m, rz + band_m + bin_m, bin_m)
-    hist, edges = np.histogram(z, bins=edges)
-    k = int(np.argmax(hist))
-    peak = z[(z >= edges[k] - bin_m) & (z <= edges[k + 1] + bin_m)]
-    return float(np.median(peak)) if len(peak) else fallback
+    d = np.hypot(pts[:, 0] - robot_xyz[0], pts[:, 1] - robot_xyz[1])
+    in_band = np.abs(pts[:, 2] - rz) <= band_m
+    radii = radius_m if isinstance(radius_m, (tuple, list)) else (radius_m,)
+    for rad in radii:
+        near = in_band & (d <= float(rad))
+        if int(near.sum()) < min_points:
+            continue
+        z = pts[near, 2]
+        edges = np.arange(rz - band_m, rz + band_m + bin_m, bin_m)
+        hist, edges = np.histogram(z, bins=edges)
+        k = int(np.argmax(hist))
+        peak = z[(z >= edges[k] - bin_m) & (z <= edges[k + 1] + bin_m)]
+        if len(peak) and hist[k] >= float(peak_share) * len(z):
+            return float(np.median(peak))
+    return fallback
 
 
 # *****
