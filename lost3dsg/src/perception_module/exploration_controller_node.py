@@ -30,7 +30,7 @@ import urllib.parse
 import urllib.request
 
 from frontier_extractor import GridInfo
-from grid_planner import build_costmap, plan_path, planner_params
+from grid_planner import build_costmap, plan_partial, plan_path, planner_params
 
 STATUS_TOPIC = "/exploration/status"
 CANDIDATES_TOPIC = "/exploration/candidates"
@@ -93,32 +93,6 @@ def _node_class():
             self.blacklist_radius = float(acfg.get("blacklist_radius_m", 0.5))
             self.goal_tol = float(acfg.get("goal_tol_m", 0.3))
             self.candidate_wait_s = float(acfg.get("candidate_wait_s", 8.0))
-            # *****
-            # Date: 2026-11-23
-            # Editor: WangZX
-            # Remark: Termination: in auto mode, when no candidate can be chosen (no frontier left, or all skipped)
-            #         for done_confirm_s, send /action?act=task_done once; the feed then settles and ends the run
-            #         (reason task_complete). Only for the task modes in stop_modes (default Exploration).
-            # *****
-            self.stop_when_done = bool(acfg.get("stop_when_done", True))
-            self.done_confirm_s = float(acfg.get("done_confirm_s", 15.0))
-            self.stop_modes = [str(m) for m in (acfg.get("stop_modes") or ["Exploration"])]
-            self.none_since = None            # since when no candidate could be chosen (auto mode, idle)
-            self.done_sent = False            # task_done was sent: no further gotos
-            # *****
-            # Date: 2026-11-23
-            # Editor: WangZX
-            # Remark: Guards against ending at the start (live test: frontiers dropped to 0 about 20 s after the
-            #         first goto and the task ended after 48 s). The task never ends before min_explore_s; before
-            #         ending, the robot does one final 360-degree scan in place, then needs done_confirm_s and at
-            #         least done_min_rankings fresh rankings with no choosable candidate.
-            # *****
-            self.min_explore_s = float(acfg.get("min_explore_s", 120.0))
-            self.done_min_rankings = int(acfg.get("done_min_rankings", 2))
-            self.started_at = time.monotonic()
-            self.final_scan_done = False      # the final scan of the current "no candidate" episode was made
-            self.rank_count = 0               # rankings received (on_candidates)
-            self.none_rank0 = 0               # rank_count when the current "no candidate" wait started
             self.world = (cfg.get("tf") or {}).get("world_frame", "map")
             bev = cfg.get("bev") or {}
             self.base = bev.get("base_frame", "base_link")
@@ -176,7 +150,6 @@ def _node_class():
         def on_candidates(self, msg):
             try:
                 self.candidates = (time.monotonic(), json.loads(msg.data))
-                self.rank_count += 1
             except ValueError:
                 pass
 
@@ -223,6 +196,21 @@ def _node_class():
                     body, length = {"seq": seq, "error": f"no map on {self.map_topic} yet"}, None
                 else:
                     res, why = plan_path(cost, info, robot[:2], target[:2], self.pparams)
+                    # *****
+                    # Date: 2026-11-23
+                    # Editor: WangZX
+                    # Remark: No full path: drive the partial path towards the goal and keep re-planning (an
+                    #         obstacle seen from afar, like a low lintel, often vanishes on approach).
+                    # *****
+                    if res is None and self.pparams.get("allow_partial"):
+                        part, pwhy = plan_partial(cost, info, robot[:2], target[:2], self.pparams)
+                        if part is not None:
+                            res = part
+                            self.get_logger().info(
+                                f"goto #{seq}: no full path ({why}); partial path {part['length_m']:.2f} m, "
+                                f"ends {part['remaining_m']:.2f} m from the goal", throttle_duration_sec=3.0)
+                        else:
+                            why = f"{why}; {pwhy}"
                     if res is None:
                         body, length = {"seq": seq, "error": why}, None
                     else:
@@ -304,13 +292,6 @@ def _node_class():
                                                "blacklisted")
                     self.auto_target = None
 
-            # *****
-            # Date: 2026-11-23
-            # Editor: WangZX
-            # Remark: The "no candidate" confirmation timer only runs while auto mode is idle.
-            # *****
-            if active or not auto:
-                self.none_since = None
             if active:
                 target = active.get("target_ros") or [0.0, 0.0, 0.0]
                 self.state.update(phase=active.get("phase"), target=[round(target[0], 2), round(target[1], 2)])
@@ -328,14 +309,6 @@ def _node_class():
             self.auto_step(robot)
 
         def auto_step(self, robot):
-            # *****
-            # Date: 2026-11-23
-            # Editor: WangZX
-            # Remark: After task_done the controller sends nothing more (see the termination remark in __init__).
-            # *****
-            if self.done_sent:
-                self.state.update(candidate_id=None, message="AUTO: exploration finished (task_done sent)")
-                return
             if robot is None:
                 self.state["message"] = "AUTO: waiting for the robot pose"
                 return
@@ -349,8 +322,6 @@ def _node_class():
             pick = choose_candidate(cands, self.blacklist + self.reached, self.blacklist_radius)
             if pick is not None:
                 self.bootstrapped = True
-                self.none_since = None
-                self.final_scan_done = False
             if pick is None:
                 if not self.bootstrapped:
                     # Nothing to rank yet (right after start the map is tiny): scan in place once.
@@ -358,69 +329,11 @@ def _node_class():
                     self.send_goto(robot, robot, None)
                     self.state["message"] = "AUTO: no candidates yet, scanning in place"
                 else:
-                    # *****
-                    # Date: 2026-11-23
-                    # Editor: WangZX
-                    # Remark: No candidate left: confirm for done_confirm_s (a ranking can be briefly empty while
-                    #         the map updates), then end the task with task_done.
-                    # *****
-                    now = time.monotonic()
-                    if self.none_since is None:
-                        self.none_since, self.none_rank0 = now, self.rank_count
-                    waited = now - self.none_since
-                    fresh_n = self.rank_count - self.none_rank0
-                    if self.stop_when_done and self.task_mode in self.stop_modes:
-                        # *****
-                        # Date: 2026-11-23
-                        # Editor: WangZX
-                        # Remark: min_explore_s, the final scan and the fresh-ranking count (see __init__).
-                        # *****
-                        run_s = now - self.started_at
-                        if run_s < self.min_explore_s:
-                            if not self.final_scan_done and waited >= self.done_confirm_s:
-                                self.final_scan_done = True
-                                self.send_goto(robot, robot, None)
-                                self.state["message"] = "AUTO: no candidate left, scanning in place"
-                                return
-                            msg = (f"AUTO: no candidate left, waiting for new frontiers "
-                                   f"(no stop before {self.min_explore_s:.0f} s, now {run_s:.0f} s)")
-                        elif not self.final_scan_done:
-                            self.final_scan_done = True
-                            self.send_goto(robot, robot, None)
-                            self.state["message"] = "AUTO: no candidate left, final scan in place before stopping"
-                            return
-                        elif waited >= self.done_confirm_s and fresh_n >= self.done_min_rankings:
-                            self.send_task_done(len(cands))
-                            return
-                        else:
-                            msg = (f"AUTO: no candidate left after the final scan, stopping in "
-                                   f"{max(0.0, self.done_confirm_s - waited):.0f} s unless a new frontier appears")
-                    else:
-                        msg = "AUTO: exploration complete (no reachable candidate left)"
-                    self.state.update(candidate_id=None, message=msg)
+                    self.state.update(candidate_id=None,
+                                      message="AUTO: exploration complete (no reachable candidate left)")
                 return
             vp = pick["viewpoint"]
             self.send_goto(robot, vp, pick.get("id"))
-
-        # *****
-        # Date: 2026-11-23
-        # Editor: WangZX
-        # Remark: End the task (termination condition, see __init__). Retried on the next tick if the feed is
-        #         unreachable.
-        # *****
-        def send_task_done(self, n_ranked):
-            try:
-                self._http("/action?act=task_done")
-            except Exception as exc:
-                self.get_logger().warn(f"task_done failed to send: {exc}", throttle_duration_sec=10.0)
-                return
-            self.done_sent = True
-            self.state.update(candidate_id=None, done=True,
-                              message="AUTO: exploration finished (task_done sent)")
-            self.get_logger().info(
-                f"exploration finished: no choosable candidate for {self.done_confirm_s:.0f} s "
-                f"({n_ranked} ranked, {len(self.blacklist)} blacklisted, {len(self.reached)} reached); "
-                "task_done sent")
 
         def send_goto(self, robot, xy, cid):
             q = urllib.parse.urlencode({"act": "goto", "x": f"{xy[0]:.3f}", "y": f"{xy[1]:.3f}",

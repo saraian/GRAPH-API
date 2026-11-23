@@ -23,14 +23,34 @@ import math
 import cv2
 import numpy as np
 
-from frontier_extractor import DEFAULT_PARAMS, cells_to_world, classify, frontier_mask, world_to_cell
+from frontier_extractor import DEFAULT_PARAMS, _disk, cells_to_world, classify, frontier_mask, world_to_cell
 
 DEFAULT_PLANNER_PARAMS = {
     "robot_radius_m": 0.20,
     "preferred_clearance_m": 0.60,
     "clearance_weight": 5.0,
-    "allow_unknown": False,        # reserved: unknown cells are never traversed in this version
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: allow_unknown is now implemented (build_costmap): unknown cells (and the free speckles the denoising
+    #         opening drops) within unknown_reach_m of observed free space, outside the obstacle inflation, are
+    #         traversable at unknown_cost times the normal cost. Far from the robot the rtabmap grid is sparse --
+    #         free cells peppered with unknown ones -- and frontiers sit on that edge, so with known-free-only
+    #         planning no path reached them and they were blacklisted.
+    # *****
+    "allow_unknown": True,
+    "unknown_cost": 3.0,           # cost multiplier of an unknown cell
+    "unknown_reach_m": 0.5,        # an unknown cell is usable only this close to observed free space
     "snap_radius_m": 1.5,          # start / goal snapping to the nearest traversable cell
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Partial paths (plan_partial): with no path to the goal, go to the reachable cell nearest to it, if that
+    #         is at least partial_min_progress_m closer than the start. Obstacles seen from afar (a low lintel)
+    #         often vanish once the robot is closer; the controller re-plans every replan_period_s while travelling.
+    # *****
+    "allow_partial": True,
+    "partial_min_progress_m": 0.3,
     "simplify_tol_m": 0.10,        # Douglas-Peucker tolerance
 }
 
@@ -57,6 +77,19 @@ def build_costmap(grid, info, params=None, visited_xy=None, frontier_params=None
     d_pref = max(float(p["preferred_clearance_m"]), r + res)
     pen = np.clip((d_pref - dist) / (d_pref - r), 0.0, 1.0) ** 2
     cost = 1.0 + float(p["clearance_weight"]) * pen
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Unknown cells near observed free space are traversable at a higher cost (see allow_unknown).
+    # *****
+    if p["allow_unknown"]:
+        free, _, unknown = classify(grid, fp)
+        blocked = cv2.dilate(occupied.astype(np.uint8), _disk(math.ceil(r / res))).astype(bool)
+        reach = _disk(math.ceil(float(p["unknown_reach_m"]) / res))
+        near_free = cv2.dilate(free.astype(np.uint8), reach).astype(bool)
+        extra = (unknown | free) & ~traversable & ~blocked & near_free
+        cost[extra] *= float(p["unknown_cost"])
+        traversable = traversable | extra
     cost[~traversable] = np.inf
     return cost, traversable
 
@@ -134,3 +167,43 @@ def plan_path(cost, info, start_xy, goal_xy, params=None):
         out[-1] = [round(float(goal_xy[0]), 3), round(float(goal_xy[1]), 3)]
     return {"points": out, "length_m": round(length, 3), "cost": round(float(cum[g_rc]) * res, 3),
             "snapped_start_m": round(s_snap * res, 3), "snapped_goal_m": round(g_snap * res, 3)}, ""
+
+
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: Partial path towards an unreachable goal (see allow_partial). Same result dict as plan_path plus
+#         partial=True and remaining_m (straight-line distance from the partial end to the goal).
+# *****
+def plan_partial(cost, info, start_xy, goal_xy, params=None):
+    from skimage.graph import MCP_Geometric
+
+    p = planner_params(params)
+    res = float(info.resolution)
+    traversable = np.isfinite(cost)
+    rad = int(math.ceil(float(p["snap_radius_m"]) / res))
+    s_rc, s_snap = _snap(traversable, world_to_cell(start_xy[0], start_xy[1], info), rad)
+    if s_rc is None:
+        return None, "start is not near traversable space"
+    mcp = MCP_Geometric(cost)
+    cum, _ = mcp.find_costs([s_rc])
+    reach = np.isfinite(cum)
+    rr, cc = np.nonzero(reach)
+    if len(rr) == 0:
+        return None, "nothing reachable"
+    xs, ys = cells_to_world(rr, cc, info)
+    d_goal = np.hypot(xs - goal_xy[0], ys - goal_xy[1])
+    k = int(np.argmin(d_goal))
+    d_start = math.hypot(start_xy[0] - goal_xy[0], start_xy[1] - goal_xy[1])
+    if d_start - float(d_goal[k]) < float(p["partial_min_progress_m"]):
+        return None, f"no path, and no reachable cell closer to the goal (nearest {float(d_goal[k]):.2f} m)"
+    end = (int(rr[k]), int(cc[k]))
+    cells = np.asarray(mcp.traceback(end), dtype=np.int64)
+    px, py = cells_to_world(cells[:, 0], cells[:, 1], info)
+    pts = np.stack([px, py], axis=1)
+    length = float(np.hypot(*np.diff(pts, axis=0).T).sum()) if len(pts) > 1 else 0.0
+    simple = _douglas_peucker(pts, float(p["simplify_tol_m"]))
+    out = [[round(float(x), 3), round(float(y), 3)] for x, y in simple]
+    return {"points": out, "length_m": round(length, 3), "cost": round(float(cum[end]) * res, 3),
+            "snapped_start_m": round(s_snap * res, 3), "snapped_goal_m": None, "partial": True,
+            "remaining_m": round(float(d_goal[k]), 3)}, ""

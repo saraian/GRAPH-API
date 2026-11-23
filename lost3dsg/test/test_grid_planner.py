@@ -65,9 +65,47 @@ def test_wall_blocks_and_unknown_is_not_traversed():
     g[30:50, 100:103] = OCC                                        # wall across the corridor
     res, why = _plan(g, (1.0, 2.0), (9.0, 2.0))
     assert res is None and "no path" in why
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: allow_unknown (default on): 1 m of unknown between observed free space is crossed at a higher cost,
+    #         2 m is not (unknown_reach_m 0.5 from each side); with allow_unknown off nothing unknown is crossed.
+    # *****
     g = _corridor(1.2)
     g[30:50, 90:110] = UNK                                         # 1 m of unknown across it
+    res, why = _plan(g, (1.0, 2.0), (9.0, 2.0), {"allow_unknown": False})
+    assert res is None
     res, why = _plan(g, (1.0, 2.0), (9.0, 2.0))
+    assert res is not None, why
+    g = _corridor(1.2)
+    g[20:60, 80:120] = UNK                                         # 2 m of unknown across it, wall to wall
+    res, why = _plan(g, (1.0, 2.0), (9.0, 2.0))
+    assert res is None
+
+
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: Live-test case: far from the robot the rtabmap grid is sparse (free cells peppered with unknown ones)
+#         and the frontier sits on its edge. Planning on known free space only found no path; with allow_unknown
+#         the planner reaches it, and still does not cut through a wall.
+# *****
+def test_sparse_far_region_is_reachable_with_allow_unknown():
+    import cv2
+    rng = np.random.default_rng(0)
+    g = np.full((80, 200), OCC, np.int16)
+    g[4:76, 4:196] = FREE
+    # x 5..10 m: clustered unknown patches (smoothed noise), as rtabmap leaves them at range
+    noise = cv2.GaussianBlur(rng.random((72, 100)).astype(np.float32), (0, 0), 2.0)
+    sparse = noise > np.quantile(noise, 0.35)                     # 65 % of the cells unknown
+    g[4:76, 96:196][sparse] = UNK
+    g[4:76, 190:196] = UNK                                         # the unexplored edge (the frontier side)
+    res, why = _plan(g, (1.0, 2.0), (9.3, 2.0), {"allow_unknown": False})
+    assert res is None, res
+    res, why = _plan(g, (1.0, 2.0), (9.3, 2.0))
+    assert res is not None, why
+    g[4:76, 150:153] = OCC                                         # a wall across the sparse part
+    res, why = _plan(g, (1.0, 2.0), (9.3, 2.0))
     assert res is None
 
 
@@ -130,3 +168,24 @@ def test_choose_candidate_skips_blacklisted():
     assert choose_candidate(cands, [], 0.5)["id"] == 0
     assert choose_candidate(cands, [[1.2, 1.1]], 0.5)["id"] == 1
     assert choose_candidate(cands, [[1.0, 1.0], [3.0, 1.0]], 0.5) is None
+
+
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: Partial path (plan_partial): a line seen across a doorway from afar blocks the full path; the partial path
+#         ends next to the line, closest to the goal; with no progress possible it refuses.
+# *****
+def test_partial_path_goes_as_close_as_possible():
+    from grid_planner import plan_partial
+    g = _corridor(1.2)
+    g[30:50, 150:152] = OCC                                        # the line across the corridor at x = 7.5 m
+    cost, _ = build_costmap(g, INFO)
+    full, _ = plan_path(cost, INFO, (1.0, 2.0), (9.0, 2.0))
+    assert full is None
+    res, why = plan_partial(cost, INFO, (1.0, 2.0), (9.0, 2.0))
+    assert res is not None and res["partial"], why
+    end = res["points"][-1]
+    assert 7.0 < end[0] < 7.5 and res["remaining_m"] < 2.0
+    res, why = plan_partial(cost, INFO, (7.2, 2.0), (9.0, 2.0))      # already at the line: no progress left
+    assert res is None and "closer" in why

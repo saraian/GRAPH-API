@@ -145,3 +145,102 @@ def test_growth_does_not_run_through_holes_in_the_floor():
     blob = [((c + 0.5) * RES, (r + 0.5) * RES, -1.0) for r in range(58, 63) for c in range(58, 63)]
     m = _mask(g, np.asarray(floor + blob), robot_rc=(10, 10))
     assert m.sum() < 60, m.sum()      # the 5x5 blob (+ closing), not the 30 % of empty floor cells around it
+
+
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: Ramp vs drop-off (continuous_ground): a gentle downward ramp is never masked, a staircase and the
+#         stairwell still are.
+# *****
+from negative_obstacle_node import continuous_ground  # noqa: E402
+
+
+def _full_mask(g, pts, floor_z=0.0, robot_rc=(60, 20)):
+    neg, flo = height_evidence(pts, g.shape, RES, 0.0, 0.0, floor_z)
+    ok = continuous_ground(pts, g.shape, RES, 0.0, 0.0, floor_z)
+    return negative_mask(g, neg, flo, RES, robot_rc=robot_rc, ground_ok=ok)
+
+
+def _profile_scene(height_of_x, holes=0.0, seed=3):
+    """Free 10 x 6 m grid; one or two ground points per cell at height_of_x(x), voxel-quantised to 5 cm."""
+    rng = np.random.default_rng(seed)
+    g = np.zeros((120, 200), np.int16)
+    pts = []
+    for r in range(120):
+        for c in range(200):
+            if rng.random() < holes:
+                continue
+            x, y = (c + 0.5) * RES, (r + 0.5) * RES
+            pts += [(x, y, round(height_of_x(x) / RES) * RES)] * 2
+    return g, np.asarray(pts, float)
+
+
+def test_gentle_ramp_down_is_not_masked():
+    # floor to x = 3, then 8 degrees down to -0.7 m at x = 8, then a lower landing
+    ramp = lambda x: 0.0 if x < 3.0 else -min(5.0, x - 3.0) * 0.14   # noqa: E731
+    g, pts = _profile_scene(ramp, holes=0.1)
+    assert not _full_mask(g, pts).any()
+    neg, flo = height_evidence(pts, g.shape, RES, 0.0, 0.0, 0.0)
+    assert negative_mask(g, neg, flo, RES, robot_rc=(60, 20)).any()   # without the check the ramp was masked
+
+
+def test_stairs_down_are_still_masked():
+    stairs = lambda x: 0.0 if x < 3.0 else -0.18 * (1 + int((x - 3.0) / 0.28))   # noqa: E731
+    g, pts = _profile_scene(stairs)
+    m = _full_mask(g, pts)
+    xs = (np.arange(200) + 0.5) * RES
+    assert m[5:115][:, xs > 3.6].mean() > 0.95 and not m[:, xs < 2.9].any()
+
+
+def test_stairwell_scene_unchanged_with_the_ramp_check():
+    g, pts = _scene()
+    m = _full_mask(g, pts, robot_rc=(60, 40))
+    xs = (np.arange(220) + 0.5) * RES
+    assert m[5:115][:, (xs >= 6.0) & (xs < 10.0)].all() and not m[:, xs < 6.0].any()
+
+
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: Overhead obstacle clearing (overhead_cells): a low door lintel is cleared, a wall and an unseen-floor
+#         cell are not.
+# *****
+from negative_obstacle_node import overhead_cells  # noqa: E402
+
+
+def test_low_lintel_is_cleared_but_walls_are_not():
+    g = np.zeros((40, 40), np.int16)
+    pts = [((c + 0.5) * RES, (r + 0.5) * RES, 0.0) for r in range(40) for c in range(40) if c not in (20, 30)]
+    for r in range(40):
+        y = (r + 0.5) * RES
+        if 10 <= r < 26:                                             # doorway: floor seen, lintel at 1.6-1.9 m
+            pts += [(20.5 * RES, y, 0.0), (20.5 * RES, y, 1.6), (20.5 * RES, y, 1.9)]
+        else:                                                        # wall beside the doorway
+            pts += [(20.5 * RES, y, zz) for zz in (0.5, 1.0, 1.6, 2.2)]
+        pts += [(30.5 * RES, y, 1.7)]                                # high points over an unseen floor
+    g[:, 20] = 100
+    g[:, 30] = 100
+    pts = np.asarray(pts, float)
+    _, flo = height_evidence(pts, g.shape, RES, 0.0, 0.0, 0.0)
+    m = overhead_cells(g, pts, RES, 0.0, 0.0, 0.0, flo)
+    assert m[11:25, 20].all()                                        # the lintel over the doorway
+    assert not m[:11, 20].any() and not m[25:, 20].any()             # walls, and the cells beside the jambs
+    assert not m[:, 30].any()
+    assert m.sum() == 14
+
+
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: Floor estimate (histogram mode): live 00337 had the habitat base 0.17 m above the mesh floor and the
+#         floor near the robot in the blind zone, so the old median drifted up with wall-base points.
+# *****
+def test_floor_estimate_ignores_wall_base_points_and_base_offset():
+    rng = np.random.default_rng(4)
+    floor = np.column_stack([rng.uniform(1.0, 3.0, 400), rng.uniform(-3.0, 3.0, 400), np.full(400, -2.77)])
+    walls = np.column_stack([rng.uniform(-1.0, 1.0, 600), rng.uniform(-1.0, 1.0, 600),
+                             rng.uniform(-2.70, -2.45, 600)])                  # wall bases, furniture feet
+    pts = np.vstack([floor, walls])
+    assert abs(estimate_floor(pts, (0.0, 0.0, -2.60)) - (-2.77)) < 0.02
+    assert estimate_floor(pts[:10], (0.0, 0.0, -2.60), fallback=-2.77) == -2.77

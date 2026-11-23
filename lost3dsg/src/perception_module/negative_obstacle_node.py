@@ -46,6 +46,33 @@ DEFAULT_NEG_PARAMS = {
     "close_radius_m": 0.10,  # morphological closing of the mask
     "keep_radius_m": 0.6,    # never mask cells this close to the robot
     "free_thresh": 25,       # same free threshold as frontier_extractor
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: False-positive guards (see negative_mask): seed components smaller than min_seed_area_m2 are noise,
+    #         and growth stops at empty cells with at least floor_neighbors floor-supported 8-neighbours.
+    # *****
+    "min_seed_area_m2": 0.05,
+    "floor_neighbors": 4,
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Slope tolerance (continuous_ground): neighbouring ground cells whose heights differ by at most
+    #         max_step_m are one continuous surface; gaps up to gap_bridge_m without points are bridged.
+    # *****
+    "max_step_m": 0.07,
+    "gap_bridge_m": 0.10,
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Overhead obstacles (clear_overhead): rtabmap counts every point between Grid/MaxGroundHeight (0.25 m)
+    #         and Grid/MaxObstacleHeight (1.8 m) as an obstacle, so a low door lintel (hm3d_00337: lintel points at
+    #         1.5-1.8 m) draws an occupied line across the doorway. The robot is 1.5 m tall (agent_height).
+    # *****
+    "clear_overhead": True,
+    "ground_max_m": 0.25,     # rtabmap Grid/MaxGroundHeight: below this a point is ground
+    "overhead_min_m": 1.5,    # robot height: points at or above this do not block the robot
+    "occ_thresh": 65,         # same occupied threshold as frontier_extractor
 }
 
 
@@ -84,31 +111,180 @@ def height_evidence(points, shape, res, origin_x, origin_y, floor_z, params=None
     return neg.reshape(h, w), flo.reshape(h, w)
 
 
-def estimate_floor(points, robot_xyz, radius_m=1.5, band_m=0.25):
-    """Floor height near the robot: median z of nearby points within band_m of the robot height, else robot z."""
-    rz = float(robot_xyz[2])
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: Ramps were masked as drop-offs: the low part of a gentle downward ramp lies more than drop_m below the
+#         floor. A drop-off is a height DISCONTINUITY (stairwell lip, stair riser), a ramp is not. This finds the
+#         ground cells joined to the current floor by a chain of neighbouring cells with height steps
+#         <= max_step_m; those cells are continuous ground and are never masked, however low they are.
+#         Ground height per cell = highest point at or below floor_z + floor_band_m (so a stair lip cell keeps
+#         the upper floor's height). Empty cells up to gap_bridge_m wide are bridged with the neighbouring
+#         height, but only cells that hold points can be returned as continuous ground.
+# *****
+def continuous_ground(points, shape, res, origin_x, origin_y, floor_z, params=None, yaw=0.0):
+    """Boolean mask of ground cells connected to the current floor by gentle height steps."""
+    import cv2
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    p = neg_params(params)
+    h, w = shape
+    out = np.zeros((h, w), bool)
     if points is None or len(points) == 0:
-        return rz
+        return out
+    rows, cols, z, inside = points_to_cells(points, shape, res, origin_x, origin_y, yaw)
+    band = float(p["floor_band_m"])
+    sel = inside & (z <= float(floor_z) + band)
+    if not sel.any():
+        return out
+    lo = -1e6
+    ground = np.full(h * w, lo, np.float64)
+    np.maximum.at(ground, rows[sel] * w + cols[sel], z[sel])
+    ground = ground.reshape(h, w)
+    valid = ground > lo / 2
+    hb, vb = ground.astype(np.float32), valid.copy()
+    k3 = np.ones((3, 3), np.uint8)
+    for _ in range(int(round(float(p["gap_bridge_m"]) / res))):
+        d = cv2.dilate(np.where(vb, hb, np.float32(lo)), k3)
+        fill = ~vb & (d > lo / 2)
+        if not fill.any():
+            break
+        hb[fill] = d[fill]
+        vb |= fill
+    step = float(p["max_step_m"])
+    ids = np.arange(h * w).reshape(h, w)
+    src, dst = [], []
+    for (a_r, a_c, b_r, b_c) in ((slice(None), slice(0, -1), slice(None), slice(1, None)),
+                                 (slice(0, -1), slice(None), slice(1, None), slice(None)),
+                                 (slice(0, -1), slice(0, -1), slice(1, None), slice(1, None)),
+                                 (slice(0, -1), slice(1, None), slice(1, None), slice(0, -1))):
+        ok = vb[a_r, a_c] & vb[b_r, b_c] & (np.abs(hb[a_r, a_c] - hb[b_r, b_c]) <= step)
+        src.append(ids[a_r, a_c][ok])
+        dst.append(ids[b_r, b_c][ok])
+    src, dst = np.concatenate(src), np.concatenate(dst)
+    graph = coo_matrix((np.ones(len(src), np.int8), (src, dst)), shape=(h * w, h * w))
+    _, lab = connected_components(graph, directed=False)
+    lab = lab.reshape(h, w)
+    floor_cells = valid & (np.abs(ground - float(floor_z)) <= band)
+    if not floor_cells.any():
+        return out
+    good = np.zeros(lab.max() + 1, bool)
+    good[np.unique(lab[floor_cells])] = True
+    return good[lab] & valid
+
+
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: Floor = the most populated height (histogram mode), not the median. Live 00337: the floor under and
+#         around the robot is in the camera blind zone, so within 1.5 m the band held mostly wall-base and furniture
+#         points and the median drifted from -2.77 to -2.63; the real floor then fell outside floor_band_m (no
+#         overhead clearing) and below drop_m (false drop-offs). The floor is the largest horizontal surface, so
+#         it is the histogram peak; the search radius is 3 m to reach past the blind zone.
+# *****
+def estimate_floor(points, robot_xyz, radius_m=3.0, band_m=0.3, bin_m=0.02, fallback=None):
+    """Floor height near the robot: the densest height bin within band_m of the robot height, else `fallback`
+    (the last good estimate; the robot z when None -- the habitat base sits ~0.17 m above the mesh floor)."""
+    rz = float(robot_xyz[2])
+    if fallback is not None:
+        fallback = float(fallback)
+    else:
+        fallback = rz
+    if points is None or len(points) == 0:
+        return fallback
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     near = (np.hypot(pts[:, 0] - robot_xyz[0], pts[:, 1] - robot_xyz[1]) <= radius_m) & \
            (np.abs(pts[:, 2] - rz) <= band_m)
     if int(near.sum()) < 50:
-        return rz
-    return float(np.median(pts[near, 2]))
+        return fallback
+    z = pts[near, 2]
+    edges = np.arange(rz - band_m, rz + band_m + bin_m, bin_m)
+    hist, edges = np.histogram(z, bins=edges)
+    k = int(np.argmax(hist))
+    peak = z[(z >= edges[k] - bin_m) & (z <= edges[k + 1] + bin_m)]
+    return float(np.median(peak)) if len(peak) else fallback
 
 
-def negative_mask(grid, neg, flo, res, params=None, robot_rc=None):
-    """Boolean mask of drop-off cells (see module remark)."""
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: Overhead-only occupied cells (a low door lintel, a shelf above head height). A cell is cleared to free
+#         when it is occupied in the rtabmap grid, holds a floor point (the floor under it was seen, so nothing at
+#         body height hid it), holds NO point between ground_max_m and overhead_min_m above the floor, and holds
+#         at least one point at or above overhead_min_m. A wall has points at body height and stays; a cell whose
+#         floor was never seen stays as rtabmap made it.
+# *****
+def overhead_cells(grid, points, res, origin_x, origin_y, floor_z, flo, params=None, yaw=0.0):
+    """Boolean mask of occupied cells whose only obstacle points are above the robot."""
+    p = neg_params(params)
+    g = np.asarray(grid, dtype=np.int16)
+    h, w = g.shape
+    if points is None or len(points) == 0:
+        return np.zeros((h, w), bool)
+    rows, cols, z, inside = points_to_cells(points, g.shape, res, origin_x, origin_y, yaw)
+    idx = rows[inside] * w + cols[inside]
+    dz = z[inside] - float(floor_z)
+    body = (dz > float(p["ground_max_m"])) & (dz < float(p["overhead_min_m"]))
+    high = dz >= float(p["overhead_min_m"])
+    n_body = np.bincount(idx[body], minlength=h * w).reshape(h, w)
+    n_high = np.bincount(idx[high], minlength=h * w).reshape(h, w)
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Body / overhead evidence over the 3x3 neighbourhood: the rtabmap grid and its cloud are offset by a
+    #         cell here and there (live 00337: lintel points one cell beside the occupied cell), and a cell next to
+    #         a wall end or door jamb must keep its obstacle.
+    # *****
+    import cv2
+    box = lambda a: cv2.boxFilter(a.astype(np.float32), -1, (3, 3), normalize=False,  # noqa: E731
+                                  borderType=cv2.BORDER_CONSTANT)
+    return (g >= int(p["occ_thresh"])) & (flo >= 1) & (box(n_body) == 0) & (box(n_high) >= 1)
+
+
+def negative_mask(grid, neg, flo, res, params=None, robot_rc=None, ground_ok=None):
+    """Boolean mask of drop-off cells (see module remark). ground_ok: continuous_ground cells, never masked."""
     import cv2
     p = neg_params(params)
     g = np.asarray(grid, dtype=np.int16)
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: False-positive fixes (re-applied). /rtabmap/cloud_map is voxelised at the grid cell size, so a cell
+    #         holds about ONE point per surface: per-cell counts with min_points >= 2 seeded only from noise or
+    #         vertical structure, a lone noise point below the floor could seed, and real floor cells that hold no
+    #         point (voxel / cell misalignment, grazing view) let the growth run across the floor. Now:
+    #         (1) a seed cell holds a below-floor point and its 3x3 neighbourhood holds >= min_points of them;
+    #         (2) seed connected components smaller than min_seed_area_m2 are dropped;
+    #         (3) growth does not enter an empty cell with >= floor_neighbors floor-supported 8-neighbours (a
+    #             hole inside the floor, not the void over a stairwell);
+    #         (4) any cell holding a floor point and not a seed is protected (was: >= min_points floor points).
+    # *****
     min_pts = int(p["min_points"])
-    seed = (neg >= min_pts) & (flo <= float(p["floor_ratio"]) * neg)
-    protected = (flo >= min_pts) & ~seed
+    neg3 = cv2.boxFilter(neg.astype(np.float32), -1, (3, 3), normalize=False, borderType=cv2.BORDER_CONSTANT)
+    seed = (neg >= 1) & (neg3 >= min_pts) & (flo <= float(p["floor_ratio"]) * neg)
+    min_area = int(round(float(p["min_seed_area_m2"]) / (res * res)))
+    if min_area > 1 and seed.any():
+        n, lab, stats, _ = cv2.connectedComponentsWithStats(seed.astype(np.uint8), connectivity=8)
+        keep = np.zeros(n, bool)
+        keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= min_area
+        seed = keep[lab]
+    protected = (flo >= 1) & ~seed
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Continuous ground (a ramp) neither seeds, nor is grown into, nor stays masked (continuous_ground).
+    # *****
+    if ground_ok is not None:
+        seed &= ~ground_ok
+        protected |= ground_ok
     if not seed.any():
         return np.zeros(g.shape, bool)
     free = (g >= 0) & (g < int(p["free_thresh"]))
-    grow_ok = free & (flo == 0)
+    floor_nb = cv2.boxFilter((flo >= 1).astype(np.float32), -1, (3, 3), normalize=False,
+                             borderType=cv2.BORDER_CONSTANT)
+    grow_ok = free & (flo == 0) & (floor_nb < float(p["floor_neighbors"]))
+    if ground_ok is not None:
+        grow_ok &= ~ground_ok
     mask = seed.copy()
     k3 = np.ones((3, 3), np.uint8)
     for _ in range(int(round(float(p["grow_max_m"]) / res))):
@@ -291,12 +467,35 @@ def _node_class():
             grid = np.asarray(msg.data, dtype=np.int16).reshape(info.height, info.width)
             ox, oy = info.origin.position.x, info.origin.position.y
             yaw = _yaw(info.origin.orientation)
-            floor_z = estimate_floor(cloud, robot)
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Fall back to the last good floor estimate, not the robot z (0.17 m above the floor in habitat).
+            # *****
+            floor_z = estimate_floor(cloud, robot, fallback=getattr(self, "last_floor", None))
+            self.last_floor = floor_z
             neg, flo = height_evidence(cloud, grid.shape, info.resolution, ox, oy, floor_z, self.params, yaw)
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Clear overhead-only occupied cells (a low door lintel) before anything else (overhead_cells).
+            # *****
+            overhead = np.zeros(grid.shape, bool)
+            if self.params["clear_overhead"]:
+                overhead = overhead_cells(grid, cloud, info.resolution, ox, oy, floor_z, flo, self.params, yaw)
+                if overhead.any():
+                    grid = grid.copy()
+                    grid[overhead] = 0
             rr, rc, _, ins = points_to_cells(np.array([[robot[0], robot[1], 0.0]]), grid.shape,
                                              info.resolution, ox, oy, yaw)
             robot_rc = (int(rr[0]), int(rc[0])) if bool(ins[0]) else None
-            mask = negative_mask(grid, neg, flo, info.resolution, self.params, robot_rc)
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Ramps: cells joined to the floor by gentle height steps are never masked.
+            # *****
+            ground_ok = continuous_ground(cloud, grid.shape, info.resolution, ox, oy, floor_z, self.params, yaw)
+            mask = negative_mask(grid, neg, flo, info.resolution, self.params, robot_rc, ground_ok)
             for pub, value in ((self.pub_map, 100), (self.pub_display, -1)):
                 out = OccupancyGrid()
                 out.header = msg.header
@@ -307,10 +506,12 @@ def _node_class():
             n = int(mask.sum())
             stats = {"stamp": time.time(), "floor_z": round(floor_z, 3), "robot_z": round(float(robot[2]), 3),
                      "masked_cells": n, "masked_area_m2": round(n * info.resolution ** 2, 2),
+                     "overhead_cleared_cells": int(overhead.sum()),
                      "cloud_points": int(len(cloud)), "ms": round(ms, 1)}
             self.pub_stats.publish(String(data=json.dumps(stats)))
             self.get_logger().info(
-                f"negative obstacles: {n} cells ({stats['masked_area_m2']} m2) floor_z={floor_z:.2f} "
+                f"negative obstacles: {n} cells ({stats['masked_area_m2']} m2), overhead cleared "
+                f"{stats['overhead_cleared_cells']} cells, floor_z={floor_z:.2f} "
                 f"points={len(cloud)} {ms:.0f} ms", throttle_duration_sec=10.0)
 
     return NegativeObstacleNode

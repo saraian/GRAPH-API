@@ -401,7 +401,16 @@ exploration:
     robot_radius_m: 0.20        # cells closer than this to an obstacle are not traversable
     preferred_clearance_m: 0.60 # beyond this distance from obstacles the cost is the plain path length
     clearance_weight: 5.0       # extra cost near obstacles: pushes the path to the middle of corridors
-    allow_unknown: false        # reserved: unknown cells are never traversed in this version
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Unknown cells and partial paths, for sparse far-range maps and obstacles that vanish on approach.
+    # *****
+    allow_unknown: true         # unknown cells near observed free space are traversable
+    unknown_cost: 3.0           # cost multiplier of an unknown cell
+    unknown_reach_m: 0.5        # max distance of a usable unknown cell from observed free space
+    allow_partial: true         # no full path: go to the reachable cell nearest the goal, keep re-planning
+    partial_min_progress_m: 0.3 # a partial path must get at least this much closer to the goal
     snap_radius_m: 1.5          # start / goal snapping to the nearest traversable cell
     simplify_tol_m: 0.10        # Douglas-Peucker tolerance of the published path
     replan_period_s: 1.0        # re-plan the travelling goto at most this often
@@ -415,47 +424,30 @@ exploration:
     goal_tol_m: 0.3             # path follower arrival distance
     stuck_frames: 5             # forward steps without motion before the goto counts as blocked
     path_wait_s: 5.0            # a goto with no planned path after this long is unreachable
-    # *****
-    # Date: 2026-11-23
-    # Editor: WangZX
-    # Remark: Termination: with no choosable candidate (no frontier left, or all blacklisted / reached) for
-    #         done_confirm_s, auto mode sends task_done and the run settles and ends (reason task_complete).
-    # *****
-    stop_when_done: true        # false = keep waiting for new frontiers instead of ending the task
-    done_confirm_s: 15.0        # how long "no candidate" must last before the task ends
-    stop_modes: [Exploration]   # task modes that end this way (add ObjectNav to end it when the frontiers run out)
-    # *****
-    # Date: 2026-11-23
-    # Editor: WangZX
-    # Remark: Guards against ending at the start. Before ending, the robot also makes one final 360-degree scan.
-    # *****
-    min_explore_s: 120.0        # the task never ends this way before this many seconds
-    done_min_rankings: 2        # fresh candidate rankings with no choosable candidate needed after the final scan
   # *****
   # Date: 2026-11-23
   # Editor: WangZX
-  # Remark: Negative obstacle (drop-off) filter, negative_obstacle_node.py: cells whose rtabmap points lie below the current floor (stairwell, the floor below) are occupied for frontiers / info gain / planner and unknown on the BEV. Exploration / ObjectNav only; Building is unaffected.
+  # Remark: Map filter (negative_obstacle_node.py), Exploration / ObjectNav only: drop-offs (stairwell, floor below)
+  #         are masked, ramps are kept, overhead-only obstacles (low lintel) are cleared.
   # *****
   negative_obstacles:
     enabled: true
     cloud_topic: /rtabmap/cloud_map
     rate_hz: 1.0                # max filter rate
-    drop_m: 0.15                # a point this far below the floor is negative evidence
-    floor_band_m: 0.10          # |z - floor| within this is floor evidence
-    # *****
-    # Date: 2026-11-23
-    # Editor: WangZX
-    # Remark: Comments updated to the current seed / growth rules of negative_mask.
-    # *****
-    min_points: 2               # below-floor points needed in the 3x3 neighbourhood of a seed cell (the cell itself needs >= 1)
-    floor_ratio: 0.5            # a seed cell needs floor points <= floor_ratio * its own below-floor points
-    grow_max_m: 1.5             # growth over free cells with no floor point and < floor_neighbors floor neighbours (ray-traced void)
+    # drop-off detection
+    drop_m: 0.2                 # a point this far below the floor counts as a drop
+    floor_band_m: 0.10          # |z - floor| within this counts as floor
+    min_points: 2               # below-floor points needed around a seed cell (3x3)
+    floor_ratio: 0.5            # a seed cell holds at most this ratio of floor to below-floor points
+    min_seed_area_m2: 0.05      # smaller seed areas are noise
+    grow_max_m: 1.5             # growth over the ray-traced void above a stairwell
+    floor_neighbors: 4          # growth stops at empty cells with this many floor neighbours (a hole in the floor)
     close_radius_m: 0.10        # closing of the mask
-    keep_radius_m: 0.6          # cells this close to the robot are never masked
-    # *****
-    # Date: 2026-11-23
-    # Editor: WangZX
-    # Remark: False-positive guards: smaller seed areas are noise; growth stops at empty cells with this many floor-supported 8-neighbours (a hole in the floor, not a stairwell void).
-    # *****
-    min_seed_area_m2: 0.05
-    floor_neighbors: 4
+    keep_radius_m: 0.6          # never mask cells this close to the robot
+    # ramps
+    max_step_m: 0.07            # neighbour height step still counted as one surface (stair riser ~0.17 m)
+    gap_bridge_m: 0.10          # empty gaps bridged when following a ramp
+    # overhead obstacles
+    clear_overhead: true        # clear occupied cells whose only points are above the robot
+    ground_max_m: 0.25          # rtabmap Grid/MaxGroundHeight
+    overhead_min_m: 1.5         # robot height: points at or above this do not block

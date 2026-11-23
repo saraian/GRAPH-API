@@ -722,7 +722,21 @@ _DEFAULTS = {
             "robot_radius_m": 0.20,
             "preferred_clearance_m": 0.60,
             "clearance_weight": 5.0,
-            "allow_unknown": False,
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Unknown cells near observed free space are traversable at a higher cost (grid_planner).
+            # *****
+            "allow_unknown": True,
+            "unknown_cost": 3.0,
+            "unknown_reach_m": 0.5,
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Partial paths towards an unreachable goal (grid_planner.plan_partial).
+            # *****
+            "allow_partial": True,
+            "partial_min_progress_m": 0.3,
             "snap_radius_m": 1.5,
             "simplify_tol_m": 0.10,
             "replan_period_s": 1.0,
@@ -737,21 +751,6 @@ _DEFAULTS = {
             "goal_tol_m": 0.3,
             "stuck_frames": 5,
             "path_wait_s": 5.0,
-            # *****
-            # Date: 2026-11-23
-            # Editor: WangZX
-            # Remark: Termination when no candidate can be chosen (exploration_controller_node).
-            # *****
-            "stop_when_done": True,
-            "done_confirm_s": 15.0,
-            "stop_modes": ["Exploration"],
-            # *****
-            # Date: 2026-11-23
-            # Editor: WangZX
-            # Remark: Guards against ending at the start: minimum exploration time and fresh rankings needed.
-            # *****
-            "min_explore_s": 120.0,
-            "done_min_rankings": 2,
         },
         # *****
         # Date: 2026-11-23
@@ -776,6 +775,21 @@ _DEFAULTS = {
             # *****
             "min_seed_area_m2": 0.05,
             "floor_neighbors": 4,
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Ramp tolerance of negative_obstacle_node.continuous_ground.
+            # *****
+            "max_step_m": 0.07,
+            "gap_bridge_m": 0.10,
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Overhead obstacle clearing of negative_obstacle_node.overhead_cells.
+            # *****
+            "clear_overhead": True,
+            "ground_max_m": 0.25,
+            "overhead_min_m": 1.5,
         },
     },
 }
