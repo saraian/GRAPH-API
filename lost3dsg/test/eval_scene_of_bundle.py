@@ -77,6 +77,20 @@ def resolve(bundle: pathlib.Path, env=None):
         if root:
             return f"{root}/{rel_scene}", f"{root}/{rel_cfg}", f"the name {name!r} resolved through {var}"
         return "MISSING", "MISSING", f"the name {name!r}, but {var} is not set"
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Any other hm3d_NNNNN is found the way run_sim.sh now finds it: NNNNN-<hash>/<hash>.basis.glb
+    #         directly under HM3D_ROOT or under its val/ train/ minival/ folders.
+    # *****
+    if name.startswith("hm3d_") and name[5:].isdigit() and env.get("HM3D_ROOT"):
+        root = pathlib.Path(env["HM3D_ROOT"])
+        for base in (root, root / "val", root / "train", root / "minival"):
+            for d in sorted(base.glob(f"{name[5:]}-*")):
+                glb = d / f"{d.name.split('-', 1)[1]}.basis.glb"
+                if glb.is_file():
+                    return (str(glb), f"{root}/{_HM3D_CFG}",
+                            f"the name {name!r} found under HM3D_ROOT")
     if name:
         return "MISSING", "MISSING", f"the name {name!r}, which is not in the launcher's table"
     return "MISSING", "MISSING", "no scene recorded"

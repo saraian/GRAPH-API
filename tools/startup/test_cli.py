@@ -328,6 +328,51 @@ class StartupTest(unittest.TestCase):
         self.assertEqual(run.call_args.args[3],
                          ['clio', '/data/recording', '/data/output', '--rate', '0.5'])
 
+    # *****
+    # Date: 2026-11-18
+    # Editor: WangZX
+    # Remark: Tests for --task / --target: default and case-insensitive parsing, refusal of prior-map
+    #         options for unknown-scene tasks, and the task written into the resolved config and status.
+    # *****
+    def test_task_defaults_to_building_and_is_case_insensitive(self):
+        from graphapi_cli.cli import parser
+        self.assertEqual(parser().parse_args(['run', 'sim']).task, 'Building')
+        for value, expected in (('building', 'Building'), ('EXPLORATION', 'Exploration'), ('objectnav', 'ObjectNav')):
+            self.assertEqual(parser().parse_args(['run', 'sim', '--task', value]).task, expected)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser().parse_args(['run', 'sim', '--task', 'patrol'])
+
+    def test_unknown_scene_task_refuses_prior_map_options(self):
+        from graphapi_cli.cli import main
+        refused = (['--task', 'Exploration', '--floors=0 2.8'],
+                   ['--task', 'Exploration', '--tour-schedule', 'x.json'],
+                   ['--task', 'ObjectNav', '--no-perception'],
+                   ['--task', 'Building', '--target', 'chair'],
+                   ['--target', 'chair'])
+        for flags in refused:
+            with self.subTest(flags=flags), patch('graphapi_cli.launch.start') as start, \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertNotEqual(main(['--project', str(ROOT), 'run', 'sim', *flags]), 0)
+                start.assert_not_called()
+
+    def test_task_is_written_to_resolved_config_and_status(self):
+        for request, mode, target, bev in (({}, 'Building', '', None),
+                                           ({'task': 'Exploration'}, 'Exploration', '', 'ros'),
+                                           ({'task': 'ObjectNav', 'target': 'chair'}, 'ObjectNav', 'chair', 'ros')):
+            with self.subTest(mode=mode):
+                req = {'mode': 'sim', **request}
+                if mode == 'Building':
+                    req['task'] = 'Building'
+                env, state = prepare_job(ROOT, req, self.env)
+                cfg = read_yaml(Path(env['GRAPH_API_CONFIG']))
+                self.assertEqual(cfg['task']['mode'], mode)
+                self.assertEqual(cfg['task']['objectnav']['target'], target)
+                self.assertEqual((cfg.get('bev') or {}).get('source'), bev)
+                self.assertEqual(state['task'], mode)
+                self.assertEqual(state.get('target'), target or None)
+                Registry(self.work).release(state['operation_id'])
+                Path(env['GRAPH_API_CONFIG']).unlink()
+
     def test_help_never_imports_ros_habitat_or_cuda(self):
         result = subprocess.run([sys.executable,'-m','graphapi_cli.cli','--help'],cwd=ROOT,capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)

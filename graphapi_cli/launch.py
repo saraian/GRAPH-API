@@ -79,6 +79,19 @@ def prepare_job(root, request, inherited=None):
         pose = request.get("pose") or "simulator"
         overrides = {"habitat": {"localization_mode": "ground_truth" if pose == "simulator" else "rtabmap"},
                      "run": {"pose_source": pose}}
+    # *****
+    # Date: 2026-11-18
+    # Editor: WangZX
+    # Remark: Write the selected task into the resolved config (single source for run_sim.sh, the feed host
+    #         and ROS nodes). Unknown-scene tasks take the BEV from the live RTAB-Map grid, not the navmesh map.
+    # *****
+    if mode == "sim" and request.get("task"):
+        task = {"mode": request["task"]}
+        if request.get("target"):
+            task["objectnav"] = {"target": request["target"]}
+        overrides["task"] = task
+        if request["task"] != "Building":
+            overrides["bev"] = {"source": "ros", "map_topic": "/rtabmap/map", "base_frame": "base_link"}
     source, cfg = resolve_config(root, selected, request.get("local"), overrides)
     if uses_vlm(request, env):
         prepare_vlm_credentials(root, cfg, env)
@@ -163,6 +176,15 @@ def prepare_job(root, request, inherited=None):
                  "bridge_url": env["GRAPH_API_BASE_URL"], "domain": domain, "gpu": gpu,
                  "container": env.get("GRAPHAPI_PAL_CONTAINER", env["TIAGO_DOCKER_TARGET"] + "-dev") if mode != "sim" else env["GRAPH_API_CONTAINER_NAME"],
                  "session": env.get("FOUND_TMUX_SESSION"), "scene": request.get("scene"), "created": time.time(), "recording": env["GRAPHAPI_RECORD"] == "1"}
+        # *****
+        # Date: 2026-11-18
+        # Editor: WangZX
+        # Remark: Record the task in status.json so `graphapi status` and the dashboard can show it.
+        # *****
+        if mode == "sim":
+            state["task"] = (cfg.get("task") or {}).get("mode", "Building")
+            if (cfg.get("task") or {}).get("objectnav", {}).get("target"):
+                state["target"] = cfg["task"]["objectnav"]["target"]
         from .rviz_config import settings as viewer_settings
         state["viewer"] = viewer_settings(mode, cfg, env)
         if mode in ("tiago", "bag"):

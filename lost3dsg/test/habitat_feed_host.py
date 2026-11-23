@@ -63,6 +63,13 @@ from box_view import BOX_EDGES, box_corners_map, project_visible  # noqa: E402  
 from config import CFG, CFG_PATH  # noqa: E402
 import gt_codec as _gt_codec  # noqa: E402
 import hm3d_ground_truth_manifest as _gt_manifest  # noqa: E402
+# *****
+# Date: 2026-11-22
+# Editor: WangZX
+# Remark: Executor "primitive": pure-pursuit path follower (ROS-free). The habitat quaternion helper is imported
+#         where it is used, so test_ctrl_server's habitat_sim stub keeps working.
+# *****
+from path_follower import follow_step  # noqa: E402
 # FullTurnDetector (scan_hook.py) counted a full turn for the SAMPLING tour, which turned in
 # 10-degree steps and had no idea when a circle closed. A schedule states its scan angle per
 # stop, so ScheduledTour fires the same hook from its own scan counter at :1597 and the
@@ -638,6 +645,13 @@ class Ctrl:
         self.scan_events = collections.deque()
         # Published by the sim thread each frame, read by /revisit_status. Swapped whole.
         self.revisit = None
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: Latest planned path from POST /goto_path ({seq, points | error, received}), swapped whole and
+        #         read by the sim thread for executor "primitive".
+        # *****
+        self.goto_path = None
 
 
 CTRL = Ctrl()
@@ -665,6 +679,31 @@ class CtrlHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: POST /goto_path {seq, points [[x, y], ...]} or {seq, error}: the grid planner's path for goto
+        #         number seq (ROS map metres). Stored whole; the sim thread ignores it unless seq matches.
+        # *****
+        if url.path == "/goto_path":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 262144:
+                    raise ValueError("invalid goto_path body size")
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(body, dict) or not isinstance(body.get("seq"), int):
+                    raise ValueError("goto_path needs an integer seq")
+                pts = body.get("points") or []
+                if not isinstance(pts, list) or not all(
+                        isinstance(q, (list, tuple)) and len(q) >= 2 for q in pts):
+                    raise ValueError("points must be a list of [x, y]")
+                CTRL.goto_path = {"seq": body["seq"], "error": str(body.get("error") or ""),
+                                  "points": [[float(q[0]), float(q[1])] for q in pts],
+                                  "received": time.monotonic()}
+                self._json({"success": True, "seq": body["seq"], "points": len(pts)})
+            except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self._json({"success": False, "message": str(exc)}, code=400)
+            return
         if url.path != "/object_command":
             self._json({"success": False, "error": f"unknown path {url.path}"}, code=404)
             return
@@ -759,7 +798,13 @@ class CtrlHandler(BaseHTTPRequestHandler):
         elif path == "/revisit_status":
             # /action is fire-and-forget, so without this a caller cannot tell a reach from a
             # refusal. Single attribute read: the sim thread swaps CTRL.revisit whole.
-            self._json({"success": True, **(CTRL.revisit or {"active": None, "last": None})})
+            # *****
+            # Date: 2026-11-22
+            # Editor: WangZX
+            # Remark: Also report auto_mode, read by exploration_controller_node and shown by the BEV button.
+            # *****
+            self._json({"success": True, "auto_mode": CTRL.auto_mode,
+                        **(CTRL.revisit or {"active": None, "last": None})})
         elif path == "/get_config":
             self._json({"success": True, "config": CTRL.config})
         else:
@@ -1185,6 +1230,33 @@ REVISIT_ARRIVAL_TOL_M = float(os.environ.get("FEED_REVISIT_ARRIVAL_TOL",
 REVISIT_MAX_FRAMES = int(os.environ.get("FEED_REVISIT_MAX_FRAMES",
                                         hab_cfg.get("revisit_max_frames", 600)))
 
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Task mode from the run config. Building drives the fixed schedule (original behaviour);
+#         Exploration / ObjectNav run without a schedule and are driven by /action commands.
+# *****
+task_cfg = CFG.get("task", {}) if isinstance(CFG, dict) else {}
+TASK_MODE = str(task_cfg.get("mode") or "Building")
+TASK_EXECUTOR = str(task_cfg.get("executor") or "navmesh")
+TASK_MAX_DURATION_S = float(task_cfg.get("max_duration_s") or 0.0)
+TASK_TARGET = str((task_cfg.get("objectnav") or {}).get("target") or "")
+UNKNOWN_SCENE_TASK = TASK_MODE != "Building"
+# *****
+# Date: 2026-11-22
+# Editor: WangZX
+# Remark: Settings of executor "primitive" and of the exploration auto mode (exploration.auto in the config):
+#         start in auto mode, how long a goto waits for its first planned path, how many forward steps without
+#         motion count as blocked, and the path follower parameters.
+# *****
+_auto_cfg = ((CFG.get("exploration") or {}).get("auto") or {}) if isinstance(CFG, dict) else {}
+TASK_AUTO_START = bool(_auto_cfg.get("start_enabled", True))
+TASK_PATH_WAIT_S = float(_auto_cfg.get("path_wait_s", 5.0))
+TASK_STUCK_FRAMES = int(_auto_cfg.get("stuck_frames", 5))
+TASK_FOLLOW_PARAMS = {"lookahead_m": float(_auto_cfg.get("lookahead_m", 0.4)),
+                      "goal_tol_m": float(_auto_cfg.get("goal_tol_m", 0.3)),
+                      "turn_step_deg": TURN_STEP_DEG}
+
 # GA-258. DYNAMIC DWELL: stay while merges are still waiting to be confirmed.
 #
 # A merge commits only after `merge_min_consecutive` consecutive sweeps over the evidence
@@ -1552,6 +1624,27 @@ def _move_navigate(sim, agent, goal, follower, state):
         state["why"] = f"stopped {dist:.2f} m short (tolerance {REVISIT_ARRIVAL_TOL_M:.2f} m)"
         return "unreachable"
     return "arrived"
+
+
+# *****
+# Date: 2026-11-22
+# Editor: WangZX
+# Remark: Planned goto path for the BEV: habitat ShortestPath (Detour A* over navmesh polygons plus
+#         string pulling) from the agent to the goto target, as ROS map [x, y, z] points. Empty when no goto
+#         is travelling or no path exists.
+# *****
+def _goto_path_ros(sim, agent, revisit):
+    if revisit is None or revisit.phase != RevisitState.TRAVEL or not sim.pathfinder.is_loaded:
+        return []
+    try:
+        req = habitat_sim.ShortestPath()
+        req.requested_start = np.asarray(agent.get_state().position, dtype=np.float32)
+        req.requested_end = np.asarray(revisit.target_hab, dtype=np.float32)
+        if not sim.pathfinder.find_path(req):
+            return []
+        return [[round(float(v), 3) for v in habitat_pose_to_ros(p)[0]] for p in req.points]
+    except Exception:
+        return []
 
 
 def _move_teleport(sim, agent, goal, follower, state):
@@ -1940,14 +2033,21 @@ class RevisitState:
     TRAVEL = "travel"
     SCAN = "scan"
 
+    # *****
+    # Date: 2026-11-22
+    # Editor: WangZX
+    # Remark: seq identifies one goto (it increases per goto and is kept by the scan phase), so a path
+    #         planned for an earlier goto is never applied to a later one.
+    # *****
     def __init__(self, target_hab, target_ros, scan_frames, resume, saved_tour_i=None,
-                 snap_distance_m=0.0):
+                 snap_distance_m=0.0, seq=0):
         self.target_hab = np.asarray(target_hab, dtype=np.float64)
         self.target_ros = tuple(float(v) for v in target_ros)
         self.scan_frames = int(scan_frames)
         self.resume = bool(resume)
         self.saved_tour_i = saved_tour_i
         self.snap_distance_m = float(snap_distance_m)
+        self.seq = int(seq)
         self.phase = self.TRAVEL
         self.frames_travelled = 0
         self.scan_left = int(scan_frames)
@@ -1955,7 +2055,223 @@ class RevisitState:
     def status(self):
         return {"phase": self.phase, "target_ros": list(self.target_ros),
                 "frames_travelled": self.frames_travelled, "scan_left": self.scan_left,
-                "resume": self.resume, "snap_distance_m": round(self.snap_distance_m, 3)}
+                "resume": self.resume, "snap_distance_m": round(self.snap_distance_m, 3),
+                "seq": self.seq}
+
+
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Motion owner for unknown-scene tasks (Exploration / ObjectNav). It replaces ScheduledTour with the
+#         same attribute surface, holds no route, stands still until a goto arrives, and ends on
+#         task_done or the timeout checked in main().
+# *****
+class TaskExecutor:
+    """Executes external commands for an unknown-scene task; there is no schedule to drive.
+
+    goto: travel along the navmesh (executor "navmesh"), then turn once in place and fire a
+    scan_complete event so the object manager merges exactly as it does after a schedule stop.
+    executor "primitive" (2026-11-22, WangZX): goto follows a path planned on the rtabmap grid by
+    exploration_controller_node (POST /goto_path) with forward / turn primitives; nav_goal is refused.
+    """
+
+    def __init__(self, sim, floor_y, executor="navmesh"):
+        self.sim = sim
+        self.executor = executor
+        self.follower = sim.make_greedy_follower(0, goal_radius=0.4)
+        # The attribute surface main() reads off ScheduledTour, with no route behind it.
+        self.points = []
+        self.laps = 0
+        self.lap = 0
+        self.i = 0
+        self.todo = []
+        self.scan_left = 0
+        self.scans_done = 0
+        self.travel_frames = 0
+        self.leg = {"frames": 0}
+        self.floor_y = float(floor_y)
+        self.floor_order = [round(float(floor_y), 2)]
+        self._tour_reached = 0
+        self._tour_planned_total = 0
+        self.revisit = None
+        self.last_revisit = None
+        self.revisits_requested = 0
+        self.revisits_reached = 0
+        self.revisits_failed = 0
+        self.house_done = False        # set when the task ends; main() then settles and stops the feed
+        self.end_reason = None         # task_complete | task_timeout
+        self.done_requested = False    # set by /action?act=task_done
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: Executor "primitive" state: goto counter, the remaining planned path (ROS [x, y] points) and
+        #         the stuck / path-wait bookkeeping of the travelling goto.
+        # *****
+        self.goto_seq = 0
+        self.path_ros = []
+        self.path_seen_at = None
+        self.path_wait_since = None
+        self.stuck = 0
+        print(f"[feed] TASK {TASK_MODE}: no schedule, executor {executor}"
+              f"{', target ' + repr(TASK_TARGET) if TASK_TARGET else ''}; waiting for /action commands",
+              flush=True)
+
+    def bind_floors(self, scene_floors, tol, guard):
+        self.floor_guard = guard
+        if guard is not None:
+            guard.reanchor(self.floor_y)
+
+    def _refuse(self, target_ros, detail):
+        self.revisits_requested += 1
+        self.revisits_failed += 1
+        self.last_revisit = {"outcome": "refused", "detail": detail, "target_ros": list(target_ros),
+                             "frames_travelled": 0, "resumed": False}
+        print(f"[feed] goto refused: {detail}", flush=True)
+
+    def start_revisit(self, target_hab, target_ros, scan_frames, resume, snap_distance_m=0.0):
+        if self.house_done:
+            return self._refuse(target_ros, "the task has ended")
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: Executor "primitive" is implemented: the path comes from exploration_controller_node (grid
+        #         planner on the rtabmap map) through POST /goto_path, and path_follower drives the agent.
+        # *****
+        if self.executor not in ("navmesh", "primitive"):
+            return self._refuse(target_ros, f"task.executor={self.executor} is not a known executor "
+                                            "(navmesh | primitive)")
+        self.revisits_requested += 1
+        self.leg = {"frames": 0}
+        self.scan_left = 0
+        self.goto_seq += 1
+        self.path_ros = []
+        self.path_seen_at = None
+        self.path_wait_since = time.monotonic()
+        self.stuck = 0
+        self.revisit = RevisitState(target_hab, target_ros, scan_frames, resume, None, snap_distance_m,
+                                    self.goto_seq)
+        print(f"[feed] TASK goto #{self.goto_seq} ({target_ros[0]:.2f}, {target_ros[1]:.2f}, "
+              f"{target_ros[2]:.2f}), executor {self.executor}, scan {int(scan_frames)} frames", flush=True)
+        return self.revisit
+
+    # *****
+    # Date: 2026-11-22
+    # Editor: WangZX
+    # Remark: One frame of executor "primitive": take the newest planned path for this goto from CTRL.goto_path,
+    #         then let path_follower pick forward / turn. Returns "arrived", "unreachable", "timeout" or None
+    #         while travelling, like _move_navigate. Arrival is measured against the requested ROS target.
+    # *****
+    def _travel_primitive(self, agent, r):
+        state = self.leg
+        if state["frames"] >= REVISIT_MAX_FRAMES:
+            return "timeout"
+        msg = CTRL.goto_path
+        if msg is not None and msg.get("seq") == r.seq and msg.get("received") != self.path_seen_at:
+            self.path_seen_at = msg.get("received")
+            if msg.get("error"):
+                state["why"] = f"planner: {msg['error']}"
+                return "unreachable"
+            self.path_ros = [list(q[:2]) for q in (msg.get("points") or [])]
+        if not self.path_ros:
+            if time.monotonic() - (self.path_wait_since or time.monotonic()) > TASK_PATH_WAIT_S:
+                state["why"] = f"planner gave no path within {TASK_PATH_WAIT_S:.0f} s"
+                return "unreachable"
+            return None
+        from habitat_sim.utils.common import quat_rotate_vector
+        st = agent.get_state()
+        pos_ros = habitat_pose_to_ros(st.position)[0]
+        # Habitat looks along -z; ROS (x, y) = (-hz, -hx), so the ROS heading is atan2(-fx, -fz).
+        fwd = quat_rotate_vector(st.rotation, np.array([0.0, 0.0, -1.0]))
+        yaw = math.atan2(-float(fwd[0]), -float(fwd[2]))
+        action, self.path_ros = follow_step(pos_ros[:2], yaw, self.path_ros, TASK_FOLLOW_PARAMS)
+        if action == "arrived":
+            dist = math.hypot(pos_ros[0] - r.target_ros[0], pos_ros[1] - r.target_ros[1])
+            state["distance"] = dist
+            if dist > REVISIT_ARRIVAL_TOL_M:
+                state["why"] = f"path ended {dist:.2f} m from the target (tolerance {REVISIT_ARRIVAL_TOL_M:.2f} m)"
+                return "unreachable"
+            return "arrived"
+        before = np.asarray(agent.get_state().position, dtype=np.float64)
+        self.sim.step(action)
+        state["frames"] += 1
+        if action == "move_forward":
+            moved = float(np.linalg.norm(np.asarray(agent.get_state().position, dtype=np.float64) - before))
+            self.stuck = self.stuck + 1 if moved < 0.03 else 0
+            if self.stuck >= TASK_STUCK_FRAMES:
+                state["why"] = f"blocked: {self.stuck} forward steps without moving"
+                return "unreachable"
+        return None
+
+    def planned_path_ros(self, agent):
+        """Remaining primitive path from the robot, as ROS [x, y, z] points; [] when not travelling."""
+        r = self.revisit
+        if self.executor != "primitive" or r is None or r.phase != RevisitState.TRAVEL or not self.path_ros:
+            return []
+        pos = habitat_pose_to_ros(agent.get_state().position)[0]
+        z = round(float(pos[2]), 3)
+        return [[round(float(pos[0]), 3), round(float(pos[1]), 3), z]] + \
+               [[round(float(q[0]), 3), round(float(q[1]), 3), z] for q in self.path_ros]
+
+    def step(self, agent):
+        r = self.revisit
+        if self.house_done or r is None:
+            return                      # idle: stand still, frames keep shipping
+        if r.phase == RevisitState.TRAVEL:
+            # *****
+            # Date: 2026-11-22
+            # Editor: WangZX
+            # Remark: Executor "primitive" follows the grid-planned path; "navmesh" keeps the greedy follower.
+            # *****
+            if self.executor == "primitive":
+                verdict = self._travel_primitive(agent, r)
+            else:
+                verdict = _move_navigate(self.sim, agent, r.target_hab, self.follower, self.leg)
+            r.frames_travelled = self.leg["frames"]
+            if verdict is None:
+                return
+            self.travel_frames += self.leg["frames"]
+            if verdict != "arrived":
+                self.revisits_failed += 1
+                self.last_revisit = {"outcome": verdict, "detail": self.leg.get("why", ""),
+                                     "target_ros": list(r.target_ros),
+                                     "frames_travelled": self.leg["frames"], "resumed": False}
+                print(f"[feed] TASK goto {verdict}: {self.leg.get('why', '')}", flush=True)
+                self.revisit = None
+                return
+            if r.scan_frames <= 0:
+                self._finish(r)
+                return
+            scan = RevisitState(r.target_hab, r.target_ros, r.scan_frames, r.resume, None, r.snap_distance_m,
+                                r.seq)
+            scan.phase = RevisitState.SCAN
+            scan.frames_travelled = self.leg["frames"]
+            self.scan_left = r.scan_frames
+            self.revisit = scan
+            return
+        agent.act("turn_left")
+        self.scan_left -= 1
+        r.scan_left = self.scan_left
+        if self.scan_left <= 0:
+            self._finish(r)
+
+    def _finish(self, r):
+        self.scans_done += 1
+        self.revisits_reached += 1
+        here = self.sim.get_agent(0).get_state().position
+        _fire_post_scan({"event": "scan_complete", "scan_id": f"task-{self.scans_done}",
+                         "task": TASK_MODE, "xyz": [float(v) for v in r.target_hab],
+                         "observed_from": [float(v) for v in here],
+                         "scans_done": self.scans_done})
+        self.last_revisit = {"outcome": "reached", "detail": "", "target_ros": list(r.target_ros),
+                             "frames_travelled": r.frames_travelled, "resumed": False}
+        self.scan_left = 0
+        self.revisit = None
+
+    def report(self):
+        return {"task": TASK_MODE, "executor": self.executor, "target": TASK_TARGET or None,
+                "scans_done": self.scans_done, "travel_frames": self.travel_frames,
+                "goto_requested": self.revisits_requested, "goto_reached": self.revisits_reached,
+                "goto_failed": self.revisits_failed, "end_reason": self.end_reason}
 
 
 # class Tour lived here: greedy nearest-unvisited coverage over navmesh samples, a 360 scan at
@@ -2048,7 +2364,12 @@ def main(sim=None, session_context=None, runtime=None):
     # schedule would publish frames from a robot that never moves, which is worse than no run.
     # run_sim.sh builds or finds the schedule and refuses the launch before this file starts, and
     # this refusal is the same statement for anyone starting the feed host on its own.
-    if not SCHEDULE_PATH:
+    # *****
+    # Date: 2026-11-18
+    # Editor: WangZX
+    # Remark: The schedule is mandatory for Building only; unknown-scene tasks start without one.
+    # *****
+    if not SCHEDULE_PATH and not UNKNOWN_SCENE_TASK:
         raise SystemExit(
             "[feed] FEED_SCHEDULE is not set and the sampling policy is removed, so this run "
             "would have no motion at all. Build the scene's schedule with schedule_batch.py, or "
@@ -2060,9 +2381,26 @@ def main(sim=None, session_context=None, runtime=None):
     if MOVE_FN not in MOVERS:
         raise SystemExit(f"[feed] FEED_MOVE_FN={MOVE_FN!r} is not one of {sorted(MOVERS)}")
     _floor_now = float(agent.get_state().position[1])
-    _sched_doc = load_schedule(SCHEDULE_PATH, _floor_now)
-    schedule_payload = schedule_overlay(_sched_doc, EXPLORATION_LAPS)
-    tour = ScheduledTour(sim, _sched_doc, EXPLORATION_LAPS, MOVE_FN)
+    # *****
+    # Date: 2026-11-18
+    # Editor: WangZX
+    # Remark: Unknown-scene tasks use TaskExecutor (no route, no schedule overlay) and start with
+    #         auto_mode off so the agent only moves on /action commands.
+    # *****
+    schedule_payload = None
+    if UNKNOWN_SCENE_TASK:
+        tour = TaskExecutor(sim, _floor_now, TASK_EXECUTOR)
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: Unknown-scene tasks start in auto mode by default (exploration.auto.start_enabled):
+        #         exploration_controller_node then sends the goto commands; any manual command turns it off.
+        # *****
+        CTRL.auto_mode = TASK_AUTO_START
+    else:
+        _sched_doc = load_schedule(SCHEDULE_PATH, _floor_now)
+        schedule_payload = schedule_overlay(_sched_doc, EXPLORATION_LAPS)
+        tour = ScheduledTour(sim, _sched_doc, EXPLORATION_LAPS, MOVE_FN)
     poller = None
     if SHOW and OVERLAY:
         poller = BeliefPoller()
@@ -2222,10 +2560,31 @@ def main(sim=None, session_context=None, runtime=None):
                 st.position = np.asarray(target, dtype=np.float32)
                 agent.set_state(st)
                 nav_target = None
+            # *****
+            # Date: 2026-11-18
+            # Editor: WangZX
+            # Remark: nav_goal follows the ground-truth navmesh, so in unknown-scene tasks it is refused unless
+            #         task.executor is navmesh (2026-11-22: with executor primitive, use goto instead).
+            # *****
+            elif UNKNOWN_SCENE_TASK and TASK_EXECUTOR != "navmesh":
+                print(f"[feed] nav_goal refused: task.executor={TASK_EXECUTOR} plans on the rtabmap grid; "
+                      "send goto instead", flush=True)
             else:
                 nav_target = np.asarray(target)
         elif act == "goto":
             _start_goto(p)
+        # *****
+        # Date: 2026-11-18
+        # Editor: WangZX
+        # Remark: task_done lets a planner end an unknown-scene task; main() then settles and ends the feed
+        #         with reason task_complete.
+        # *****
+        elif act == "task_done":
+            if UNKNOWN_SCENE_TASK:
+                tour.done_requested = True
+                print(f"[feed] TASK {TASK_MODE}: task_done received", flush=True)
+            else:
+                print("[feed] task_done ignored: Building ends when its schedule is complete", flush=True)
         else:
             print(f"[feed] unknown action: {act}")
 
@@ -2328,6 +2687,20 @@ def main(sim=None, session_context=None, runtime=None):
         # RULE 73. THE RUN ENDS ITSELF. See TOUR_END_SETTLE_S: with no cap, nothing else would.
         # The break is at the TOP of the loop, after a full frame has been sent and feed_stats.json
         # rewritten, so the bundle already holds a complete set of statistics when it fires.
+        # *****
+        # Date: 2026-11-18
+        # Editor: WangZX
+        # Remark: Unknown-scene tasks have no tour to complete: they end on task_done or on
+        #         task.max_duration_s, then reuse the same settle-and-stop path below.
+        # *****
+        if UNKNOWN_SCENE_TASK and not tour.house_done:
+            timed_out = TASK_MAX_DURATION_S > 0 and (t0 - t_start) >= TASK_MAX_DURATION_S
+            if tour.done_requested or timed_out:
+                tour.end_reason = "task_complete" if tour.done_requested else "task_timeout"
+                tour.house_done = True
+                tour.revisit = None
+                print(f"[feed] TASK {TASK_MODE} ended: {tour.end_reason} after {t0 - t_start:.0f}s",
+                      flush=True)
         if tour is not None and getattr(tour, "house_done", False):
             if house_done_at is None:
                 house_done_at = t0
@@ -2343,7 +2716,12 @@ def main(sim=None, session_context=None, runtime=None):
                       f"merges pending)", flush=True)
             elif (t0 - house_done_at) >= TOUR_END_SETTLE_S:
                 settle_pending_end, _sw = _pending_merges()
-                end_reason = "house_tour_complete"
+                # *****
+                # Date: 2026-11-18
+                # Editor: WangZX
+                # Remark: A task records its own end reason (task_complete / task_timeout).
+                # *****
+                end_reason = getattr(tour, "end_reason", None) or "house_tour_complete"
                 break
         while CTRL.actions:
             queued_act, queued_params = CTRL.actions.popleft()
@@ -2391,6 +2769,19 @@ def main(sim=None, session_context=None, runtime=None):
                             "requested": tour.revisits_requested,
                             "reached": tour.revisits_reached,
                             "failed": tour.revisits_failed}
+            # *****
+            # Date: 2026-11-22
+            # Editor: WangZX
+            # Remark: Unknown-scene tasks: while a goto travels, publish the path being followed in ROS map
+            #         coordinates so the BEV can draw it: the remaining grid-planned path (executor "primitive")
+            #         or the navmesh shortest path from the current pose (executor "navmesh", the same query the
+            #         greedy follower re-plans every step). Also the executor and the time of the last goto end,
+            #         for exploration_controller_node. Building is unchanged (no key added).
+            # *****
+            if UNKNOWN_SCENE_TASK:
+                CTRL.revisit["executor"] = tour.executor
+                CTRL.revisit["planned_path"] = (tour.planned_path_ros(agent) if tour.executor == "primitive"
+                                                else _goto_path_ros(sim, agent, tour.revisit))
 
         # OWNER RULING 20. Checked AFTER the motion and BEFORE the observation, so a frame is
         # never rendered from a pose the guard is about to reject — a corrected teleport would
@@ -2441,7 +2832,12 @@ def main(sim=None, session_context=None, runtime=None):
                 # WHICH POLICY DROVE THIS RUN. Constant now that the sampling policy is removed,
                 # and KEPT for exactly that reason: bundles made before 2026-09-11 record "sampled"
                 # and measure a different experiment, so a reader needs the key to tell them apart.
-                "motion_policy": "schedule",
+                # *****
+                # Date: 2026-11-18
+                # Editor: WangZX
+                # Remark: Unknown-scene tasks are driven by /action commands; Building still stamps "schedule".
+                # *****
+                "motion_policy": "schedule" if not UNKNOWN_SCENE_TASK else "commands",
                 "schedule_path": SCHEDULE_PATH,
                 "schedule": tour.report(),
                 "post_scan_hook": POST_SCAN_HOOK or None,
@@ -2770,7 +3166,14 @@ def main(sim=None, session_context=None, runtime=None):
     # the feed could not read the count -- not that nothing was pending.
     _settled = (settle_pending_end == 0) if settle_pending_end is not None else None
     feed_stats["ended_reason"] = end_reason
-    feed_stats["house_tour_complete"] = bool(tour is not None and getattr(tour, "house_done", False))
+    # *****
+    # Date: 2026-11-18
+    # Editor: WangZX
+    # Remark: A task run never completes a house tour; record the task and its end reason instead.
+    # *****
+    feed_stats["house_tour_complete"] = bool(tour is not None and getattr(tour, "house_done", False)
+                                             and not UNKNOWN_SCENE_TASK)
+    feed_stats["task"] = TASK_MODE
     feed_stats["settle_pending_start"] = settle_pending_start
     feed_stats["settle_pending_end"] = settle_pending_end
     feed_stats["settle_was_enough"] = _settled

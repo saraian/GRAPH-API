@@ -647,6 +647,137 @@ _DEFAULTS = {
         # A positive value starts a new batch before this point count is exceeded.
         "bbox_cuda_max_batch_points": 0,
     },
+    # *****
+    # Date: 2026-11-18
+    # Editor: WangZX
+    # Remark: Added task defaults. Building = known scene with fixed tour (original behaviour);
+    #         Exploration / ObjectNav = unknown-scene tasks. A config without this section falls back to Building.
+    # *****
+    "task": {
+        "mode": "Building",          # Building | Exploration | ObjectNav
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: primitive (grid planner + forward/turn primitives) is the default for Exploration / ObjectNav.
+        # *****
+        "executor": "primitive",     # primitive (rtabmap grid planner) | navmesh (ground-truth navmesh follower)
+        "max_duration_s": 1800.0,    # timeout fallback for task modes; unused by Building
+        "objectnav": {"target": ""}, # ObjectNav target category; set by --target or a future dataset
+    },
+    # *****
+    # Date: 2026-11-19
+    # Editor: WangZX
+    # Remark: Frontier extraction defaults (frontier_node.py); a config without this section uses them.
+    # *****
+    "exploration": {
+        "frontier": {
+            "enabled": True,
+            "rate_hz": 1.0,
+            "free_thresh": 25,
+            "occ_thresh": 65,
+            "robot_radius_m": 0.20,
+            "min_frontier_size_m": 0.3,
+            "max_frontier_length_m": 2.0,
+            "min_unknown_area_m2": 0.10,
+            # *****
+            # Date: 2026-11-19
+            # Editor: WangZX
+            # Remark: Live-test additions: robot snapping over the camera blind zone, and ray-tracing seam filling.
+            # *****
+            "start_search_radius_m": 1.5,
+            "fill_gap_m": 0.15,
+            # *****
+            # Date: 2026-11-20
+            # Editor: WangZX
+            # Remark: Camera blind zone clearing around visited poses (fake frontier ring around the robot).
+            # *****
+            "blind_radius_m": 1.0,
+            "visit_spacing_m": 0.25,
+        },
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: CRMI information gain defaults (info_gain_node.py); a config without this section uses them.
+        # *****
+        "info_gain": {
+            "enabled": True,
+            "min_period_s": 2.0,
+            "w_geo": 1.0,
+            "w_sem": 0.0,
+            "distance_decay_per_m": 0.25,
+            "unreachable_factor": 0.5,
+            "auto_goto": False,
+            "sensor": {"max_range_m": 4.0, "n_beams": 180, "z_step_m": 0.1, "sigma_hit_m": 0.1,
+                       "z_hit": 0.7, "z_short": 0.1, "z_max": 0.1, "z_rand": 0.1, "lambda_short": 0.2},
+            "belief": {"cell_m": 0.2, "n_bins": 10, "known_confidence": 20.0, "stop_prob": 0.001,
+                       "dedup_cells": True},
+        },
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: Grid planner and exploration auto-mode defaults (exploration_controller_node.py, feed executor
+        #         primitive); a config without these sections uses them.
+        # *****
+        "planner": {
+            "robot_radius_m": 0.20,
+            "preferred_clearance_m": 0.60,
+            "clearance_weight": 5.0,
+            "allow_unknown": False,
+            "snap_radius_m": 1.5,
+            "simplify_tol_m": 0.10,
+            "replan_period_s": 1.0,
+        },
+        "auto": {
+            "start_enabled": True,
+            "poll_hz": 5.0,
+            "candidate_wait_s": 8.0,
+            "max_failures": 2,
+            "blacklist_radius_m": 0.5,
+            "lookahead_m": 0.4,
+            "goal_tol_m": 0.3,
+            "stuck_frames": 5,
+            "path_wait_s": 5.0,
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Termination when no candidate can be chosen (exploration_controller_node).
+            # *****
+            "stop_when_done": True,
+            "done_confirm_s": 15.0,
+            "stop_modes": ["Exploration"],
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Guards against ending at the start: minimum exploration time and fresh rankings needed.
+            # *****
+            "min_explore_s": 120.0,
+            "done_min_rankings": 2,
+        },
+        # *****
+        # Date: 2026-11-23
+        # Editor: WangZX
+        # Remark: Negative obstacle filter defaults (negative_obstacle_node.py); a config without it uses them.
+        # *****
+        "negative_obstacles": {
+            "enabled": True,
+            "cloud_topic": "/rtabmap/cloud_map",
+            "rate_hz": 1.0,
+            "drop_m": 0.15,
+            "floor_band_m": 0.10,
+            "min_points": 2,
+            "floor_ratio": 0.5,
+            "grow_max_m": 1.5,
+            "close_radius_m": 0.10,
+            "keep_radius_m": 0.6,
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: False-positive guards of negative_obstacle_node.negative_mask.
+            # *****
+            "min_seed_area_m2": 0.05,
+            "floor_neighbors": 4,
+        },
+    },
 }
 
 

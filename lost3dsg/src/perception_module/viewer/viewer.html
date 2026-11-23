@@ -882,6 +882,21 @@
     <header class="hud-header">
       <h1><i data-lucide="cpu" style="width:18px;height:18px;"></i> GRAPH API | AUTONOMOUS SYSTEM CONTROL</h1>
       <div class="hud-stats">
+        <!-- *****
+             Date: 2026-11-18
+             Editor: WangZX
+             Remark: Current task badge (Building / Exploration / ObjectNav), filled from /health "task".
+                     The task value is shown in yellow.
+             ***** -->
+        <div class="hud-stat-badge" id="badgeTask"><i data-lucide="target" style="width:13px;height:13px;"></i> CURRENT TASK: <b id="statTask" style="color:#facc15;">&mdash;</b></div>
+        <!-- *****
+             Date: 2026-11-20
+             Editor: WangZX
+             Remark: Current VLM model badge, filled from /health "vlm" and shown in yellow.
+                     Model ids can be long, so the value truncates with an ellipsis and the
+                     full id plus endpoint live in the hover title.
+             ***** -->
+        <div class="hud-stat-badge" id="badgeVlm"><i data-lucide="cpu" style="width:13px;height:13px;"></i> MODEL: <b id="statVlm" style="color:#facc15;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom;">&mdash;</b></div>
         <div class="hud-stat-badge"><i data-lucide="box" style="width:13px;height:13px;"></i> OBJECTS: <b id="statNodes">0</b></div>
         <div class="hud-stat-badge"><i data-lucide="share-2" style="width:13px;height:13px;"></i> EDGES: <b id="statEdges">0</b></div>
         <div id="pipelineStatusBadges" style="display:flex; gap:6px; align-items:center;">
@@ -2227,6 +2242,36 @@
             components: data.components
           });
           renderCycleStamp(data.stamp);
+          // *****
+          // Date: 2026-11-18
+          // Editor: WangZX
+          // Remark: Show the task mode from /health; ObjectNav also shows its target when one was given.
+          // *****
+          const taskEl = document.getElementById('statTask');
+          if (taskEl) {
+            const task = data.task || {};
+            const mode = task.mode || '\u2014';
+            taskEl.textContent = (mode === 'ObjectNav' && task.target) ? `${mode} (${task.target})` : mode;
+          }
+          // *****
+          // Date: 2026-11-22
+          // Editor: WangZX
+          // Remark: Remember the task mode for the BEV click: unknown-scene tasks send goto (navigate + scan).
+          // *****
+          window.currentTaskMode = (data.task && data.task.mode) || 'Building';
+          // *****
+          // Date: 2026-11-20
+          // Editor: WangZX
+          // Remark: Show the VLM model reported by /health; the endpoint goes in the tooltip
+          //         so a truncated id can still be read and local vs remote is obvious.
+          // *****
+          const vlmEl = document.getElementById('statVlm');
+          if (vlmEl) {
+            const vlm = data.vlm || {};
+            const model = vlm.model || '\u2014';
+            vlmEl.textContent = model;
+            vlmEl.title = vlm.base_url ? `${model} \u2014 ${vlm.base_url}` : model;
+          }
         })
         .catch(err => {
           presentViewerMode({
@@ -2307,6 +2352,13 @@
     let currentNavGoal = null;
     selectedFloorY = 'auto';
     const topdownImgCache = {};
+    // *****
+    // Date: 2026-11-22
+    // Editor: WangZX
+    // Remark: Last BEV background image drawn on the ROS occupancy-grid source, shown while a newer map loads.
+    // *****
+    let lastTopdownDrawn = null;
+    let topdownSeq = 0;
 
     function syncFloorOptions(floors, agentZ) {
       const hudSel = document.getElementById('hudFloorSelect');
@@ -2514,11 +2566,40 @@
     // column spaced for a size nothing has any more.
     function layoutDocksSettled() { requestAnimationFrame(() => requestAnimationFrame(layoutDocks)); }
 
+    // *****
+    // Date: 2026-11-23
+    // Editor: WangZX
+    // Remark: Restore the original panel sizes. Sizes and positions saved by earlier drags / resizes are dropped
+    //         once (layout version 2), so the minimap and the d-pad come back at their stylesheet size in the
+    //         default right-hand column. A double-click on a panel's resize corner restores its original size later.
+    // *****
+    const DOCK_LAYOUT_VERSION = '2';
+    try {
+      if (localStorage.getItem('dock:version') !== DOCK_LAYOUT_VERSION) {
+        localStorage.removeItem('dock:minimap');
+        localStorage.removeItem('dock:teleop');
+        localStorage.setItem('dock:version', DOCK_LAYOUT_VERSION);
+      }
+    } catch (e) {}
+
     function makeDockable(el, name, opts) {
       if (!el) return;
       const parent = el.parentElement, key = 'dock:' + name;
       const grip = el.querySelector('.dock-grip');
-      const rz = document.createElement('div'); rz.className = 'dock-resize'; rz.title = 'Drag to resize'; el.appendChild(rz);
+      // *****
+      // Date: 2026-11-23
+      // Editor: WangZX
+      // Remark: The stylesheet width (the original size), measured before any saved width is applied.
+      // *****
+      const cssW = (() => {
+        const pw = el.style.width, ph = el.style.height;
+        el.style.width = ''; el.style.height = '';
+        const w = el.offsetWidth;
+        el.style.width = pw; el.style.height = ph;
+        return w;
+      })();
+      const rz = document.createElement('div'); rz.className = 'dock-resize';
+      rz.title = 'Drag to resize; double-click to restore the original size'; el.appendChild(rz);
       const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
       function apply(st, quiet) {
         const pw = parent.clientWidth, ph = parent.clientHeight;
@@ -2577,14 +2658,31 @@
         state.width = clamp(rs.w0 + grow, opts.minW, parent.clientWidth - 24);
         apply(state);
       });
-      rz.addEventListener('pointerup', () => { if (rs) { rs = null; save(state); } });
+      rz.addEventListener('pointerup', () => { if (rs) { rs = null; save(state); layoutDocks(); } });
+      // *****
+      // Date: 2026-11-23
+      // Editor: WangZX
+      // Remark: Double-click on the resize corner: back to the original (stylesheet) width.
+      // *****
+      rz.addEventListener('dblclick', ev => {
+        ev.stopPropagation(); ev.preventDefault();
+        state.width = cssW || opts.minW;
+        save(state); apply(state);
+      });
       window.addEventListener('resize', () => apply(state));
       el.__dock = { get: () => ({ ...state }), set: st => { state = { ...state, ...st }; apply(state); save(state); } };
       // REPLACE an existing entry rather than appending. makeDockable can run more than once for
       // the same panel, and a stale entry keeps its unscaled element: the gutter took the MAX
       // width across the registry, read 300 px from the dead entry while the live panels were
       // 189 px on screen, and reserved 324 px of feed for something 189 px wide.
-      const dock = { el, name, opts, apply, natural: state.width || el.offsetWidth || opts.minW,
+      // *****
+      // Date: 2026-11-23
+      // Editor: WangZX
+      // Remark: `natural` follows the current saved width (was fixed at page load, so layoutDocks put a resized
+      //         panel back to its old width until the next reload).
+      // *****
+      const dock = { el, name, opts, apply,
+                     get natural() { return state.width || cssW || el.offsetWidth || opts.minW; },
                      get state() { return state; }, set state(v) { state = v; } };
       const at = DOCKS.findIndex(d => d.name === name);
       if (at >= 0) DOCKS[at] = dock; else DOCKS.push(dock);
@@ -2696,6 +2794,27 @@
             syncFloorOptions(data.floors, data.agent ? data.agent.z : null);
           }
           if (typeof data.auto_mode === 'boolean') acceptAutoModeTelemetry(data.auto_mode);
+          // *****
+          // Date: 2026-11-22
+          // Editor: WangZX
+          // Remark: Exploration / ObjectNav: the status line shows exploration_controller_node's state (auto or
+          //         manual, current goto and path length, last outcome such as a refusal or a blocked path).
+          // *****
+          const xs = data && data.exploration_status;
+          const tm = window.currentTaskMode || 'Building';
+          if (xs && (tm === 'Exploration' || tm === 'ObjectNav')) {
+            const st = document.getElementById('teleopStatus');
+            if (st) {
+              let t = xs.message || '';
+              if (xs.target && xs.phase === 'travel' && typeof xs.path_len_m === 'number') {
+                t += ' → (' + xs.target[0].toFixed(1) + ', ' + xs.target[1].toFixed(1) + ') '
+                  + xs.path_len_m.toFixed(1) + ' m';
+              }
+              if (xs.last_outcome) t += ' | LAST: ' + xs.last_outcome;
+              st.textContent = t.toUpperCase();
+              st.title = t;
+            }
+          }
           if (data && data.agent && typeof data.agent.x === 'number' && typeof data.agent.y === 'number') {
             const curX = data.agent.x, curY = data.agent.y, curZ = data.agent.z || 0;
             const lastPt = clientTraveledPath[clientTraveledPath.length - 1];
@@ -3060,12 +3179,48 @@
       void moved;
     }
 
+    // *****
+    // Date: 2026-11-20
+    // Editor: WangZX
+    // Remark: BEV view rotation. The whole BEV picture is rotated about the agent (canvas centre + pan) by
+    //         BEV_VIEW_ROTATION; -pi/2 = 90 deg counter-clockwise on screen. Labels and HUD text are drawn
+    //         unrotated at the rotated screen position (bevRotateScreen), and clicks are mapped back with
+    //         bevUnrotateScreen.
+    // *****
+    // *****
+    // Date: 2026-11-20
+    // Editor: WangZX
+    // Remark: Mirror fix. Both BEV sources are in ROS ground coords (x, y) and were drawn with +y DOWN-screen,
+    //         a mirror image of the real top view (turning left looked like turning right). BEV_VIEW_MIRROR_Y
+    //         flips y first, then BEV_VIEW_ROTATION applies; the result shows ROS +x up and +y left, the true
+    //         top view. bevRotateScreen / bevUnrotateScreen apply / undo flip + rotation about (cx, cy).
+    // *****
+    const BEV_VIEW_ROTATION = -Math.PI / 2;
+    const BEV_VIEW_MIRROR_Y = true;
+    function bevRotateScreen(x, y, cx, cy) {
+      const c = Math.cos(BEV_VIEW_ROTATION), s = Math.sin(BEV_VIEW_ROTATION);
+      const dx = x - cx, dy = BEV_VIEW_MIRROR_Y ? cy - y : y - cy;
+      return [cx + dx * c - dy * s, cy + dx * s + dy * c];
+    }
+    function bevUnrotateScreen(x, y, cx, cy) {
+      const c = Math.cos(-BEV_VIEW_ROTATION), s = Math.sin(-BEV_VIEW_ROTATION);
+      const dx = x - cx, dy = y - cy;
+      const ux = dx * c - dy * s, uy = dx * s + dy * c;
+      return [cx + ux, BEV_VIEW_MIRROR_Y ? cy - uy : cy + uy];
+    }
+
     function renderCanvasBEV(canvasId, data, currentZoom) {
       const canvas = document.getElementById(canvasId);
       if (!canvas) return;
       syncBevCanvasSize(canvas);
       const ctx = canvas.getContext('2d');
       const w = canvas.width, h = canvas.height;
+      // *****
+      // Date: 2026-11-20
+      // Editor: WangZX
+      // Remark: Start every frame from the identity transform, so a rotation never accumulates.
+      // *****
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
       const cx = w / 2 + bevPanX, cy = h / 2 + bevPanY;
@@ -3075,6 +3230,20 @@
 
       // Host exports ROS convention: x/y = ground plane, z = height.
       const ax = data.agent.x, az = data.agent.y;
+      // *****
+      // Date: 2026-11-20
+      // Editor: WangZX
+      // Remark: Rotate everything drawn in world coordinates about the agent (see BEV_VIEW_ROTATION).
+      // *****
+      ctx.translate(cx, cy);
+      ctx.rotate(BEV_VIEW_ROTATION);
+      // *****
+      // Date: 2026-11-20
+      // Editor: WangZX
+      // Remark: Flip y before the rotation (mirror fix, see BEV_VIEW_MIRROR_Y).
+      // *****
+      if (BEV_VIEW_MIRROR_Y) ctx.scale(1, -1);
+      ctx.translate(-cx, -cy);
       const yaw = data.agent.yaw || 0;
       const floorH = (selectedFloorY === 'auto') ? (data.agent.z || 0) : parseFloat(selectedFloorY);
 
@@ -3106,17 +3275,81 @@
       const mapSrcRaw = activeMap && (activeMap.url || activeMap.image);
       const mapSrc = (typeof mapSrcRaw === 'string' && mapSrcRaw.startsWith('/')) ? PFX + mapSrcRaw : mapSrcRaw;
       if (mapSrc) {
+        // *****
+        // Date: 2026-11-22
+        // Editor: WangZX
+        // Remark: Bounded LRU cache, ONLY for the ROS occupancy-grid source (Exploration / ObjectNav): it gets a
+        //         new map URL on every map change, and the unbounded cache kept every decoded image for the
+        //         whole run. There, keep the TOPDOWN_IMG_CACHE_MAX most recently used images and drop the rest,
+        //         clearing their src so the browser frees the decoded bitmap. The navmesh source (Building)
+        //         keeps the original unbounded cache, unchanged.
+        // *****
+        const TOPDOWN_IMG_CACHE_MAX = 8;
+        const boundTopdownCache = data.source === 'ros_occupancy_grid';
         if (!topdownImgCache[mapSrc]) {
           const img = new Image();
+          // *****
+          // Date: 2026-11-22
+          // Editor: WangZX
+          // Remark: ROS grid source: each image carries a sequence number and its own bounds; when it loads it
+          //         becomes the fallback background if it is newer than the current one (loads can finish out
+          //         of order). Building keeps the original onload.
+          // *****
+          if (boundTopdownCache) {
+            img._seq = ++topdownSeq;
+            img._bounds = { bounds_min: activeMap.bounds_min, bounds_max: activeMap.bounds_max };
+            img.onload = () => {
+              if (!lastTopdownDrawn || img._seq > lastTopdownDrawn.img._seq) {
+                lastTopdownDrawn = { img, bounds_min: img._bounds.bounds_min, bounds_max: img._bounds.bounds_max };
+              }
+              if (lastBEVData) drawBEV(lastBEVData);
+            };
+          } else {
+            img.onload = () => { if (lastBEVData) drawBEV(lastBEVData); };
+          }
           img.src = mapSrc;
-          img.onload = () => { if (lastBEVData) drawBEV(lastBEVData); };
           topdownImgCache[mapSrc] = img;
+        } else if (boundTopdownCache) {
+          const hit = topdownImgCache[mapSrc];
+          delete topdownImgCache[mapSrc];
+          topdownImgCache[mapSrc] = hit;              // re-insert: most recently used last
         }
-        const imgObj = topdownImgCache[mapSrc];
+        if (boundTopdownCache) {
+          const cachedKeys = Object.keys(topdownImgCache);
+          for (let k = 0; k < cachedKeys.length - TOPDOWN_IMG_CACHE_MAX; k++) {
+            const old = topdownImgCache[cachedKeys[k]];
+            // *****
+            // Date: 2026-11-22
+            // Editor: WangZX
+            // Remark: Do not clear the image still shown as the loading fallback (lastTopdownDrawn).
+            // *****
+            if (old && !(lastTopdownDrawn && lastTopdownDrawn.img === old)) { old.onload = null; old.src = ''; }
+            delete topdownImgCache[cachedKeys[k]];
+          }
+        }
+        // *****
+        // Date: 2026-11-22
+        // Editor: WangZX
+        // Remark: No flicker on the ROS occupancy-grid source (Exploration / ObjectNav). Every map change brings
+        //         a new image URL, and until it has loaded the frame had no background, so the map blinked.
+        //         Remember the last image that was drawn, with its own bounds, and draw it until the new one
+        //         is ready. The navmesh source (Building) is unchanged.
+        // *****
+        let imgObj = topdownImgCache[mapSrc];
+        let drawBounds = activeMap;
+        const imgReady = imgObj && imgObj.complete && imgObj.naturalWidth > 0;
+        if (boundTopdownCache) {
+          if (imgReady && (!lastTopdownDrawn || (imgObj._seq || 0) >= lastTopdownDrawn.img._seq)) {
+            lastTopdownDrawn = { img: imgObj, bounds_min: activeMap.bounds_min, bounds_max: activeMap.bounds_max };
+          } else if (!imgReady && lastTopdownDrawn) {
+            imgObj = lastTopdownDrawn.img;
+            drawBounds = lastTopdownDrawn;
+          }
+        }
         if (imgObj && imgObj.complete && imgObj.naturalWidth > 0) {
           ctx.save();
-          const bMin = activeMap.bounds_min;
-          const bMax = activeMap.bounds_max;
+          const bMin = drawBounds.bounds_min;
+          const bMax = drawBounds.bounds_max;
           const mapW = (bMax[0] - bMin[0]) * scale;
           const mapH = (bMax[2] - bMin[2]) * scale;
           const imgX = cx + (bMin[0] - ax) * scale;
@@ -3180,7 +3413,16 @@
             ctx.textAlign = 'center';
             const txt = (rm.label || rm.room_id || '') +
                         (rm.area_m2 ? '  ' + Number(rm.area_m2).toFixed(1) + 'm2' : '');
-            ctx.fillText(txt, lx, ly);
+            // *****
+            // Date: 2026-11-20
+            // Editor: WangZX
+            // Remark: Upright label at the rotated screen position (see BEV_VIEW_ROTATION).
+            // *****
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            const q = bevRotateScreen(lx, ly, cx, cy);
+            ctx.fillText(txt, q[0], q[1]);
+            ctx.restore();
             ctx.textAlign = 'start';
           }
         });
@@ -3221,6 +3463,169 @@
         ctx.stroke();
       }
 
+      // *****
+      // Date: 2026-11-19
+      // Editor: WangZX
+      // Remark: Frontier overlay from frontier_node (via /bev_data "frontiers"): magenta dots are frontier
+      //         cells, the ring is the viewpoint (green = reachable, grey = unreachable), id shown when zoomed in.
+      // *****
+      if (Array.isArray(data.frontiers) && data.frontiers.length) {
+        data.frontiers.forEach(fr => {
+          if (!fr) return;
+          ctx.fillStyle = 'rgba(232, 121, 249, 0.9)';
+          (fr.cells || []).forEach(pt => {
+            if (!pt || pt.length < 2) return;
+            ctx.fillRect(cx + (pt[0] - ax) * scale - 1.5, cy + (pt[1] - az) * scale - 1.5, 3, 3);
+          });
+          const vp = fr.viewpoint;
+          if (Array.isArray(vp) && vp.length >= 2) {
+            const vx = cx + (vp[0] - ax) * scale, vy = cy + (vp[1] - az) * scale;
+            ctx.beginPath();
+            ctx.arc(vx, vy, 4.5, 0, 2 * Math.PI);
+            ctx.strokeStyle = fr.reachable ? '#22c55e' : '#94a3b8';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            if (currentZoom > 0.8) {
+              ctx.fillStyle = '#f5d0fe';
+              ctx.font = '600 9px ui-monospace, monospace';
+              // *****
+              // Date: 2026-11-20
+              // Editor: WangZX
+              // Remark: Upright label at the rotated screen position (see BEV_VIEW_ROTATION).
+              // *****
+              ctx.save();
+              ctx.setTransform(1, 0, 0, 1, 0, 0);
+              const q = bevRotateScreen(vx, vy, cx, cy);
+              ctx.fillText('F' + fr.id, q[0] + 6, q[1] - 6);
+              ctx.restore();
+            }
+          }
+        });
+      }
+
+      // *****
+      // Date: 2026-11-22
+      // Editor: WangZX
+      // Remark: Information gain overlay from info_gain_node (via /bev_data "candidates"): the best candidate
+      //         gets a gold ring and star; when zoomed in every candidate shows "G <gain bits> U <utility>"
+      //         under its frontier id. Drawn at the candidate's own viewpoint, so a frontier list newer than
+      //         the ranking cannot mislabel it. Text and star are upright (see BEV_VIEW_ROTATION).
+      // *****
+      // *****
+      // Date: 2026-11-23
+      // Editor: WangZX
+      // Remark: The gold ring / star now marks the candidate the robot actually goes to, not info_gain's best_id:
+      //         during a goto, the candidate nearest the controller's target (within 0.5 m); otherwise the
+      //         highest-utility candidate that auto mode does not skip (blacklisted or already reached, from
+      //         exploration_status.skipped). Skipped candidates are greyed with an "x". A goto target that
+      //         matches no candidate gets its own gold star.
+      // *****
+      const xst = data.exploration_status || null;
+      const xTarget = (xst && Array.isArray(xst.target) && xst.target.length >= 2) ? xst.target : null;
+      const xSkipped = (xst && Array.isArray(xst.skipped)) ? xst.skipped : [];
+      const xSkipR = (xst && isFinite(Number(xst.skip_radius_m))) ? Number(xst.skip_radius_m) : 0.5;
+      const candSkipped = cd => {
+        const v = cd && cd.viewpoint;
+        return Array.isArray(v) && xSkipped.some(b => Math.hypot(v[0] - b[0], v[1] - b[1]) <= xSkipR);
+      };
+      let chosenId = null;
+      if (Array.isArray(data.candidates) && data.candidates.length) {
+        if (xTarget) {
+          let dBest = 0.5;
+          data.candidates.forEach(cd => {
+            const v = cd && cd.viewpoint;
+            if (!Array.isArray(v) || v.length < 2) return;
+            const d = Math.hypot(v[0] - xTarget[0], v[1] - xTarget[1]);
+            if (d <= dBest) { dBest = d; chosenId = cd.id; }
+          });
+        } else {
+          let uBest = -Infinity;
+          data.candidates.forEach(cd => {
+            const u = Number(cd && cd.utility);
+            if (cd && Array.isArray(cd.viewpoint) && isFinite(u) && u > uBest && !candSkipped(cd)) {
+              uBest = u; chosenId = cd.id;
+            }
+          });
+        }
+      }
+      if (xTarget && chosenId === null) {
+        const tq0x = cx + (xTarget[0] - ax) * scale, tq0y = cy + (xTarget[1] - az) * scale;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        const tq = bevRotateScreen(tq0x, tq0y, cx, cy);
+        ctx.beginPath();
+        for (let k = 0; k < 10; k++) {
+          const r = k % 2 ? 3 : 7, a = -Math.PI / 2 + k * Math.PI / 5;
+          const sx = tq[0] + r * Math.cos(a), sy = tq[1] + r * Math.sin(a);
+          if (k === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+        }
+        ctx.closePath();
+        ctx.fillStyle = '#facc15';
+        ctx.fill();
+        ctx.restore();
+      }
+      if (Array.isArray(data.candidates) && data.candidates.length) {
+        data.candidates.forEach(cd => {
+          const vp = cd && cd.viewpoint;
+          if (!Array.isArray(vp) || vp.length < 2) return;
+          const vx = cx + (vp[0] - ax) * scale, vy = cy + (vp[1] - az) * scale;
+          const best = cd.id === chosenId;
+          const skipped = !best && candSkipped(cd);
+          if (best) {
+            ctx.beginPath();
+            ctx.arc(vx, vy, 9, 0, 2 * Math.PI);
+            ctx.strokeStyle = '#facc15';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+          }
+          // *****
+          // Date: 2026-11-22
+          // Editor: WangZX
+          // Remark: Every candidate now always shows its score (no zoom threshold): a dark badge with
+          //         "F<id> <utility>" next to its viewpoint, plus the gain in bits and the distance when zoomed in.
+          //         Badge colour runs from slate (lowest utility) to gold (best) so the ranking is readable at a
+          //         glance. Replaces the zoom-only "G/U" text below.
+          // *****
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          const q = bevRotateScreen(vx, vy, cx, cy);
+          {
+            const us = data.candidates.map(c => Number(c && c.utility)).filter(isFinite);
+            const uMax = us.length ? Math.max(...us) : 1, uMin = us.length ? Math.min(...us) : 0;
+            const u = Number(cd.utility), g = Number(cd.geo_gain_bits), dm = Number(cd.distance_m);
+            const rel = (isFinite(u) && uMax > uMin) ? (u - uMin) / (uMax - uMin) : 1;
+            let txt = (skipped ? '\u2715 ' : '') + 'F' + cd.id + ' ' + (isFinite(u) ? u.toFixed(2) : '?');
+            if (currentZoom > 0.8) {
+              txt += ' G' + (isFinite(g) ? g.toFixed(1) : '?') + 'b';
+              if (isFinite(dm) && dm >= 0) txt += ' ' + dm.toFixed(1) + 'm';
+            }
+            ctx.font = (best ? '700 ' : '600 ') + '10px ui-monospace, monospace';
+            const w = ctx.measureText(txt).width + 6, bx = q[0] + 7, by = q[1] + 3;
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+            ctx.fillRect(bx, by, w, 13);
+            ctx.strokeStyle = best ? '#facc15' : 'rgba(148, 163, 184, 0.6)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(bx + 0.5, by + 0.5, w - 1, 12);
+            const lerp = (a, b) => Math.round(a + (b - a) * rel);
+            ctx.fillStyle = best ? '#facc15'
+              : (skipped ? 'rgb(100, 116, 139)' : `rgb(${lerp(148, 253)}, ${lerp(163, 224)}, ${lerp(184, 71)})`);
+            ctx.fillText(txt, bx + 3, by + 10);
+          }
+          if (best) {
+            ctx.beginPath();
+            for (let k = 0; k < 10; k++) {
+              const r = k % 2 ? 3 : 7, a = -Math.PI / 2 + k * Math.PI / 5;
+              const sx = q[0] + r * Math.cos(a), sy = q[1] - 16 + r * Math.sin(a);
+              if (k === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+            }
+            ctx.closePath();
+            ctx.fillStyle = '#facc15';
+            ctx.fill();
+          }
+          ctx.restore();
+        });
+      }
+
       // 3c. THE EXPLORATION SCHEDULE: the route the run was told to walk, as against the
       // trajectory it actually walked (section 4). Two different claims, so two different
       // looks -- the plan is a dashed violet polyline, the traveled path a solid emerald one.
@@ -3250,7 +3655,16 @@
             ctx.fillStyle = '#ede9fe';
             ctx.font = '600 8px ui-monospace, monospace';
             ctx.textAlign = 'center';
-            ctx.fillText(String(st.order), px, py - 5);
+            // *****
+            // Date: 2026-11-20
+            // Editor: WangZX
+            // Remark: Upright label at the rotated screen position (see BEV_VIEW_ROTATION).
+            // *****
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            const q = bevRotateScreen(px, py, cx, cy);
+            ctx.fillText(String(st.order), q[0], q[1] - 5);
+            ctx.restore();
             ctx.textAlign = 'start';
           }
         });
@@ -3264,12 +3678,17 @@
         ctx.restore();
       }
 
-      // 4. Traveled Path Trajectory (Glowing Emerald)
+      // 4. Traveled Path Trajectory (Glowing Red)
+      // *****
+      // Date: 2026-11-22
+      // Editor: WangZX
+      // Remark: Traveled path colour changed from emerald to red in all modes (planned paths are green).
+      // *****
       const path = (data.traveled_path && data.traveled_path.length > 1) ? data.traveled_path : clientTraveledPath;
       if (path && path.length > 1) {
-        ctx.strokeStyle = '#10b981';
+        ctx.strokeStyle = '#ef4444';
         ctx.lineWidth = 2.5;
-        ctx.shadowColor = '#10b981';
+        ctx.shadowColor = '#ef4444';
         ctx.shadowBlur = 6;
         ctx.beginPath();
         path.forEach((pt, i) => {
@@ -3281,9 +3700,36 @@
         ctx.shadowBlur = 0;
       }
 
-      // 5. Planned Navmesh Path Trajectory (Dashed Cyan)
+      // *****
+      // Date: 2026-11-22
+      // Editor: WangZX
+      // Remark: Planned goto path (Exploration / ObjectNav, ROS grid source only): drawn in the traveled-path
+      //         style but green, from the robot to the goto target; the feed sends it only while a goto travels.
+      // *****
+      if (data.source === 'ros_occupancy_grid' && Array.isArray(data.goto_path) && data.goto_path.length > 1) {
+        ctx.save();
+        ctx.strokeStyle = '#22c55e';
+        ctx.lineWidth = 2.5;
+        ctx.shadowColor = '#22c55e';
+        ctx.shadowBlur = 6;
+        ctx.beginPath();
+        data.goto_path.forEach((pt, i) => {
+          const px = cx + (pt[0] - ax) * scale;
+          const py = cy + (pt[1] - az) * scale;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // 5. Planned Navmesh Path Trajectory (Dashed Green)
+      // *****
+      // Date: 2026-11-22
+      // Editor: WangZX
+      // Remark: Planned paths are green in all modes (was cyan).
+      // *****
       if (data.planned_path && data.planned_path.length > 1) {
-        ctx.strokeStyle = '#38bdf8';
+        ctx.strokeStyle = '#22c55e';
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 4]);
         ctx.beginPath();
@@ -3379,13 +3825,23 @@
             const labelText = String(obj.name || obj.label).split('#')[0];
             ctx.font = 'bold 9px Inter, sans-serif';
             const tw = ctx.measureText(labelText).width;
+            // *****
+            // Date: 2026-11-20
+            // Editor: WangZX
+            // Remark: Upright label pill at the rotated screen position (see BEV_VIEW_ROTATION); the pill and its text
+            //         get real screen coordinates, which replay_server's label declutter relies on.
+            // *****
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            const q = bevRotateScreen(px, py, cx, cy);
             ctx.fillStyle = 'rgba(11, 19, 41, 0.85)';
-            ctx.fillRect(px + 6, py - 6, tw + 6, 12);
+            ctx.fillRect(q[0] + 6, q[1] - 6, tw + 6, 12);
             ctx.strokeStyle = 'rgba(51, 65, 85, 0.8)';
             ctx.lineWidth = 0.8;
-            ctx.strokeRect(px + 6, py - 6, tw + 6, 12);
+            ctx.strokeRect(q[0] + 6, q[1] - 6, tw + 6, 12);
             ctx.fillStyle = '#f8fafc';
-            ctx.fillText(labelText, px + 9, py + 3);
+            ctx.fillText(labelText, q[0] + 9, q[1] + 3);
+            ctx.restore();
           }
         });
       }
@@ -3414,13 +3870,20 @@
         }
         if (currentZoom > 0.75) {
           const text = `${kind === 'relocation' ? 'MOVED' : 'DELETED'} · ${event.label || objectId || 'object'}`;
+          // *****
+          // Date: 2026-11-20
+          // Editor: WangZX
+          // Remark: Upright pill at the rotated screen position (see BEV_VIEW_ROTATION); restored by the save above.
+          // *****
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          const q = bevRotateScreen(px, py, cx, cy);
           ctx.font = 'bold 9px Inter, sans-serif';
           const width = ctx.measureText(text).width + 8;
-          ctx.fillStyle = 'rgba(9,13,22,.92)'; ctx.fillRect(px + 9, py - 7, width, 14);
+          ctx.fillStyle = 'rgba(9,13,22,.92)'; ctx.fillRect(q[0] + 9, q[1] - 7, width, 14);
           ctx.strokeStyle = kind === 'relocation' ? '#d97706' : '#dc2626';
-          ctx.strokeRect(px + 9, py - 7, width, 14);
+          ctx.strokeRect(q[0] + 9, q[1] - 7, width, 14);
           ctx.fillStyle = kind === 'relocation' ? '#fde68a' : '#fecaca';
-          ctx.fillText(text, px + 13, py + 3);
+          ctx.fillText(text, q[0] + 13, q[1] + 3);
         }
         ctx.restore();
         return true;
@@ -3443,6 +3906,12 @@
         const unmappedText = unmapped ? ` · ${unmapped} WITHOUT POSITION` : '';
         const text = movedText + '   ' + deletedText + unmappedText;
         ctx.save();
+        // *****
+        // Date: 2026-11-20
+        // Editor: WangZX
+        // Remark: HUD legend stays in screen space: no BEV rotation.
+        // *****
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.font = '800 9px ui-monospace, monospace';
         const width = ctx.measureText(text).width + 16;
         const x = Math.max(8, w - width - 8), y = 8;
@@ -3474,7 +3943,15 @@
       // 8. Robot Marker & Vision Cone (Full Canvas Coverage & Perfectly Aligned Apex)
       ctx.save();
       ctx.translate(cx, cy);
-      ctx.rotate(-yaw);
+      // *****
+      // Date: 2026-11-20
+      // Editor: WangZX
+      // Remark: The marker points to local -y at rotation 0, and this block draws in world-aligned local
+      //         coordinates (the view flip/rotation is applied by the outer transform). Both sources report ROS
+      //         yaw (navmesh: habitat_pose_to_ros; ROS grid: TF), where yaw 0 faces +x, so rotate(yaw + pi/2)
+      //         for both. This replaces the per-source rule written before the mirror fix.
+      // *****
+      ctx.rotate(yaw + Math.PI / 2);
 
       // Vision Cone covering forward field of view (90 deg FOV centered around heading -Y)
       const visionRadius = Math.max(w, h) * 0.85;
@@ -3643,14 +4120,48 @@
         const cx = w / 2 + bevPanX, cy = h / 2 + bevPanY;
         const scale = 25.0 * bevZoom;
 
+        // *****
+        // Date: 2026-11-20
+        // Editor: WangZX
+        // Remark: Undo the BEV view rotation before converting the click to world coordinates.
+        // *****
+        const uq = bevUnrotateScreen(clickX, clickY, cx, cy);
         // ROS convention: x/y = ground plane, z = height (floor)
-        const targetX = lastBEVData.agent.x + (clickX - cx) / scale;
-        const targetY = lastBEVData.agent.y + (clickY - cy) / scale;
+        const targetX = lastBEVData.agent.x + (uq[0] - cx) / scale;
+        const targetY = lastBEVData.agent.y + (uq[1] - cy) / scale;
         const targetZ = (selectedFloorY === 'auto') ? (lastBEVData.agent.z || 0) : parseFloat(selectedFloorY);
 
-        currentNavGoal = [targetX, targetY, targetZ];
-        const actName = (teleopMode === 'teleport') ? 'teleport' : 'nav_goal';
-        sendAction(actName, { x: targetX, y: targetY, z: targetZ });
+        // *****
+        // Date: 2026-11-22
+        // Editor: WangZX
+        // Remark: Exploration / ObjectNav: a click sends goto (validated by the feed: navmesh snap and storey
+        //         check, then navigate, turn a full circle and emit scan_complete), matching the 360 deg scan
+        //         the information gain assumes. A click within 0.5 m of a candidate viewpoint (or, without a
+        //         ranking yet, a frontier viewpoint) snaps to it. teleport and Building keep the old behaviour.
+        // *****
+        let gx = targetX, gy = targetY, snapped = null;
+        const taskMode = window.currentTaskMode || 'Building';
+        const unknownSceneTask = taskMode === 'Exploration' || taskMode === 'ObjectNav';
+        if (unknownSceneTask && teleopMode !== 'teleport') {
+          const pool = (Array.isArray(lastBEVData.candidates) && lastBEVData.candidates.length)
+            ? lastBEVData.candidates : (lastBEVData.frontiers || []);
+          let bestD = 0.5;
+          pool.forEach(c => {
+            const vp = c && c.viewpoint;
+            if (!Array.isArray(vp) || vp.length < 2) return;
+            const d = Math.hypot(vp[0] - targetX, vp[1] - targetY);
+            if (d <= bestD) { bestD = d; snapped = c; }
+          });
+          if (snapped) { gx = snapped.viewpoint[0]; gy = snapped.viewpoint[1]; }
+        }
+        currentNavGoal = [gx, gy, targetZ];
+        const actName = (teleopMode === 'teleport') ? 'teleport' : (unknownSceneTask ? 'goto' : 'nav_goal');
+        sendAction(actName, { x: gx, y: gy, z: targetZ });
+        const statusEl = document.getElementById('teleopStatus');
+        if (statusEl && actName === 'goto') {
+          statusEl.textContent = 'GOTO (' + gx.toFixed(2) + ', ' + gy.toFixed(2) + ')'
+            + (snapped ? ' \u2192 F' + snapped.id : '') + ' + SCAN';
+        }
       });
     }
 
