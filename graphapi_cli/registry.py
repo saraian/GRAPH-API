@@ -172,8 +172,18 @@ class Registry:
                 row = json.loads(path.read_text())
             except (OSError, json.JSONDecodeError):
                 continue
+            # *****
+            # Date: 2026-11-22
+            # Editor: WangZX
+            # Remark: Check liveness only for records still marked active: the result was used for nothing
+            #         else, and checking every record ran one `docker inspect` (~16 ms) per operation ever
+            #         recorded (137 here, ~2.2 s), on every dashboard proxy request. Same outcome, far fewer calls.
+            # *****
+            if row.get("state") not in ("PREPARING", "RUNNING", "DRAINING"):
+                result.append(row)
+                continue
             live = actor_alive(row["actor"], row.get("pid"), row.get("process_identity")) if row.get("actor") else alive(row.get("pid"), row.get("process_identity"))
-            if row.get("state") in ("PREPARING", "RUNNING", "DRAINING") and not live:
+            if not live:
                 row["state"] = "FAILED"
                 row["error"] = "supervisor exited without recording a terminal state"
             result.append(row)

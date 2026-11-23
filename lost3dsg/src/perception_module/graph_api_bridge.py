@@ -365,6 +365,16 @@ class BridgeNode(Node):
         self.frame_times = collections.deque(maxlen=24)
         self.raw_jpeg = None          # /camera/rgb: every sim frame, kept separate so a
         self.last_raw_time = 0.0      # stale annotated frame can never masquerade as live
+        # *****
+        # Date: 2026-11-23
+        # Editor: WangZX
+        # Remark: Capture stamps (header.stamp, seconds) of the newest annotated and raw frames.
+        #         The annotated frame is published at the END of a perception cycle, so its arrival
+        #         time is fresh while its picture is the view from seconds ago; _best_frame_pick
+        #         compares capture stamps to stop that old view flashing into the live feed.
+        # *****
+        self.latest_jpeg_stamp = None
+        self.raw_stamp = None
         # the raw feed publishes /camera/rgb (habitat_feed_node.py:126). The old
         # '/camera/rgb/image_raw' had no publisher at all, so this fallback never fired.
         # GA-271. Detected walls, from wall_detector's per-frame depth fit -- NOT from the
@@ -422,6 +432,12 @@ class BridgeNode(Node):
             self.latest_jpeg = jpeg
             self.last_frame_time = time.time()
             self.frame_times.append(self.last_frame_time)
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Keep the capture stamp of the annotated frame (see __init__).
+            # *****
+            self.latest_jpeg_stamp = _stamp_sec(msg)
 
     def _on_walls(self, msg):
         """Keep the newest wall segments. A decode failure is counted, not swallowed."""
@@ -436,6 +452,12 @@ class BridgeNode(Node):
         if jpeg:
             self.raw_jpeg = jpeg
             self.last_raw_time = time.time()
+            # *****
+            # Date: 2026-11-23
+            # Editor: WangZX
+            # Remark: Keep the capture stamp of the newest live frame (see __init__).
+            # *****
+            self.raw_stamp = _stamp_sec(msg)
 
     def call(self, key, req):
         client = self.cli[key]
@@ -1603,6 +1625,34 @@ COMPOSITE_MAX_AGE_SEC = 30.0
 # so without this the dashboard pins itself to a single annotated frame forever.
 ANNOTATED_MAX_AGE_SEC = float(os.environ.get("BRIDGE_ANNOTATED_MAX_AGE", "1.5"))
 RAW_MAX_AGE_SEC = float(os.environ.get("BRIDGE_RAW_MAX_AGE", "3.0"))
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: The annotated frame is shown in the live feed only while its CAPTURE stamp is at most
+#         this far behind the newest live camera frame. ANNOTATED_MAX_AGE_SEC alone measured
+#         arrival time, and a slow cycle (VLM) delivered a picture taken seconds earlier, often
+#         from another viewpoint, which flashed for 1.5 s before the live view came back.
+#         The simulator feed draws the belief boxes itself, so boxes stay on screen.
+# *****
+ANNOTATED_MAX_LAG_SEC = float(os.environ.get("BRIDGE_ANNOTATED_MAX_LAG", "0.5"))
+
+
+def _stamp_sec(msg):
+    """header.stamp in seconds, None when the message carries no stamp."""
+    try:
+        st = msg.header.stamp
+        t = float(st.sec) + float(st.nanosec) * 1e-9
+    except AttributeError:
+        return None
+    return t if t > 0.0 else None
+
+
+def _annotated_is_current(node):
+    """Whether the annotated frame shows the current view (capture stamp vs the live camera)."""
+    ann, raw = getattr(node, "latest_jpeg_stamp", None), getattr(node, "raw_stamp", None)
+    if ann is None or raw is None:
+        return True              # no stamps to compare: keep the arrival-time rule alone
+    return (raw - ann) <= ANNOTATED_MAX_LAG_SEC
 # GA-183. How long `call()` waits for a ROS service to answer. Was a bare 5.0, and `merge`
 # routinely exceeds it: run 20260901_055513 returned 500 on 89 of 140 merge POSTs while the
 # merges THEMSELVES SUCCEEDED -- 89 discarded objects left the world model against only 51
@@ -1903,7 +1953,13 @@ def _best_frame_pick():
     global _feed_probe_blocked_until, _last_frame_source
     node = get_node()
     now = time.time()
-    if node and node.latest_jpeg and (now - node.last_frame_time) < ANNOTATED_MAX_AGE_SEC:
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Also require the annotated frame's capture stamp to be current (_annotated_is_current).
+    # *****
+    if (node and node.latest_jpeg and (now - node.last_frame_time) < ANNOTATED_MAX_AGE_SEC
+            and _annotated_is_current(node)):
         _last_frame_source = "perception overlay"
         return node.latest_jpeg
     if _SVC_B.get("feed_enabled", True) and now >= _feed_probe_blocked_until:
@@ -2101,6 +2157,26 @@ def proxy_bev_data(floor_y: str = None):
             })
         data = _externalise_maps(_node.ros_bev.payload())
         data.update(_bev_room_overlays())
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: Add the feed's planned goto path (ROS map points, empty when no goto travels) as `goto_path`
+        #         for the BEV. A failed fetch only leaves the path out; it is not a BEV source error.
+        # *****
+        try:
+            with urllib.request.urlopen(f"{FEED_HOST}/revisit_status", timeout=0.3) as r:
+                _rev = json.loads(r.read())
+            data["goto_path"] = _rev.get("planned_path") or []
+            # *****
+            # Date: 2026-11-22
+            # Editor: WangZX
+            # Remark: The feed's auto_mode as well, so the AUTO/MANUAL button follows the controller's state.
+            # *****
+            if isinstance(_rev.get("auto_mode"), bool):
+                data["auto_mode"] = _rev["auto_mode"]
+        except Exception as exc:
+            data["goto_path"] = []
+            data["goto_path_error"] = f"{type(exc).__name__}: {exc}"
         latency_file = _active_output_dir() / "perception_latencies.json"
         if latency_file.exists():
             try:
@@ -2637,10 +2713,30 @@ def get_pipeline_health():
 
     from graphapi_cli.stack_health import apply_component_settings
     all_active = apply_component_settings(components, os.environ)
+    # *****
+    # Date: 2026-11-18
+    # Editor: WangZX
+    # Remark: Report the run's task mode (and ObjectNav target) so the dashboard header can show it.
+    # *****
+    task_cfg = CFG.get("task") or {}
+    task_info = {"mode": str(task_cfg.get("mode") or "Building"),
+                 "target": str((task_cfg.get("objectnav") or {}).get("target") or "")}
+    # *****
+    # Date: 2026-11-20
+    # Editor: WangZX
+    # Remark: Report the VLM model actually in force so the dashboard header can name it.
+    #         base_url travels with it because the same model id can point at a local or a
+    #         remote endpoint, and only the endpoint tells those apart at a glance.
+    # *****
+    vlm_cfg = CFG.get("vlm") or {}
+    vlm_info = {"model": str(vlm_cfg.get("model") or ""),
+                "base_url": str(vlm_cfg.get("base_url") or "")}
     return {
         "status": "ok" if all_active else "degraded",
         "all_active": all_active,
         "components": components,
+        "task": task_info,
+        "vlm": vlm_info,
         "stamp": _stamp(),
     }
 

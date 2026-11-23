@@ -284,6 +284,57 @@ def generate_launch_description():
         condition=IfCondition(use_wall_detector),
     )
 
+    # *****
+    # Date: 2026-11-19
+    # Editor: WangZX
+    # Remark: Frontier extraction from /rtabmap/map; idles in Building mode and never exits on its own,
+    #         because any required component exit shuts the run down.
+    # *****
+    frontier_node = Node(
+        package='lost3dsg',
+        executable='frontier_node.py',
+        name='frontier_node',
+        output='both',
+    )
+
+    # *****
+    # Date: 2026-11-22
+    # Editor: WangZX
+    # Remark: CRMI information gain over the frontier candidates; idles in Building mode and never exits on its own.
+    # *****
+    info_gain_node = Node(
+        package='lost3dsg',
+        executable='info_gain_node.py',
+        name='info_gain_node',
+        output='both',
+    )
+
+    # *****
+    # Date: 2026-11-22
+    # Editor: WangZX
+    # Remark: Exploration controller: grid path planning for goto and the auto mode; idles in Building mode
+    #         and never exits on its own.
+    # *****
+    exploration_controller_node = Node(
+        package='lost3dsg',
+        executable='exploration_controller_node.py',
+        name='exploration_controller_node',
+        output='both',
+    )
+
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Negative obstacle filter: republishes the rtabmap map with stairwells / the floor below removed
+    #         for the exploration nodes and the BEV; idles in Building mode and never exits on its own.
+    # *****
+    negative_obstacle_node = Node(
+        package='lost3dsg',
+        executable='negative_obstacle_node.py',
+        name='negative_obstacle_node',
+        output='both',
+    )
+
     # ------------------------------------------------------------
     # 3) graph_api_bridge.py — script standalone (non un nodo ROS2
     #    installato), lanciato con ExecuteProcess impostando la cwd.
@@ -347,7 +398,28 @@ def generate_launch_description():
     # ------------------------------------------------------------
     delayed_perception = TimerAction(
         period=perception_delay,
-        actions=[perception_node, object_manager_node, wall_detector_node],
+        # *****
+        # Date: 2026-11-19
+        # Editor: WangZX
+        # Remark: frontier_node starts with the perception nodes (after rtabmap is up).
+        # *****
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: info_gain_node starts with frontier_node.
+        # *****
+        # *****
+        # Date: 2026-11-22
+        # Editor: WangZX
+        # Remark: exploration_controller_node starts with frontier_node and info_gain_node.
+        # *****
+        # *****
+        # Date: 2026-11-23
+        # Editor: WangZX
+        # Remark: negative_obstacle_node starts with the exploration nodes.
+        # *****
+        actions=[perception_node, object_manager_node, wall_detector_node, frontier_node,
+                 info_gain_node, exploration_controller_node, negative_obstacle_node],
     )
 
     delayed_bridge = TimerAction(

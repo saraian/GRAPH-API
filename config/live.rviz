@@ -201,6 +201,40 @@ Visualization Manager:
       Value: false
     Topic Filter: true
     Decay Time: 0
+  # *****
+  # Date: 2026-11-19
+  # Editor: WangZX
+  # Remark: Frontiers from frontier_node (latched): cell points, viewpoint spheres (green = reachable,
+  #         grey = unreachable) and id labels. Published only in Exploration / ObjectNav runs.
+  # *****
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: 'exploration: frontiers'
+    Value: true
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /exploration/frontier_markers
+    Namespaces: {}
+  # *****
+  # Date: 2026-11-22
+  # Editor: WangZX
+  # Remark: Information gain of the frontier candidates from info_gain_node (latched): "F<id> G=<bits> U=<utility>"
+  #         labels, gold ring and arrow on the best candidate. Published only in Exploration / ObjectNav runs.
+  # *****
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: 'exploration: information gain'
+    Value: true
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /exploration/candidate_markers
+    Namespaces: {}
   # Perception's frame-local box corners are BEST_EFFORT/VOLATILE.  The persistent
   # boxes below are stable per-object colored world-model boxes with dark outlines; this
   # display is useful for checking the detector before object-manager admission has completed.

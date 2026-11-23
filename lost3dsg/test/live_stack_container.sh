@@ -754,6 +754,13 @@ except Exception:
     print("")' 2>/dev/null || echo "")
     if [ "$_reason" = "house_tour_complete" ]; then
       _dead_node="FEED_ENDED"; _dead_why=" (the feed host completed the house tour)"
+    # *****
+    # Date: 2026-11-18
+    # Editor: WangZX
+    # Remark: Unknown-scene tasks end normally on task_done (task_complete) or on their timeout (task_timeout).
+    # *****
+    elif [ "$_reason" = "task_complete" ] || [ "$_reason" = "task_timeout" ]; then
+      _dead_node="FEED_ENDED"; _dead_why=" (the unknown-scene task ended: $_reason)"
     else
       _dead_node="FEED_ABORTED"
       _dead_why=" (feed_ended.json with reason '${_reason:-none}' — ended by hand, not by the tour)"

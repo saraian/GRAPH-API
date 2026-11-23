@@ -21,13 +21,22 @@
 # the arm set it deliberately: `regen_arm_configs.py --check` answers that.
 
 vlm:
-  provider: openai_compatible
-  base_url: http://localhost:11434/v1
-  model: qwen3.5-9b
-  # Local server on another machine; the OpenAI-compatible client still requires a value.
-  # This placeholder is ignored by servers without authentication.
-  api_key: ollama
-  timeout: 240.0
+  # CLoud Deployed VLM
+  base_url: https://api.aijws.com/v1
+  model: gpt-6-astra
+  api_key: ""
+
+  # Local Deployed VLM qwen3-vl:2b-instruct
+  # base_url: http://127.0.0.1:11434/v1
+  # model: qwen3-vl:2b-instruct
+  # api_key: ""
+
+  # Remote Deployed VLM qwen3.8-flash-next-unsloth-ud-iq3_xxs
+  # base_url: http://192.168.2.14:8080/v1
+  # model: qwen3.8-flash-next-unsloth-ud-iq3_xxs
+  # api_key: ""
+
+  timeout: 120.0
   retries: 2
   enable_thinking: false
   image_max_side: 448
@@ -43,10 +52,10 @@ appearance:
   min_crop_px: 4
   batch_size: 8
 similarity:
-  label: 0.25
-  color: 0.25
+  label: 0.05
+  color: 0.3
   material: 0.15
-  description: 0.35
+  description: 0.5
 association:
   input_silence_timeout_s: 180.0
   input_silence_max_strikes: 3
@@ -62,19 +71,19 @@ association:
   bbox_reduction_ratio: 0.3
   reevaluation_radius_m: 2.0
   association_margin_m: 0.3
+  merge_engine: legacy
+  merge_cost_ratio: 20.0
+  merge_min_consecutive: 2
   merge_max_distance_m: 0.8
   merge_max_surface_gap_m: 0.02
   merge_visual_review: true
   merge_near_distance_m: 0.02
   merge_near_iou_threshold: 0.25
-  merge_near_containment_threshold: 0.8
-  merge_near_max_volume_ratio: 6.0
   merge_aabb_margin_m: 0.8
-  # Incremental legacy merge: force a complete AABB candidate and refusal-cache audit
-  # every N merge requests, in addition to the final scheduled-tour audit.
-  merge_full_sweep_interval: 10
   merge_min_evidence: 1
-  merge_min_similarity: 0.86
+  merge_min_similarity: 0.925
+  merge_knn_k: null
+  confirm_min_views: null
   update_in_place_distance_m: 0.5
   transition_move_distance_m: 0.35
   uncertain_move_distance_m: 0.8
@@ -184,14 +193,9 @@ rooms:
   gvd_topo_fill_max_area_m2: 20.0
   room_nested_merge_max_area_m2: 8.0
   room_nested_merge_area_ratio: 0.3
-  room_stale_overlap_retire_ratio: 0.50
   gvd_3d_nonwall_component_ratio: 0.01
   gvd_door_nms_m: 1.6
   gvd_critical_endpoint_margin_m: 0.2
-  gvd_wall_gap_max_m: 0.25
-  gvd_wall_gap_support_m: 0.30
-  room_cut_noise_max_area_m2: 0.10
-  room_cut_noise_max_ratio: 0.01
   doorway_vlm_enabled: true
   doorway_vlm_min_confidence: 0.55
   doorway_vlm_min_confirmations: 2
@@ -258,22 +262,14 @@ hooks:
   refiner: ''
   store: ''
   decisions_log: ''
+  merge_scorer: null
 perception:
+  describer:
+    emit_attributes: true
   frame_queue_max: 8
   frame_queue_min_translation_m: 0.25
   frame_queue_min_rotation_rad: 0.26
   backend: local
-  detector: vlm
-  boxer:
-    labels: lvisplus
-    threshold_2d: 0.20
-    threshold_3d: 0.50
-    nms_iou_threshold: 0.50
-    precision: auto
-    depth_stride: 8
-    max_depth_m: 10.0
-    max_depth_points: 12000
-    startup_timeout_s: 900
   max_frame_age_s: 1.0
   modal_endpoint: ''
   score_threshold: 0.30
@@ -303,9 +299,6 @@ perception:
   - window
   - window frame
   - window shutter
-  - bar
-  - air conditioner
-  - lamp
   - stairs
   - staircase
   - railing
@@ -324,3 +317,141 @@ perception_parallel:
   bbox_cuda_max_batch_points: 0
 archive:
   per_detection: true
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Added task section to select the run task. 
+#         1. Building = known scene, fixed tour, maintain 3DSG (default, original behaviour); 
+#         2. Exploration = unknown-scene task, scan the environment;
+#         3. ObjectNav = unknown-scene task, find a target object.
+# *****
+task:
+  mode: Building          # Building | Exploration | ObjectNav (overridden by --task)
+  # *****
+  # Date: 2026-11-22
+  # Editor: WangZX
+  # Remark: Default executor is now primitive (grid planner on the rtabmap map + forward/turn primitives).
+  #         It applies to Exploration / ObjectNav only; Building is unaffected.
+  # *****
+  executor: primitive     # primitive = goto planned on the rtabmap grid (exploration_controller_node); navmesh = ground-truth navmesh follower
+  max_duration_s: 1800    # timeout fallback for task modes (s); /action?act=task_done ends a task earlier
+  objectnav:
+    target: ''            # ObjectNav target category (overridden by --target)
+# *****
+# Date: 2026-11-19
+# Editor: WangZX
+# Remark: Frontier extraction parameters (frontier_node.py, active only in Exploration / ObjectNav).
+# *****
+exploration:
+  frontier:
+    enabled: true
+    rate_hz: 1.0                # max extraction rate
+    free_thresh: 25             # 0 <= v < free_thresh -> free
+    occ_thresh: 65              # v >= occ_thresh -> occupied
+    robot_radius_m: 0.20        # obstacle inflation
+    min_frontier_size_m: 0.3    # shorter clusters are dropped
+    max_frontier_length_m: 2.0  # longer clusters are split
+    min_unknown_area_m2: 0.10   # smaller unknown holes inside known space are ignored
+    # *****
+    # Date: 2026-11-19
+    # Editor: WangZX
+    # Remark: Live-test additions: robot snapping over the camera blind zone, and ray-tracing seam filling.
+    # *****
+    start_search_radius_m: 1.5  # robot snapping radius (camera blind zone in front of the robot)
+    fill_gap_m: 0.15            # unknown seams up to this width inside seen space count as free
+    # *****
+    # Date: 2026-11-20
+    # Editor: WangZX
+    # Remark: Camera blind zone clearing around visited poses (fake frontier ring around the robot).
+    # *****
+    blind_radius_m: 1.0         # unknown cells this close to a visited pose (line of sight) count as seen; 0 = off
+    visit_spacing_m: 0.25       # spacing of the recorded visited poses
+  # *****
+  # Date: 2026-11-22
+  # Editor: WangZX
+  # Remark: CRMI geometric information gain (info_gain_node.py). Compute and display only; semantic weight 0.
+  # *****
+  info_gain:
+    enabled: true
+    min_period_s: 2.0           # at most one evaluation per this many seconds
+    w_geo: 1.0
+    w_sem: 0.0                  # semantic gain reserved, disabled
+    distance_decay_per_m: 0.25  # utility *= exp(-decay * distance)
+    unreachable_factor: 0.5     # utility *= factor for a frontier not yet reachable
+    auto_goto: false            # reserved, not implemented
+    sensor:
+      max_range_m: 4.0          # same as rtabmap Grid/RangeMax
+      n_beams: 180              # 360 deg virtual scan
+      z_step_m: 0.1             # range discretisation of the virtual reading
+      sigma_hit_m: 0.1
+      z_hit: 0.7                # beam mixture weights (CRMI code)
+      z_short: 0.1
+      z_max: 0.1
+      z_rand: 0.1
+      lambda_short: 0.2
+    belief:
+      cell_m: 0.2               # gain grid; rtabmap cells are pooled to this size
+      n_bins: 10                # occupancy levels of the per-cell belief
+      known_confidence: 20.0    # Beta concentration for cells rtabmap has observed
+      stop_prob: 0.001          # skip cells a beam reaches with lower probability
+      dedup_cells: true         # count each cell once (best beam); false = sum over beams (paper Eq. 3)
+  # *****
+  # Date: 2026-11-22
+  # Editor: WangZX
+  # Remark: Grid path planner (grid_planner.py) and exploration auto mode (exploration_controller_node.py,
+  #         executor primitive in habitat_feed_host.py). Active only in Exploration / ObjectNav.
+  # *****
+  planner:
+    robot_radius_m: 0.20        # cells closer than this to an obstacle are not traversable
+    preferred_clearance_m: 0.60 # beyond this distance from obstacles the cost is the plain path length
+    clearance_weight: 5.0       # extra cost near obstacles: pushes the path to the middle of corridors
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Unknown cells and partial paths, for sparse far-range maps and obstacles that vanish on approach.
+    # *****
+    allow_unknown: true         # unknown cells near observed free space are traversable
+    unknown_cost: 3.0           # cost multiplier of an unknown cell
+    unknown_reach_m: 0.5        # max distance of a usable unknown cell from observed free space
+    allow_partial: true         # no full path: go to the reachable cell nearest the goal, keep re-planning
+    partial_min_progress_m: 0.3 # a partial path must get at least this much closer to the goal
+    snap_radius_m: 1.5          # start / goal snapping to the nearest traversable cell
+    simplify_tol_m: 0.10        # Douglas-Peucker tolerance of the published path
+    replan_period_s: 1.0        # re-plan the travelling goto at most this often
+  auto:
+    start_enabled: true         # the run starts in auto mode; a manual command in the GUI switches to manual
+    poll_hz: 5.0                # controller loop rate (feed status polling)
+    candidate_wait_s: 8.0       # after a goto, wait at most this long for a fresh candidate ranking
+    max_failures: 2             # a candidate failing this many times is blacklisted
+    blacklist_radius_m: 0.5     # candidates this close to a blacklisted point are skipped
+    lookahead_m: 0.4            # path follower pursuit distance
+    goal_tol_m: 0.3             # path follower arrival distance
+    stuck_frames: 5             # forward steps without motion before the goto counts as blocked
+    path_wait_s: 5.0            # a goto with no planned path after this long is unreachable
+  # *****
+  # Date: 2026-11-23
+  # Editor: WangZX
+  # Remark: Map filter (negative_obstacle_node.py), Exploration / ObjectNav only: drop-offs (stairwell, floor below)
+  #         are masked, ramps are kept, overhead-only obstacles (low lintel) are cleared.
+  # *****
+  negative_obstacles:
+    enabled: true
+    cloud_topic: /rtabmap/cloud_map
+    rate_hz: 1.0                # max filter rate
+    # drop-off detection
+    drop_m: 0.2                 # a point this far below the floor counts as a drop
+    floor_band_m: 0.10          # floor evidence from this far below the floor up to ground_max_m above
+    min_points: 2               # below-floor points needed around a seed cell (3x3)
+    floor_ratio: 0.5            # a seed cell holds at most this ratio of floor to below-floor points
+    min_seed_area_m2: 0.05      # smaller seed areas are noise
+    grow_max_m: 1.5             # growth over the ray-traced void above a stairwell
+    floor_neighbors: 4          # growth stops at empty cells with this many floor neighbours (a hole in the floor)
+    close_radius_m: 0.10        # closing of the mask
+    keep_radius_m: 0.6          # never mask cells this close to the robot
+    # ramps
+    max_step_m: 0.07            # neighbour height step still counted as one surface (stair riser ~0.17 m)
+    gap_bridge_m: 0.10          # empty gaps bridged when following a ramp
+    # overhead obstacles
+    clear_overhead: true        # clear occupied cells whose only points are above the robot
+    ground_max_m: 0.25          # rtabmap Grid/MaxGroundHeight
+    overhead_min_m: 1.5         # robot height: points at or above this do not block

@@ -78,6 +78,34 @@ install(PROGRAMS
   src/perception_module/graph_api_bridge.py
   src/perception_module/check_mapping_tf.py
   src/perception_module/ros_bev.py
+  # *****
+  # Date: 2026-11-19
+  # Editor: WangZX
+  # Remark: Frontier extraction node and the information gain module (exploration / ObjectNav tasks).
+  # *****
+  src/perception_module/frontier_extractor.py
+  src/perception_module/frontier_node.py
+  src/perception_module/info_gain.py
+  # *****
+  # Date: 2026-11-22
+  # Editor: WangZX
+  # Remark: CRMI information gain node (scores the frontier candidates).
+  # *****
+  src/perception_module/info_gain_node.py
+  # *****
+  # Date: 2026-11-22
+  # Editor: WangZX
+  # Remark: Grid path planner, path follower (imported by the feed) and the exploration controller node.
+  # *****
+  src/perception_module/grid_planner.py
+  src/perception_module/path_follower.py
+  src/perception_module/exploration_controller_node.py
+  # *****
+  # Date: 2026-11-23
+  # Editor: WangZX
+  # Remark: Negative obstacle (drop-off) filter node; also imported by the map consumers and ros_bev.
+  # *****
+  src/perception_module/negative_obstacle_node.py
   src/perception_module/live_overlay.py
   src/perception_module/vlm_call.py
   src/perception_module/scene_analysis.py

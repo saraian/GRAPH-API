@@ -2199,6 +2199,40 @@ LAUNCH_LOG_DIR = Path(tempfile.gettempdir()) / "found-launcher"
 # so the form offers exactly these rather than a free-text box that fails a minute later.
 SCENES = ["hm3d_00861", "hm3d_00337", "hm3d_00770", "mp3d_17DRP"]
 
+
+# *****
+# Date: 2026-11-23
+# Editor: WangZX
+# Remark: The launcher also offers every HM3D scene found in the dataset library (run_sim.sh resolves any
+#         hm3d_NNNNN the same way): NNNNN-<hash>/<hash>.basis.glb directly under HM3D_ROOT or under its
+#         val/ train/ minival/ folders. HM3D_ROOT comes from the environment, else from config/local.yaml.
+#         Scanned on every request, so a scene unpacked while the dashboard runs shows up on reload.
+# *****
+def _hm3d_root():
+    root = os.environ.get("HM3D_ROOT")
+    if not root:
+        try:
+            from graphapi_cli.configuration import environment
+            root = environment(GRAPH_API_ROOT)[0].get("HM3D_ROOT")
+        except Exception:
+            root = None
+    return Path(root) if root and Path(root).is_dir() else None
+
+
+def available_scenes():
+    found = set()
+    root = _hm3d_root()
+    if root is not None:
+        for base in (root, root / "val", root / "train", root / "minival"):
+            if not base.is_dir():
+                continue
+            for d in base.iterdir():
+                m = re.fullmatch(r"(\d{5})-([A-Za-z0-9]+)", d.name)
+                if m and (d / f"{m.group(2)}.basis.glb").is_file():
+                    found.add(f"hm3d_{m.group(1)}")
+    known = [s for s in SCENES if not s.startswith("hm3d_") or s in found or root is None]
+    return known + sorted(found - set(known))
+
 # EVERY variable run_sim.sh reads, grouped, each with THE SCRIPT'S OWN DEFAULT as its
 # placeholder. Read out of the script rather than remembered: a form that offers a stale
 # default is worse than one that offers none, because it looks authoritative.
@@ -2566,7 +2600,12 @@ def _start_page_html(bundles, current, mode, why):
         groups.append(f'<details><summary>{name} <span class="g">{_h.escape(blurb)}</span></summary>'
                       f'<div class="grid">{"".join(cells)}</div></details>')
 
-    scene_opts = "".join(f'<option>{s}</option>' for s in SCENES)
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Offer every scene in the dataset library (available_scenes), not only the fixed list.
+    # *****
+    scene_opts = "".join(f'<option>{s}</option>' for s in available_scenes())
     badge = f'<span class="badge {mode}">{mode}</span>'
     # GA-380: relative, like the menu's links -- an absolute href navigates to the SITE ROOT behind
     # a path prefix. This one sits in a different function from the menu and survived two sweeps.
@@ -2589,6 +2628,19 @@ def _start_page_html(bundles, current, mode, why):
                '<section><h2>Start a new run</h2>'
                f'<div><label for="f_scene">scene</label><select id="f_scene">{scene_opts}</select>'
                '<div class="hint">the four run_sim.sh accepts; override the paths under SCENE</div></div>'
+               # *****
+               # Date: 2026-11-20
+               # Editor: WangZX
+               # Remark: Task selection, same as `./graphapi run sim --task/--target`. The target box is shown
+               #         only for ObjectNav (toggleTarget in START_PAGE_JS).
+               # *****
+               '<div><label for="f_task">task</label><select id="f_task" onchange="toggleTarget()">'
+               '<option selected>Building</option><option>Exploration</option><option>ObjectNav</option></select>'
+               '<div class="hint">Building = known scene, fixed tour; Exploration / ObjectNav = unknown scene, '
+               'no tour, no prior map</div></div>'
+               '<div id="targetBox" hidden><label for="f_target">target</label>'
+               '<input type="text" id="f_target" placeholder="e.g. chair" autocomplete="off">'
+               '<div class="hint">ObjectNav target category (optional)</div></div>'
                f'{"".join(groups)}'
                '<div class="bar"><button id="go" onclick="startRun()">LAUNCH RUN</button>'
                '<button class="plain stop" id="stopBtn" onclick="stopRun()" hidden>STOP (SIGINT)</button>'
@@ -2646,15 +2698,34 @@ function collectEnv() {
   });
   return env;
 }
+// *****
+// Date: 2026-11-20
+// Editor: WangZX
+// Remark: Show the ObjectNav target box only when ObjectNav is selected.
+// *****
+function toggleTarget() {
+  var box = document.getElementById('targetBox');
+  if (box) box.hidden = document.getElementById('f_task').value !== 'ObjectNav';
+}
 async function startRun() {
   var msg = document.getElementById('runMsg'), go = document.getElementById('go');
   go.disabled = true; msg.style.color = '#8296b4'; msg.textContent = 'starting...';
   try {
     var r = await fetch('/start_run', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({scene: document.getElementById('f_scene').value, env: collectEnv()})});
+      // *****
+      // Date: 2026-11-20
+      // Editor: WangZX
+      // Remark: The selected task (and the ObjectNav target) is sent with the scene.
+      // *****
+      body: JSON.stringify({scene: document.getElementById('f_scene').value,
+                            task: document.getElementById('f_task').value,
+                            target: document.getElementById('f_task').value === 'ObjectNav'
+                                    ? document.getElementById('f_target').value.trim() : '',
+                            env: collectEnv()})});
     var d = await r.json();
     if (d.started) { msg.style.color = '#10b981';
-      msg.textContent = 'run ' + d.scene + ' started (pid ' + d.pid + ')'; pollRun(); }
+      msg.textContent = 'run ' + (d.task || 'Building') + (d.target ? ' (' + d.target + ')' : '')
+                        + ' on ' + d.scene + ' started (pid ' + d.pid + ')'; pollRun(); }
     else { msg.style.color = '#f87171';
       msg.textContent = 'not started: ' + (d.why || ('HTTP ' + r.status));
       (d.rejected || []).forEach(function (x) { msg.textContent += ' | ' + x; }); }
@@ -2745,12 +2816,45 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
 
     _install_baseline_replay(app)
 
+    # *****
+    # Date: 2026-11-20
+    # Editor: WangZX
+    # Remark: Bundle directory name of the active (PREPARING / RUNNING / DRAINING) sim operation, or None.
+    #         The registry has no bundle for a running operation, but the directory name carries the
+    #         operation's hash: operation 20261119T170043Z_48f0c35791 -> results/*_48f0c35791_*.
+    # *****
+    def _active_bundle_name():
+        try:
+            from graphapi_cli.registry import Registry
+            rows = Registry(os.environ.get("WORKSPACE_ROOT", str(RUNS_ROOT.parent))).rows()
+            active = [r for r in rows if r.get("mode") == "sim"
+                      and r.get("state") in ("PREPARING", "RUNNING", "DRAINING")]
+            if not active:
+                return None
+            suffix = str(active[-1]["operation_id"]).split("_", 1)[1]
+            found = sorted(RUNS_ROOT.glob(f"*_{suffix}_*"), key=lambda p: p.stat().st_mtime)
+            return found[-1].name if found else None
+        except Exception:
+            return None
+
     @app.get("/", response_class=HTMLResponse)
     def _start_page():
         try:
             current = current_fn()
         except OSError:
             current = None
+        # *****
+        # Date: 2026-11-20
+        # Editor: WangZX
+        # Remark: In live mode the "resume" link opens /dash, which shows the RUNNING operation, so name that
+        #         run's bundle instead of the latest COMPLETED one. Falls back to current_fn() when no run is
+        #         active or its bundle directory does not exist yet. Only the start page changes: the delete
+        #         guard keeps using current_fn.
+        # *****
+        if MODE["mode"] == "live":
+            running = _active_bundle_name()
+            if running:
+                current = running
         return HTMLResponse(with_tools_menu(
             _start_page_html(bundles_fn(), current, MODE["mode"], MODE["why"])))
 
@@ -3010,25 +3114,60 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
             body = await request.json()
         except ValueError as exc:
             return JSONResponse(status_code=400, content={"started": False, "why": str(exc)})
-        scene = str(body.get("scene") or SCENES[0])
-        if scene not in SCENES:
-            return JSONResponse(status_code=400, content={"started": False, "why": f"unknown scene {scene!r}", "known": SCENES})
+        # *****
+        # Date: 2026-11-23
+        # Editor: WangZX
+        # Remark: Validate against the scanned library (available_scenes) instead of the fixed list.
+        # *****
+        scenes = available_scenes()
+        scene = str(body.get("scene") or scenes[0])
+        if scene not in scenes:
+            return JSONResponse(status_code=400, content={"started": False, "why": f"unknown scene {scene!r}", "known": scenes})
         env_in, rejected = _clean_env(body.get("env"))
         if rejected:
             return JSONResponse(status_code=400, content={"started": False, "why": "some settings were refused", "rejected": rejected})
+        # *****
+        # Date: 2026-11-20
+        # Editor: WangZX
+        # Remark: Task / target from the launcher form, validated with the same rules as the CLI
+        #         (graphapi_cli.cli): canonical task name, target only for ObjectNav, and no prior map
+        #         (RTABMAP_LOCALIZE_DB) for unknown-scene tasks. Passed to launch.start like `--task`.
+        # *****
+        from graphapi_cli.cli import TASK_MODES, UNKNOWN_SCENE_TASKS
+        task_in = str(body.get("task") or "Building").strip()
+        task = next((m for m in TASK_MODES if m.lower() == task_in.lower()), None)
+        if task is None:
+            return JSONResponse(status_code=400, content={"started": False, "why": f"unknown task {task_in!r}",
+                                                          "known": list(TASK_MODES)})
+        target = str(body.get("target") or "").strip()
+        if target and task != "ObjectNav":
+            return JSONResponse(status_code=400, content={"started": False,
+                                                          "why": "target is only used with task ObjectNav"})
+        if task in UNKNOWN_SCENE_TASKS and env_in.get("RTABMAP_LOCALIZE_DB"):
+            return JSONResponse(status_code=400, content={"started": False,
+                                                          "why": f"task {task} maps an unknown scene from scratch; "
+                                                                 "clear RTABMAP_LOCALIZE_DB"})
         env = dict(os.environ)
         env.update(env_in)
         try:
             from graphapi_cli.launch import start
-            row = start(GRAPH_API_ROOT, {"mode": "sim", "scene": scene,
-                                        "local": env.get("GRAPHAPI_LOCAL_CONFIG"),
-                                        "gui": env.get("RVIZ") == "1" or env.get("FEED_SHOW") == "1"},
-                        detach=True, inherited=env)
+            request_row = {"mode": "sim", "scene": scene, "task": task,
+                           "local": env.get("GRAPHAPI_LOCAL_CONFIG"),
+                           "gui": env.get("RVIZ") == "1" or env.get("FEED_SHOW") == "1"}
+            if target:
+                request_row["target"] = target
+            row = start(GRAPH_API_ROOT, request_row, detach=True, inherited=env)
         except (OSError, ValueError) as exc:
             return JSONResponse(status_code=409, content={"started": False, "why": str(exc)})
         shown = {k: ("<set>" if k in _SECRET_NAMES else v) for k, v in sorted(env_in.items())}
+        # *****
+        # Date: 2026-11-20
+        # Editor: WangZX
+        # Remark: Echo the task and target so the launcher message can name them.
+        # *****
         return JSONResponse({"started": True, "operation_id": row["operation_id"], "pid": row["pid"],
-                             "scene": scene, "log": row["log"], "settings": shown})
+                             "scene": scene, "task": task, "target": target,
+                             "log": row["log"], "settings": shown})
 
     @app.post("/stop_run")
     def _stop_run(request: Request = None):

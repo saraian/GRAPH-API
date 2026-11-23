@@ -9,6 +9,7 @@ if [[ ${GRAPHAPI_CLI_CONTAINER:-0} == 1 ]]; then
   exec python3 -m graphapi_cli.cli "$@"
 fi
 
+# 按需自动重建 CLI 镜像，改了 graphapi_cli/ 里的任何文件，下一次运行 ./graphapi 都会自动重建镜像，不用手动 build
 command -v docker >/dev/null || { echo 'graphapi: install Docker and start its daemon first' >&2; exit 2; }
 IMAGE=${GRAPHAPI_CLI_IMAGE:-graphapi-cli:latest}
 # Both planning and execution mount the current source and set PYTHONPATH to
@@ -44,6 +45,7 @@ if [[ "$IMAGE_EXISTS" == 0 || ( "$INSTALLED" != "$REVISION" && "$CONTROL_COMMAND
   build_cli_image
 fi
 
+# 确认 Docker 守护进程在本机运行，且共享了宿主机的文件系统路径。Docker Desktop for Windows/Mac 通过 TCP 端口暴露守护进程，无法访问宿主机的文件系统。
 ENDPOINT=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
 case "$ENDPOINT" in
   unix://*) SOCKET=${ENDPOINT#unix://} ;;
@@ -55,6 +57,7 @@ mkdir -p "$CACHE/graphapi"
 PLAN=$(mktemp -d "${TMPDIR:-/tmp}/graphapi-bootstrap.XXXXXX")
 trap 'rm -rf "$PLAN"' EXIT
 
+# 要传进容器的环境变量
 # Planning receives exports so inherited values can override local settings.
 # The container-side planner filters the runtime environment in one place.
 ENV_ARGS=()
@@ -63,8 +66,9 @@ while IFS= read -r key; do
     PATH|PYTHONPATH|PYTHONHOME|VIRTUAL_ENV|CONDA_*|LD_LIBRARY_PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS) continue ;;
   esac
   if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then ENV_ARGS+=(-e "$key"); fi
-done < <(compgen -e)
+done < <(compgen -e) # 列出所有已导出的环境变量名
 
+# 第一次运行容器：规划挂载。把整个宿主机文件系统只读挂载到 /host
 # Planning reads external configuration through a read-only host view. The
 # actual CLI receives only the identity mounts that its command needs.
 docker run --rm --user "$(id -u):$(id -g)" \
@@ -79,9 +83,13 @@ read_args() {
     VALUES+=("$value")
   done < "$file"
 }
+
+# TIAGo真机相关。
 VALUES=(); read_args "$PLAN/docker.args"; DOCKER_ARGS=("${VALUES[@]}")
 VALUES=(); read_args "$PLAN/host.env"; HOST_ENV=("${VALUES[@]}")
 VALUES=(); read_args "$PLAN/host.args"; HOST_ARGS=("${VALUES[@]}")
+
+# 第二次运行容器：执行真正的命令
 MODE=$(cat "$PLAN/host.mode")
 if [[ "$MODE" != none ]]; then
   # These existing actions affect host firewall/routing and retain host sudo.

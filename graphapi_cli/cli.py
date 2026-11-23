@@ -12,6 +12,24 @@ from .configuration import ConfigurationError, environment, initialize, path_fro
 from .help_text import configure_help, selected_help
 
 
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Task modes for `run sim`. Building is the original known-scene workflow; 
+#         Exploration and ObjectNav are unknown-scene tasks. Names are matched case-insensitively.
+# *****
+TASK_MODES = ("Building", "Exploration", "ObjectNav")
+UNKNOWN_SCENE_TASKS = ("Exploration", "ObjectNav")
+
+
+def task_mode(value):
+    """argparse type: accept any capitalisation of a task mode and return its canonical name."""
+    for mode in TASK_MODES:
+        if str(value).strip().lower() == mode.lower():
+            return mode
+    raise argparse.ArgumentTypeError(f"invalid task {value!r} (choose from {', '.join(TASK_MODES)})")
+
+
 def parser():
     ap = argparse.ArgumentParser(prog="graphapi", description="Setup once; launch GRAPH-API workflows through one CLI.")
     ap.add_argument("--project", metavar="DIRECTORY", help="repository folder; normally found automatically")
@@ -74,6 +92,19 @@ def parser():
             sub.add_argument("--pose", choices=("simulator", "rtabmap"), help="where the camera position comes from (default: simulator)")
             sub.add_argument("--map", metavar="FILE", help="use an existing RTAB-Map database; work on a copy, keeping the original")
             sub.add_argument("--mapping-only", action="store_true", help="build a map without object detection")
+            # *****
+            # Date: 2026-11-18
+            # Editor: WangZX
+            # Remark: Added --task (Building | Exploration | ObjectNav, default Building) 
+            #         and an optional --target object category for ObjectNav.
+            # *****
+            sub.add_argument("--task", type=task_mode, default="Building", metavar="TASK",
+                             help="Building: known scene, fixed tour, maintain the 3D scene graph (default); "
+                                  "Exploration: autonomous exploration of an unknown scene; "
+                                  "ObjectNav: search for a target object in an unknown scene. "
+                                  "Unknown-scene tasks have no fixed tour and no prior map; the agent waits for /action commands")
+            sub.add_argument("--target", metavar="CATEGORY",
+                             help="object category to search for with --task ObjectNav, for example chair (optional)")
         else:
             sub.add_argument("--container", metavar="NAME", help="private PAL container name; otherwise use local settings")
             sub.add_argument("--resume", action="store_true", help="reuse the current TIAGO session and output; does not restart an old run ID")
@@ -198,7 +229,13 @@ def _show_status(value, *, history=False):
             if value.get(key) is not None:
                 stamp = datetime.fromtimestamp(value[key], timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                 print(f"{label}: {stamp}")
-        for key, label in (("bag", "TIAGO bag"), ("robot_address", "TIAGO robot address"),
+        # *****
+        # Date: 2026-11-18
+        # Editor: WangZX
+        # Remark: Show the run task and ObjectNav target in the human-readable status.
+        # *****
+        for key, label in (("task", "Task"), ("target", "Target"),
+                           ("bag", "TIAGO bag"), ("robot_address", "TIAGO robot address"),
                            ("map_source", "Map source"), ("map_frame", "Map frame"), ("map_topic", "Map topic"),
                            ("runtime", "Runtime"), ("container", "Container"),
                            ("perception", "Perception enabled"), ("recording", "Recording enabled"),
@@ -304,6 +341,25 @@ def main(argv=None):
                 raise ConfigurationError("--visits requires --transforms and a compatible tour schedule")
             if request.get("rate", 1) <= 0:
                 raise ConfigurationError("--rate must be positive")
+            # *****
+            # Date: 2026-11-18
+            # Editor: WangZX
+            # Remark: Unknown-scene tasks refuse options that bring a fixed tour or a prior map, 
+            #         and --target is only accepted with ObjectNav.
+            # *****
+            task = request.get("task")
+            if request.get("target") and task != "ObjectNav":
+                raise ConfigurationError("--target is only used with --task ObjectNav")
+            if task in UNKNOWN_SCENE_TASKS:
+                prior = [flag for flag, key in (("--map", "map"), ("--floors", "floors"), ("--visits", "visits"),
+                                                ("--transforms", "transforms"), ("--tour-schedule", "tour_schedule"))
+                         if request.get(key)]
+                if task == "ObjectNav":
+                    prior += [flag for flag, key in (("--no-perception", "no_perception"),
+                                                     ("--mapping-only", "mapping_only")) if request.get(key)]
+                if prior:
+                    raise ConfigurationError(f"--task {task} runs in an unknown scene without a fixed tour or prior map; "
+                                             f"remove {', '.join(prior)}")
             if getattr(args, "container", None):
                 env["GRAPHAPI_PAL_CONTAINER"] = args.container
             if getattr(args, "resume", False):

@@ -570,7 +570,22 @@ case "${1:-hm3d_00861}" in
               DEF_DATASET=$HM3D_ROOT/hm3d_annotated_basis.scene_dataset_config.json ;;
   mp3d_17DRP) DEF_SCENE=$MP3D_ROOT/17DRP5sb8fy/17DRP5sb8fy.glb
               DEF_DATASET=$MP3D_ROOT/mp3d.scene_dataset_config.json ;;
-  *) echo "unknown scene '$1' (hm3d_00861|hm3d_00337|hm3d_00770|hm3d_00824|hm3d_00829|mp3d_17DRP)"; exit 1 ;;
+  # *****
+  # Date: 2026-11-23
+  # Editor: WangZX
+  # Remark: Any other HM3D scene by number (hm3d_NNNNN): looked up as NNNNN-<hash>/<hash>.basis.glb directly
+  #         under HM3D_ROOT or under its val/ train/ minival/ split folders (the layout of the official
+  #         HM3D v0.2 tars), so newly downloaded scenes need no new case here.
+  # *****
+  hm3d_[0-9][0-9][0-9][0-9][0-9])
+              DEF_SCENE=""
+              for _d in "$HM3D_ROOT"/"${1#hm3d_}"-* "$HM3D_ROOT"/{val,train,minival}/"${1#hm3d_}"-*; do
+                _h=${_d##*/}; _h=${_h#*-}
+                [ -f "$_d/$_h.basis.glb" ] && { DEF_SCENE="$_d/$_h.basis.glb"; break; }
+              done
+              [ -n "$DEF_SCENE" ] || { echo "unknown scene '$1': no ${1#hm3d_}-*/*.basis.glb under $HM3D_ROOT (or its val/ train/ minival/)"; exit 1; }
+              DEF_DATASET=$HM3D_ROOT/hm3d_annotated_basis.scene_dataset_config.json ;;
+  *) echo "unknown scene '$1' (hm3d_NNNNN found under HM3D_ROOT, or mp3d_17DRP)"; exit 1 ;;
 esac
 # VLM config: real regolo endpoint when a key is present, offline smoke fallback
 if [ -n "${REGOLO_API_KEY:-}" ]; then
@@ -852,6 +867,26 @@ except Exception:
     print(sys.argv[3])" "${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" "$1" "$2" 2>/dev/null || echo "$2"
 }
 
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Read task.mode from the run config. Building keeps the original known-scene workflow;
+#         Exploration / ObjectNav skip the fixed tour and every prior map below.
+# *****
+TASK_MODE=$(python3 -c "
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    print((c.get('task') or {}).get('mode') or 'Building')
+except Exception:
+    print('Building')" "${GRAPH_API_CONFIG:-$HERE/$CFG_NAME}" 2>/dev/null || echo Building)
+case "$TASK_MODE" in
+  Building|Exploration|ObjectNav) ;;
+  *) echo "!! task.mode=$TASK_MODE is not one of Building, Exploration, ObjectNav"; exit 1 ;;
+esac
+export TASK_MODE
+echo "    task: $TASK_MODE"
+
 # CAMERA PITCH, in degrees, negative looks DOWN. It reaches the feed host and the bundle: a
 # setting that changes what the camera SEES and is not recorded is the shape that made six days
 # of tour runs unreadable.
@@ -973,7 +1008,20 @@ if [ "${RTABMAP_SLAM:-0}" = "1" ]; then
   echo "   Localization against the published map is the only mode; see PLAN_1.3 §31."
   exit 1
 fi
-if [ "${MAPPING_ONLY:-0}" != "1" ] && [ "${RTABMAP_SLAM:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Unknown-scene tasks never use a prior map: refuse an explicit localization database or a map
+#         draw, skip the published-map lookup below, and always map from scratch.
+# *****
+if [ "$TASK_MODE" != "Building" ]; then
+  if [ -n "${RTABMAP_LOCALIZE_DB:-}" ] || [ "${MAP_DRAW:-0}" = "1" ]; then
+    echo "!! task $TASK_MODE runs in an unknown scene: unset RTABMAP_LOCALIZE_DB and MAP_DRAW (no prior map)."
+    exit 1
+  fi
+  echo "    task $TASK_MODE: unknown scene, published maps are ignored; this run maps from scratch."
+fi
+if [ "$TASK_MODE" = "Building" ] && [ "${MAPPING_ONLY:-0}" != "1" ] && [ "${RTABMAP_SLAM:-0}" != "1" ] && [ -z "${RTABMAP_LOCALIZE_DB:-}" ]; then
   if [ -n "$FEED_SPAWN_FLOOR" ]; then
     _mapdir=$(printf "$WORKSPACE_ROOT/maps/%s/floor_%+.2f" "$SCENE_ARG" "$FEED_SPAWN_FLOOR")
   else
@@ -1266,7 +1314,16 @@ SCHEDULE_DIR=${SCHEDULE_DIR:-$WORKSPACE_ROOT/schedules}
 # the sampling policy" and there is no such policy to ask for; it now refuses rather than being
 # read as "unset", because a lane that deliberately typed `FEED_SCHEDULE=` asked for something
 # specific and must be told it no longer exists.
-if [ -n "${FEED_SCHEDULE+x}" ] && [ -z "$FEED_SCHEDULE" ]; then
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Unknown-scene tasks have no fixed tour: no schedule is built or read, and the feed host waits for
+#         /action commands (goto / nav_goal) instead. The original schedule chain applies to Building only.
+# *****
+if [ "$TASK_MODE" != "Building" ]; then
+  export FEED_SCHEDULE=""
+  echo "    schedule: <none> (task $TASK_MODE: no fixed tour; the agent is driven by /action commands)"
+elif [ -n "${FEED_SCHEDULE+x}" ] && [ -z "$FEED_SCHEDULE" ]; then
   echo "!! FEED_SCHEDULE is set and empty. That used to mean \"use the sampling policy\", which is"
   echo "   removed (owner 2026-09-11). Unset FEED_SCHEDULE to build or reuse this scene's schedule,"
   echo "   or point it at a schedule file."
@@ -1378,9 +1435,16 @@ fi
 # bundles from two machines cannot safely share one directory: nothing inside could tell them apart,
 # so a reader comparing them would not know they were comparing different systems. The bundle now
 # says so itself, which is stronger than keeping the directories apart and remembering why.
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Record the task in run_metadata.json. The motion_policy literal stays "schedule" (Building output is
+#         unchanged); unknown-scene tasks rewrite it to "commands" right after the heredoc.
+# *****
 cat <<EOF > "$RUN_DIR/run_metadata.json"
 {
   "run_id": "$RUN_ID",
+  "task": "$TASK_MODE",
   "scene": "$SCENE_ARG",
   "start_time": "$(date -Iseconds)",
   "machine": "$(hostname)",
@@ -1512,6 +1576,20 @@ print(json.dumps({
 }
 EOF
 python3 -m json.tool "$RUN_DIR/run_metadata.json" > /dev/null   || { echo "!! run_metadata.json is not valid JSON — aborting rather than shipping an unreadable bundle"; exit 1; }
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Unknown-scene tasks are driven by /action commands, not a schedule; stamp that in the bundle.
+# *****
+if [ "$TASK_MODE" != "Building" ]; then
+  python3 -c "
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d['feed']['motion_policy'] = 'commands'
+json.dump(d, open(p, 'w'), indent=2)" "$RUN_DIR/run_metadata.json" \
+    || { echo "!! could not stamp motion_policy=commands into run_metadata.json"; exit 1; }
+fi
 
 echo "    run bundle: $RUN_DIR"
 echo "    (latest is repointed at the end, after a successful run)"
@@ -1948,7 +2026,7 @@ fi
 # house_20260911_131347 died on exactly that, exit 1, before a single frame.
 SCENE_NAME="${SCENE_ARG:-${SCENE:-hm3d_00861}}"
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-$HERE}"
-RESULTS_DIR="${RESULTS_DIR:-$WORKSPACE_ROOT/results}"
+export RESULTS_DIR="${RESULTS_DIR:-$WORKSPACE_ROOT/results}"  # storey children re-enter via bash "$0"
 FLOORS="${HOUSE_FLOORS:-}"
 _floor_source="HOUSE_FLOORS"
 if [ -z "$FLOORS" ]; then
@@ -1964,6 +2042,22 @@ if [ -z "$FLOORS" ]; then
   _floor_source="the published maps in $_mapdir"
 fi
 FLOORS="$(echo $FLOORS)"      # collapse the trailing space so ${FLOORS%% *} is exact
+# *****
+# Date: 2026-11-18
+# Editor: WangZX
+# Remark: Unknown-scene tasks do not know the storeys in advance: ignore HOUSE_FLOORS and the published
+#         maps and start one unpinned run (an explicit --floor still chooses the spawn storey).
+# *****
+_parent_task=$(python3 -c "
+import sys, yaml
+try:
+    print(((yaml.safe_load(open(sys.argv[1])) or {}).get('task') or {}).get('mode') or 'Building')
+except Exception:
+    print('Building')" "$GRAPH_API_CONFIG" 2>/dev/null || echo Building)
+if [ "$_parent_task" != "Building" ]; then
+  FLOORS=""
+  _floor_source="task $_parent_task (unknown scene, no published storeys)"
+fi
 
 if [ "$MULTI_FLOOR" = "1" ]; then
   FLOORS="$(printf '%s' "$MULTI_FLOOR_SEQUENCE" | tr ',' ' ' | xargs)"

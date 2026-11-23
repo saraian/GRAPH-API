@@ -101,6 +101,17 @@ def command(root, env, arguments, *, habitat=False, name=None, gpu=False, contro
         # Existing native/remote orchestration tools launch sibling Docker containers.
         socket = env.get("GRAPHAPI_DOCKER_SOCKET", "/var/run/docker.sock")
         args += ["-v", f"{socket}:{socket}"]
+        # Controllers write operation status and run bundles into the host workspace, so they run as
+        # the invoking user (like the CLI container) rather than the image's root. The host account
+        # files give that uid a name and home; the socket group keeps sibling launches working.
+        args += ["--user", f"{os.getuid()}:{os.getgid()}", "--group-add", str(Path(socket).stat().st_gid)]
+        for account in ("/etc/passwd", "/etc/group"):
+            if Path(account).is_file():
+                args += ["-v", f"{account}:{account}:ro"]
+        # DOCKER_CONFIG is forwarded above; nested controllers require it to exist.
+        docker_config = env.get("DOCKER_CONFIG")
+        if docker_config and Path(docker_config).is_dir():
+            args += ["-v", f"{docker_config}:{docker_config}"]
         ssh = Path.home() / ".ssh"
         if ssh.is_dir():
             args += ["-v", f"{ssh}:{ssh}:ro"]

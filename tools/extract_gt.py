@@ -39,7 +39,24 @@ def extract(scene: str) -> dict:
     import quaternion  # noqa: F401, I001  (must precede habitat_sim: registers the dtype)
     import habitat_sim as hs
 
-    glb, cfg = SCENES[scene]
+    # *****
+    # Date: 2026-11-23
+    # Editor: WangZX
+    # Remark: Scenes outside the fixed table are looked up by number under HM3D_ROOT (directly or under
+    #         val/ train/ minival/), the same rule run_sim.sh uses.
+    # *****
+    if scene in SCENES:
+        glb, cfg = SCENES[scene]
+    else:
+        import os
+        root = Path(os.environ.get("HM3D_ROOT", "/DATA/habitat_matterport/hm3d_example"))
+        hits = [d / f"{d.name.split('-', 1)[1]}.basis.glb"
+                for base in (root, root / "val", root / "train", root / "minival")
+                for d in sorted(base.glob(f"{scene.removeprefix('hm3d_')}-*"))]
+        hits = [g for g in hits if g.is_file()]
+        if not scene.startswith("hm3d_") or not hits:
+            raise SystemExit(f"unknown scene {scene!r}: not in the table and not found under {root}")
+        glb, cfg = str(hits[0]), str(root / "hm3d_annotated_basis.scene_dataset_config.json")
     cfg0 = hs.SimulatorConfiguration()          # single config, as the feed host builds it
     cfg0.scene_id = glb
     cfg0.scene_dataset_config_file = cfg
