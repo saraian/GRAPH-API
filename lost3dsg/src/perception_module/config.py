@@ -41,7 +41,7 @@ _DEFAULTS = {
         # against it. Set to 6 to re-enable; the code is unchanged and self-checking.
         "grid_cells": 0,
         "base_url": "https://api.regolo.ai/v1",
-        "model": "qwen3.8-27b",          # owner ruling 2026-09-14 (was gemma4-31b)
+        "model": "qwen3.5-9b",           # compact multimodal model for faster VLM cycles
         # `auto` keeps the existing OpenAI-compatible transport. Set this to `gemini` for
         # Google's generateContent API, or leave it unset and use a Vertex AI base_url: the
         # transport also detects aiplatform.googleapis.com automatically.
@@ -50,6 +50,9 @@ _DEFAULTS = {
         # matches the generateContent request used by the Gemini deployment.
         "thinking_level": "low",
         "image_mime_type": "image/png",
+        # Aspect-preserving maximum side for images sent to the VLM. 448 retains
+        # useful object detail while reducing the image payload vs the former 512.
+        "image_max_side": 448,
         # vlm_completion_kwargs() below is INERT unless this is exactly False, so a config
         # passed through GRAPH_API_CONFIG that omits the key would fall back to a default
         # without it and silently re-enable hidden reasoning, with nothing in the bundle to
@@ -61,6 +64,10 @@ _DEFAULTS = {
         "api_key": "",
         "timeout": 180.0,
         "retries": 2,
+        # Boxer semantics already receives the complete frame. Add enlarged crops only
+        # for the smallest proposals, where the frame alone has the least detail. Sending
+        # one crop per proposal made a cycle's image payload grow with every detection.
+        "boxer_max_proposal_crops": 6,
         "crop_concurrency": 4,
         # GA-303: seconds per describer call (single crop and crop grid). Declared since
         # the first crop_grid measurements but read by nothing until 2026-09-07: the bound
@@ -74,6 +81,9 @@ _DEFAULTS = {
         # this is the tree that runs. A yaml that still sets the key now sets nothing.
     },
     "embedding": {
+        # Keep semantic matching on MiniLM; do not fall back to Word2Vec when
+        # the Sentence Transformers model is unavailable.
+        "backend": "sentence_transformer",  # sentence_transformer | word2vec
         "word2vec_path": "/root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz",
         "word2vec_limit": 200000,
     },
@@ -110,6 +120,7 @@ _DEFAULTS = {
         # --- merge thresholds -------------------------------------------------------------
         "merge_max_distance_m": 0.8,       # maximum centre distance for legacy merge locality
         "merge_max_surface_gap_m": 0.02,   # tight box-surface exception to the centre gate
+        "merge_visual_review": False,
         "merge_near_distance_m": 0.02,     # AABB surface gap for same-label overlap override
         "merge_near_iou_threshold": 0.25,
         "merge_near_containment_threshold": 0.80,
@@ -417,7 +428,7 @@ _DEFAULTS = {
         # lazy asynchronous check against the current RGB camera frame.
         "doorway_vlm_enabled": True,
         "doorway_vlm_min_confidence": 0.55,
-        "doorway_vlm_min_confirmations": 1,
+        "doorway_vlm_min_confirmations": 2,
         "doorway_require_wall_support": False,
         "doorway_vlm_key_resolution_m": 0.25,
         "doorway_vlm_show_rejected": False,

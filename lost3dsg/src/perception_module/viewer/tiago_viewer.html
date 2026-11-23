@@ -1199,6 +1199,10 @@
               <option value="auto">Auto Follow Agent</option>
             </select>
           </div>
+          <label style="display:flex;align-items:center;gap:8px;color:#e2e8f0;font-size:0.78rem;">
+            <input id="bevShowDoorways" type="checkbox" checked onchange="if(lastBEVData) renderCanvasBEV('bevCanvasModal', lastBEVData, bevZoom);">
+            <span style="color:#fb7185;font-weight:700;">Doorways</span>
+          </label>
           <!-- The IN / OUT / RESET row lived here. Zoom is now on the map itself:
                wheel about the cursor, drag to pan, double-click to zoom, and a +/-
                cluster pinned in the canvas corner. Those buttons also never redrew
@@ -1971,6 +1975,27 @@
           const px = cx + (pt[0] - ax) * scale;
           const py = cy + (pt[1] - az) * scale;
           ctx.beginPath(); ctx.arc(px, py, 2.5, 0, 2 * Math.PI); ctx.fill();
+        });
+      }
+
+      // Confirmed door cuts from room.json. Visible in the waypoint selector only;
+      // they do not affect canvas clicks or waypoint coordinates.
+      const showDoorways = canvasId === 'bevCanvasModal' &&
+        document.getElementById('bevShowDoorways')?.checked !== false;
+      if (showDoorways && Array.isArray(data.doorways) && data.doorways.length) {
+        data.doorways.forEach(door => {
+          const pts = door && door.points;
+          if (!Array.isArray(pts) || pts.length < 2) return;
+          const x1 = cx + (pts[0][0] - ax) * scale, y1 = cy + (pts[0][1] - az) * scale;
+          const x2 = cx + (pts[1][0] - ax) * scale, y2 = cy + (pts[1][1] - az) * scale;
+          ctx.save(); ctx.lineCap = 'round';
+          ctx.strokeStyle = 'rgba(15, 23, 42, 0.9)'; ctx.lineWidth = 7;
+          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+          ctx.strokeStyle = '#fb7185'; ctx.lineWidth = 4;
+          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+          ctx.fillStyle = '#fff1f2';
+          ctx.beginPath(); ctx.arc((x1 + x2) / 2, (y1 + y2) / 2, 3, 0, 2 * Math.PI); ctx.fill();
+          ctx.restore();
         });
       }
 

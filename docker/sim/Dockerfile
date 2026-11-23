@@ -50,6 +50,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 setup.py build_ext --parallel 4 install --headless --bullet && \
     mkdir -p /opt/habitat/bin && ln -s /usr/bin/python3 /opt/habitat/bin/python && \
     rm -rf /tmp/habitat-sim
+# Boxer source is pinned as a local submodule; checkpoints are mounted separately
+# from the host so the large research weights do not inflate the image. Keep this
+# after Habitat so Boxer changes do not invalidate its expensive native build.
+COPY third_party/boxer /opt/boxer
 COPY lost3dsg /opt/graphapi_ws/src/lost3dsg
 COPY config /opt/graphapi_ws/config
 # Compatibility resource symlinks resolve relative to the copied package.
@@ -66,6 +70,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN printf '%s\n' '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}' \
     > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+# RTX 50-series GPUs need CUDA 12.8 kernels. Keep this upgrade after Habitat's
+# expensive native build so changing the PyTorch wheel does not rebuild Habitat.
+RUN python3 -m pip uninstall -y torch torchvision \
+      nvidia-cublas-cu11 nvidia-cuda-runtime-cu11 nvidia-curand-cu11 nvidia-cufft-cu11 \
+      nvidia-cuda-nvrtc-cu11 nvidia-cuda-cupti-cu11 nvidia-cudnn-cu11 nvidia-nccl-cu11 nvidia-nvtx-cu11 && \
+    python3 -m pip install --no-cache-dir \
+      --extra-index-url https://download.pytorch.org/whl/cu128 \
+      'torch==2.7.1+cu128' 'torchvision==0.22.1+cu128' \
+      'onnxruntime-gpu==1.20.2'
 ARG RUNTIME_BUILD_REVISION=manual
 LABEL graphapi.runtime="2" graphapi.runtime.build="${RUNTIME_BUILD_REVISION}"
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,display

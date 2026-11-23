@@ -1221,6 +1221,13 @@ class ObjectServices(Node):
         self._merge_refusal_cache = {}
         self._merge_incremental_stats = {}
         self._merge_force_next_full = False
+        self._visual_review = None
+        if CFG["association"].get("merge_visual_review", False):
+            from cv_utils import vlm_call
+            from detection_archive import resolve_archive_dir
+            from merge_visual import VisualMergeReview
+            self._visual_review = VisualMergeReview(
+                resolve_archive_dir(CFG, PROJECT_ROOT), vlm_call, self.get_logger())
         self._mutation_sequence = 0
         self._provenance_incomplete = False
         self._mutation_ledger_path = os.path.join(
@@ -1490,6 +1497,11 @@ class ObjectServices(Node):
 
         return response
     
+    def destroy_node(self):
+        if self._visual_review is not None:
+            self._visual_review.close()
+        return super().destroy_node()
+
     @staticmethod
     def _merge_object_key(obj):
         return str(getattr(obj, "object_id", None) or obj.label)
@@ -1910,8 +1922,21 @@ class ObjectServices(Node):
             # were correctly refused, and were then fused anyway. Overlap is locality,
             # not similarity; the same confusion as GA-05, in the one operation that
             # destroys an identity.
-            if (sim < min_similarity
-                    and not geometry_override):
+            review = getattr(self, "_visual_review", None)
+            visual_views = None
+            review_candidate = (review is not None
+                                and (not same_base_label or sim < min_similarity)
+                                and (sim >= min_similarity or geometry_override
+                                     or bbox_iou >= MERGE_NEAR_IOU_THRESHOLD))
+            if review_candidate:
+                verdict, visual_views = review.check(a, b)
+                if verdict != "same_whole_object":
+                    refused(a, b, "visual_" + verdict, sim, visual_views=visual_views,
+                            bbox_iou=bbox_iou)
+                    if verdict in ("pending", "unavailable"):
+                        sweep.visual_retry_ids.update((id(a), id(b)))
+                    continue
+            if sim < min_similarity and not geometry_override and not review_candidate:
                 print(f"   ❌ LOW SIMILARITY ({sim:.2f} < {min_similarity})")
                 # Unit-typed key (joint rename with the ontology lane, their
                 # inbox 00002/00004/00005): `threshold` was unit-polymorphic -- 0.925
@@ -1950,7 +1975,9 @@ class ObjectServices(Node):
             # a real signal -- a different-label pair with nothing else measured
             # scored 0.0000 because the labels WERE compared and disagreed. This
             # only refuses pairs that would otherwise have been merged.
-            if ev["optional_count"] < MERGE_MIN_EVIDENCE:
+            if review_candidate:
+                decision_reason = "visual_same_whole_object"
+            if ev["optional_count"] < MERGE_MIN_EVIDENCE and not review_candidate:
                 print(f"   ❌ NO EVIDENCE ({ev['optional_count']} optional "
                       f"terms < {MERGE_MIN_EVIDENCE}; sim {sim:.3f} on the label alone)")
                 refused(a, b, "evidence_absent", sim,
@@ -2004,6 +2031,7 @@ class ObjectServices(Node):
                 "color_conflict": colors_clash,
                 "material_conflict": materials_clash,
                 "decision_reason": decision_reason,
+                "visual_views": visual_views,
                 "keeper_room": room_a if keeper is a else room_b,
                 "discard_room": room_b if keeper is a else room_a,
                 "pair_key": pair_key,
@@ -2034,6 +2062,7 @@ class ObjectServices(Node):
                 "material_conflict": materials_clash,
                 "similarity":  round(sim, 3),
                 "decision_reason": decision_reason,
+                "visual_views": visual_views,
                 # Keep the same evidence metadata on accepted merges that the
                 # refusal path already records. A similarity of 1.0 is not enough
                 # to calibrate this gate: it can come from a label-only/identical
@@ -2198,6 +2227,7 @@ class ObjectServices(Node):
                     keeper_room=pair["keeper_room"], discard_room=pair["discard_room"],
                     similarity=pair["similarity"],
                     decision_reason=pair.get("decision_reason"),
+                    visual_views=pair.get("visual_views"),
                     geometry_policy=(pair.get("geometry_acc") or {}).get(
                         "policy", "surface_enclosure"),
                     geometry_samples=(pair.get("geometry_acc") or {}).get("n"),
@@ -2301,6 +2331,7 @@ class ObjectServices(Node):
                     self._merge_refusal_cache.pop(pair_id, None)
 
         return SimpleNamespace(
+            visual_retry_ids=set(),
             max_distance=max_distance, min_similarity=min_similarity, dry_run=dry_run,
             full_audit=full_audit, audit_interval=audit_interval,
             cache_hits_by_reason=cache_hits_by_reason, active_cache=active_cache,
@@ -2360,7 +2391,8 @@ class ObjectServices(Node):
                         or (key[0] in touched or key[1] in touched)
                         and key not in current_candidate_pairs):
                     self._merge_refusal_cache.pop(key, None)
-        self._merge_object_signatures = current_signatures
+        self._merge_object_signatures = {oid: sig for oid, sig in current_signatures.items()
+                                         if oid not in sweep.visual_retry_ids}
         self._merge_room_signature = room_signature
         # Commit only after a completed sweep; failed evaluations must be retried.
         self._merge_request_signature = sweep.request_signature
@@ -2378,6 +2410,7 @@ class ObjectServices(Node):
                 cached_refusals=sum(cache_hits_by_reason.values()),
                 cache_hits_by_reason=cache_hits_by_reason,
                 applied_merges=len(to_remove_pairs),
+                visual_retry_objects=len(sweep.visual_retry_ids),
             )
         except Exception as exc:
             self.get_logger().error(f"decision_log merge_incremental_summary failed: {exc}")
@@ -2504,6 +2537,7 @@ class ObjectServices(Node):
             audit_limit_reached = False
             for pass_index in range(max_passes):
                 decisions = self._evaluate_merge_sweep(sweep)
+                visual_retry_count = len(getattr(sweep, "visual_retry_ids", ()))
                 pass_applied = self._apply_merge_proposals(
                     decisions.accepted, max_distance=sweep.max_distance, dry_run=dry_run)
                 applied.extend(pass_applied)
@@ -2532,6 +2566,8 @@ class ObjectServices(Node):
                 f"{'[DRY RUN] ' if dry_run else ''}"
                 f"{len(applied)} merge(s) "
                 f"{'simulati' if dry_run else 'eseguiti'}"
+                + (f"; {visual_retry_count} objects await visual review"
+                   if visual_retry_count else "")
                 + ("; audit pass limit reached, another full audit is required"
                    if audit_limit_reached else "")
             )

@@ -20,6 +20,7 @@ import time
 import urllib.parse
 import uuid
 from collections import deque
+from itertools import chain
 from datetime import datetime, timezone
 from pathlib import Path as FilePath
 
@@ -696,6 +697,7 @@ def _embedding_model_identity():
         loaded = "none"
     return {
         "loaded": loaded,
+        "backend_requested": embedding_cfg.get("backend", "auto"),
         "word2vec_path_configured": configured,
         "word2vec_path_exists": bool(configured) and os.path.exists(configured),
         "word2vec_limit": embedding_cfg.get("word2vec_limit"),
@@ -833,6 +835,7 @@ class ObjectManagerService(Node):
         self.scan_merge_callback_group = MutuallyExclusiveCallbackGroup()
         
         # --- INIT ROOM MANAGER ---
+        self._recent_door_sightings = deque(maxlen=128)
         self.room_manager = RoomManager(
             w2v_model=world2vec,
             node=self,
@@ -969,9 +972,14 @@ class ObjectManagerService(Node):
         self._input_watchdog = self.create_timer(INPUT_SILENCE_TIMEOUT, self._check_input_silence)
         #self._uncertain_cleanup_timer = self.create_timer(5.0, self._cleanup_uncertain_by_time)
 
+    def _refresh_door_tracks(self):
+        self.room_manager.update_door_tracks(chain(
+            wm.persistent_perceptions, tuple(self._recent_door_sightings)))
+
     @synchronized_world_model
     def reassign_objects_to_rooms(self):
         """Synchronize persistent object assignments after map resegmentation."""
+        self._refresh_door_tracks()
         changed = self.room_manager.reassign_objects_by_geometry(wm.persistent_perceptions)
         if not changed:
             return
@@ -1764,6 +1772,7 @@ class ObjectManagerService(Node):
         else:
             self.latest_fov_volume = None
 
+        door_sightings = []
         for box in request.bboxes.boxes:
             x_min, x_max = min(box.x_min, box.x_max), max(box.x_min, box.x_max)
             y_min, y_max = min(box.y_min, box.y_max), max(box.y_min, box.y_max)
@@ -1811,6 +1820,14 @@ class ObjectManagerService(Node):
                 }
             temp_key = create_object_key(box.label, "", "", "")
             observation = observation_dict_from_msg(getattr(box, "observation", None))
+            if RoomManager.is_door_track_label(box.label) and (observation or {}).get("capture_id"):
+                # Preserve the measured geometry even if association later renames
+                # the object or another box in this capture has the same label.
+                door_sightings.append({
+                    "label": box.label,
+                    "bbox": {k: bbox_data[k] for k in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")},
+                    "observations": [{"capture_id": observation["capture_id"]}],
+                })
             previous = cycle_bboxes_by_label.get(temp_key)
             if previous is not None:
                 self.object_services.log_both(
@@ -2346,6 +2363,10 @@ class ObjectManagerService(Node):
 
         self.latest_bboxes.clear()
 
+        if door_sightings:
+            self._recent_door_sightings.extend(door_sightings)
+        if door_sightings or objects_modified:
+            self._refresh_door_tracks()
         if objects_modified:
             publish_persistent_bboxes(self, wm, self.persistent_bbox_pub)
             publish_persistent_centroids(self, wm, self.persistent_centroids_pub)

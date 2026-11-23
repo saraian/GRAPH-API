@@ -83,6 +83,90 @@ BAG_TOPICS=(
 
 q() { printf '%q' "$1"; }
 
+# Serialize pane creation and shutdown. A cancelled startup must not create
+# new panes after stop has already checked an empty session.
+lock_stack() {
+  exec {stack_lock_fd}>"/tmp/graphapi-tiago-${SESSION//[^a-zA-Z0-9_.-]/_}.lock"
+  flock "$stack_lock_fd"
+}
+
+unlock_stack() {
+  flock -u "$stack_lock_fd"
+  exec {stack_lock_fd}>&-
+  unset stack_lock_fd
+}
+
+startup_cancelled() {
+  [ -n "${GRAPH_API_RUN_ID:-}" ] && [ -e "/tmp/graphapi-tiago-cancel-$GRAPH_API_RUN_ID" ]
+}
+
+register_startup() {
+  [ -n "${GRAPH_API_RUN_ID:-}" ] || return 0
+  startup_record="/tmp/graphapi-tiago-start-$GRAPH_API_RUN_ID"
+  python3 - "$startup_record" "$$" <<'PY'
+import json, os, sys
+from pathlib import Path
+path, pid = Path(sys.argv[1]), int(sys.argv[2])
+identity = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+temporary = path.with_suffix('.tmp')
+temporary.write_text(json.dumps([pid, identity]))
+os.replace(temporary, path)
+PY
+  trap 'exit 130' INT TERM
+}
+
+cancel_startup() {
+  [ -n "${GRAPHAPI_STOP_OPERATION_ID:-}" ] || return 0
+  python3 - "/tmp/graphapi-tiago-start-$GRAPHAPI_STOP_OPERATION_ID" <<'PY'
+import json, os, signal, sys, time
+from pathlib import Path
+record = Path(sys.argv[1])
+def status(pid):
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        return fields[0], int(fields[1]), fields[19]
+    except (OSError, IndexError, ValueError):
+        return None
+try:
+    pid, identity = json.loads(record.read_text())
+except FileNotFoundError:
+    sys.exit(0)
+root = status(pid)
+if root is None or root[2] != identity:
+    record.unlink(missing_ok=True)
+    sys.exit(0)
+# Only this registered startup's descendants; never match process names.
+processes = {int(p.name): status(int(p.name)) for p in Path('/proc').iterdir() if p.name.isdigit()}
+owned = {pid: identity}
+while True:
+    children = {p: info[2] for p, info in processes.items() if info and info[1] in owned and p not in owned}
+    if not children:
+        break
+    owned.update(children)
+for child, expected in reversed(list(owned.items())):
+    info = status(child)
+    if info and info[2] == expected:
+        try:
+            os.kill(child, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    if not any((info := status(p)) and info[0] != 'Z' and info[2] == expected for p, expected in owned.items()):
+        record.unlink(missing_ok=True)
+        sys.exit(0)
+    time.sleep(.05)
+print('TIAGo startup is still closing; retry stop.', file=sys.stderr)
+sys.exit(1)
+PY
+}
+
+cleanup_stack() {
+  if [ -n "${startup_record:-}" ]; then rm -f -- "$startup_record"; fi
+  if [ -n "${stack_lock_fd:-}" ]; then flock -u "$stack_lock_fd"; fi
+}
+trap cleanup_stack EXIT
+
 send() {
   local name=$1 cmd=$2
   local logfile=$name
@@ -142,6 +226,8 @@ PY
 }
 
 start_stack() {
+  register_startup
+  if startup_cancelled; then return 130; fi
   if tmux has-session -t "$SESSION" 2>/dev/null; then
     echo "tmux session already exists: $SESSION"
     echo "attach with: tmux attach -t $SESSION"
@@ -252,6 +338,8 @@ start_stack() {
     fi
     session_env+=(-e "$key=${!key:-}")
   done
+  lock_stack
+  if startup_cancelled; then return 130; fi
   tmux new-session -d -s "$SESSION" -n bridge "${session_env[@]}"
   tmux set-window-option -t "$SESSION:bridge" remain-on-exit on
   printf '%s\n' "${GRAPH_API_RUN_ID:-legacy}" > "$OUTPUT/operation_id"
@@ -329,9 +417,26 @@ start_stack() {
       echo "bag: $BAG_PATH (rate=$BAG_RATE loop=$BAG_LOOP; recorded map; RTAB-Map disabled)"
     fi
   fi
+  if [ -n "${startup_record:-}" ]; then
+    rm -f -- "$startup_record"
+    unset startup_record
+  fi
+  unlock_stack
 }
 
 stop_stack() {
+  if [ -n "${GRAPHAPI_STOP_OPERATION_ID:-}" ]; then
+    # The cancellation marker also covers a launcher still in its preflight.
+    touch -- "/tmp/graphapi-tiago-cancel-$GRAPHAPI_STOP_OPERATION_ID"
+  fi
+  lock_stack
+  if ! cancel_startup; then unlock_stack; return 1; fi
+  if [ -n "${GRAPHAPI_STOP_OPERATION_ID:-}" ] &&
+     { [ ! -f "$OUTPUT/operation_id" ] ||
+       [ "$(cat "$OUTPUT/operation_id")" != "$GRAPHAPI_STOP_OPERATION_ID" ]; }; then
+    unlock_stack
+    return 0
+  fi
   if tmux has-session -t "$SESSION" 2>/dev/null; then
     # Let ros2 launch send SIGINT to RTAB-Map and close SQLite before removing panes.
     for window in $(tmux list-windows -t "$SESSION" -F '#W'); do
@@ -347,6 +452,7 @@ stop_stack() {
     done
     if [ "$busy" = 1 ]; then
       echo "Stack still shutting down; leaving panes intact. Inspect RTAB-Map before retrying stop." >&2
+      unlock_stack
       return 1
     fi
     tmux kill-session -t "$SESSION"
@@ -354,6 +460,7 @@ stop_stack() {
   else
     echo "session not running: $SESSION"
   fi
+  unlock_stack
 }
 
 archive_output() {

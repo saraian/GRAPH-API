@@ -1028,6 +1028,17 @@ def _is_gemini_vlm():
     }
 
 
+def _is_local_ollama_vlm():
+    """Whether the configured endpoint is Ollama's local HTTP server."""
+    vlm = CFG.get("vlm") or {}
+    provider = str(vlm.get("provider", "auto") or "auto").strip().lower()
+    if provider == "ollama":
+        return True
+    parsed = urllib.parse.urlparse(str(vlm.get("base_url") or ""))
+    return (parsed.hostname or "").lower() in {"localhost", "127.0.0.1", "::1"} \
+        and parsed.port in (None, 11434)
+
+
 def _resolve_api_key():
     vlm = CFG.get("vlm", {}) or {}
     if _is_gemini_vlm():
@@ -1125,6 +1136,65 @@ def _header_value(headers, name):
     except Exception:
         return None
     return None
+
+
+def _ollama_chat_completion(prompt, encoded_image, timeout, response_format,
+                            model, additional_images=None):
+    """Call Ollama natively so its `think` and multimodal fields are honored."""
+    vlm = CFG.get("vlm") or {}
+    parsed = urllib.parse.urlparse(str(vlm.get("base_url") or "http://localhost:11434/v1"))
+    endpoint = urllib.parse.urlunsplit((parsed.scheme or "http", parsed.netloc,
+                                        "/api/chat", "", ""))
+
+    images = []
+    if encoded_image:
+        images.append(encoded_image)
+    message_text = prompt
+    for index, image in enumerate(additional_images or (), start=1):
+        encoded = image.get("encoded_image") if isinstance(image, dict) else None
+        if not encoded:
+            continue
+        label = str(image.get("label") or f"Additional image {index}")
+        message_text += f"\n\nAdditional image {index}: {label}."
+        images.append(encoded)
+
+    message = {"role": "user", "content": message_text}
+    if images:
+        message["images"] = images
+    body = {"model": model, "messages": [message], "stream": False,
+            "options": {"num_predict": 1024}}
+    enable_thinking = vlm.get("enable_thinking", False)
+    if enable_thinking is not None:
+        body["think"] = bool(enable_thinking)
+    if response_format is not None:
+        if isinstance(response_format, dict) and response_format.get("type") == "json_schema":
+            schema_wrapper = response_format.get("json_schema") or {}
+            schema = schema_wrapper.get("schema")
+            body["format"] = schema if isinstance(schema, dict) else "json"
+        else:
+            body["format"] = response_format
+
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        document = json.loads(response.read().decode("utf-8"))
+        headers = response.headers
+    if document.get("error"):
+        raise RuntimeError(f"Ollama error: {document['error']}")
+    content = (document.get("message") or {}).get("content")
+    if not content:
+        raise RuntimeError("Ollama returned an empty response")
+    usage = {
+        "prompt_tokens": document.get("prompt_eval_count"),
+        "completion_tokens": document.get("eval_count"),
+        "total_tokens": (document.get("prompt_eval_count") or 0)
+                        + (document.get("eval_count") or 0),
+    }
+    return content, usage, _header_value(headers, "x-request-id")
 
 
 class _GeminiHttpError(RuntimeError):
@@ -1343,6 +1413,15 @@ def vlm_call(prompt, encoded_image=None, timeout=None, response_format=None, ima
                     image_mime_type=image_mime_type,
                     additional_images=additional_images,
                 )
+            elif _is_local_ollama_vlm():
+                content, usage, request_id = _ollama_chat_completion(
+                    prompt,
+                    encoded_image,
+                    timeout=CFG["vlm"]["timeout"] if timeout is None else timeout,
+                    response_format=response_format,
+                    model=model_name,
+                    additional_images=additional_images,
+                )
             else:
                 image_content = [{"type": "text", "text": prompt}]
                 if encoded_image:
@@ -1440,9 +1519,18 @@ def vlm_call(prompt, encoded_image=None, timeout=None, response_format=None, ima
                 "error": str(e)[:300],
             })
             last_err = e
+            status_code = getattr(e, "status_code", None) or getattr(e, "code", None)
+            # Invalid request payloads (for example a context overflow) will fail
+            # identically on retry. Stop immediately; only retry transient 408/409/429
+            # responses and transport/server failures.
+            if isinstance(status_code, int) and 400 <= status_code < 500 \
+                    and status_code not in (408, 409, 429):
+                break
+    attempts_made = attempt + 1
     last_detail = f"{type(last_err).__name__}: {str(last_err)[:240]}" if last_err else "unknown"
     raise RuntimeError(
-        f"VLM unreachable after {attempts_total} attempts; last_error={last_detail}"
+        f"VLM request failed after {attempts_made}/{attempts_total} attempts; "
+        f"last_error={last_detail}"
     ) from last_err
 
 def numpy_to_base64(img, fmt='.png'):

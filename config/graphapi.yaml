@@ -39,7 +39,9 @@ vlm:
   timeout: 120.0
   retries: 2
   enable_thinking: false
+  image_max_side: 448
 embedding:
+  backend: sentence_transformer
   word2vec_path: /root/gensim-data/word2vec-google-news-300/word2vec-google-news-300.gz
   word2vec_limit: 200000
 appearance:
@@ -73,6 +75,8 @@ association:
   merge_cost_ratio: 20.0
   merge_min_consecutive: 2
   merge_max_distance_m: 0.8
+  merge_max_surface_gap_m: 0.02
+  merge_visual_review: true
   merge_near_distance_m: 0.02
   merge_near_iou_threshold: 0.25
   merge_aabb_margin_m: 0.8
@@ -194,7 +198,7 @@ rooms:
   gvd_critical_endpoint_margin_m: 0.2
   doorway_vlm_enabled: true
   doorway_vlm_min_confidence: 0.55
-  doorway_vlm_min_confirmations: 1
+  doorway_vlm_min_confirmations: 2
   doorway_require_wall_support: true
   doorway_vlm_key_resolution_m: 0.25
   doorway_vlm_show_rejected: false
@@ -268,7 +272,7 @@ perception:
   backend: local
   max_frame_age_s: 1.0
   modal_endpoint: ''
-  score_threshold: 0.15
+  score_threshold: 0.30
   nms_threshold: 0.5
   cloud_timeout_s: 60.0
   excluded_labels:

@@ -59,6 +59,7 @@ install(PROGRAMS
   src/perception_module/perception_utils.py
   src/perception_module/object_manager_6.py
   src/perception_module/object_services.py
+  src/perception_module/merge_visual.py
   src/perception_module/object_evidence.py
   src/perception_module/boxer_geometry.py
   src/perception_module/scan_hook.py

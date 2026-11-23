@@ -940,10 +940,14 @@ case "$ACTION" in
     ;;
   stop)
     ensure_container
+    stop_env=()
+    if [ -n "${GRAPHAPI_STOP_OPERATION_ID:-}" ]; then
+      stop_env+=(-e "GRAPHAPI_STOP_OPERATION_ID=$GRAPHAPI_STOP_OPERATION_ID")
+    fi
     if [ -n "${FOUND_TMUX_SESSION:-}" ]; then
-      exec_user -e "FOUND_TMUX_SESSION=$FOUND_TMUX_SESSION" "$CONTAINER" bash -lc 'found-robot-stack stop'
+      exec_user "${stop_env[@]}" -e "FOUND_TMUX_SESSION=$FOUND_TMUX_SESSION" "$CONTAINER" bash -lc 'found-robot-stack stop'
     else
-      exec_user "$CONTAINER" bash -lc 'found-robot-stack stop'
+      exec_user "${stop_env[@]}" "$CONTAINER" bash -lc 'found-robot-stack stop'
     fi
     ;;
   attach)

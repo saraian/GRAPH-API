@@ -1168,27 +1168,27 @@
                  already has from every media player. -->
             <button id="btnFitGraph" class="graph-layout-pill" onclick="fitCy()"
                     title="Fit the whole graph inside the panel (does not resize the panel)">&#x2925; FIT</button>
-              <button id="btnPhysics" class="graph-layout-pill active" onclick="toggleGraphPhysics()"
-                      aria-pressed="true"
-                      title="Physics runs outside the UI thread. The worker uses the local WASM solver and falls back to JavaScript inside the worker if WebAssembly is unavailable.">⚡ PHYSICS: ON</button>
+              <button id="btnPhysics" disabled class="graph-layout-pill" onclick="toggleGraphPhysics()"
+                      aria-pressed="false"
+                      title="TREE keeps hierarchy levels fixed">⚡ PHYSICS: OFF</button>
               <div style="width:1px; height:18px; background:rgba(51,65,85,0.8); margin: 0 2px;"></div>
               <!-- GA-251. Six layout pills in a row is most of the toolbar's width, and only
                    one of them is ever active. The labeled selector keeps the current choice
                    visible while its menu keeps the toolbar short. -->
               <div style="position:relative">
                 <button id="btnLayoutMenu" class="graph-layout-pill active" type="button"
-                        onclick="toggleLayoutMenu()" title="Graph layout mode · 🗺 MAP"
-                        aria-label="Graph layout mode: map" aria-haspopup="menu"
+                        onclick="toggleLayoutMenu()" title="Graph layout mode · 🌲 TREE"
+                        aria-label="Graph layout mode: tree" aria-haspopup="menu"
                         aria-controls="layoutMenu" aria-expanded="false">
-                  <span id="layoutMenuButtonLabel">🗺 MAP</span> <span aria-hidden="true">▾</span>
+                  <span id="layoutMenuButtonLabel">🌲 TREE</span> <span aria-hidden="true">▾</span>
                 </button>
                 <div id="layoutMenu" role="menu" aria-label="Graph layout mode" style="display:none">
-                  <div id="layoutMenuCurrent" class="lm-current">Current: 🗺 MAP</div>
+                  <div id="layoutMenuCurrent" class="lm-current">Current: 🌲 TREE</div>
                   <button class="lm-item" type="button" role="menuitem" onclick="pickLayout('map','🗺 MAP')"><b>🗺 MAP</b><span>the room's floor plan — neighbours on screen are neighbours in the room</span></button>
                   <button class="lm-item" type="button" role="menuitem" onclick="pickLayout('float','✳ FLOAT')"><b>✳ FLOAT</b><span>repulsion only, no edge forces — shows the node set</span></button>
                   <button class="lm-item" type="button" role="menuitem" onclick="pickLayout('grid','▦ GRID')"><b>▦ GRID</b><span>even rows and columns, sorted by class</span></button>
                   <button class="lm-item" type="button" role="menuitem" onclick="pickLayout('concentric','◎ ORBIT')"><b>◎ ORBIT</b><span>rings by status — collapses to one ring in a single room</span></button>
-                  <button class="lm-item" type="button" role="menuitem" onclick="pickLayout('breadthfirst','🌲 TREE')"><b>🌲 TREE</b><span>hierarchy from the room outward</span></button>
+                  <button class="lm-item" type="button" role="menuitem" onclick="pickLayout('breadthfirst','🌲 TREE')"><b>🌲 TREE</b><span>building, rooms and their objects</span></button>
                   <button class="lm-item" type="button" role="menuitem" onclick="pickLayout('circle','◯ CIRCLE')"><b>◯ CIRCLE</b><span>one ring, insertion order</span></button>
                 </div>
               </div>
@@ -1573,6 +1573,10 @@
               <option value="auto">Auto Follow Agent</option>
             </select>
           </div>
+          <label style="display:flex;align-items:center;gap:8px;color:#e2e8f0;font-size:0.78rem;">
+            <input id="bevShowDoorways" type="checkbox" checked onchange="drawBEV(lastBEVData);">
+            <span style="color:#fb7185;font-weight:700;">Doorways</span>
+          </label>
           <!-- The IN / OUT / RESET row lived here. Zoom is now on the map itself:
                wheel about the cursor, drag to pan, double-click to zoom, and a +/-
                cluster pinned in the canvas corner. Those buttons also never redrew
@@ -3972,6 +3976,47 @@
       ctx.beginPath(); ctx.arc(0, 0, 3, 0, 2 * Math.PI); ctx.fill();
       ctx.restore();
 
+      // Draw confirmed openings above the room, object and trajectory layers.
+      if (document.getElementById('bevShowDoorways')?.checked !== false) {
+        for (const door of data.doorways || []) {
+          const pts = door.points;
+          if (!Array.isArray(pts) || pts.length !== 2 ||
+              !pts.every(p => Array.isArray(p) && p.length >= 2 &&
+                              Number.isFinite(p[0]) && Number.isFinite(p[1]))) continue;
+          const [[x1, y1], [x2, y2]] = pts.map(([x, y]) =>
+            [cx + (x - ax) * scale, cy + (y - az) * scale]);
+          const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+          const span = Math.hypot(x2 - x1, y2 - y1);
+          if (!span) continue;
+          const nx = -(y2 - y1) / span, ny = (x2 - x1) / span;
+          ctx.save();
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+          for (const [x, y] of [[x1, y1], [x2, y2]]) {
+            ctx.moveTo(x - 4 * nx, y - 4 * ny);
+            ctx.lineTo(x + 4 * nx, y + 4 * ny);
+          }
+          ctx.strokeStyle = '#190e20'; ctx.lineWidth = 6; ctx.stroke();
+          ctx.strokeStyle = '#ff8eae'; ctx.lineWidth = 3; ctx.stroke();
+          if (mx >= 0 && mx < w && my >= 0 && my < h) {
+            ctx.font = 'bold 11px sans-serif';
+            const label = 'Doorway';
+            const width = Math.ceil(ctx.measureText(label).width) + 10;
+            const x = Math.max(0, Math.min(w - width, mx - width / 2));
+            const y = my >= 29 ? my - 28 : my + 12;
+            ctx.beginPath(); ctx.moveTo(mx, my);
+            ctx.lineTo(x + width / 2, my >= 29 ? y + 16 : y);
+            ctx.strokeStyle = '#ff8eae'; ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.fillStyle = '#311322'; ctx.fillRect(x, y, width, 16);
+            ctx.strokeRect(x, y, width, 16);
+            ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(label, x + width / 2, y + 8);
+          }
+          ctx.restore();
+        }
+      }
+
       const coordsEl = document.getElementById('bevCoords');
       if (coordsEl) coordsEl.textContent = `AGENT: (${ax.toFixed(2)}, ${az.toFixed(2)})`;
     }
@@ -4444,8 +4489,8 @@
     //
     // NOTHING IS COLLAPSED. All 270 nodes remain, individually visible and selectable; the
     // change is where they are put, not how many there are.
-    let currentGraphLayout = 'map';
-    let physicsOn = true;
+    let currentGraphLayout = 'breadthfirst';
+    let physicsOn = false;
     let physicsRequestId = 0;
     let physicsWorker = null;
     // The active worker is terminated before a new layout starts. This keeps stale results
@@ -4460,6 +4505,16 @@
         physicsWorker.terminate();
         physicsWorker = null;
       }
+    }
+
+    function syncPhysicsButton() {
+      const button = document.getElementById('btnPhysics');
+      const fixed = currentGraphLayout === 'breadthfirst' && !semanticViewOn;
+      button.disabled = fixed;
+      button.classList.toggle('active', physicsOn && !fixed);
+      button.setAttribute('aria-pressed', String(physicsOn && !fixed));
+      button.textContent = '⚡ PHYSICS: ' + (physicsOn && !fixed ? 'ON' : 'OFF');
+      button.title = fixed ? 'TREE keeps hierarchy levels fixed' : 'Toggle graph physics';
     }
 
     function toggleGraphPhysics() {
@@ -4685,149 +4740,91 @@
     function setGraphLayout(mode) {
       if (cy && currentGraphLayout !== mode) cy.scratch('_physicsSettledLayout', null);
       currentGraphLayout = mode;
+      syncPhysicsButton();
       document.querySelectorAll('.graph-layout-pill:not(#btnPhysics)').forEach(btn => btn.classList.remove('active'));
       const btn = document.getElementById('btnLayout' + mode.charAt(0).toUpperCase() + mode.slice(1));
       if (btn) btn.classList.add('active');
       runSelectedLayout();
     }
 
-    // GA-248. MAP: the room's own floor plan, quantised to a grid.
-    //
-    // THE KEY REALISATION, and it took a measurement to see it: every node already carries an
-    // exact 3D position. Every force layout, every stress majorization, every neighbour
-    // embedding exists to RECONSTRUCT a geometry from a graph. We do not have to reconstruct
-    // anything -- we have the geometry, and the graph is a blurred copy of it. Hop distance
-    // on the informative edge set correlates with true 3D distance at only r = 0.60, and on
-    // isNextTo alone at r = 0.228.
-    //
-    // MEASURED against neighbourhood preservation at k=10 (chance = 10/269 = 0.037):
-    //   FLOAT              NP@10 3D 0.041   hop 0.051   <- AT CHANCE. carries no adjacency.
-    //   stress majorization         --      hop 0.277   best stress, still worse than this
-    //   MAP (this)                0.488         0.250   13x chance on geometry
-    //   raw projection            0.840         0.320   the ceiling, but 1,396 overlaps
-    // FLOAT places every relation at the random-pair length: isOn 194 px, isIn 198, isAbove
-    // 197, isNextTo 176, random 182. The edges are decoration. Under MAP the lengths form a
-    // ladder -- containment and support tightest, adjacency next -- for free, from geometry.
-    //
-    // WHY A GRID and not the raw projection: 207 of 270 objects have a same-class neighbour
-    // within 8.6 cm, so the projection piles duplicates on one pixel. Continuous overlap
-    // removal does not converge on that input -- measured, 463 overlapping pairs still left
-    // after 400 passes. Quantising to distinct cells resolves co-located duplicates by
-    // construction, and costs metric exactness we do not need.
-    //
-    // z is dropped because z is the VERTICAL axis here (std 0.48 against 1.16 and 2.70).
-    function runMapLayout() {
+    // Anchor nodes in the BEV coordinate system. Only collisions displace them.
+    function runMapLayout(refresh = false) {
       if (!cy) return;
-      const nodes = cy.nodes(':visible').length ? cy.nodes(':visible') : cy.nodes();
-      const n = nodes.length;
-      if (!n) return;
-      const CELL_W = 104, CELL_H = 36, SLACK = 1.6, ASPECT = Math.max(0.4, cy.width() / cy.height());
-
-      const gx = new Float64Array(n), gy = new Float64Array(n);
-      let cx = 0, cy0 = 0, np = 0;
-      nodes.forEach((el, i) => {
-        const p = el.data('position');
-        if (p && p.length >= 2) { cx += p[1]; cy0 += p[0]; np++; }
-      });
-      cx = np ? cx / np : 0; cy0 = np ? cy0 / np : 0;
-      let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
-      nodes.forEach((el, i) => {
-        const p = el.data('position');
-        // The room node has no position of its own; the centroid is the honest placement,
-        // not the origin, which would fling it into a corner of an unrelated coordinate frame.
-        gx[i] = (p && p.length >= 2) ? p[1] : cx;
-        gy[i] = (p && p.length >= 2) ? p[0] : cy0;
-        if (gx[i] < minx) minx = gx[i]; if (gx[i] > maxx) maxx = gx[i];
-        if (gy[i] < miny) miny = gy[i]; if (gy[i] > maxy) maxy = gy[i];
+      const nodes = cy.nodes(':visible');
+      if (!nodes.length) return;
+      const cellWidth = 112, cellHeight = 72, unitsPerMetre = 180;
+      const byRoom = new Map();
+      nodes.forEach(node => {
+        const room = node.data('room');
+        const point = objectWorldPoint(node.data());
+        if (node.data('type') !== 'object' || !room || !point) return;
+        const sum = byRoom.get(room) || { x: 0, y: 0, count: 0 };
+        sum.x += point.x;
+        sum.y += point.y;
+        sum.count++;
+        byRoom.set(room, sum);
       });
 
-      const cells = Math.ceil(n * SLACK);
-      const ratio = (ASPECT * CELL_H) / CELL_W;
-      const rows = Math.max(1, Math.round(Math.sqrt(cells / ratio)));
-      const cols = Math.max(1, Math.ceil(cells / rows));
-
-      const ex = Math.max(maxx - minx, 1e-9), ey = Math.max(maxy - miny, 1e-9);
-      const fx = new Float64Array(n), fy = new Float64Array(n);
-      for (let i = 0; i < n; i++) {
-        fx[i] = (gx[i] - minx) / ex * (cols - 1);
-        fy[i] = (gy[i] - miny) / ey * (rows - 1);
-      }
-
-      // Densest region first, then spiral out to the nearest free cell. Claiming in input
-      // order would let an outlier take a central cell that a crowded cluster needs.
-      let mx = 0, my = 0;
-      for (let i = 0; i < n; i++) { mx += fx[i]; my += fy[i]; }
-      mx /= n; my /= n;
-      const keyd = new Float64Array(n);
-      for (let i = 0; i < n; i++) keyd[i] = (fx[i]-mx)*(fx[i]-mx) + (fy[i]-my)*(fy[i]-my);
-      const ord = Array.from({length: n}, (_, i) => i).sort((a, b) => (keyd[a]-keyd[b]) || (a-b));
-
-      const taken = new Uint8Array(cols * rows);
-      const cellOf = new Int32Array(n);
-      const maxR = Math.max(cols, rows);
-      for (const i of ord) {
-        const bx = Math.round(fx[i]), by = Math.round(fy[i]);
-        let best = -1, bestD = Infinity;
-        for (let r = 0; r < maxR; r++) {
-          for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
-            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-            const x = bx + dx, y = by + dy;
-            if (x < 0 || x >= cols || y < 0 || y >= rows) continue;
-            const c = y * cols + x;
-            if (taken[c]) continue;
-            const d = (x-fx[i])*(x-fx[i]) + (y-fy[i])*(y-fy[i]);
-            if (d < bestD) { bestD = d; best = c; }
-          }
-          if (best >= 0) break;
+      const entries = nodes.map(node => {
+        let point = objectWorldPoint(node.data());
+        if (!point && node.data('type') === 'room') {
+          const sum = byRoom.get(node.data('room'));
+          if (sum) point = { x: sum.x / sum.count, y: sum.y / sum.count };
         }
-        if (best < 0) best = taken.indexOf(0);
-        taken[best] = 1;
-        cellOf[i] = best;
-      }
-
-      // Greedy alone lands ~2.5x off the optimal assignment. Three swap passes close it to
-      // within a few percent of a Hungarian solve, in milliseconds and in plain JS.
-      const freeCells = [];
-      for (let c = 0; c < cols * rows; c++) if (!taken[c]) freeCells.push(c);
-      const cxOf = c => c % cols, cyOf = c => Math.floor(c / cols);
-      const err = (i, c) => { const dx = cxOf(c)-fx[i], dy = cyOf(c)-fy[i]; return dx*dx + dy*dy; };
-      for (let pass = 0; pass < 3; pass++) {
-        let moves = 0;
-        for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-          const ci = cellOf[i], cj = cellOf[j];
-          if (err(i,cj) + err(j,ci) < err(i,ci) + err(j,cj) - 1e-12) {
-            cellOf[i] = cj; cellOf[j] = ci; moves++;
-          }
+        return { node, point };
+      }).sort((a, b) => a.node.id().localeCompare(b.node.id()));
+      const measured = entries.filter(entry => entry.point);
+      const right = measured.length ? Math.max(...measured.map(e => e.point.x)) : 0;
+      const top = measured.length ? Math.min(...measured.map(e => e.point.y)) : 0;
+      const sideRows = Math.ceil(Math.sqrt(entries.length - measured.length));
+      const occupied = new Set();
+      const pending = [];
+      let side = 0;
+      for (const {node, point} of entries) {
+        let x, y;
+        if (point) {
+          x = Math.round(point.x * unitsPerMetre / cellWidth);
+          y = Math.round(point.y * unitsPerMetre / cellHeight);
+        } else {
+          x = Math.ceil(right * unitsPerMetre / cellWidth) + 2 + Math.floor(side / sideRows);
+          y = Math.round(top * unitsPerMetre / cellHeight) + side % sideRows;
+          side++;
         }
-        for (let i = 0; i < n; i++) {
-          let bk = -1, bd = err(i, cellOf[i]);
-          for (let k = 0; k < freeCells.length; k++) {
-            const d = err(i, freeCells[k]);
-            if (d < bd - 1e-12) { bd = d; bk = k; }
-          }
-          if (bk >= 0) { const old = cellOf[i]; cellOf[i] = freeCells[bk]; freeCells[bk] = old; moves++; }
+        const anchor = x + ',' + y;
+        const saved = node.scratch('_mapSlot');
+        if (refresh && saved && saved.anchor === anchor) {
+          occupied.add(saved.key);
+        } else {
+          pending.push({node, x, y, anchor});
         }
-        if (!moves) break;
       }
-
-      const positions = {};
-      nodes.forEach((el, i) => {
-        positions[el.id()] = { x: cxOf(cellOf[i]) * CELL_W, y: cyOf(cellOf[i]) * CELL_H };
+      cy.batch(() => {
+        for (const {node, x, y, anchor} of pending) {
+          let best;
+          for (let radius = 0; !best; radius++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+              for (let dy = -radius; dy <= radius; dy++) {
+                if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+                const key = (x + dx) + ',' + (y + dy);
+                if (occupied.has(key)) continue;
+                const distance = Math.hypot(dx * cellWidth, dy * cellHeight);
+                if (!best || distance < best.distance) best = {dx, dy, key, distance};
+              }
+            }
+          }
+          occupied.add(best.key);
+          node.scratch('_mapSlot', {anchor, key: best.key});
+          node.position({x: (x + best.dx) * cellWidth, y: (y + best.dy) * cellHeight});
+        }
       });
-      const lay = cy.layout({ name: 'preset', positions: positions, fit: false, animate: false });
-      lay.one('layoutstop', () => {
-        // FIT, NOT zoom(1)+center(). MAP is the layout the panel opens in, and zoom(1)
-        // pins the scale to 1 whatever the extent is: on an 838x311 panel with the nodes
-        // spread over a map-shaped extent, centring at zoom 1 leaves most of the graph
-        // outside it, which is why the panel did not appear to fit its graph at the
-        // start. `cy.fit(cy.nodes(), 60)` rather than bare `cy.fit()` for the reason
-        // recorded below: 7.1 ms against 1027 ms cold, because the no-argument form
-        // takes the bounding box of every element, edges included.
-        cy.fit(cy.nodes(), 60);
-        cy.scratch('_labelHubIds', null);
-        if (typeof applyDensityScale === 'function') applyDensityScale();
-      });
-      lay.run();
+      const last = cy.scratch('_mapFit');
+      const pan = cy.pan();
+      if (!refresh || (pending.length && last && last.zoom === cy.zoom() &&
+          last.x === pan.x && last.y === pan.y)) {
+        cy.fit(nodes, 32);
+        cy.scratch('_mapFit', {zoom: cy.zoom(), ...cy.pan()});
+      }
+      if (!refresh) applyDensityScale();
     }
 
     // GA-246. FLOAT: a force layout with NO EDGE FORCES AT ALL.
@@ -5476,6 +5473,8 @@
 
     function toggleSemanticView(enabled) {
       semanticViewOn = !!enabled;
+      syncPhysicsButton();
+      if (semanticViewOn && cy) cy.nodes('.tree-building').remove();
       const panel = document.getElementById('panelGraph');
       const bar = document.getElementById('semanticGraphBar');
       const toggle = document.getElementById('semanticViewToggle');
@@ -5700,10 +5699,10 @@
       let spatialX = 0, spatialY = 0, spatialCount = 0;
       if (useSpatialSeed) {
         nodes.forEach(node => {
-          const spatial = node.data('position');
-          if (Array.isArray(spatial) && spatial.length >= 2) {
-            spatialX += Number(spatial[1]) || 0;
-            spatialY += Number(spatial[0]) || 0;
+          const spatial = objectWorldPoint(node.data());
+          if (spatial) {
+            spatialX += spatial.x;
+            spatialY += spatial.y;
             spatialCount++;
           }
         });
@@ -5712,14 +5711,12 @@
       spatialY = spatialCount ? spatialY / spatialCount : 0;
       nodes.forEach((node, index) => {
         const position = node.position();
-        const spatial = useSpatialSeed ? node.data('position') : null;
+        const spatial = useSpatialSeed ? objectWorldPoint(node.data()) : null;
         // MAP already has measured coordinates. Seed the worker from them directly instead
         // of running the main-thread quantised map layout before every solve. Small,
         // deterministic offsets separate objects that share one measured coordinate.
-        const seedX = Array.isArray(spatial) && spatial.length >= 2
-          ? (Number(spatial[1]) || 0) * 180 : spatialX * 180;
-        const seedY = Array.isArray(spatial) && spatial.length >= 2
-          ? (Number(spatial[0]) || 0) * 180 : spatialY * 180;
+        const seedX = (spatial ? spatial.x : spatialX) * 180;
+        const seedY = (spatial ? spatial.y : spatialY) * 180;
         positions[index * 2] = useSpatialSeed
           ? seedX + ((index * 37) % 11 - 5) * 0.7 : position.x;
         positions[index * 2 + 1] = useSpatialSeed
@@ -5897,13 +5894,27 @@
       layout.run();
     }
 
-    function runTreeLayout() {
+    function runTreeLayout(refresh = false) {
       if (!cy) return;
-      const visible = cy.nodes(':visible');
-      const nodes = visible.length ? visible : cy.nodes();
+      const visible = cy.nodes(':visible').not('.tree-building');
+      const rooms = visible.filter('[type="room"]').map(node => node)
+        .sort((a, b) => a.id().localeCompare(b.id(), undefined, {numeric: true}));
+      const rootId = '__tree_building__';
+      let building = cy.getElementById(rootId);
+      if (rooms.length) {
+        if (!building.length) building = cy.add({data: {
+          id: rootId, type: 'building', label: 'Building'
+        }, classes: 'tree-building'});
+        building.data('building_id', lastGraphData?.building_id || '');
+        const edges = rooms.map(room => ({data: {
+          id: rootId + room.id(), source: rootId, target: room.id(), label: 'contains room'
+        }, classes: 'tree-building-edge'})).filter(e => !cy.getElementById(e.data.id).length);
+        if (edges.length) cy.add(edges);
+      } else if (building.length) {
+        building.remove();
+      }
+      const nodes = cy.nodes(':visible');
       if (!nodes.length) return;
-
-      const rooms = nodes.filter(node => node.data('type') === 'room').map(node => node);
       const nodeIds = new Set(nodes.map(node => node.id()));
       const parentOf = new Map();
       cy.edges().forEach(edge => {
@@ -5915,12 +5926,12 @@
         else if (target.data('type') === 'room') parentOf.set(source.id(), target.id());
       });
 
-      const defaultRoom = rooms.length === 1 ? rooms[0].id() : null;
+      const roomIds = new Map(rooms.map(room => [room.data('room'), room.id()]));
       const childrenByRoom = new Map(rooms.map(room => [room.id(), []]));
       const unassigned = [];
       nodes.forEach(node => {
-        if (node.data('type') === 'room') return;
-        const parent = parentOf.get(node.id()) || defaultRoom;
+        if (node.data('type') === 'room' || node.data('type') === 'building') return;
+        const parent = parentOf.get(node.id()) || roomIds.get(node.data('room'));
         if (parent && childrenByRoom.has(parent)) childrenByRoom.get(parent).push(node);
         else unassigned.push(node);
       });
@@ -5932,13 +5943,13 @@
 
       const blocks = rooms.map(room => ({ root: room, children: childrenByRoom.get(room.id()) }));
       if (unassigned.length) blocks.push({ root: null, children: unassigned });
-      const positions = {}, CELL_W = 104, CELL_H = 40, BLOCK_GAP = 180;
+      const positions = {}, CELL_W = 104, CELL_H = 68, BLOCK_GAP = 100;
       let cursorX = 0;
       blocks.forEach(block => {
         const count = block.children.length;
         const cols = Math.max(6, Math.min(24, Math.ceil(Math.sqrt(Math.max(1, count) * 2.6))));
         const usedCols = Math.min(cols, Math.max(1, count));
-        const width = Math.max(520, usedCols * CELL_W);
+        const width = Math.max(160, usedCols * CELL_W);
         if (block.root) positions[block.root.id()] = { x: cursorX + width / 2, y: 0 };
         block.children.forEach((node, index) => {
           const row = Math.floor(index / cols), col = index % cols;
@@ -5949,13 +5960,17 @@
         cursorX += width + BLOCK_GAP;
       });
 
-      const layout = cy.layout({ name: 'preset', positions, fit: false, animate: false });
-      layout.one('layoutstop', () => {
-        cy.fit(nodes, 60);
-        cy.scratch('_labelHubIds', null);
-        applyDensityScale();
-      });
-      layout.run();
+      if (rooms.length) {
+        const middle = (positions[rooms[0].id()].x + positions[rooms[rooms.length - 1].id()].x) / 2;
+        positions[rootId] = {x: middle, y: -Math.max(200, (cursorX - BLOCK_GAP) * .10)};
+      }
+      nodes.positions(node => positions[node.id()]);
+      const last = cy.scratch('_treeFit'), pan = cy.pan();
+      if (!refresh || !last || (last.zoom === cy.zoom() && last.x === pan.x && last.y === pan.y)) {
+        cy.fit(nodes, 32);
+        cy.scratch('_treeFit', {zoom: cy.zoom(), ...cy.pan()});
+      }
+      applyDensityScale();
     }
 
     function runCircleLayout() {
@@ -5989,6 +6004,11 @@
       // early; stopping only inside the physics branch would leave cola simulating underneath
       // a mode that thinks it has placed the nodes, and the two would fight for every frame.
       stopPhysics();
+      if (currentGraphLayout === 'breadthfirst' && !semanticViewOn) {
+        runTreeLayout();
+        return;
+      }
+      cy.nodes('.tree-building').remove();
       if (semanticViewOn) {
         runSemanticLayout(allowPhysics);
         return;
@@ -6027,10 +6047,6 @@
       }
       if (currentGraphLayout === 'concentric') {
         runOrbitLayout();
-        return;
-      }
-      if (currentGraphLayout === 'breadthfirst') {
-        runTreeLayout();
         return;
       }
       if (currentGraphLayout === 'circle') {
@@ -6261,9 +6277,10 @@
         cy.batch(() => {
           cy.nodes('[type="room"]').style({ width: size * 1.5, height: size * 1.5,
                                             'font-size': fontFor(12) });
-          cy.nodes('[type!="room"][type!="semantic-summary"]').style({
+          cy.nodes('[type!="building"][type!="room"][type!="semantic-summary"]').style({
             width: size, height: size, 'font-size': fontFor(10)
           });
+          cy.nodes('[type="building"]').style({'font-size': fontFor(14)});
           cy.nodes('[type="semantic-summary"]').style({ 'font-size': fontFor(10) });
         });
       }
@@ -6272,7 +6289,7 @@
       // cached. Recomputing degree() per node per call was 43 ms of the old 114.
       cy.batch(() => {
         cy.nodes().forEach(nd => {
-          const keep = z > cut || nd.data('type') === 'room' ||
+          const keep = z > cut || nd.data('type') === 'building' || nd.data('type') === 'room' ||
                        labelHubIds.has(nd.id()) || nd.selected();
           if (keep === nd.hasClass('nolabel')) nd.toggleClass('nolabel', !keep);
         });
@@ -6999,6 +7016,15 @@
           { selector: 'node.aging', style: { 'opacity': 0.72, 'border-color': '#eab308' } },
           { selector: 'node.stale', style: { 'opacity': 0.42, 'border-color': '#ef4444',
                                              'border-style': 'dashed' } },
+          { selector: 'node.tree-building', style: {
+              'shape': 'round-rectangle', 'width': 'label', 'padding': 10,
+              'text-valign': 'center', 'text-margin-y': 0, 'background-color': '#243450',
+              'border-color': '#a5b4fc', 'border-width': 3, 'text-background-opacity': 0
+          } },
+          { selector: 'edge.tree-building-edge', style: {
+              'line-color': '#a5b4fc', 'width': 3, 'opacity': .85, 'label': '',
+              'target-arrow-shape': 'none', 'curve-style': 'straight'
+          } },
           { selector: 'node.nolabel', style: { 'text-opacity': 0 } },
           { selector: 'node.lifecycle-moved', style: {
               'background-color': '#d97706', 'border-color': '#fde68a',
@@ -7412,6 +7438,19 @@
       const badgeEl = document.getElementById('aeroTypeBadge');
       const content = document.getElementById('detailContent');
 
+      if (data.type === 'building') {
+        if (titleEl) titleEl.textContent = data.building_id || data.label;
+        if (badgeEl) {
+          badgeEl.textContent = 'BUILDING';
+          badgeEl.style.color = '#a5b4fc';
+          badgeEl.style.borderColor = '#a5b4fc';
+          badgeEl.style.background = '#243450';
+        }
+        if (content) content.textContent = 'Rooms in this view: ' +
+          cy.getElementById(data.id).connectedEdges('.tree-building-edge:visible').length;
+        if (overlay) overlay.classList.add('active');
+        return;
+      }
       if (titleEl) titleEl.textContent = data.label || 'OBJECT';
       if (badgeEl) {
         const isRoom = data.type === 'room';
@@ -7763,9 +7802,9 @@
               // COLLECTION — a plain Array throws (e.remove is not a function),
               // which the catch below swallowed, skipping the whole sync.
               const toRemove = cy.nodes().filter(n => !incomingNodeIds.has(n.id()) &&
-                  !n.hasClass('lifecycle-ghost') && !n.hasClass('semantic-summary'))
+                  !n.hasClass('lifecycle-ghost') && !n.hasClass('semantic-summary') && !n.hasClass('tree-building'))
                 .union(cy.edges().filter(e => !incomingEdgeIds.has(e.id()) &&
-                  !e.hasClass('semantic-summary-edge')));
+                  !e.hasClass('semantic-summary-edge') && !e.hasClass('tree-building-edge')));
               if (toRemove.length > 0) cy.remove(toRemove);
 
               // 2. Update existing node data in-place (keeps coordinates untouched)
@@ -7808,7 +7847,7 @@
                 syncEdgeTypeUi();
                 if (wasEmpty) {
                   runSelectedLayout();
-                } else if (newNodes.length > 0) {
+                } else if (newNodes.length > 0 && currentGraphLayout !== 'breadthfirst' && (currentGraphLayout !== 'map' || physicsOn || semanticViewOn)) {
                   // Stable incremental placement: position new nodes without disturbing existing layout
                   newNodes.forEach((n, idx) => {
                     const roomId = n.data.room ? 'n_' + String(n.data.room).replace(/[^a-zA-Z0-9_]/g, '_') : null;
@@ -7828,6 +7867,12 @@
                 }
                 applyZoomLabelScale();
               }
+              if (!wasEmpty && currentGraphLayout === 'breadthfirst' && !semanticViewOn) {
+                runTreeLayout(true);
+              }
+              if (!wasEmpty && currentGraphLayout === 'map' && !physicsOn && !semanticViewOn) {
+                runMapLayout(true);
+              }
               if (semanticViewOn && topologyChanged && newNodes.length === 0 && newEdges.length === 0) {
                 syncSemanticSummaries();
               }
@@ -7835,7 +7880,7 @@
               // Those paths do not run a layout, but they do change the ranked label set.
               if (topologyChanged && !wasEmpty) {
                 applyDensityScale();
-                if (physicsOn) runSelectedLayout();
+                if (physicsOn && (currentGraphLayout !== 'breadthfirst' || semanticViewOn)) runSelectedLayout();
               }
               // GA-247: honour the crops checkbox. This fired on every sync regardless,
               // so 269 image requests and 269 un-batched style writes happened whether or

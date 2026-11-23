@@ -261,10 +261,11 @@ def execute(root, request, env, state):
     stopping = False
     process = None
     private_owned = False
+    private_stop_pending = False
     monitor_done = None
 
     def interrupt(signum, _frame):
-        nonlocal stopping
+        nonlocal stopping, private_stop_pending
         if stopping:
             return
         stopping = True
@@ -273,6 +274,11 @@ def execute(root, request, env, state):
         if request["mode"] == "sim":
             # SIGINT to the Docker client is insufficient for a detached shell.
             stop_simulation(state, env.get("RTABMAP_CLOSE_TIMEOUT", "120"))
+        elif request["mode"] in ("tiago", "bag") and container_alive(state["container"]):
+            # docker exec's client can exit while its detached tmux workload
+            # survives. Cancel startup and close only this operation's session
+            # before interrupting the launcher client.
+            private_stop_pending = bool(stop_tiago(root, env, state))
         if process and process.poll() is None:
             os.killpg(process.pid, signal.SIGINT)
 
@@ -480,20 +486,41 @@ def execute(root, request, env, state):
         # Container labels/names identify only this operation, never broad process patterns.
         if request["mode"] == "sim":
             stop_simulation(state, env.get("RTABMAP_CLOSE_TIMEOUT", "120"))
-        elif private_owned and state.get("state") == "FAILED":
-            stop_tiago(root, env, state)
+        elif request["mode"] in ("tiago", "bag"):
+            # Startup may have created panes before its docker exec client was
+            # interrupted, before the normal acknowledgement above was read.
+            identity = subprocess.run(["docker", "exec", state["container"], "cat", "/ws/output/operation_id"],
+                                      capture_output=True, text=True)
+            private_owned = identity.returncode == 0 and identity.stdout.strip() == state["operation_id"]
+            if stopping or state.get("state") == "FAILED":
+                private_stop_pending = bool(stop_tiago(root, env, state))
         remaining = [name for name in owned_containers(state["operation_id"]) if name != state.get("actor")]
         private_running = False
         if private_owned:
             private_running = subprocess.run(["docker", "exec", "-u", "user", state["container"], "tmux", "has-session", "-t", state["session"]],
                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-        if not remaining and not private_running:
+        if not remaining and not private_running and not private_stop_pending:
             reg.release(state["operation_id"])
+        elif private_running or private_stop_pending:
+            # Keep an unfinished shutdown discoverable by `graphapi stop` even
+            # after this CLI supervisor exits. The private container owns its
+            # lease until the acknowledged session has actually closed.
+            state.update(state="DRAINING", actor="pal:" + state["container"],
+                         pid=None, process_identity=None, returncode=1,
+                         cleanup_error="private stack is still closing; retry graphapi stop")
+            state.pop("finished", None)
+            reg.db.execute("UPDATE leases SET actor=?,pid=NULL,identity=NULL WHERE operation=?",
+                           (state["actor"], state["operation_id"]))
+            reg.db.commit()
+            write_json(status, state)
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
 
 
 def stop_tiago(root, env, state):
+    env = dict(env, FOUND_TMUX_SESSION=state["session"])
+    if state.get("operation_id"):
+        env["GRAPHAPI_STOP_OPERATION_ID"] = state["operation_id"]
     command = ["bash", str(runtime(root, "run_tiago")), "stop", state["container"]]
     rc = subprocess.run(command, cwd=root, env=env).returncode
     if rc:
@@ -511,10 +538,15 @@ def stop_operation(workspace, selector):
     reg = Registry(workspace)
     state = reg.select(selector)
     if state["state"] in ("PREPARING", "RUNNING", "DRAINING"):
-        if state.get("actor") and container_alive(state["actor"]):
+        if state.get("actor") and not state["actor"].startswith("pal:") and container_alive(state["actor"]):
             if state["state"] == "DRAINING" and state.get("mode") == "sim":
                 # Recover an older supervisor that only interrupted its Docker client.
                 stop_simulation(state)
+                return reg.select(state["operation_id"])
+            if state["state"] == "DRAINING" and state.get("mode") in ("tiago", "bag"):
+                env, _ = environment(Path(state["project"]))
+                if stop_tiago(Path(state["project"]), env, state):
+                    raise ValueError("private components are still closing; resource ownership retained")
                 return reg.select(state["operation_id"])
             if state.get("pid") is None:
                 subprocess.run(["docker", "kill", "--signal=SIGINT", state["actor"]], check=True,
@@ -532,11 +564,15 @@ def stop_operation(workspace, selector):
         subprocess.run(["docker", "stop", "-t", "30", *names], check=True)
     if state.get("mode") in ("tiago", "bag"):
         identity = subprocess.run(["docker", "exec", state["container"], "cat", "/ws/output/operation_id"], capture_output=True, text=True)
-        if identity.returncode == 0 and identity.stdout.strip() == state["operation_id"]:
+        if (identity.returncode == 0 and identity.stdout.strip() == state["operation_id"]) or state.get("state") == "DRAINING":
             env, _ = environment(Path(state["project"]))
             env["FOUND_TMUX_SESSION"] = state["session"]
             if stop_tiago(Path(state["project"]), env, state):
                 raise ValueError("private components are still closing; resource ownership retained")
     if not owned_containers(state["operation_id"]):
         reg.release(state["operation_id"])
+        if state.get("state") == "DRAINING" and state.get("mode") in ("tiago", "bag"):
+            state.update(state="INTERRUPTED", returncode=130, finished=time.time())
+            state.pop("cleanup_error", None)
+            write_json(reg.operations / state["operation_id"] / "status.json", state)
     return state

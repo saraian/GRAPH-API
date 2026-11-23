@@ -1,6 +1,6 @@
 {
  "scene_id": "hm3d_00861",
- "navmesh": "/home/yuri/habitat_matterport/versioned_data/hm3d-0.2/hm3d/example/00861-GLAQ4DNUx5U/GLAQ4DNUx5U.basis.navmesh",
+ "navmesh": "data/scene_datasets/hm3d/example/00861-GLAQ4DNUx5U/GLAQ4DNUx5U.basis.navmesh",
  "settings": {
   "mpp": 0.05,
   "robot_radius": 0.25,

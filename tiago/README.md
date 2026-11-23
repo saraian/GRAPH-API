@@ -66,6 +66,13 @@ that session/output; it must match the bag and profile already running. It does
 not resume a stopped historical operation. The CLI reserves the private
 container for one managed acquisition at a time.
 
+For foreground physical and bag runs, Ctrl-C requests the same graceful shutdown
+as `./graphapi stop RUN_ID`. The operation enters `DRAINING`, closes its private
+pipeline session, saves the output, and releases its resources after shutdown.
+Cancellation during startup prevents the launcher from creating a late session.
+If shutdown is still pending, use `./graphapi stop RUN_ID` again; the operation
+keeps its resource reservations until its private session has closed.
+
 The runner must provide the private PAL container or private build inputs.
 See the [TIAGO setup instructions](../README.md#tiago).
 An already prepared container can be reused without supplying the ISO, builder

@@ -165,10 +165,6 @@ def _append_cycle_row(row):
         except OSError:
             pass
 
-# ponytail: fixed cap for images sent to the VLM; make it a CFG["vlm"] knob if a
-# model ever needs finer input. The base64 payload dominates vlm_ms, not the answer.
-VLM_IMAGE_MAX_SIDE = 512
-
 # GA-353. Depth of the ground-truth semantic frame cache, in frames. Derived, not tuned:
 # the feed host renders at most ~11 f/s at 1280x960 (measured 89 ms/frame, config note) and
 # the archive looks the frame up after the detection span, p95 ~9.4 s on 192014, so the frame
@@ -180,7 +176,10 @@ GT_SEMANTIC_CACHE_FRAMES = 120
 
 def _encode_for_vlm(img):
     h, w = img.shape[:2]
-    scale = VLM_IMAGE_MAX_SIDE / float(max(h, w))
+    # Keep image size configurable so speed/quality tradeoffs can be evaluated
+    # without changing preprocessing code.
+    max_side = max(1, int(CFG.get("vlm", {}).get("image_max_side", 448)))
+    scale = max_side / float(max(h, w))
     if scale < 1.0:
         img = cv2.resize(img, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
     return numpy_to_base64(img)
@@ -338,6 +337,7 @@ class DetectObjectsNode(Node, DetectionPipelineMixin, PerceptionIOMixin):
                 request_kind="unified_scene",
             ),
             image_encoder_fn=_encode_for_vlm,
+            log_fn=self.log_both,
             crop_call_fn=partial(
                 vlm_call,
                 timeout=CFG["vlm"]["crop_timeout"],
