@@ -673,7 +673,10 @@ _DEFAULTS = {
         # *****
         "executor": "primitive",     # primitive (rtabmap grid planner) | navmesh (ground-truth navmesh follower)
         "max_duration_s": 1800.0,    # timeout fallback for task modes; unused by Building
-        "objectnav": {"target": ""}, # ObjectNav target category; set by --target or a future dataset
+        # Target match is a LOST similarity in [0, 1]; this weight makes it comparable to the
+        # geometric gain (bits) while leaving normal Exploration geometric-only.
+        "objectnav": {"target": "", "semantic_weight": 5.0,
+                      "found_threshold": 0.80, "found_label_threshold": 0.75},
     },
     # *****
     # Date: 2026-11-19

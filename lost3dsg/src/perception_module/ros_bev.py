@@ -96,6 +96,7 @@ class RosBEV:
         self.candidates = None
         self.best_candidate = None
         self.candidates_received = None
+        self.objectnav_found = None
         self.candidate_subscription = node.create_subscription(
             String, '/exploration/candidates', self.on_candidates, qos)
         # *****
@@ -148,12 +149,17 @@ class RosBEV:
             data = json.loads(msg.data)
             items = data.get('candidates') or []
             best = data.get('best_id')
+            found = data.get('found_object') if data.get('target_found') else None
         except (ValueError, AttributeError):
             return
         with self.lock:
             self.candidates = items
             self.best_candidate = best
             self.candidates_received = time.monotonic()
+            # Keep the success marker latched for the rest of this run, even after the
+            # task_done request stops frontier scoring and no more candidate messages arrive.
+            if isinstance(found, dict):
+                self.objectnav_found = found
 
     # *****
     # Date: 2026-11-22
@@ -209,6 +215,7 @@ class RosBEV:
                     'frontiers': self.frontiers, 'frontiers_age_s': f_age,
                     'candidates': self.candidates, 'best_candidate': self.best_candidate,
                     'candidates_age_s': c_age,
+                    'objectnav_found': self.objectnav_found,
                     # *****
                     # Date: 2026-11-22
                     # Editor: WangZX

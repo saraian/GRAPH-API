@@ -2007,6 +2007,7 @@ TOOLS_MENU_TEMPLATE = """
     <a href="./"      style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">NEW &rarr;</a>
     <a id="liveLink" href="dash" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LIVE &rarr;</a>
     <a href="bundles" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">LOAD &rarr;</a>
+    <a href="objectnav" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">OBJECTNAV &rarr;</a>
     <a href="baseline-replay/" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:6px 10px;text-decoration:none;">BASELINE REPLAY &rarr;</a>
 __EXT_LINKS____INTERNAL_LINKS__  </div>
 </div>
@@ -2091,6 +2092,79 @@ __EXT_LINKS____INTERNAL_LINKS__  </div>
   }
 </script>
 """
+
+
+def _objectnav_page_html():
+    """Live inspector for the target parsing and per-frontier LOST object matches."""
+    return r'''<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ObjectNav inspector</title>
+<style>
+  :root{color-scheme:dark;font:14px system-ui,sans-serif;background:#080d18;color:#e2e8f0}
+  body{margin:0;padding:28px;max-width:1200px;margin-inline:auto}
+  h1{font-size:22px;margin:0 0 6px}h2{font-size:15px;margin:0 0 12px;color:#cbd5e1}
+  .muted{color:#94a3b8}.top{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-bottom:20px}
+  a{color:#7dd3fc}.card{background:#111827;border:1px solid #263449;border-radius:10px;padding:16px;margin:12px 0}
+  .target{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .field{background:#0b1220;padding:10px;border-radius:7px;min-height:48px;overflow-wrap:anywhere}
+  .key{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#7c8ba1;margin-bottom:5px}
+  .value{font-weight:600}.frontiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+  .frontier{background:#0b1220;border:1px solid #25344a;border-radius:8px;padding:13px}
+  .frontier.best{border-color:#fbbf24;box-shadow:0 0 0 1px #fbbf2440}.row{display:flex;justify-content:space-between;gap:8px}
+  .obj{border-top:1px solid #1e293b;padding:9px 0 2px;margin-top:8px}.pill{font:11px ui-monospace,monospace;background:#172338;border-radius:99px;padding:3px 7px;color:#bfdbfe}
+  .bar{height:5px;background:#1e293b;border-radius:5px;margin:7px 0}.bar i{display:block;height:100%;background:#38bdf8;border-radius:5px}
+  #state{font:12px ui-monospace,monospace;color:#94a3b8}
+</style></head><body>
+<div class="top"><div><h1>ObjectNav · semantic frontier inspector</h1>
+<div class="muted">Target parsing and objects matched at each frontier viewpoint</div></div>
+<div><a href="/dash">← Dashboard</a><div id="state">Connecting…</div></div></div>
+<section class="card"><h2>Target</h2><div class="muted" id="rawTarget">Awaiting ObjectNav telemetry</div>
+<div class="target" id="fields"></div></section>
+<section class="card"><div class="row"><h2>Frontiers and visible objects</h2><span class="muted" id="summary"></span></div>
+<div class="frontiers" id="frontiers"></div></section>
+<script>
+let objectCache={},lastObjectQuery=0,lastPayload=null;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const show=v=>(v===null||v===undefined||v===''?'Not specified':String(v));
+async function refreshObjects(){
+ if(Date.now()-lastObjectQuery<5000)return;lastObjectQuery=Date.now();
+ try{const r=await fetch('/query_objects',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',cache:'no-store'});
+   const q=await r.json();if(q.success&&Array.isArray(q.objects)){
+     objectCache=Object.fromEntries(q.objects.map(o=>[String(o.object_id),o]));
+     if(lastPayload)render(lastPayload);
+   }
+ }catch(_){/* The candidate payload remains usable if the live graph query is unavailable. */}
+}
+function render(payload){
+ const state=document.getElementById('state'), fields=document.getElementById('fields');
+ if(!payload||!payload.available||!payload.data){state.textContent='Waiting for /exploration/candidates';return;}
+ const d=payload.data, tf=d.target_fields||{};
+ state.textContent=`Updated ${payload.age_s??'—'} s ago · task ${d.task||'—'}`;
+ const found=d.target_found&&d.found_object?` · FOUND: ${d.found_object.label} (LOST ${Number(d.found_object.lost_similarity||0).toFixed(3)})`:'';
+ document.getElementById('rawTarget').textContent='Requested target: '+show(d.target)+found;
+ fields.innerHTML=['label','color','material','description'].map(k=>`<div class="field"><div class="key">${k}${k==='label'?' · required':''}</div><div class="value">${esc(show(tf[k]))}</div></div>`).join('');
+ const cs=d.candidates||[]; document.getElementById('summary').textContent=`${cs.length} viewpoints · best_id ${d.best_id??'—'} · w_sem ${d.weights?.w_sem??'—'}`;
+ if(!cs.length){document.getElementById('frontiers').innerHTML='<div class="muted">No frontier candidates have been published yet.</div>';return;}
+ document.getElementById('frontiers').innerHTML=cs.map(c=>{
+   const objs=(c.visible_objects||[]).slice().sort((a,b)=>(b.lost_similarity||0)-(a.lost_similarity||0));
+   const body=objs.length?objs.map(o=>{const score=Math.max(0,Math.min(1,Number(o.lost_similarity)||0));
+     const ev=o.evidence||{};
+     const graphObject=objectCache[String(o.object_id)]||{};
+     const evidence=['label','color','material','description'].filter(k=>ev[k])
+       .map(k=>`${k}: ${show(tf[k]??(k==='label'?d.target:null))} ↔ ${show(k==='label'?o.label:(graphObject[k]??o[k]))}`).join(' · ')||'no comparable fields';
+     return `<div class="obj"><div class="row"><b>${esc(o.label||'Object')}</b><span class="pill">LOST ${score.toFixed(3)}</span></div>
+       <div class="bar"><i style="width:${(score*100).toFixed(1)}%"></i></div>
+       <div class="muted">ID ${esc(o.object_id??'—')} · distance ${esc(o.distance_m??'—')} m · room ${esc(o.room_id??'—')}</div>
+       <div class="muted">LOST evidence: ${esc(evidence)}${ev.optional_count===0?' · label only':''}</div></div>`;
+   }).join(''):'<div class="obj muted">No visible objects, or waiting for the scene graph query.</div>';
+   return `<article class="frontier ${c.id===d.best_id?'best':''}"><div class="row"><b>Frontier ${esc(c.id)}${c.id===d.best_id?' · selected':''}</b><span class="pill">S ${Number(c.sem_gain||0).toFixed(3)}</span></div>
+     <div class="muted">Utility ${esc(c.utility)} · geometric gain ${esc(c.geo_gain_bits)} bits · robot distance ${esc(c.distance_m)} m · reachable ${c.reachable?'yes':'no'}</div>${body}</article>`;
+ }).join('');
+}
+async function poll(){try{const r=await fetch('/exploration/candidates',{cache:'no-store'});lastPayload=await r.json();render(lastPayload);refreshObjects();}
+ catch(e){document.getElementById('state').textContent='Dashboard/bridge unreachable: '+e;}}
+poll();setInterval(poll,1500);
+</script></body></html>'''
 
 
 def _room_overlays(bundle):
@@ -2928,7 +3002,19 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
 
     @app.get("/dash", response_class=HTMLResponse)
     def _dash():
-        return index_fn()
+        response = index_fn()
+        # Make the ObjectNav inspector discoverable without opening the hamburger menu.
+        # This endpoint serves the same main viewer in live and replay assemblies.
+        if isinstance(response, HTMLResponse):
+            body = response.body.decode("utf-8", errors="replace")
+            link = ("<a href='/objectnav' style='position:fixed;right:14px;top:12px;z-index:100000;"
+                    "padding:8px 12px;border-radius:7px;background:#0e7490;color:#ecfeff;"
+                    "border:1px solid #67e8f9;text-decoration:none;font:600 12px system-ui;"
+                    "box-shadow:0 2px 12px #0008'>ObjectNav</a>")
+            pos = body.lower().rfind("</body>")
+            body = body[:pos] + link + body[pos:] if pos >= 0 else body + link
+            return HTMLResponse(body, status_code=response.status_code)
+        return response
 
     # ---- THE 3D SCENE, IN BOTH MODES ---------------------------------------------------
     # These three lived in `build_app` until 2026-09-04, which meant /scene3d, /scene_mesh
@@ -2980,6 +3066,10 @@ def _install_launcher(app, index_fn, bundles_fn, current_fn):
     # tools menu linked /bundles and posted /start_rviz, both fell through the catch-all, and
     # the bridge answered 404 for each (rule 19: the control looked wired). File-backed and
     # host-local, so they belong to both modes.
+    @app.get("/objectnav", response_class=HTMLResponse)
+    def _objectnav_inspector():
+        return HTMLResponse(_objectnav_page_html())
+
     @app.get("/bundles", response_class=HTMLResponse)
     def _bundles():
         """Every archived run with its configuration, statistics and map, so a bundle is

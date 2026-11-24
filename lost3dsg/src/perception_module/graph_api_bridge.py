@@ -388,6 +388,11 @@ class BridgeNode(Node):
         from std_msgs.msg import String as _WallStr
         self.latest_walls, self.walls_stamp = [], 0.0
         self.create_subscription(_WallStr, '/detected_wall_segments', self._on_walls, 10)
+        # ObjectNav frontier ranking is published by info_gain_node. Keep its latest
+        # compact JSON payload here so the host dashboard can inspect semantic matching.
+        self.latest_exploration_candidates, self.exploration_candidates_stamp = None, 0.0
+        self.create_subscription(_WallStr, '/exploration/candidates',
+                                 self._on_exploration_candidates, 10)
         self.create_subscription(Image, '/camera/rgb', self._on_raw_image, _QOS_CAMERA)
         self.create_subscription(Image, '/image_with_bb', self._on_annotated_image, 10)
 
@@ -446,6 +451,17 @@ class BridgeNode(Node):
             self.walls_stamp = time.time()
         except (ValueError, TypeError) as exc:
             self.get_logger().warn(f"wall segments undecodable: {exc}")
+
+    def _on_exploration_candidates(self, msg):
+        """Keep the latest frontier/LOST ranking for the live dashboard."""
+        try:
+            payload = json.loads(msg.data)
+            if not isinstance(payload, dict):
+                raise ValueError("expected a JSON object")
+            self.latest_exploration_candidates = payload
+            self.exploration_candidates_stamp = time.time()
+        except (ValueError, TypeError) as exc:
+            self.get_logger().warn(f"exploration candidates undecodable: {exc}")
 
     def _on_raw_image(self, msg: Image):
         jpeg = self._convert_to_jpeg(msg)
@@ -2645,6 +2661,20 @@ def get_cycle_series(limit: int = 400):
         rows = rows[-max(1, limit):]
     return JSONResponse(content={"rows": rows, "n": n,
                                  "path": str(picked) if picked is not None else None})
+
+
+@app.get("/exploration/candidates")
+def get_exploration_candidates():
+    """Latest frontier scores, including ObjectNav target fields and LOST object evidence."""
+    node = get_node()
+    payload = getattr(node, "latest_exploration_candidates", None) if node else None
+    received = getattr(node, "exploration_candidates_stamp", 0.0) if node else 0.0
+    return JSONResponse(content={
+        "available": payload is not None,
+        "received_at": received or None,
+        "age_s": round(max(0.0, time.time() - received), 2) if received else None,
+        "data": payload,
+    })
 
 
 @app.get("/health")

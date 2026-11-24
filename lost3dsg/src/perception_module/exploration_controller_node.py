@@ -29,7 +29,10 @@ import traceback
 import urllib.parse
 import urllib.request
 
-from frontier_extractor import GridInfo
+import cv2
+import numpy as np
+
+from frontier_extractor import GridInfo, cells_to_world, world_to_cell
 from grid_planner import build_costmap, plan_partial, plan_path, planner_params
 
 STATUS_TOPIC = "/exploration/status"
@@ -66,8 +69,55 @@ def choose_candidate(candidates, blacklist, radius_m):
     return None
 
 
+def object_clearance(x, y, box):
+    dx = np.maximum(np.maximum(box["x_min"] - x, x - box["x_max"]), 0)
+    dy = np.maximum(np.maximum(box["y_min"] - y, y - box["y_max"]), 0)
+    return np.hypot(dx, dy)
+
+
+def object_costmap(cost, info, box, radius):
+    rows, cols = np.ogrid[:cost.shape[0], :cost.shape[1]]
+    x, y = cells_to_world(rows, cols, info)
+    distance = object_clearance(x, y, box)
+    return np.where(distance <= radius, np.inf, cost), distance
+
+
+def clear_to_object(grid, info, xy, box, occ_thresh):
+    # Trace to the nearest surface. The cell containing the surface may be occupied by the object.
+    edge = [np.clip(xy[i], box[a + "_min"], box[a + "_max"]) for i, a in enumerate("xy")]
+    cells = max(1, math.ceil(math.dist(xy, edge) / (info.resolution * 0.5)))
+    end = world_to_cell(*edge, info)
+    for i in range(cells):
+        t = i / cells
+        r, c = world_to_cell(xy[0] + t * (edge[0] - xy[0]), xy[1] + t * (edge[1] - xy[1]), info)
+        if not (0 <= r < grid.shape[0] and 0 <= c < grid.shape[1]):
+            return False
+        if (r, c) != end and grid[r, c] >= occ_thresh:
+            return False
+    return True
+
+
+def object_approach_goal(cost, grid, info, robot, box, radius, stand_off, excluded, tol, frontier):
+    cost, distance = object_costmap(cost, info, box, radius)
+    r, c = world_to_cell(*robot[:2], info)
+    reachable = np.isfinite(cost).astype(np.uint8)
+    if not (0 <= r < cost.shape[0] and 0 <= c < cost.shape[1] and reachable[r, c]):
+        return None
+    cv2.floodFill(reachable, None, (c, r), 2, flags=8)
+    candidates = ((reachable == 2) & (grid >= 0) & (grid <= frontier.get("free_thresh", 25))
+                  & (distance <= stand_off))
+    rr, cc = np.nonzero(candidates)
+    xs, ys = cells_to_world(rr, cc, info)
+    for idx in np.argsort(np.hypot(xs - robot[0], ys - robot[1])):
+        xy = (float(xs[idx]), float(ys[idx]))
+        if any(math.dist(xy, old) <= tol for old in excluded):
+            continue
+        if clear_to_object(grid, info, xy, box, frontier.get("occ_thresh", 65)):
+            return xy
+    return None
+
+
 def _node_class():
-    import numpy as np
     from nav_msgs.msg import OccupancyGrid
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -112,6 +162,11 @@ def _node_class():
             self.cost_key = None
             self.cost_info = None
             self.candidates = None            # (receive time, payload)
+            self.target_found_sent = False
+            self.object_approach = None
+            self.object_attempts = {}
+            self.checked_match = None
+            self.object_standoff = float((task.get("objectnav") or {}).get("approach_distance_m", 0.6))
             self.visited = []
             # Goto bookkeeping
             self.planned_seq = None
@@ -185,7 +240,7 @@ def _node_class():
                 self.cost_info, self.cost_key = gi, key
             return self.cost, self.cost_info
 
-        def plan_and_post(self, seq, target, robot):
+        def plan_and_post(self, seq, target, robot, object_box=None):
             t0 = time.perf_counter()
             if math.hypot(target[0] - robot[0], target[1] - robot[1]) <= self.goal_tol:
                 body = {"seq": seq, "points": [[robot[0], robot[1]], [target[0], target[1]]]}
@@ -195,6 +250,8 @@ def _node_class():
                 if cost is None:
                     body, length = {"seq": seq, "error": f"no map on {self.map_topic} yet"}, None
                 else:
+                    if object_box is not None:
+                        cost, _ = object_costmap(cost, info, object_box, self.pparams["robot_radius_m"])
                     res, why = plan_path(cost, info, robot[:2], target[:2], self.pparams)
                     # *****
                     # Date: 2026-11-23
@@ -252,6 +309,15 @@ def _node_class():
             auto = bool(st.get("auto_mode"))
             active = st.get("active")
             self.state["auto"] = auto
+            if self.target_found_sent:
+                return
+            if self.task_mode == "ObjectNav":
+                if not auto:
+                    if self.object_approach is not None:
+                        self.goto_end = time.monotonic()
+                    self.object_approach = None
+                elif self.object_step(robot, active, st):
+                    return
             seq = active.get("seq") if active else None
             # A goto ended (or was replaced): remember when, and count failures of this node's own gotos.
             if self.prev_seq is not None and seq != self.prev_seq:
@@ -308,6 +374,72 @@ def _node_class():
                 return
             self.auto_step(robot)
 
+        def object_step(self, robot, active, status):
+            approach = self.object_approach
+            if approach is None:
+                if not self.candidates or robot is None or self.map is None:
+                    return False
+                received, payload = self.candidates
+                found = payload.get("found_object") if payload.get("target_found") else None
+                if not found or not found.get("bbox") or self.checked_match == received:
+                    return False
+                stamp = payload.get("frontier_stamp") or payload.get("stamp", 0)
+                if time.time() - stamp > max(3.0, self.candidate_wait_s):
+                    return False
+                cost, info = self.costmap()
+                if cost is None:
+                    return False
+                box = found["bbox"]
+                grid = np.asarray(self.map.data).reshape(cost.shape)
+                failed = self.object_attempts.setdefault(found["object_id"], [])
+                goal = object_approach_goal(cost, grid, info, robot, box, self.pparams["robot_radius_m"],
+                                            self.object_standoff, failed, self.goal_tol, self.fparams)
+                self.checked_match = received
+                if goal is None:
+                    return False
+                if not self.send_goto(robot, goal, None):
+                    return False
+                approach = {"goal": goal, "object": found, "sent": time.monotonic(), "seq": None}
+                self.object_approach = approach
+                # This goto supersedes the frontier goto and owns its own acknowledgement and retries.
+                self.auto_target = self.sent_at = self.prev_seq = None
+                self.state.update(phase="approach", message=f"ObjectNav: approaching {found['label']}")
+                return True
+
+            goal, found = approach["goal"], approach["object"]
+            xy = (active or {}).get("target_ros") or []
+            matches = len(xy) >= 2 and math.dist(xy[:2], goal) < 0.002
+            if matches:
+                approach["seq"] = active["seq"]
+            if robot is not None and approach["seq"] is not None and self.map is not None:
+                box = found["bbox"]
+                cost, info = self.costmap()
+                tolerance = self.goal_tol
+                if (cost is not None and math.dist(robot[:2], goal) <= tolerance
+                        and self.pparams["robot_radius_m"] <= object_clearance(*robot[:2], box)
+                        <= self.object_standoff + tolerance
+                        and clear_to_object(np.asarray(self.map.data).reshape(cost.shape), info,
+                                            robot[:2], box, self.fparams.get("occ_thresh", 65))):
+                    result = self._http("/action?act=task_done")
+                    if result.get("success"):
+                        self.target_found_sent = True
+                        self.state.update(phase="target_found", target=None, candidate_id=None,
+                                          message=f"ObjectNav: reached {found['label']}")
+                    return True
+            if matches:
+                seq = active["seq"]
+                if (active.get("phase") == "travel" and robot is not None
+                        and (status.get("executor") or self.task_executor) == "primitive"
+                        and (seq != self.planned_seq or time.monotonic() - self.last_plan >= self.replan_period)):
+                    self.plan_and_post(seq, goal, robot, found["bbox"])
+                return True
+            if approach["seq"] is None and time.monotonic() - approach["sent"] < 3.0:
+                return True
+            self.object_attempts[found["object_id"]].append(goal)
+            self.object_approach = None
+            self.goto_end = time.monotonic()
+            return False
+
         def auto_step(self, robot):
             if robot is None:
                 self.state["message"] = "AUTO: waiting for the robot pose"
@@ -344,7 +476,9 @@ def _node_class():
             q = urllib.parse.urlencode({"act": "goto", "x": f"{xy[0]:.3f}", "y": f"{xy[1]:.3f}",
                                         "z": f"{robot[2]:.3f}"})
             try:
-                self._http("/action?" + q)
+                result = self._http("/action?" + q)
+                if not result.get("success", True):
+                    return False
             except Exception as exc:
                 self.get_logger().warn(f"auto goto failed to send: {exc}", throttle_duration_sec=10.0)
                 return
@@ -356,6 +490,7 @@ def _node_class():
                               message=f"AUTO: goto {'F%s' % cid if cid is not None else 'here'}")
             self.get_logger().info(f"auto goto -> {'F%s' % cid if cid is not None else 'scan in place'} "
                                    f"({xy[0]:.2f}, {xy[1]:.2f})")
+            return True
 
         def publish_status(self):
             out = dict(self.state, stamp=time.time())

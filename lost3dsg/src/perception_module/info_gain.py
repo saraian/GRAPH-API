@@ -11,8 +11,8 @@
 # Remark: Geometric gain implemented as CRMI (Xu et al., RA-L 2021) with the sensor cause model (SCM):
 #         360 deg virtual ray casting from each candidate viewpoint, per-cell mutual information between the
 #         confidence-rich belief and the virtual measurement. The CR map is approximated from the rtabmap
-#         occupancy grid (belief_from_grid, the replaceable layer). Semantic gain is a reserved interface
-#         (weight 0). Pure numpy, no ROS import, so it is unit-testable.
+#         occupancy grid (belief_from_grid, the replaceable layer). Semantic gain is enabled for
+#         ObjectNav and remains off by default for other tasks. Pure numpy, no ROS import.
 # *****
 """Information gain = w_geo * geometric gain + w_sem * semantic gain.
 
@@ -50,7 +50,7 @@ import numpy as np
 DEFAULT_GAIN_PARAMS = {
     # utility
     "w_geo": 1.0,
-    "w_sem": 0.0,                  # semantic gain reserved, disabled
+    "w_sem": 0.0,                  # off by default; ObjectNav supplies task.objectnav.semantic_weight
     "distance_decay_per_m": 0.2,  # utility *= exp(-decay * distance)
     "unreachable_factor": 0.5,     # utility *= factor for a frontier not yet reachable
     # sensor (virtual 360 deg scan, beam mixture model)
@@ -282,18 +282,223 @@ class GeometricGain:
 
 
 class SemanticGain:
-    """Reserved semantic gain (LOST-3DSG similarity). Disabled: returns 0.
-
-    `context` is where the semantic part will get its inputs: the ObjectNav target
-    (CFG.task.objectnav.target), the object manager's objects near the candidate, and the
-    LOST-3DSG similarity entry point (nlp_utils.lost_similarity).
-    """
+    """LOST-3DSG similarity between an ObjectNav target and visible graph objects."""
 
     def __init__(self, params=None):
         self.p = dict(params or {})
+        self.target = None
+
+    def set_target(self, target):
+        self.target = dict(target or {})
+
+    def score_visible_objects(self, visible, context=None):
+        """Return the best LOST score and per-object evidence for a set of visible nodes."""
+        context = context or {}
+        target = self.target or context.get("target_fields") or {}
+        target_label = str(target.get("label") or "").strip()
+        compare = context.get("lost_similarity_detailed")
+        label_compare = context.get("semantic_similarity")
+        embed = context.get("get_embedding")
+        model = context.get("embedding_model")
+        if not target_label or compare is None or embed is None or model is None:
+            return 0.0, []
+
+        target_description = target.get("description")
+        target_embedding = target.get("description_embedding")
+        if target_embedding is None and target_description:
+            target_embedding = embed(model, target_description)
+            target["description_embedding"] = target_embedding
+
+        scored, best = [], 0.0
+        for row in visible or []:
+            obj = row.get("_node") if isinstance(row, dict) else None
+            if not isinstance(obj, dict):
+                continue
+            object_label = str(obj.get("label") or "").split("#", 1)[0].strip()
+            if not object_label or object_label.lower() in {"unknown", "none", "n/a"}:
+                continue
+            description = obj.get("description")
+            cache = context.setdefault("object_embeddings", {})
+            cache_key = (str(obj.get("object_id") or object_label), str(description or ""))
+            if cache_key not in cache:
+                cache[cache_key] = embed(model, description) if description else None
+            score, evidence = compare(
+                model,
+                target_label, object_label,
+                target.get("color"), obj.get("color"),
+                target.get("material"), obj.get("material"),
+                target_embedding, cache[cache_key],
+            )
+            score = float(score)
+            label_score = (float(label_compare(model, target_label, object_label))
+                           if label_compare is not None else 0.0)
+            best = max(best, score)
+            scored.append({"object_id": obj.get("object_id"), "label": object_label,
+                           "bbox": obj.get("bbox"),
+                           "color": obj.get("color"), "material": obj.get("material"),
+                           "description": description,
+                           "room_id": obj.get("room_id", "unknown"),
+                           "distance_m": row.get("distance_m"),
+                           "lost_similarity": round(score, 4),
+                           "label_similarity": round(label_score, 4), "evidence": evidence})
+        return best, scored
 
     def evaluate(self, candidate, context=None):
-        return 0.0
+        context = context or {}
+        rows = objects_in_camera_view(candidate.get("viewpoint", ()), context.get("objects"),
+                                      context.get("camera"), include_nodes=True)
+        return self.score_visible_objects(rows, context)[0]
+
+
+def _ray_box_hit(origin, target, box, eps=1e-6):
+    """Whether a segment from camera origin to target enters an AABB before its end."""
+    try:
+        t0, t1 = 0.0, 1.0 - eps
+        for axis in "xyz":
+            lo, hi = float(box[f"{axis}_min"]), float(box[f"{axis}_max"])
+            d = target["xyz".index(axis)] - origin["xyz".index(axis)]
+            o = origin["xyz".index(axis)]
+            if abs(d) < eps:
+                if o < lo or o > hi:
+                    return False
+                continue
+            a, b = (lo - o) / d, (hi - o) / d
+            if a > b:
+                a, b = b, a
+            t0, t1 = max(t0, a), min(t1, b)
+            if t0 > t1:
+                return False
+        return t1 >= t0
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _map_occludes(origin, point, box, grid, info, threshold=65):
+    """Check known occupied map cells between the camera and the near XY face of a target."""
+    if grid is None or info is None:
+        return False
+    try:
+        res = float(info.resolution)
+        dx, dy = point[0] - origin[0], point[1] - origin[1]
+        t0, t1 = 0.0, 1.0
+        for o, d, lo, hi in ((origin[0], dx, box[0][0], box[0][1]),
+                             (origin[1], dy, box[1][0], box[1][1])):
+            if abs(d) < 1e-9:
+                if o < lo or o > hi:
+                    return False
+                continue
+            a, b = (lo - o) / d, (hi - o) / d
+            if a > b:
+                a, b = b, a
+            t0, t1 = max(t0, a), min(t1, b)
+            if t0 > t1:
+                return False
+        stop = max(0.0, t0 - res / max(math.hypot(dx, dy), res))
+        steps = max(1, int(math.ceil(stop * math.hypot(dx, dy) / max(res * 0.5, 1e-4))))
+        c, s = math.cos(float(getattr(info, "yaw", 0.0))), math.sin(float(getattr(info, "yaw", 0.0)))
+        g = np.asarray(grid)
+        for i in range(1, steps + 1):
+            t = stop * i / steps
+            wx, wy = origin[0] + t * dx, origin[1] + t * dy
+            lx, ly = c * (wx - info.origin_x) + s * (wy - info.origin_y), \
+                     -s * (wx - info.origin_x) + c * (wy - info.origin_y)
+            col, row = int(math.floor(lx / res)), int(math.floor(ly / res))
+            if 0 <= row < g.shape[0] and 0 <= col < g.shape[1] and g[row, col] >= threshold:
+                return True
+        return False
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return False
+
+
+def objects_in_camera_view(viewpoint, objects, camera=None, include_nodes=False):
+    """Return persistent object nodes visible in at least one pose of a 360-degree scan.
+
+    The camera is modelled with its configured HFOV/pitch and a panoramic sequence of yaw poses.
+    A target is included when part of its 3D AABB projects inside the image and a ray to that
+    visible part is not blocked by known occupied map cells or another scene-graph object's AABB.
+    This is a geometric first pass; the camera pans through a full 360-degree scan.
+    """
+    camera = camera or {}
+    try:
+        x, y = float(viewpoint[0]), float(viewpoint[1])
+        height = float(camera.get("height_m", 1.5))
+        hfov = math.radians(float(camera.get("hfov_deg", 90.0)))
+        vfov = math.radians(float(camera.get("vfov_deg", 60.0)))
+        pitch = math.radians(float(camera.get("pitch_deg", -30.0)))
+        max_range = float(camera.get("max_range_m", 4.0))
+        yaw_step = max(math.radians(5), min(hfov / 2.0, math.radians(30)))
+    except (TypeError, ValueError, IndexError):
+        return []
+    if hfov <= 0 or vfov <= 0 or max_range <= 0:
+        return []
+    origin = (x, y, height)
+    rows = []
+    for obj in objects or []:
+        if not isinstance(obj, dict) or not isinstance(obj.get("bbox"), dict):
+            continue
+        box = obj["bbox"]
+        try:
+            bounds = [(float(box[f"{a}_min"]), float(box[f"{a}_max"])) for a in "xyz"]
+            if any(lo > hi for lo, hi in bounds):
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        corners = [(a, b, c) for a in bounds[0] for b in bounds[1] for c in bounds[2]]
+        center = tuple((lo + hi) / 2.0 for lo, hi in bounds)
+        # Face-centres help with broad boxes whose corners all fall outside a narrow image.
+        points = corners + [center]
+        points += [((bounds[0][0] + bounds[0][1]) / 2, yy, zz)
+                   for yy in bounds[1] for zz in bounds[2]]
+        points += [(xx, (bounds[1][0] + bounds[1][1]) / 2, zz)
+                   for xx in bounds[0] for zz in bounds[2]]
+        points += [(xx, yy, (bounds[2][0] + bounds[2][1]) / 2)
+                   for xx in bounds[0] for yy in bounds[1]]
+        distance = math.dist(origin, center)
+        rows.append((obj, bounds, points, distance))
+
+    visible = []
+    for obj, bounds, points, distance in rows:
+        if distance > max_range:
+            continue
+        seen = False
+        for point in points:
+            ray = tuple(point[i] - origin[i] for i in range(3))
+            rng = math.sqrt(sum(v * v for v in ray))
+            if rng <= 1e-6 or rng > max_range:
+                continue
+            if _map_occludes(origin, point, bounds, camera.get("grid"), camera.get("grid_info"),
+                             camera.get("occ_thresh", 65)):
+                continue
+            for yaw in (i * yaw_step for i in range(int(math.ceil(2 * math.pi / yaw_step)))):
+                # Camera optical axes: forward is horizontal yaw with the configured down pitch.
+                forward = (math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw),
+                           math.sin(pitch))
+                right = (-math.sin(yaw), math.cos(yaw), 0.0)
+                up = (-math.sin(pitch) * math.cos(yaw), -math.sin(pitch) * math.sin(yaw),
+                      math.cos(pitch))
+                z = sum(ray[i] * forward[i] for i in range(3))
+                if z <= 0:
+                    continue
+                px = sum(ray[i] * right[i] for i in range(3)) / z
+                py = sum(ray[i] * up[i] for i in range(3)) / z
+                if abs(px) > math.tan(hfov / 2) or abs(py) > math.tan(vfov / 2):
+                    continue
+                blocked = any(other is not obj and
+                              _ray_box_hit(origin, point, other_box)
+                              for other, other_box, _, _ in rows)
+                if not blocked:
+                    seen = True
+                    break
+            if seen:
+                break
+        if seen:
+            row = {"object_id": obj.get("object_id"), "label": obj.get("label", ""),
+                   "room_id": obj.get("room_id", "unknown"),
+                   "distance_m": round(distance, 3)}
+            if include_nodes:
+                row["_node"] = obj
+            visible.append(row)
+    return visible
 
 
 class BKIEstimator:
@@ -321,7 +526,7 @@ class BKIEstimator:
 # *****
 # Date: 2026-11-22
 # Editor: WangZX
-# Remark: Default weights follow the config (geometric only, semantic weight 0).
+# Remark: Default weights follow the config (geometric only outside ObjectNav).
 # *****
 def combine(geometric, semantic, w_geo=1.0, w_sem=0.0):
     """Weighted sum of the two gains (semantic gain comes from the LOST-3DSG similarity scores)."""
@@ -358,14 +563,27 @@ def evaluate_candidates(grid, info, frontier_payload, params=None, semantic=None
     geo.set_grid(grid, info)
     robot = frontier_payload.get("robot")
     use_sem = semantic is not None and p["w_sem"] != 0.0
+    semantic_context = context or {}
     out = []
     for fr in frontier_payload.get("frontiers") or []:
         g = geo.evaluate(fr["viewpoint"])
-        s = semantic.evaluate(fr, context) if use_sem else 0.0
+        s = 0.0
         d = candidate_distance(fr, robot)
-        out.append({"id": fr["id"], "viewpoint": fr["viewpoint"], "reachable": bool(fr.get("reachable")),
-                    "distance_m": round(d, 3), "geo_gain_bits": round(g, 3), "sem_gain": round(s, 3),
-                    "utility": round(utility(g, s, d, bool(fr.get("reachable")), p), 4)})
+        candidate = {"id": fr["id"], "viewpoint": fr["viewpoint"], "reachable": bool(fr.get("reachable")),
+                     "distance_m": round(d, 3), "geo_gain_bits": round(g, 3), "sem_gain": round(s, 3),
+                     "utility": round(utility(g, s, d, bool(fr.get("reachable")), p), 4)}
+        if semantic_context.get("objects") is not None:
+            camera = dict(semantic_context.get("camera") or {})
+            camera["grid"], camera["grid_info"] = grid, info
+            visible = objects_in_camera_view(fr["viewpoint"], semantic_context["objects"], camera,
+                                             include_nodes=use_sem)
+            if use_sem:
+                s, candidate["visible_objects"] = semantic.score_visible_objects(visible, semantic_context)
+            else:
+                candidate["visible_objects"] = visible
+        candidate["sem_gain"] = round(s, 4)
+        candidate["utility"] = round(utility(g, s, d, bool(fr.get("reachable")), p), 4)
+        out.append(candidate)
     out.sort(key=lambda c: c["utility"], reverse=True)
     for rank, c in enumerate(out):
         c["rank"] = rank
